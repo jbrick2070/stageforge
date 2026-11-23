@@ -4,7 +4,7 @@ import { AudioEngine } from './audio/AudioEngine';
 import { CAMERAS, TopBar } from './components/TopBar';
 import { ShowOverlay } from './components/ShowOverlay';
 import { useShowGamepad } from './input/useShowGamepad';
-import { applyDemoLighting } from './data/demoLighting';
+import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
 import { BottomConsole } from './components/BottomConsole';
 import { RigBuilderDrawer } from './components/RigBuilderDrawer';
@@ -59,7 +59,7 @@ export const App: React.FC = () => {
     return result;
   }, [bump, controllerBump]);
   const [cues, setCues] = useState<ShowCue[]>(() => structuredClone(SHOW_CUES));
-  const [activeCueId, setActiveCueId] = useState<string | null>('cue-1');
+  const [activeCueId, setActiveCueId] = useState<string | null>(null);
 
   const [audioMetrics, setAudioMetrics] = useState<AudioMetrics>(EMPTY_AUDIO);
   const [volume, setVolume] = useState(0.72);
@@ -85,6 +85,7 @@ export const App: React.FC = () => {
   const autoCueIndexRef = useRef(0);
   const lastAutoSwitchRef = useRef(0);
   const lastDemoTick = useRef(-1);
+  const previewRig = useCallback(() => engineRef.current?.previewRig(), []);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -98,7 +99,10 @@ export const App: React.FC = () => {
 
   // Trigger a show cue cleanly preserving user's custom media/text/master
   const triggerCue = useCallback((cue: ShowCue, automatic = false) => {
-    if (!automatic) autoDirRef.current = false;
+    if (!automatic) {
+      previewRig();
+      autoDirRef.current = false;
+    }
     setActiveCueId(cue.id);
     setShowState((prev) => ({
       ...prev,
@@ -122,7 +126,7 @@ export const App: React.FC = () => {
           }
         : prev.led,
     }));
-  }, []);
+  }, [previewRig]);
 
   // Mount Three.js StageEngine + AudioEngine once
   useEffect(() => {
@@ -219,6 +223,7 @@ export const App: React.FC = () => {
       switch (e.code) {
         case 'Space':
           e.preventDefault();
+          previewRig();
           setShowState((s) => ({ ...s, blackout: !s.blackout }));
           break;
         case 'KeyB':
@@ -301,6 +306,7 @@ export const App: React.FC = () => {
   }, []);
 
   const handleCamera = (cam: CameraPreset) => {
+    previewRig();
     setActiveCamera(cam);
     engineRef.current?.setCameraPreset(cam);
   };
@@ -311,10 +317,16 @@ export const App: React.FC = () => {
     const startShow = ae.getStatus().source === 'none' || audioMetrics.demo?.finished;
     const playing = ae.togglePlayPause();
     if (startShow && playing && ae.getStatus().source === 'synth') {
+      const demo = getDemoPosition(0);
+      const opening = applyDemoLighting({ ...showState, autoDirector: true }, demo);
+      engineRef.current?.beginDemo(opening);
       autoDirRef.current = true;
       lastDemoTick.current = -1;
       setActiveCueId(null);
-      setShowState(s => applyDemoLighting({ ...s, autoDirector: true }, getDemoPosition(0)));
+      setShowState(opening);
+      setAudioMetrics({ ...EMPTY_AUDIO, playing: true, source: 'synth', trackName: ae.getStatus().trackName, demo });
+      setToast(null);
+      return;
     }
     showToast(playing ? `Playing: ${ae.getStatus().trackName}` : 'Audio Paused');
   };
@@ -324,6 +336,7 @@ export const App: React.FC = () => {
     if (!ae) return;
     try {
       const name = await ae.loadAudioFile(file);
+      previewRig();
       showToast(`Loaded Track: ${name}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -341,6 +354,7 @@ export const App: React.FC = () => {
     }
     try {
       await ae.startMicInput();
+      previewRig();
       showToast('Live Mic / Room Audio Sync Active');
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -349,6 +363,7 @@ export const App: React.FC = () => {
   };
 
   const handleSaveCue = (cueId: string) => {
+    previewRig();
     setCues((prev) =>
       prev.map((c) =>
         c.id === cueId
@@ -386,6 +401,7 @@ export const App: React.FC = () => {
   }, [rig]);
 
   const toggleDirector = () => {
+    previewRig();
     const next = !autoDirRef.current;
     autoDirRef.current = next;
     lastDemoTick.current = -1;
@@ -394,6 +410,7 @@ export const App: React.FC = () => {
     showToast(next ? 'Auto-LD on' : 'Manual lighting control');
   };
   const takeDesk = () => {
+    previewRig();
     setActiveCueId(null);
     autoDirRef.current = false;
     setShowState(s => s.autoDirector ? { ...s, autoDirector: false } : s);
@@ -424,6 +441,7 @@ export const App: React.FC = () => {
         }
         case 'masterUp':
         case 'masterDown':
+          previewRig();
           setShowState(s => ({ ...s, masterDimmer: Math.max(0, Math.min(1, s.masterDimmer + (action === 'masterUp' ? 0.05 : -0.05))) }));
           break;
         case 'auto': toggleDirector(); break;
@@ -434,8 +452,9 @@ export const App: React.FC = () => {
     orbit: (x, y) => engineRef.current?.orbitBy(x, y),
   });
 
+  const demoOpeningBlack = showState.autoDirector && !!audioMetrics.demo && audioMetrics.demo.step < DEMO_BLACKOUT_STEPS;
   return (
-    <main data-cinema={cinemaMode} className="stage-workstation relative w-screen h-screen bg-[#040509] overflow-hidden">
+    <main data-cinema={cinemaMode} data-demo-blackout={demoOpeningBlack} className="stage-workstation relative w-screen h-screen bg-black overflow-hidden">
       {/* Full-Viewport HQ 3D WebGL2 Canvas */}
       <div ref={viewportRef} className="stage-viewport w-full h-full cursor-grab active:cursor-grabbing" />
       <ShowOverlay demo={audioMetrics.demo} controller={controller} cinema={cinemaMode} />
@@ -473,20 +492,23 @@ export const App: React.FC = () => {
           setShowState((s) => ({ ...s, audioReactive: !s.audioReactive }))
         }
         onSelectCamera={handleCamera}
-        onToggleRigDrawer={() => setRigDrawerOpen((v) => !v)}
+        onToggleRigDrawer={() => {
+          previewRig();
+          setRigDrawerOpen((v) => !v);
+        }}
         onToggleDmxDrawer={() => setDmxDrawerOpen((v) => !v)}
         onToggleCostModal={() => setCostModalOpen((v) => !v)}
         onToggleCinemaMode={() => setCinemaMode((v) => !v)}
       />
 
       {/* Live Status Toast & Blackout Pill */}
-      {toast && (
+      {toast && !demoOpeningBlack && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
           {toast}
         </div>
       )}
 
-      {showState.blackout && (
+      {showState.blackout && !demoOpeningBlack && (
         <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none px-5 py-2 rounded-xl bg-rose-950/80 border border-rose-500/70 font-mono-tech text-sm tracking-widest text-rose-200 shadow-[0_0_30px_rgba(244,63,94,0.45)]">
           STAGE BLACKOUT — PRESS [SPACE] TO RESTORE
         </div>
@@ -533,6 +555,7 @@ export const App: React.FC = () => {
           activeCueId={activeCueId}
           onPatchState={(patch) => {
             if (Object.keys(patch).some(key => key !== 'masterDimmer' && key !== 'blackout')) takeDesk();
+            else previewRig();
             setShowState((s) => ({ ...s, ...patch }));
           }}
           onPatchLaser={(patch) => {

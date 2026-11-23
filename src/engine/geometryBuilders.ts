@@ -829,11 +829,13 @@ export function buildVenueArchitecture(
 ): {
   group: THREE.Group;
   crowdMesh: THREE.InstancedMesh | null;
+  practicals: (THREE.MeshBasicMaterial | THREE.PointsMaterial)[];
   crowdBaseTransforms: { x: number; z: number; scaleY: number; phase: number; rotY: number }[];
   roofY: number;
 } {
   const group = new THREE.Group();
   const roofY = venue === 'warehouse' ? 11.2 : venue === 'festival' ? 16.5 : 15.8;
+  const practicals: (THREE.MeshBasicMaterial | THREE.PointsMaterial)[] = [];
 
   // Vast dark arena / festival floor with subtle specular bounce for stage lights & lasers!
   const floorMat = new THREE.MeshStandardMaterial({
@@ -847,6 +849,7 @@ export function buildVenueArchitecture(
   group.add(floor);
 
   const houseLamp = new THREE.MeshBasicMaterial({ color: 0xaa805b });
+  practicals.push(houseLamp);
   const seatMat = new THREE.MeshStandardMaterial({ color: 0x36404c, roughness: 0.85 });
   if (venue === 'arena' || venue === 'warehouse') {
     const hallW = venue === 'warehouse' ? 28 : 54;
@@ -877,6 +880,7 @@ export function buildVenueArchitecture(
     // Side structural columns & dark walls
     const wallMat = new THREE.MeshStandardMaterial({ color: 0x242932, roughness: 0.87 });
     const warehouseGlass = new THREE.MeshBasicMaterial({ color: 0x182b39 });
+    practicals.push(warehouseGlass);
     for (const side of [-1, 1]) {
       const wall = new THREE.Mesh(new THREE.BoxGeometry(0.6, roofY + 2, hallD), wallMat);
       wall.position.set(side * (hallW / 2), (roofY + 2) / 2, 12);
@@ -902,7 +906,7 @@ export function buildVenueArchitecture(
           const edgeX = side * (hallW / 2 - 1.5 - (4 - tier) * 1.4);
           const top = 0.85 + tier * 0.86;
           addBox(group, wallMat, edgeX, top / 2, 22, 1.46, top, 44);
-          // Seat banks stop at the aisles. The low tread markers remain visible during a blackout.
+          // Low marker lights follow the aisles between seat banks.
           for (let bank = 0; bank < 4; bank++) {
             const z = 5.5 + bank * 11;
             addBox(group, seatMat, edgeX, top + 0.25, z, 0.58, 0.14, 9.55);
@@ -978,6 +982,7 @@ export function buildVenueArchitecture(
       new THREE.PointsMaterial({ color: 0xbcd4ff, size: 0.35, transparent: true, opacity: 0.55 })
     );
     group.add(stars);
+    practicals.push(stars.material);
   }
 
   // Front-of-stage crowd barricade fence
@@ -1057,11 +1062,12 @@ export function buildVenueArchitecture(
       const screen = new THREE.PlaneGeometry(0.073, 0.13);
       screen.rotateY(Math.PI).translate(0.37, 1.90, 0.145);
       const screenMat = new THREE.MeshBasicMaterial({ color: 0x94a9c6 });
+      practicals.push(screenMat);
       const phones = new THREE.InstancedMesh(screen, screenMat, phoneCount);
       phones.instanceMatrix = crowdMesh.instanceMatrix;
       group.add(phones);
     }
   }
 
-  return { group, crowdMesh, crowdBaseTransforms, roofY };
+  return { group, practicals, crowdMesh, crowdBaseTransforms, roofY };
 }

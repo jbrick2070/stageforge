@@ -41,12 +41,14 @@ import { AtmosphericParticles } from './ParticleSystem';
 import { BeamPools, MOVING_HEAD_OPTICS } from './beamPools';
 import { buildScenicPiece, ScenicPiece } from './scenicProps';
 import { SPEAKER_PROFILES } from '../data/speakerProfiles';
+import { applyDemoLighting, DEMO_BLACKOUT_STEPS, demoFade } from '../data/demoLighting';
 
 interface MovingFixtureInstance {
   type: 'beam' | 'wash';
   isFloor: boolean;
   index: number;
   podIndex: number;
+  openingStep: number;
   root: THREE.Group;
   yoke: THREE.Group;
   head: THREE.Group;
@@ -117,6 +119,11 @@ const LED_MODE_INDEX: Record<LedVisualMode, number> = {
 };
 
 export class StageEngine {
+  private standby = true;
+  private houseAmbient = new THREE.HemisphereLight(0x929faf, 0x302723, 0.36);
+  private houseColors: { color: THREE.Color; full: THREE.Color }[] = [];
+  private backgroundColor = new THREE.Color(0x030408);
+  private fogColor = new THREE.Color(0x04060c);
   private container: HTMLElement;
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -228,8 +235,8 @@ export class StageEngine {
 
     // Scene & deep arena atmosphere
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x030408);
-    this.scene.fog = new THREE.FogExp2(0x04060c, 0.015);
+    this.scene.background = this.backgroundColor.clone();
+    this.scene.fog = new THREE.FogExp2(this.fogColor, 0.015);
 
     // Generate dark metallic reflection environment map via PMREM
     const pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -272,6 +279,7 @@ export class StageEngine {
     this.controls.maxDistance = 68;
     this.controls.target.copy(this.cameraTargetLook);
     this.controls.addEventListener('start', () => {
+      this.previewRig();
       this.fitFohOnResize = false;
       this.cameraLerpActive = false;
       this.orbitAuto = false;
@@ -292,8 +300,7 @@ export class StageEngine {
     this.composer.addPass(new OutputPass());
 
     // Subtle ambient fill + dramatic real-time stage lights
-    const hemi = new THREE.HemisphereLight(0x929faf, 0x302723, 0.36);
-    this.scene.add(hemi);
+    this.scene.add(this.houseAmbient);
     this.scenicKey = new THREE.SpotLight(0xffe6d1, 280, 33, 0.80, 0.76, 1.65);
     this.scenicKey.position.set(-3, 12, 10);
     this.scenicKey.target.position.set(0, 2.8, -0.5);
@@ -360,6 +367,22 @@ export class StageEngine {
     this.composer.setSize(w, h);
   }
 
+  public previewRig() {
+    this.standby = false;
+  }
+
+  public beginDemo(opening: ShowState) {
+    this.standby = false;
+    this.setShowState(opening);
+    this.clearStage();
+  }
+
+  private clearStage() {
+    this.renderer.setRenderTarget(null);
+    this.renderer.setClearColor(0x000000, 1);
+    this.renderer.clear();
+  }
+
   public setShowState(state: ShowState) {
     this.currentState = state;
     this.bloomPass.strength = state.bloomStrength;
@@ -372,6 +395,7 @@ export class StageEngine {
   }
 
   public setBumpState(bump: BumpState) {
+    if (Object.values(bump).some(Boolean)) this.previewRig();
     this.currentBump = bump;
   }
 
@@ -379,6 +403,7 @@ export class StageEngine {
   private orbitAngles = new THREE.Spherical();
 
   public orbitBy(horizontal: number, vertical: number) {
+    this.previewRig();
     this.fitFohOnResize = false;
     this.cameraLerpActive = false;
     this.orbitAuto = false;
@@ -589,6 +614,7 @@ export class StageEngine {
     // 1. Venue architecture + animated arena crowd
     const venueBuild = buildVenueArchitecture(rig.venue, rig.audioRig.crowdDensity, this.mats);
     this.rigGroup.add(venueBuild.group);
+    this.houseColors = venueBuild.practicals.map(material => ({ color: material.color, full: material.color.clone() }));
     this.crowdMesh = venueBuild.crowdMesh;
     this.crowdBaseTransforms = venueBuild.crowdBaseTransforms;
     this.roofY = venueBuild.roofY;
@@ -891,11 +917,40 @@ export class StageEngine {
       }
     }
 
+    this.assignOpeningGroups(rig.stageWidth);
     this.particles.setEmitters(smokeEmitters, co2Emitters);
     this.beamPools = new BeamPools(this.movingFixtures.length, rig.stageWidth, rig.stageDepth, rig.stageHeight);
     this.scene.add(this.beamPools.group);
     if (this.activeView === 'foh' && this.fitFohOnResize) this.setCameraPreset('foh');
     if (this.activeView === 'pa_closeup') this.setCameraPreset('pa_closeup');
+  }
+
+  private assignOpeningGroups(stageWidth: number) {
+    // Choose the first two lanterns by mounting position so custom patches keep their symmetry.
+    const fixtures = this.movingFixtures.map(fx => ({ fx, at: fx.root.getWorldPosition(new THREE.Vector3()) }));
+    const beams = fixtures.filter(({ fx }) => fx.type === 'beam');
+    const overhead = beams.filter(({ fx }) => !fx.isFloor);
+    const candidates = [...(overhead.length >= 2 ? overhead : beams.length ? beams : fixtures)];
+    const upstage = Math.min(...candidates.map(({ at }) => at.z));
+    const pair = new Set<MovingFixtureInstance>();
+    for (const side of [-1, 1]) {
+      const targetX = side * stageWidth * 0.20;
+      const distance = (at: THREE.Vector3) => 3 * Math.abs(at.z - upstage) + Math.abs(at.x - targetX);
+      candidates.sort((a, b) => distance(a.at) - distance(b.at));
+      const next = candidates.shift();
+      if (next) {
+        next.fx.openingStep = DEMO_BLACKOUT_STEPS;
+        pair.add(next.fx);
+      }
+    }
+    for (const type of ['beam', 'wash'] as const) {
+      const rest = fixtures.filter(({ fx }) => fx.type === type && !pair.has(fx));
+      rest.sort((a, b) => a.at.z - b.at.z || Math.abs(a.at.x) - Math.abs(b.at.x));
+      const start = type === 'beam' ? 64 : 96;
+      const span = type === 'beam' ? 40 : 16;
+      const lastPair = Math.max(1, Math.floor((rest.length - 1) / 2));
+      rest.forEach(({ fx }, i) => { fx.openingStep = start + span * Math.floor(i / 2) / lastPair; });
+    }
   }
 
   private createLedMaterial(aspect: number): THREE.ShaderMaterial {
@@ -1016,6 +1071,7 @@ export class StageEngine {
       isFloor,
       index,
       podIndex,
+      openingStep: DEMO_BLACKOUT_STEPS,
       root,
       yoke,
       head,
@@ -1255,8 +1311,8 @@ export class StageEngine {
       }
 
       const audio = this.audioGetter(dt);
-      this.updateScene(dt, audio);
-      this.composer.render();
+      if (this.updateScene(dt, audio)) this.composer.render();
+      else this.clearStage();
 
       this.telemetryAccum += dt;
       if (this.onFrameTelemetry && this.telemetryAccum >= 0.05) {
@@ -1268,12 +1324,21 @@ export class StageEngine {
   }
 
   private updateScene(dt: number, audio: AudioMetrics) {
-    const s = this.currentState;
+    const demo = this.currentState.autoDirector ? audio.demo : undefined;
+    // Render opening fades on the audio clock, between the slower console readouts.
+    const s = demo && demo.step < 224 ? applyDemoLighting(this.currentState, demo) : this.currentState;
     const b = this.currentBump;
     const t = this.elapsed;
 
     // Effective master blackout / dimmer
-    const master = s.blackout ? 0 : s.masterDimmer;
+    const darkOpening = demo && demo.step <= DEMO_BLACKOUT_STEPS && !(b.blinder || b.strobe || b.laser);
+    const master = s.blackout || this.standby || darkOpening ? 0 : s.masterDimmer;
+    const roomGain = demo ? demoFade(demo.step, 96, 208) : 1;
+    this.houseAmbient.intensity = 0.36 * roomGain;
+    this.scene.environmentIntensity = 0.55 * roomGain;
+    (this.scene.background as THREE.Color).copy(this.backgroundColor).multiplyScalar(roomGain);
+    (this.scene.fog as THREE.FogExp2).color.copy(this.fogColor).multiplyScalar(roomGain);
+    for (const lamp of this.houseColors) lamp.color.copy(lamp.full).multiplyScalar(roomGain);
     const audioBoost = s.audioReactive && audio.playing ? audio.beatPulse * 0.45 + audio.bass * 0.35 : 0;
     const beatPulse = s.audioReactive && audio.playing ? audio.beatPulse : 0.15 * Math.max(0, Math.sin(t * (s.bpm / 60) * Math.PI));
 
@@ -1428,8 +1493,13 @@ export class StageEngine {
         tempCol.setHSL((norm + t * 0.12) % 1, 0.96, 0.55);
       }
 
-      const baseInt = fx.type === 'beam' ? s.beamIntensity : s.washIntensity;
-      const finalInt = Math.min(1.6, baseInt * master * strobeGate * (1.0 + audioBoost * 0.48));
+      const firstPair = fx.openingStep === DEMO_BLACKOUT_STEPS;
+      const groupGain = demo && !firstPair ? demoFade(demo.step, fx.openingStep, fx.openingStep + 12) : 1;
+      let baseInt = fx.type === 'beam' ? s.beamIntensity : s.washIntensity;
+      if (demo && firstPair && fx.type === 'wash' && demo.step < 128) {
+        baseInt = THREE.MathUtils.lerp(s.beamIntensity, s.washIntensity, demoFade(demo.step, 96, 128));
+      }
+      const finalInt = Math.min(1.6, groupGain * baseInt * master * strobeGate * (1.0 + audioBoost * 0.48));
 
       fx.beamMat.uniforms.uColor.value.copy(tempCol);
       fx.beamMat.uniforms.uIntensity.value = finalInt;
@@ -1560,7 +1630,7 @@ export class StageEngine {
       effectiveStrobe > 0.03 && strobeFlashOn
         ? 3.8 * master
         : s.audioReactive && audio.beat && master > 0.2
-          ? 2.2 * master
+          ? 2.2 * master * (demo ? demoFade(demo.step, 256, 384) : 1)
           : 0;
     for (const st of this.strobes) {
       st.lensMat.color
@@ -1588,7 +1658,7 @@ export class StageEngine {
     // 6. Stage Dynamic Spill Lights & DJ Booth Strip
     const rigHasLight = this.movingFixtures.length > 0;
     const activeLightPower = ((rigHasLight ? s.beamIntensity * 0.55 + s.washIntensity * 0.72 : 0) +
-      (this.laserUnits.length ? laserInt * 0.09 : 0)) * master * strobeGate;
+      (this.laserUnits.length ? laserInt * 0.09 : 0)) * master * strobeGate * roomGain;
     this.stagePrimaryLight.color.copy(primaryColor);
     this.stagePrimaryLight.intensity = activeLightPower * (24 + beatPulse * 14);
     this.stageAccentLight.color.copy(accentColor);
@@ -1597,10 +1667,10 @@ export class StageEngine {
     this.ledSpillLight.intensity = this.ledWallMats.length ? ledBright * (16 + beatPulse * 10) : 0;
     this.scenicKey.intensity = activeLightPower * 168 + effBlinder * 80;
     for (const light of this.sideFills) light.intensity = activeLightPower * 113 + effBlinder * 70;
-    this.deckTrim?.color.copy(accentColor).multiplyScalar(master * 0.42);
+    this.deckTrim?.color.copy(accentColor).multiplyScalar(master * roomGain * 0.42);
 
     if (this.djStripMat) {
-      this.djStripMat.color.copy(primaryColor).multiplyScalar(master * (1.2 + beatPulse * 0.9));
+      this.djStripMat.color.copy(primaryColor).multiplyScalar(master * roomGain * (1.2 + beatPulse * 0.9));
     }
 
     for (const piece of this.scenicPieces.values()) {
@@ -1609,7 +1679,7 @@ export class StageEngine {
         piece.air.rotation.z = Math.sin(t * 0.72 + piece.phase) * travel;
         piece.air.scale.z = 1 + Math.sin(t * 0.98 + piece.phase) * 0.007;
       }
-      if (piece.lamps) piece.lamps.emissiveIntensity = master * (1.35 + beatPulse * 0.38);
+      if (piece.lamps) piece.lamps.emissiveIntensity = master * roomGain * (1.35 + beatPulse * 0.38);
     }
 
     // 8. Animated Silhouetted Arena Crowd Bounce!
@@ -1632,6 +1702,7 @@ export class StageEngine {
     const effSmoke = b.smoke ? 1.0 : s.atmo.smokeOutput;
     const effCo2 = b.co2 || s.atmo.co2Active || (s.atmo.co2AutoOnDrop && audio.drop && s.audioReactive);
     const stageTint = primaryColor.clone().lerp(accentColor, 0.35);
+    this.particles.group.visible = roomGain > 0 || b.smoke || b.co2;
     this.particles.update(dt, t, s.atmo.hazeLevel, effSmoke, effCo2, stageTint, activeLightPower);
 
     // Update arena fog slightly with haze density for rich depth
@@ -1653,6 +1724,7 @@ export class StageEngine {
       }
     }
     this.controls.update();
+    return master > 0;
   }
 
   public dispose() {

@@ -279,8 +279,8 @@ export const LED_WALL_FRAG = /* glsl */ `
   }
 
   void main() {
-    if (uBrightness <= 0.005) {
-      gl_FragColor = vec4(0.0010, 0.0013, 0.0019, 1.0);
+    if (uBrightness <= 0.0) {
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
       return;
     }
 

@@ -139,6 +139,33 @@ export class DemoScore {
     this.play(source, at, length + 0.003, [filter, amp, stereo]);
   }
 
+  private walkOn(bar: number, step: number, at: number, unit: number) {
+    // Two empty bars give the blackout a downbeat of its own.
+    if (bar < 2) return;
+
+    const measure = bar % 4;
+    const hook = HOOK[measure].find(([onset]) => onset === step);
+    if (hook && (step === 0 || bar >= 4 || (bar === 3 && step === 10))) {
+      this.note('keys', hook[1], at, (hook[2] + 2) * unit,
+        0.034 + 0.016 * (bar - 2), 1200 + 260 * (bar - 2), -0.18);
+    }
+
+    // The first key rings alone. Harmony fills in one voice at a time.
+    if (step === 0 && bar >= 3) {
+      const notes = CHANGES[measure].notes.slice(0, bar - 2);
+      notes.forEach((midi, i) => {
+        this.note('pad', midi, at + i * 0.014, 14.9 * unit,
+          0.012 + 0.006 * (bar - 3), 640 + 120 * (bar - 3), [-0.56, 0.28, -0.19, 0.59][i]);
+      });
+    }
+    if (bar >= 6 && (step === 0 || (bar === 7 && step === 8))) {
+      this.drum(at, 100, 48, 0.22, bar === 6 ? 0.19 : 0.28);
+    }
+    if (bar === 7 && (step === 4 || step === 12)) {
+      this.air(at, 0.065, 0.08, 2500, 1400, 'bandpass', false, -0.13);
+    }
+  }
+
   schedule(step: number, at: number, unit: number) {
     if (this.disposed) return;
     const { sectionId, barInSection: bar, sectionBars, stepInBar: s, sectionProgress } = getDemoPosition(step);
@@ -146,7 +173,10 @@ export class DemoScore {
       this.echo.delayTime.setTargetAtTime(3 * unit, at, 0.015);
       this.lastSubdivision = unit;
     }
-    const intro = sectionId === 'intro';
+    if (sectionId === 'intro') {
+      this.walkOn(bar, s, at, unit);
+      return;
+    }
     const breakdown = sectionId === 'breakdown';
     const outro = sectionId === 'outro';
     const rebuild = sectionId === 'rebuild';
@@ -166,8 +196,8 @@ export class DemoScore {
       chord.notes.forEach((midi, i) => {
         const spread = [-0.56, 0.28, -0.19, 0.59][i];
         this.note('pad', midi, at + i * 0.014, hold * unit,
-          intro ? 0.033 : peak ? 0.077 : 0.052,
-          intro ? 720 + 60 * bar : breakdown ? 1400 : build ? 1200 + sectionProgress * 2200 : 2400, spread);
+          peak ? 0.077 : 0.052,
+          breakdown ? 1400 : build ? 1200 + sectionProgress * 2200 : 2400, spread);
       });
       if (outro && bar === 2) {
         this.note('bass', 38, at, 23 * unit, 0.18, 590);
@@ -178,17 +208,13 @@ export class DemoScore {
       }
     }
 
-    if (intro || breakdown || outro) {
+    if (breakdown || outro) {
       const phrase = HOOK[measure].find(([onset]) => onset === s);
-      if (phrase && ((intro && (s === 0 || (bar >= 2 && s >= 8))) ||
-          (breakdown && (s === 0 || s >= 8 || bar >= 4)) || (outro && bar < 2 && s === 0))) {
+      if (phrase && ((breakdown && (s === 0 || s >= 8 || bar >= 4)) || (outro && bar < 2 && s === 0))) {
         this.note('keys', phrase[1] - (breakdown ? 12 : 0), at, (phrase[2] + 2) * unit,
-          intro ? 0.12 : 0.17, breakdown ? 2100 : 3000, -0.18);
+          0.17, breakdown ? 2100 : 3000, -0.18);
       }
-      if (intro && bar >= 4 && (s === 0 || (bar >= 6 && s === 8))) {
-        this.drum(at, 100, 48, 0.22, 0.18 + (bar - 4) * 0.045);
-      }
-      if ((intro || breakdown) && bar >= 6 && (s === 4 || s === 12)) {
+      if (breakdown && bar >= 6 && (s === 4 || s === 12)) {
         this.air(at, 0.065, 0.095, 2500, 1400, 'bandpass', false, -0.13);
       }
       if (outro && bar === 0 && s === 0) this.drum(at, 116, 45, 0.28, 0.51);

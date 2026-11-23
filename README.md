@@ -30,7 +30,9 @@ Open **Rig builder** and choose an arena, festival, warehouse or starter rig. Co
 
 ## Run a show
 
-1. Select **Play demo** for a two-minute concert at 128 BPM. The walk-on introduces the hook, the first drop lands at 0:45, and the breakdown at 1:00 makes room for a second build. The finale arrives at 1:30 and resolves into a curtain call. Pause and resume preserve your position. **Replay demo** starts again from bar one. Open **Audio** to change tempo, load your own track or use a microphone.
+The stage opens in blackout. To preview the rig before playback, open **Rig builder**, select a camera or tap a cue. **Play demo** starts the concert from black even after a preview.
+
+1. Press **Play demo**. At the default 128 BPM, the stage stays completely dark for two bars (3.75 seconds). A pair of amber backlights fades up in bars 3–4. More beams join in bars 5–6, followed by washes in bars 7–8. The video walls ease in during the groove, and lasers enter during the build. The first full-rig hit lands at 0:45. The breakdown at 1:00 leads into a second build, the finale at 1:30 and a curtain call at the end of the two-minute set. **Pause** holds your place and **Replay demo** repeats the opening blackout. Open **Audio** to change tempo, load your own track or use a microphone.
 2. Select a pad in **Show cues**. Adjust the fixture palette, dimmer, haze, lasers or bloom. To save a look for this session, choose **Store cue** and then a destination pad.
 3. **Auto-LD** follows the demo score from the first bar. Select a cue or edit a fixture to take over the lights while the music continues. Turn **Auto-LD** back on to rejoin the current phrase. The master dimmer, blackout, camera and momentary effects stay under your control.
 4. Open **DMX** to inspect simulated channel values and fixture patches in either 512-channel universe. **Cost & crew** shows an illustrative production estimate for the current rig.
