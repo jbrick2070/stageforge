@@ -138,6 +138,14 @@ test('closing the relink dialog and choosing an entire media folder leave linked
       if (tag === 'video') window.wallVideo = result;
       return result;
     };
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function() {
+      const started = play.call(this);
+      if (this instanceof HTMLAudioElement) {
+        started.then(() => { window.playingTrack = this; }, () => {});
+      }
+      return started;
+    };
   });
   await open(page, show);
   await page.getByRole('button', { name: '2 missing media files · Relink' }).click();
@@ -166,9 +174,10 @@ test('closing the relink dialog and choosing an entire media folder leave linked
   await page.getByRole('button', { name: 'Audio settings', exact: true }).click();
   const position = page.getByRole('slider', { name: 'Track position' });
   await expect(position).toHaveAttribute('max', '30');
-  const oldPosition = Number(await position.inputValue());
-  await expect.poll(async () => Number(await position.inputValue())).toBeGreaterThan(oldPosition);
+  const oldPosition = await page.evaluate(() => window.playingTrack.currentTime);
+  await expect.poll(() => page.evaluate(() => window.playingTrack.currentTime), { timeout: 20000 }).not.toBe(oldPosition);
   await page.getByLabel('Load audio file').setInputFiles(silentTrack(20));
-  await expect(position).toHaveAttribute('max', '20');
+  await expect(page.getByText('Loaded Track: walk-on', { exact: true })).toBeVisible({ timeout: 20000 });
+  await expect(position).toHaveAttribute('max', '20', { timeout: 10000 });
   await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
 });

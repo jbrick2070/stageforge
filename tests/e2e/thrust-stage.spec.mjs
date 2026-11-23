@@ -3,8 +3,8 @@ import { readFile } from 'node:fs/promises';
 
 test('the exported club thrust stage supports all four wedges and fits the LED frame below the grid', async ({ page }) => {
   const show = JSON.parse(await readFile(new URL('../../public/examples/amber-walk-on.stageforge.show.json', import.meta.url)));
-  Object.assign(show.rig, { stageWidth: 12, stageDepth: 12, stageHeight: 1, platforms: [
-    { id: 'main', name: 'Main', x: 2, z: -1, width: 12, depth: 6, height: 1 },
+  Object.assign(show.rig, { stageWidth: 16, stageDepth: 12, stageHeight: 1, platforms: [
+    { id: 'main-deck', name: 'Main', x: 2, z: -1, width: 12, depth: 6, height: 1 },
     { id: 'thrust', name: 'Thrust', x: 2, z: 4, width: 4, depth: 4, height: 1 },
   ] });
   Object.assign(show.rig.ledWall, { width: 12, height: 7.5, curved: false });
