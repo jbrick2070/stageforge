@@ -24,27 +24,24 @@ const poolVertex = /* glsl */ `
 `;
 
 const poolFragment = /* glsl */ `
-  uniform vec2 deckHalf;
-  uniform float deckHeight;
-  uniform bool isFloor;
+  #if MAX_BLOCKERS > 0
+    uniform int blockerCount;
+    uniform vec4 blockerRects[MAX_BLOCKERS]; // center XZ, half width and depth
+    uniform float blockerTops[MAX_BLOCKERS];
+  #endif
   varying vec3 vWorld, vLens, vAxis, vTint;
   varying vec4 vOptics;
 
-  bool inDeckShadow() {
-    // Only the part of the ray below deck height can meet the stage box.
-    vec3 toLens = vLens - vWorld;
-    float belowDeck = clamp((deckHeight - vWorld.y) / max(0.0001, toLens.y), 0.0, 1.0);
-    vec2 span = toLens.xz * belowDeck;
-    vec2 safeSpan = mix(vec2(0.00001), span, step(vec2(0.00001), abs(span)));
-    vec2 nearT = (-deckHalf - vWorld.xz) / safeSpan;
-    vec2 farT = (deckHalf - vWorld.xz) / safeSpan;
-    vec2 entry = min(nearT, farT);
-    vec2 exitPoint = max(nearT, farT);
-    return max(0.0, max(entry.x, entry.y)) <= min(1.0, min(exitPoint.x, exitPoint.y));
+  bool blocksRay(vec4 rect, float top, vec3 toLens) {
+    // Project just the part below the box top. The two rectangle axes and
+    // the segment normal separate a miss, including a vertical light ray.
+    vec2 segment = toLens.xz * (0.5 * clamp((top - vWorld.y) / toLens.y, 0.0, 1.0));
+    vec2 center = vWorld.xz + segment - rect.xy;
+    if (any(greaterThan(abs(center), rect.zw + abs(segment)))) return false;
+    return abs(center.x * segment.y - center.y * segment.x) <= dot(rect.zw, abs(segment.yx));
   }
 
   void main() {
-    if (isFloor && inDeckShadow()) discard;
     vec3 delta = vWorld - vLens;
     float throwDist = dot(delta, vAxis);
     if (throwDist <= 0.0 || throwDist >= vOptics.z) discard;
@@ -52,6 +49,12 @@ const poolFragment = /* glsl */ `
     vec3 radial = delta - throwDist * vAxis;
     float r = length(radial) / radius;
     if (r >= 1.0) discard;
+    #if MAX_BLOCKERS > 0
+      for (int i = 0; i < MAX_BLOCKERS; i++) {
+        if (i >= blockerCount) break;
+        if (blocksRay(blockerRects[i], blockerTops[i], -delta)) discard;
+      }
+    #endif
     float wash = vOptics.w;
     float edge = 1.0 - smoothstep(mix(0.50, 0.03, wash), 1.0, r);
     float profile = edge * mix(1.0 - 0.32 * r * r, exp2(-2.5 * r * r), wash);
@@ -65,6 +68,14 @@ const poolFragment = /* glsl */ `
   }
 `;
 
+interface Platform {
+  x: number;
+  z: number;
+  width: number;
+  depth: number;
+  height: number;
+}
+
 class Receiver {
   readonly mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial>;
   count = 0;
@@ -76,7 +87,13 @@ class Receiver {
     optics: THREE.InstancedBufferAttribute;
   };
 
-  constructor(capacity: number, deckHalf: THREE.Vector2, deckHeight: number, readonly floor: boolean) {
+  readonly surfaceY: number;
+  readonly bounds: THREE.Vector4;
+
+  constructor(capacity: number, platform: Platform, readonly blockers: Platform[], maxBlockers: number) {
+    const { x, z, width, depth, height } = platform;
+    this.surfaceY = height + 0.003;
+    this.bounds = new THREE.Vector4(x - width / 2, z - depth / 2, x + width / 2, z + depth / 2);
     const geo = new THREE.InstancedBufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0], 3));
     // World XZ winding points towards +Y.
@@ -86,12 +103,21 @@ class Receiver {
       new THREE.InstancedBufferAttribute(new Float32Array(capacity * size), size).setUsage(THREE.DynamicDrawUsage);
     this.attributes = { bounds: attribute(4), lens: attribute(3), axis: attribute(3), tint: attribute(3), optics: attribute(4) };
     for (const [name, value] of Object.entries(this.attributes)) geo.setAttribute(name, value);
+    // All receivers in a rig share one shader program, even at different heights.
+    const blockerRects = new Float32Array(maxBlockers * 4);
+    const blockerTops = new Float32Array(maxBlockers);
+    blockers.forEach((b, i) => {
+      blockerRects.set([b.x, b.z, b.width / 2, b.depth / 2], i * 4);
+      blockerTops[i] = b.height;
+    });
     const mat = new THREE.ShaderMaterial({
       vertexShader: poolVertex,
       fragmentShader: poolFragment,
+      defines: { MAX_BLOCKERS: maxBlockers },
       uniforms: {
-        deckHalf: { value: deckHalf }, deckHeight: { value: deckHeight },
-        surfaceY: { value: (floor ? 0 : deckHeight) + 0.003 }, isFloor: { value: floor },
+        surfaceY: { value: this.surfaceY },
+        blockerCount: { value: blockers.length },
+        blockerRects: { value: blockerRects }, blockerTops: { value: blockerTops },
       },
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     });
@@ -131,13 +157,21 @@ class Receiver {
 export class BeamPools {
   readonly group = new THREE.Group();
   private receivers: Receiver[];
-  private deckHalf: THREE.Vector2;
   private lens = new THREE.Vector3();
   private direction = new THREE.Vector3();
 
-  constructor(private capacity: number, width: number, depth: number, private deckHeight: number) {
-    this.deckHalf = new THREE.Vector2(width * 0.5, depth * 0.5);
-    this.receivers = [new Receiver(capacity, this.deckHalf, deckHeight, false), new Receiver(capacity, this.deckHalf, deckHeight, true)];
+  constructor(private capacity: number, width: number, depth: number, height: number,
+      platforms: readonly Platform[] = [{ x: 0, z: 0, width, depth, height }]) {
+    this.receivers = platforms.map((platform, index) => {
+      // A coplanar overlap belongs to the first module. Higher modules can
+      // also cast an oblique shadow from outside the receiver's own bounds.
+      const blockers = platforms.filter((other, i) => other.height > platform.height ||
+        (other.height === platform.height && i < index &&
+          Math.abs(other.x - platform.x) * 2 < other.width + platform.width &&
+          Math.abs(other.z - platform.z) * 2 < other.depth + platform.depth));
+      return new Receiver(capacity, platform, blockers, platforms.length);
+    });
+    this.receivers.push(new Receiver(capacity, { x: 0, z: 0, width: 140, depth: 140, height: 0 }, [...platforms], platforms.length));
     for (const receiver of this.receivers) this.group.add(receiver.mesh);
   }
 
@@ -162,8 +196,7 @@ export class BeamPools {
 
     for (const receiver of this.receivers) {
       if (receiver.count >= this.capacity) continue;
-      const surfaceY = (receiver.floor ? 0 : this.deckHeight) + 0.003;
-      const height = this.lens.y - surfaceY;
+      const height = this.lens.y - receiver.surfaceY;
       if (height <= 0) continue;
       // Intersect the finite cone's lower and upper Y extents with this
       // plane to get a conservative bound, including grazing-angle beams.
@@ -182,15 +215,14 @@ export class BeamPools {
       const radius = nearRadius + end * slope;
       const x0 = this.lens.x + start * this.direction.x, x1 = this.lens.x + end * this.direction.x;
       const z0 = this.lens.z + start * this.direction.z, z1 = this.lens.z + end * this.direction.z;
-      const halfX = receiver.floor ? 70 : this.deckHalf.x;
-      const halfZ = receiver.floor ? 70 : this.deckHalf.y;
-      const left = Math.max(-halfX, Math.min(x0, x1) - radius);
-      const right = Math.min(halfX, Math.max(x0, x1) + radius);
-      const back = Math.max(-halfZ, Math.min(z0, z1) - radius);
-      const front = Math.min(halfZ, Math.max(z0, z1) + radius);
+      const bounds = receiver.bounds;
+      const left = Math.max(bounds.x, Math.min(x0, x1) - radius);
+      const right = Math.min(bounds.z, Math.max(x0, x1) + radius);
+      const back = Math.max(bounds.y, Math.min(z0, z1) - radius);
+      const front = Math.min(bounds.w, Math.max(z0, z1) + radius);
       if (left >= right || back >= front) continue;
-      if (receiver.floor && left >= -this.deckHalf.x && right <= this.deckHalf.x &&
-          back >= -this.deckHalf.y && front <= this.deckHalf.y) continue;
+      if (receiver.blockers.some(b => left >= b.x - b.width / 2 && right <= b.x + b.width / 2 &&
+          back >= b.z - b.depth / 2 && front <= b.z + b.depth / 2)) continue;
       receiver.add(left, back, right, front, this.lens, this.direction, nearRadius, slope, throwLength, wash, color, intensity);
     }
   }

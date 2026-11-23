@@ -6,6 +6,9 @@ import { ShowOverlay } from './components/ShowOverlay';
 import { useShowGamepad } from './input/useShowGamepad';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
+import { normalizeDesign } from './data/stageDesign';
+import { parseRigJson } from './data/rigImport';
+import { StageDesigner } from './components/StageDesigner';
 import { BottomConsole } from './components/BottomConsole';
 import { RigBuilderDrawer } from './components/RigBuilderDrawer';
 import { DmxMonitorDrawer } from './components/DmxMonitorDrawer';
@@ -44,6 +47,17 @@ const EMPTY_BUMP: BumpState = {
   motorDrop: false,
 };
 
+const SAVED_DESIGN_KEY = 'stageforge.design.v1';
+
+function readSavedDesign(): RigConfig | null {
+  try {
+    const json = localStorage.getItem(SAVED_DESIGN_KEY);
+    return json ? parseRigJson(json) : null;
+  } catch {
+    return null;
+  }
+}
+
 export const App: React.FC = () => {
   const viewportRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<StageEngine | null>(null);
@@ -68,6 +82,8 @@ export const App: React.FC = () => {
   const [rigDrawerOpen, setRigDrawerOpen] = useState(false);
   const [dmxDrawerOpen, setDmxDrawerOpen] = useState(false);
   const [costModalOpen, setCostModalOpen] = useState(false);
+  const [designerRig, setDesignerRig] = useState<RigConfig | null>(null);
+  const [savedDesign, setSavedDesign] = useState(readSavedDesign);
   const [cinemaMode, setCinemaMode] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [dmxSnapshot, setDmxSnapshot] = useState<{ u1: Uint8Array; u2: Uint8Array }>({
@@ -101,6 +117,7 @@ export const App: React.FC = () => {
   const triggerCue = useCallback((cue: ShowCue, automatic = false) => {
     if (!automatic) {
       previewRig();
+      engineRef.current?.releaseDirector(false);
       autoDirRef.current = false;
     }
     setActiveCueId(cue.id);
@@ -135,6 +152,7 @@ export const App: React.FC = () => {
 
     const audio = new AudioEngine();
     audioEngineRef.current = audio;
+    let idleMetrics: AudioMetrics | undefined;
 
     const engine = new StageEngine(
       container,
@@ -143,10 +161,11 @@ export const App: React.FC = () => {
       (dt) => audio.getMetrics(dt),
       (metrics, curFps) => {
         setFps(curFps);
-        setAudioMetrics({
-          ...metrics,
-          spectrum: new Float32Array(metrics.spectrum),
-        });
+        if (metrics.playing || !idleMetrics || idleMetrics.source !== metrics.source ||
+          idleMetrics.trackName !== metrics.trackName || idleMetrics.demo?.step !== metrics.demo?.step) {
+          setAudioMetrics({ ...metrics, spectrum: new Float32Array(metrics.spectrum) });
+        }
+        idleMetrics = metrics.playing ? undefined : metrics;
         if (dmxOpenRef.current) {
           setDmxSnapshot({
             u1: new Uint8Array(engine.dmxUniverse1),
@@ -170,7 +189,8 @@ export const App: React.FC = () => {
             triggerCue(cuesRef.current[autoCueIndexRef.current], true);
           }
         }
-      }
+      },
+      showToast
     );
     engineRef.current = engine;
 
@@ -213,11 +233,13 @@ export const App: React.FC = () => {
   // Global keyboard live show hotkeys (when not typing in a text box)
   useEffect(() => {
     const isTyping = (target: EventTarget | null) =>
-      target instanceof HTMLElement && (target.isContentEditable || !!target.closest('input,textarea,select'));
+      target instanceof HTMLElement && (target.isContentEditable || !!target.closest(
+        'textarea,input:not([type=range]):not([type=color]):not([type=checkbox]):not([type=button])'
+      ));
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTyping(e.target)) return;
-      if (e.code === 'Space' && e.target instanceof Element && e.target.closest('button')) return;
+      if (isTyping(e.target) || document.querySelector('dialog[open],[aria-modal=true]')) return;
+      if (e.code === 'Space' && e.target instanceof Element && e.target.closest('button,select,summary,input[type=color],input[type=checkbox]')) return;
       if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
 
       switch (e.code) {
@@ -311,23 +333,32 @@ export const App: React.FC = () => {
     engineRef.current?.setCameraPreset(cam);
   };
 
+  const startDemo = () => {
+    const ae = audioEngineRef.current;
+    if (!ae) return;
+    ae.startDemoSynth(showState.bpm);
+    const demo = getDemoPosition(0);
+    const opening = applyDemoLighting({ ...showState, autoDirector: true }, demo);
+    engineRef.current?.beginDemo(opening);
+    autoDirRef.current = true;
+    setBump(EMPTY_BUMP);
+    setControllerBump(EMPTY_BUMP);
+    lastDemoTick.current = -1;
+    setActiveCueId(null);
+    setShowState(opening);
+    setAudioMetrics({ ...EMPTY_AUDIO, playing: true, source: 'synth', trackName: ae.getStatus().trackName, demo });
+    setToast(null);
+  };
+
   const handleTogglePlay = () => {
     const ae = audioEngineRef.current;
     if (!ae) return;
-    const startShow = ae.getStatus().source === 'none' || audioMetrics.demo?.finished;
-    const playing = ae.togglePlayPause();
-    if (startShow && playing && ae.getStatus().source === 'synth') {
-      const demo = getDemoPosition(0);
-      const opening = applyDemoLighting({ ...showState, autoDirector: true }, demo);
-      engineRef.current?.beginDemo(opening);
-      autoDirRef.current = true;
-      lastDemoTick.current = -1;
-      setActiveCueId(null);
-      setShowState(opening);
-      setAudioMetrics({ ...EMPTY_AUDIO, playing: true, source: 'synth', trackName: ae.getStatus().trackName, demo });
-      setToast(null);
+    const status = ae.getStatus();
+    if (status.source === 'none' || status.demoFinished) {
+      startDemo();
       return;
     }
+    const playing = ae.togglePlayPause();
     showToast(playing ? `Playing: ${ae.getStatus().trackName}` : 'Audio Paused');
   };
 
@@ -403,19 +434,34 @@ export const App: React.FC = () => {
   const toggleDirector = () => {
     previewRig();
     const next = !autoDirRef.current;
+    if (!next) engineRef.current?.releaseDirector(true);
     autoDirRef.current = next;
     lastDemoTick.current = -1;
     lastAutoSwitchRef.current = performance.now();
-    setShowState(s => ({ ...s, autoDirector: next }));
+    const position = audioMetrics.demo;
+    if (next && position) setActiveCueId(null);
+    setShowState(s => next && position ? applyDemoLighting({ ...s, autoDirector: true }, position) : { ...s, autoDirector: next });
     showToast(next ? 'Auto-LD on' : 'Manual lighting control');
   };
   const takeDesk = () => {
     previewRig();
     setActiveCueId(null);
+    if (autoDirRef.current) engineRef.current?.releaseDirector(true);
     autoDirRef.current = false;
     setShowState(s => s.autoDirector ? { ...s, autoDirector: false } : s);
   };
+  const applyRig = (next: RigConfig) => {
+    setRig(next);
+    if (next.schemaVersion !== 1) return;
+    setSavedDesign(next);
+    try {
+      localStorage.setItem(SAVED_DESIGN_KEY, JSON.stringify(next));
+    } catch {
+      showToast('Design applied. Export the rig to keep a copy on this device.');
+    }
+  };
   const controller = useShowGamepad({
+    enabled: !costModalOpen && !designerRig,
     command: action => {
       switch (action) {
         case 'play':
@@ -453,6 +499,9 @@ export const App: React.FC = () => {
   });
 
   const demoOpeningBlack = showState.autoDirector && !!audioMetrics.demo && audioMetrics.demo.step < DEMO_BLACKOUT_STEPS;
+  useEffect(() => {
+    if (cinemaMode || designerRig || costModalOpen) setBump(EMPTY_BUMP);
+  }, [cinemaMode, designerRig, costModalOpen]);
   return (
     <main data-cinema={cinemaMode} data-demo-blackout={demoOpeningBlack} className="stage-workstation relative w-screen h-screen bg-black overflow-hidden">
       {/* Full-Viewport HQ 3D WebGL2 Canvas */}
@@ -467,6 +516,8 @@ export const App: React.FC = () => {
         audio={audioMetrics}
         volume={volume}
         bpm={showState.bpm}
+        openingBar={demoOpeningBlack ? audioMetrics.demo!.bar + 1 : undefined}
+        blackout={showState.blackout}
         autoDirector={showState.autoDirector}
         audioReactive={showState.audioReactive}
         activeCamera={activeCamera}
@@ -476,6 +527,8 @@ export const App: React.FC = () => {
         oneNightCostLabel={oneNightCostLabel}
         cinemaMode={cinemaMode}
         onTogglePlay={handleTogglePlay}
+        onStartDemo={startDemo}
+        onDesignStage={() => setDesignerRig(rig)}
         onUploadAudio={handleUploadAudio}
         onToggleMic={handleToggleMic}
         onVolumeChange={(v) => {
@@ -494,9 +547,13 @@ export const App: React.FC = () => {
         onSelectCamera={handleCamera}
         onToggleRigDrawer={() => {
           previewRig();
+          if (window.matchMedia('(max-width: 779px)').matches) setDmxDrawerOpen(false);
           setRigDrawerOpen((v) => !v);
         }}
-        onToggleDmxDrawer={() => setDmxDrawerOpen((v) => !v)}
+        onToggleDmxDrawer={() => {
+          if (window.matchMedia('(max-width: 779px)').matches) setRigDrawerOpen(false);
+          setDmxDrawerOpen((v) => !v);
+        }}
         onToggleCostModal={() => setCostModalOpen((v) => !v)}
         onToggleCinemaMode={() => setCinemaMode((v) => !v)}
       />
@@ -520,9 +577,9 @@ export const App: React.FC = () => {
           open={rigDrawerOpen}
           rig={rig}
           onClose={() => setRigDrawerOpen(false)}
-          onChangeRig={(nextRig) => {
-            setRig(nextRig);
-          }}
+          onDesignStage={() => setDesignerRig(rig)}
+          onOpenSavedDesign={savedDesign ? () => setDesignerRig(savedDesign) : undefined}
+          onChangeRig={applyRig}
         />
       )}
 
@@ -538,12 +595,17 @@ export const App: React.FC = () => {
       )}
 
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
-      <CostEstimatorModal
-        open={costModalOpen}
+      {designerRig && <StageDesigner rig={designerRig} onClose={() => setDesignerRig(null)} onChange={design => {
+        const next = normalizeDesign(design);
+        applyRig(next);
+        previewRig();
+        setDesignerRig(null);
+      }} />}
+      {costModalOpen && <CostEstimatorModal
         rig={rig}
         onClose={() => setCostModalOpen(false)}
         onDeployRig={() => showToast('Virtual Crew Load-In Approved ($0.00) — Show Live!')}
-      />
+      />}
 
       {/* Bottom FOH DMX Console & Laser Visuals Deck */}
       {!cinemaMode && (
@@ -554,7 +616,7 @@ export const App: React.FC = () => {
           cues={cues}
           activeCueId={activeCueId}
           onPatchState={(patch) => {
-            if (Object.keys(patch).some(key => key !== 'masterDimmer' && key !== 'blackout')) takeDesk();
+            if (Object.keys(patch).some(key => key !== 'masterDimmer' && key !== 'blackout' && key !== 'bloomStrength')) takeDesk();
             else previewRig();
             setShowState((s) => ({ ...s, ...patch }));
           }}

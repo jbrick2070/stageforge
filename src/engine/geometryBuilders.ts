@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { TrussShape, VenueType } from '../types/show';
+import type { PlanPoint, RigConfig, TrussShape, VenueType } from '../types/show';
+import { stageSurfaceHeight } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
 
 // Shared high-quality PBR materials for authentic touring hardware
@@ -193,21 +194,140 @@ function addTubeStrut(
   group.add(mesh);
 }
 
-/**
- * Authentic Prolyte/Global Truss-style 4-chord box truss with diagonal lacing
- */
+/** Build the exposed walkable tops and fascia of a set of rectangular stage modules. */
+export function buildPlatformDeck(rig: RigConfig, mats: SharedMaterials): THREE.Group {
+  const group = new THREE.Group();
+  const modules = rig.platforms ?? [];
+  const coordinates = (values: number[]) => [...new Set(values)].sort((a, b) => a - b);
+  const xs = coordinates(modules.flatMap(p => [p.x - p.width / 2, p.x + p.width / 2]));
+  const zs = coordinates(modules.flatMap(p => [p.z - p.depth / 2, p.z + p.depth / 2]));
+  const heights = xs.slice(1).map((x, i) => zs.slice(1).map((z, j) =>
+    stageSurfaceHeight(rig, (xs[i] + x) / 2, (zs[j] + z) / 2)));
+  const tops: number[] = [];
+  const sides: number[] = [];
+  const quad = (out: number[], a: number[], b: number[], c: number[], d: number[]) =>
+    out.push(...a, ...b, ...d, ...b, ...c, ...d);
+  for (let i = 0; i < heights.length; i++) {
+    for (let j = 0; j < heights[i].length; j++) {
+      const h = heights[i][j];
+      if (h <= 0) continue;
+      const corners = [[xs[i], h, zs[j]], [xs[i], h, zs[j + 1]], [xs[i + 1], h, zs[j + 1]], [xs[i + 1], h, zs[j]]];
+      quad(tops, corners[0], corners[1], corners[2], corners[3]);
+      const neighbours = [heights[i - 1]?.[j], heights[i][j + 1], heights[i + 1]?.[j], heights[i][j - 1]];
+      neighbours.forEach((height, edge) => {
+        const below = height ?? 0;
+        if (below >= h) return;
+        const a = corners[edge], b = corners[(edge + 1) % 4];
+        quad(sides, a, [a[0], below, a[2]], [b[0], below, b[2]], b);
+      });
+    }
+  }
+  for (const [faces, material] of [[tops, mats.stageDeck], [sides, mats.fixtureBody]] as const) {
+    if (!faces.length) continue;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(faces, 3));
+    if (faces === tops) {
+      const uv: number[] = [];
+      for (let i = 0; i < faces.length; i += 3) uv.push(faces[i] / 18, faces[i + 2] / 9);
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    }
+    geo.computeVertexNormals();
+    group.add(new THREE.Mesh(geo, material));
+  }
+  return group;
+}
+
+// Span dimensions remain in metres. Limit the repeated visual detail on oversized runs.
+const MAX_TRUSS_BAYS = 192;
+const MAX_COUPLER_SECTIONS = 64;
+const MAX_BARRICADE_BAYS = 96;
+
+// Draw four continuous chords through the corners. Both adjoining spans use
+// the same mitred cross-section, including the closing joint on a loop.
+function buildTrussPath(path: readonly PlanPoint[], mats: SharedMaterials, slotCount: number) {
+  const group = new THREE.Group();
+  const anchorPoints: THREE.Vector3[] = [];
+  const mountSlots: { pos: THREE.Vector3; rotY: number }[] = [];
+  const points: THREE.Vector2[] = [];
+  for (const p of path) {
+    const point = new THREE.Vector2(p.x, p.z);
+    if (!points.length || points[points.length - 1].distanceToSquared(point) > 1e-8) points.push(point);
+  }
+  if (points.length < 2) return { group, anchorPoints, mountSlots };
+  const closed = points[0].distanceToSquared(points[points.length - 1]) < 1e-8;
+  const segments = points.slice(1).map((end, i) => {
+    const direction = end.clone().sub(points[i]);
+    const length = direction.length();
+    direction.divideScalar(length);
+    return { start: points[i], end, length, direction, normal: new THREE.Vector2(-direction.y, direction.x) };
+  });
+  const joints = points.map((_, i) => {
+    const before = (segments[i - 1] ?? (closed ? segments[segments.length - 1] : segments[0])).normal;
+    const after = (segments[i] ?? (closed ? segments[0] : segments[segments.length - 1])).normal;
+    const dot = before.dot(after);
+    return dot < -0.92 ? after : before.clone().add(after).divideScalar(Math.max(0.4, 1 + dot));
+  });
+  const total = segments.reduce((length, seg) => length + seg.length, 0);
+  // Long festival runs keep their full length while sharing a finite bracing budget.
+  const bayLength = Math.max(0.85, total / MAX_TRUSS_BAYS);
+  const ring = (p: THREE.Vector2, n: THREE.Vector2) => [
+    new THREE.Vector3(p.x + n.x * 0.24, -0.24, p.y + n.y * 0.24),
+    new THREE.Vector3(p.x + n.x * 0.24,  0.24, p.y + n.y * 0.24),
+    new THREE.Vector3(p.x - n.x * 0.24,  0.24, p.y - n.y * 0.24),
+    new THREE.Vector3(p.x - n.x * 0.24, -0.24, p.y - n.y * 0.24),
+  ];
+  for (const [i, seg] of segments.entries()) {
+    let from = ring(seg.start, joints[i]);
+    const bays = Math.max(1, Math.round(seg.length / bayLength));
+    for (let j = 1; j <= bays; j++) {
+      const to = ring(seg.start.clone().lerp(seg.end, j / bays), j === bays ? joints[i + 1] : seg.normal);
+      for (let corner = 0; corner < 4; corner++) {
+        const next = (corner + 1) % 4;
+        addTubeStrut(group, from[corner], to[corner], 0.038, mats.aluminumTruss);
+        addTubeStrut(group, from[j % 2 ? corner : next], to[j % 2 ? next : corner], 0.023, mats.aluminumTruss);
+        if (j === 1) addTubeStrut(group, from[corner], from[next], 0.026, mats.chrome);
+        if (!closed && i === segments.length - 1 && j === bays) addTubeStrut(group, to[corner], to[next], 0.026, mats.chrome);
+      }
+      from = to;
+    }
+  }
+  const anchors = new Set<string>();
+  for (const p of points) {
+    const key = `${p.x},${p.y}`;
+    if (anchors.has(key)) continue;
+    anchors.add(key);
+    anchorPoints.push(new THREE.Vector3(p.x, 0.29, p.y));
+  }
+  let index = 0, offset = 0;
+  for (let i = 0; i < slotCount; i++) {
+    const distance = (i + 0.5) * total / slotCount;
+    while (index < segments.length - 1 && distance > offset + segments[index].length) {
+      offset += segments[index++].length;
+    }
+    const seg = segments[index];
+    const p = seg.start.clone().addScaledVector(seg.direction, distance - offset);
+    mountSlots.push({ pos: new THREE.Vector3(p.x, -0.28, p.y), rotY: -Math.atan2(seg.direction.y, seg.direction.x) });
+  }
+  batchHardware(group);
+  return { group, anchorPoints, mountSlots };
+}
+
+/** Four-chord touring truss with diagonal lacing and underside fixture mounts. */
 export function buildTrussGeometry(
   shape: TrussShape,
   width: number,
-  mats: SharedMaterials
+  mats: SharedMaterials,
+  path: readonly PlanPoint[] = [],
+  slotCount = 32
 ): { group: THREE.Group; anchorPoints: THREE.Vector3[]; mountSlots: { pos: THREE.Vector3; rotY: number }[] } {
+  if (shape === 'path') return buildTrussPath(path, mats, slotCount);
   const group = new THREE.Group();
   const anchorPoints: THREE.Vector3[] = [];
   const mountSlots: { pos: THREE.Vector3; rotY: number }[] = [];
 
   const chordR = 0.038;
   const braceR = 0.023;
-  const hSize = 0.24; // half-size of 48cm box truss
+  const hSize = shape === 'circle' ? Math.min(0.24, width * 0.14) : 0.24;
 
   if (shape === 'box') {
     const halfW = width / 2;
@@ -228,7 +348,7 @@ export function buildTrussGeometry(
     }
 
     // Diagonal lacing bays along the truss
-    const bayCount = Math.max(4, Math.round(width / 0.85));
+    const bayCount = THREE.MathUtils.clamp(Math.round(width / 0.85), 4, MAX_TRUSS_BAYS);
     const bayW = width / bayCount;
     for (let i = 0; i < bayCount; i++) {
       const x0 = -halfW + i * bayW;
@@ -268,13 +388,13 @@ export function buildTrussGeometry(
     }
 
     // Join modular sections with coupler collars. These catch the side light on long spans.
-    const baySections = Math.max(1, Math.round(width / 3));
+    const baySections = THREE.MathUtils.clamp(Math.round(width / 3), 1, MAX_COUPLER_SECTIONS);
     const coupler = new THREE.CylinderGeometry(chordR * 1.45, chordR * 1.45, 0.095, 8);
     coupler.rotateZ(Math.PI / 2);
     for (let j = 1; j < baySections; j++) {
       for (const [cy, cz] of corners) {
         const joint = new THREE.Mesh(coupler, mats.chrome);
-        joint.position.set(-halfW + width * j / baySections, cy, cz);
+        joint.position.set(-halfW + width * (j / baySections), cy, cz);
         group.add(joint);
       }
     }
@@ -302,13 +422,14 @@ export function buildTrussGeometry(
 
     // Pre-generate evenly distributed underside mounting slots
     const slotCount = 32;
+    const inset = Math.min(0.65, halfW * 0.2);
     for (let i = 0; i < slotCount; i++) {
       const t = i / (slotCount - 1);
-      const sx = THREE.MathUtils.lerp(-halfW + 0.65, halfW - 0.65, t);
+      const sx = THREE.MathUtils.lerp(-halfW + inset, halfW - inset, t);
       mountSlots.push({ pos: new THREE.Vector3(sx, -hSize - 0.04, 0), rotY: 0 });
     }
   } else if (shape === 'circle') {
-    const radius = Math.max(2.2, width / 2);
+    const radius = width / 2;
     const ringOffsets = [
       [radius - hSize, hSize],
       [radius + hSize, hSize],
@@ -825,7 +946,9 @@ function crowdGeometry() {
 export function buildVenueArchitecture(
   venue: VenueType,
   crowdDensity: number,
-  mats: SharedMaterials
+  mats: SharedMaterials,
+  stageWidth = 22,
+  stageDepth = 11
 ): {
   group: THREE.Group;
   crowdMesh: THREE.InstancedMesh | null;
@@ -940,28 +1063,33 @@ export function buildVenueArchitecture(
     group.add(drape);
   } else {
     // Outdoor Festival Mega-Structure: giant truss goalposts + open night sky!
-    for (const sx of [-15.5, 15.5]) {
-      for (const sz of [-6.5, 6.2]) {
+    const towerX = stageWidth / 2 + 3.2;
+    const rearZ = -stageDepth / 2;
+    const frontZ = stageDepth / 2 - 0.4;
+    const centerZ = (frontZ + rearZ) / 2;
+    const canopyDepth = frontZ - rearZ + 0.9;
+    for (const sx of [-towerX, towerX]) {
+      for (const sz of [rearZ, frontZ]) {
         const tower = buildTrussGeometry('box', roofY, mats).group;
         tower.scale.set(1, 1.7, 1.7);
         tower.rotation.z = Math.PI / 2;
         tower.position.set(sx, roofY / 2, sz);
         group.add(tower);
       }
-      const sideRoof = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 13.5), mats.darkSteel);
-      sideRoof.position.set(sx, roofY, 0);
+      const sideRoof = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, canopyDepth), mats.darkSteel);
+      sideRoof.position.set(sx, roofY, centerZ);
       group.add(sideRoof);
     }
-    for (const sz of [-6.5, 0, 6.2]) {
-      const span = buildTrussGeometry('box', 31, mats).group;
+    for (const sz of [rearZ, centerZ, frontZ]) {
+      const span = buildTrussGeometry('box', 2 * towerX, mats).group;
       span.scale.set(1, 1.7, 1.7);
       span.position.set(0, roofY, sz);
       group.add(span);
     }
-    const canopy = new THREE.Mesh(new THREE.PlaneGeometry(32, 13.6),
+    const canopy = new THREE.Mesh(new THREE.PlaneGeometry(2 * towerX + 1, canopyDepth),
       new THREE.MeshStandardMaterial({ color: 0x333945, roughness: 0.88 }));
     canopy.rotation.x = Math.PI / 2;
-    canopy.position.set(0, roofY + 0.54, -0.15);
+    canopy.position.set(0, roofY + 0.54, centerZ);
     group.add(canopy);
     // Starry festival night sky points
     const starPositions: number[] = [];
@@ -986,13 +1114,17 @@ export function buildVenueArchitecture(
   }
 
   // Front-of-stage crowd barricade fence
-  const barricadeLen = venue === 'warehouse' ? 18 : 28;
+  const barricadeLen = stageWidth + (venue === 'warehouse' ? 2 : 6);
+  const barricadeZ = stageDepth / 2 + 2.4;
   const barTop = new THREE.Mesh(new THREE.BoxGeometry(barricadeLen, 0.1, 0.14), mats.darkSteel);
-  barTop.position.set(0, 1.12, 7.6);
+  barTop.position.set(0, 1.12, barricadeZ);
   group.add(barTop);
-  for (let x = -barricadeLen / 2; x <= barricadeLen / 2; x += 2.2) {
+  const postGaps = Math.min(MAX_BARRICADE_BAYS, Math.floor(barricadeLen / 2.2));
+  const postSpacing = Math.max(2.2, barricadeLen / MAX_BARRICADE_BAYS);
+  for (let i = 0; i <= postGaps; i++) {
+    const x = -barricadeLen / 2 + i * postSpacing;
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.12, 0.45), mats.darkSteel);
-    post.position.set(x, 0.56, 7.6);
+    post.position.set(x, 0.56, barricadeZ);
     group.add(post);
   }
 
@@ -1032,7 +1164,7 @@ export function buildVenueArchitecture(
       const cell = (i * 229) % 713;
       const row = (Math.floor(cell / 31) + 0.18 + random() * 0.64) / 23;
       const column = (cell % 31 + 0.22 + random() * 0.56) / 31;
-      const z = 8.2 + row * (15 + 8 * row);
+      const z = barricadeZ + 0.6 + row * (15 + 8 * row);
       const maxX = venue === 'warehouse' ? 9.2 + 2 * row : 14.0 + 4 * row;
       const x = (column * 2 - 1) * maxX;
       const scaleY = 0.88 + random() * 0.24;

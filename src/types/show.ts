@@ -3,7 +3,20 @@ import type { DemoPosition } from '../data/demoShow';
 
 export type VenueType = 'arena' | 'warehouse' | 'festival';
 
-export type TrussShape = 'box' | 'circle' | 'chevron';
+export type TrussShape = 'box' | 'circle' | 'chevron' | 'path';
+
+export interface PlanPoint {
+  x: number;
+  z: number;
+}
+
+export interface StagePlatform extends PlanPoint {
+  id: string;
+  name: string;
+  width: number;
+  depth: number;
+  height: number; // Top surface above the venue floor in metres.
+}
 
 export type FixtureType = 'beam' | 'wash' | 'laser' | 'strobe' | 'blinder';
 
@@ -74,6 +87,7 @@ export interface TrussPodConfig {
   id: string;
   name: string;
   shape: TrussShape;
+  path?: PlanPoint[]; // Ordered vertices in the pod's local XZ plane.
   width: number;
   x: number;
   baseY: number;
@@ -110,11 +124,13 @@ export interface StageProp {
 }
 
 export interface RigConfig {
+  schemaVersion?: 1;
   name: string;
   venue: VenueType;
   stageWidth: number;
   stageDepth: number;
   stageHeight: number;
+  platforms?: StagePlatform[]; // Missing means the original rectangular stage; an empty list means bare floor.
   ledWall: {
     enabled: boolean;
     width: number;

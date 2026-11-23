@@ -268,6 +268,15 @@ export const LED_WALL_FRAG = /* glsl */ `
 
   varying vec2 vUv;
 
+  vec2 mediaUV(vec2 uv, float sourceAspect) {
+    float ratio = uAspect / sourceAspect;
+    return (uv - 0.5) * vec2(max(ratio, 1.0), max(1.0 / ratio, 1.0)) + 0.5;
+  }
+
+  float inFrame(vec2 uv) {
+    return step(0.0, min(uv.x, uv.y)) * step(max(uv.x, uv.y), 1.0);
+  }
+
   float stroke(float distanceToCenter, float halfWidth, float pixelWidth) {
     return 1.0 - smoothstep(halfWidth, halfWidth + pixelWidth, abs(distanceToCenter));
   }
@@ -383,7 +392,8 @@ export const LED_WALL_FRAG = /* glsl */ `
       col = c * glow * (1.0 - r * 0.65) * (0.95 + uMid * 0.9 + uBeatPulse * 0.5);
     } else if (uMode < 6.5) {
       // 6: Tour Typography Wall
-      vec4 txt = texture2D(uTextTex, uv);
+      vec2 textUV = mediaUV(uv, 2.0);
+      vec4 txt = texture2D(uTextTex, textUV) * inFrame(textUV);
       float bgWave = 0.5 + 0.5 * sin(uv.x * 12.0 + t * 2.2) * cos(uv.y * 6.0 - t * 1.4);
       vec3 bg = mix(uColorA, uColorB, uv.x) * (0.14 + 0.14 * bgWave) * (0.8 + uBass * 0.8);
       vec3 fg = mix(vec3(1.0), mix(uColorA, uColorB, 0.5 + 0.5 * sin(t + uv.x * 4.0)), 0.32) * (1.25 + uBeatPulse * 0.55);
@@ -391,7 +401,9 @@ export const LED_WALL_FRAG = /* glsl */ `
     } else {
       // 7: User-uploaded Image / Video
       if (uHasCustom > 0.5) {
-        col = texture2D(uCustomTex, uv).rgb * (1.05 + uBeatPulse * 0.25);
+        vec2 size = max(vec2(textureSize(uCustomTex, 0)), vec2(1.0));
+        vec2 imageUV = mediaUV(uv, size.x / size.y);
+        col = texture2D(uCustomTex, imageUV).rgb * inFrame(imageUV) * (1.05 + uBeatPulse * 0.25);
       } else {
         col = mix(uColorA, uColorB, uv.x) * 0.25;
       }

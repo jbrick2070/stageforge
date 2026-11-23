@@ -28,6 +28,7 @@ import {
 } from './shaders';
 import {
   SharedMaterials,
+  buildPlatformDeck,
   buildTrussGeometry,
   buildVenueArchitecture,
   createChainHoistUnit,
@@ -37,8 +38,11 @@ import {
   createSubwoofer,
   createSharedMaterials,
 } from './geometryBuilders';
+import { buildDmxPatch } from '../data/dmxPatch';
+import { stageSurfaceHeight } from '../data/stageDesign';
 import { AtmosphericParticles } from './ParticleSystem';
 import { BeamPools, MOVING_HEAD_OPTICS } from './beamPools';
+import { fitAuthoredFoh } from './fohFraming';
 import { buildScenicPiece, ScenicPiece } from './scenicProps';
 import { SPEAKER_PROFILES } from '../data/speakerProfiles';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS, demoFade } from '../data/demoLighting';
@@ -47,16 +51,16 @@ interface MovingFixtureInstance {
   type: 'beam' | 'wash';
   isFloor: boolean;
   index: number;
-  podIndex: number;
+  fanPosition: number;
   openingStep: number;
+  directedDimmer: number;
   root: THREE.Group;
   yoke: THREE.Group;
   head: THREE.Group;
   lensMat: THREE.MeshBasicMaterial;
   beamMesh: THREE.Mesh;
   beamMat: THREE.ShaderMaterial;
-  basePan: number;
-  baseTilt: number;
+  mountYaw: number;
   currentPan: number;
   currentTilt: number;
   dmxUniverse: 1 | 2;
@@ -78,12 +82,17 @@ interface LaserUnitInstance {
   dmxStart: number;
 }
 
-interface StrobeInstance {
+interface DmxOutput {
+  buffer: Uint8Array;
+  start: number;
+}
+
+interface StrobeInstance extends DmxOutput {
   lensMat: THREE.MeshBasicMaterial;
   index: number;
 }
 
-interface BlinderInstance {
+interface BlinderInstance extends DmxOutput {
   lensMat: THREE.MeshBasicMaterial;
 }
 
@@ -95,6 +104,10 @@ interface TrussPodRuntime {
   currentTiltX: number;
   hoists: { anchorLocal: THREE.Vector3; chainMesh: THREE.Mesh; root: THREE.Group }[];
 }
+
+const CAMERA_FOV = 42;
+const LED_WING_WIDTH = 5.4;
+const LED_WING_GAP = 2.2;
 
 const PATTERN_INDEX: Record<LaserPattern, number> = {
   liquid_sky: 0,
@@ -120,6 +133,8 @@ const LED_MODE_INDEX: Record<LedVisualMode, number> = {
 
 export class StageEngine {
   private standby = true;
+  private directedStep?: number;
+  private manualFadeStart?: number;
   private houseAmbient = new THREE.HemisphereLight(0x929faf, 0x302723, 0.36);
   private houseColors: { color: THREE.Color; full: THREE.Color }[] = [];
   private backgroundColor = new THREE.Color(0x030408);
@@ -152,6 +167,7 @@ export class StageEngine {
   private laserUnits: LaserUnitInstance[] = [];
   private strobes: StrobeInstance[] = [];
   private blinders: BlinderInstance[] = [];
+  private atmosphereDmx: (DmxOutput & { type: 'hazer' | 'smoke' | 'co2' })[] = [];
   private djStripMat: THREE.MeshBasicMaterial | null = null;
   private crowdMesh: THREE.InstancedMesh | null = null;
   private crowdBaseTransforms: { x: number; z: number; scaleY: number; phase: number; rotY: number }[] = [];
@@ -210,7 +226,8 @@ export class StageEngine {
     initialRig: RigConfig,
     initialState: ShowState,
     audioGetter: (dt: number) => AudioMetrics,
-    onFrameTelemetry?: (metrics: AudioMetrics, fps: number) => void
+    onFrameTelemetry?: (metrics: AudioMetrics, fps: number) => void,
+    private onMediaError?: (message: string) => void
   ) {
     this.container = container;
     this.currentState = initialState;
@@ -269,7 +286,7 @@ export class StageEngine {
     pmrem.dispose();
 
     // Camera & OrbitControls
-    this.camera = new THREE.PerspectiveCamera(42, width / height, 0.18, 220);
+    this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, width / height, 0.18, 220);
     this.camera.position.copy(this.cameraTargetPos);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -339,6 +356,9 @@ export class StageEngine {
     this.textCanvas.height = 512;
     this.textTex = new THREE.CanvasTexture(this.textCanvas);
     this.updateTourTextTexture(initialState.led.tourText);
+    void document.fonts.ready.then(() => {
+      if (this.renderer.domElement.parentElement === this.container) this.updateTourTextTexture(this.lastTourText);
+    });
 
     this.scene.add(this.rigGroup);
     this.particles = new AtmosphericParticles();
@@ -373,6 +393,8 @@ export class StageEngine {
 
   public beginDemo(opening: ShowState) {
     this.standby = false;
+    this.manualFadeStart = undefined;
+    this.directedStep = 0;
     this.setShowState(opening);
     this.clearStage();
   }
@@ -384,6 +406,7 @@ export class StageEngine {
   }
 
   public setShowState(state: ShowState) {
+    if (state.autoDirector && !this.currentState.autoDirector) this.manualFadeStart = undefined;
     this.currentState = state;
     this.bloomPass.strength = state.bloomStrength;
     if (state.led.tourText !== this.lastTourText) {
@@ -397,6 +420,11 @@ export class StageEngine {
   public setBumpState(bump: BumpState) {
     if (Object.values(bump).some(Boolean)) this.previewRig();
     this.currentBump = bump;
+  }
+
+  public releaseDirector(crossfade: boolean) {
+    this.manualFadeStart = crossfade && this.directedStep !== undefined && this.directedStep < 384
+      ? this.elapsed : undefined;
   }
 
   private orbitOffset = new THREE.Vector3();
@@ -420,12 +448,39 @@ export class StageEngine {
     this.fitFohOnResize = preset === 'foh';
     this.orbitAuto = preset === 'orbit';
     this.cameraLerpActive = preset !== 'orbit';
+    let fov = CAMERA_FOV;
     switch (preset) {
       case 'foh':
         {
-          const width = (this.currentRig?.stageWidth ?? 22) + 8;
-          const distance = Math.max(24, width / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * this.camera.aspect));
-          this.cameraTargetPos.set(3.8, 6.6, distance + 1.0);
+          const rig = this.currentRig;
+          const rearLimit = rig?.venue === 'warehouse' ? 32 : rig?.venue === 'arena' ? 45 : 60;
+          if (rig && (rig.platforms !== undefined || rig.trussPods.some(pod => pod.shape === 'path'))) {
+            // The first rig child is the venue shell. Remaining children are stage equipment.
+            const subjects = [...this.rigGroup.children.slice(1), ...Array.from(this.scenicPieces.values(), p => p.root)];
+            const frame = fitAuthoredFoh(subjects, this.ledWallMats, this.camera.aspect, this.roofY, rearLimit, CAMERA_FOV);
+            this.cameraTargetPos.copy(frame.position);
+            this.cameraTargetLook.copy(frame.target);
+            this.controls.maxDistance = Math.max(68, frame.distance * 1.2);
+            this.camera.far = frame.far;
+            this.camera.fov = frame.fov;
+            this.camera.updateProjectionMatrix();
+            return;
+          }
+          this.controls.maxDistance = 68;
+          if (this.camera.far !== 220) {
+            this.camera.far = 220;
+            this.camera.updateProjectionMatrix();
+          }
+          const wall = rig?.ledWall;
+          const screenWidth = wall?.enabled ? wall.width + (wall.sideWings ? 2 * (LED_WING_WIDTH + LED_WING_GAP) : 0) : 0;
+          const width = Math.max((this.currentRig?.stageWidth ?? 22) + 8, screenWidth + 1);
+          const halfAngle = Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV / 2));
+          const desiredZ = Math.max(25, 1 + width / (2 * halfAngle * this.camera.aspect));
+          // Keep FOH under the roof (rear edge at z=35 in the warehouse, 51 in the arena).
+          const z = Math.min(desiredZ, rearLimit);
+          const stageFront = (this.currentRig?.stageDepth ?? 11) / 2;
+          fov = THREE.MathUtils.radToDeg(2 * Math.atan(halfAngle * (desiredZ - stageFront) / (z - stageFront)));
+          this.cameraTargetPos.set(3.8, 6.6, z);
           this.cameraTargetLook.set(0, 5.8, -0.6);
         }
         break;
@@ -451,8 +506,13 @@ export class StageEngine {
           this.cameraTargetPos.set(x - 2.4, y - 0.6, z + 6.1);
           this.cameraTargetLook.set(x + 0.55, y, z);
         } else {
-          this.cameraTargetPos.set(-4.3, rig.stageHeight + 1.0, z + 5.6);
-          this.cameraTargetLook.set(-1.5, rig.stageHeight * 0.7, z + 0.2);
+          const monitors = rig.audioRig.monitorCount ?? 0;
+          const speakerX = monitors > 1 ? -rig.stageWidth * 0.34 : 0;
+          const speakerZ = monitors ? rig.stageDepth / 2 - 0.65 : rig.stageDepth / 2 + 0.6;
+          const surfaceY = stageSurfaceHeight(rig, speakerX, speakerZ);
+          const speakerY = surfaceY + (monitors ? 0.25 : rig.audioRig.subWall ? 0.5 : 0);
+          this.cameraTargetPos.set(speakerX - 2.4, speakerY + 1.3, speakerZ + 4.7);
+          this.cameraTargetLook.set(speakerX, speakerY, speakerZ);
         }
         break;
       }
@@ -463,6 +523,10 @@ export class StageEngine {
       case 'orbit':
         this.cameraTargetLook.set(0, 5.6, 0);
         break;
+    }
+    if (this.camera.fov !== fov) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
     }
   }
 
@@ -501,7 +565,8 @@ export class StageEngine {
     this.lastCustomUrl = url;
     if (this.customVideoEl) {
       this.customVideoEl.pause();
-      this.customVideoEl.src = '';
+      this.customVideoEl.removeAttribute('src');
+      this.customVideoEl.load();
       this.customVideoEl = null;
     }
     if (this.customTex) {
@@ -514,6 +579,12 @@ export class StageEngine {
     }
 
     if (!url || !type) return;
+    const failed = () => {
+      if (generation !== this.mediaGeneration) return;
+      this.updateCustomLedMedia(null, null);
+      this.lastCustomUrl = url;
+      this.onMediaError?.(`The LED wall could not open that ${type}. Choose another file.`);
+    };
 
     if (type === 'video') {
       const video = document.createElement('video');
@@ -522,7 +593,7 @@ export class StageEngine {
       video.muted = true;
       video.playsInline = true;
       video.crossOrigin = 'anonymous';
-      video.play().catch(() => {});
+      video.play().catch(failed);
       this.customVideoEl = video;
       const vTex = new THREE.VideoTexture(video);
       vTex.colorSpace = THREE.SRGBColorSpace;
@@ -543,7 +614,7 @@ export class StageEngine {
           m.uniforms.uCustomTex.value = tex;
           m.uniforms.uHasCustom.value = 1;
         }
-      });
+      }, undefined, failed);
     }
   }
 
@@ -581,7 +652,7 @@ export class StageEngine {
         this.scenicPieces.set(prop.id, piece);
         this.scene.add(piece.root);
       }
-      piece.root.position.set(prop.x, rig.stageHeight + 0.003, prop.z);
+      piece.root.position.set(prop.x, stageSurfaceHeight(rig, prop.x, prop.z) + 0.003, prop.z);
       piece.root.rotation.y = THREE.MathUtils.degToRad(prop.rotation);
       piece.root.scale.setScalar(prop.scale);
       piece.fabric.color.set(prop.color);
@@ -597,6 +668,7 @@ export class StageEngine {
     this.currentRig = rig;
     this.syncScenery(rig);
     if (old && old.stageWidth === rig.stageWidth && old.stageHeight === rig.stageHeight &&
+      old.platforms === rig.platforms &&
       old.stageDepth === rig.stageDepth && old.venue === rig.venue && old.audioRig === rig.audioRig &&
       old.ledWall === rig.ledWall && old.trussPods === rig.trussPods && old.floorFx === rig.floorFx) return;
     this.beamPools?.dispose();
@@ -608,11 +680,13 @@ export class StageEngine {
     this.laserUnits = [];
     this.strobes = [];
     this.blinders = [];
+    this.atmosphereDmx = [];
+    const patch = buildDmxPatch(rig);
     this.ledWallMats = [];
     this.djStripMat = null;
 
     // 1. Venue architecture + animated arena crowd
-    const venueBuild = buildVenueArchitecture(rig.venue, rig.audioRig.crowdDensity, this.mats);
+    const venueBuild = buildVenueArchitecture(rig.venue, rig.audioRig.crowdDensity, this.mats, rig.stageWidth, rig.stageDepth);
     this.rigGroup.add(venueBuild.group);
     this.houseColors = venueBuild.practicals.map(material => ({ color: material.color, full: material.color.clone() }));
     this.crowdMesh = venueBuild.crowdMesh;
@@ -626,47 +700,37 @@ export class StageEngine {
 
     // 2. Main Concert Stage Deck + Stairs + Edge Trim
     const stageGroup = new THREE.Group();
-    const deck = new THREE.Mesh(
-      new THREE.BoxGeometry(rig.stageWidth, rig.stageHeight, rig.stageDepth),
-      this.mats.stageDeck
-    );
-    deck.position.set(0, rig.stageHeight / 2, 0);
-    stageGroup.add(deck);
+    this.deckTrim = null;
+    if (rig.platforms !== undefined) {
+      stageGroup.add(buildPlatformDeck(rig, this.mats));
+    } else {
+      const deck = new THREE.Mesh(new THREE.BoxGeometry(rig.stageWidth, rig.stageHeight, rig.stageDepth), this.mats.stageDeck);
+      deck.position.y = rig.stageHeight / 2;
+      stageGroup.add(deck);
 
-    // Metallic aluminum stage front trim rail
-    const frontTrim = new THREE.Mesh(
-      new THREE.BoxGeometry(rig.stageWidth + 0.1, 0.14, 0.12),
-      this.mats.aluminumTruss
-    );
-    frontTrim.position.set(0, rig.stageHeight - 0.06, rig.stageDepth / 2 + 0.04);
-    stageGroup.add(frontTrim);
+      const frontTrim = new THREE.Mesh(new THREE.BoxGeometry(rig.stageWidth + 0.1, 0.14, 0.12), this.mats.aluminumTruss);
+      frontTrim.position.set(0, rig.stageHeight - 0.06, rig.stageDepth / 2 + 0.04);
+      stageGroup.add(frontTrim);
 
-    // Subtle glowing safety edge strip along stage front
-    this.deckTrim = new THREE.MeshBasicMaterial();
-    const edgeGlow = new THREE.Mesh(
-      new THREE.BoxGeometry(rig.stageWidth - 0.6, 0.04, 0.04),
-      this.deckTrim
-    );
-    edgeGlow.position.set(0, rig.stageHeight - 0.16, rig.stageDepth / 2 + 0.05);
-    stageGroup.add(edgeGlow);
+      this.deckTrim = new THREE.MeshBasicMaterial();
+      const edgeGlow = new THREE.Mesh(new THREE.BoxGeometry(rig.stageWidth - 0.6, 0.04, 0.04), this.deckTrim);
+      edgeGlow.position.set(0, rig.stageHeight - 0.16, rig.stageDepth / 2 + 0.05);
+      stageGroup.add(edgeGlow);
 
-    // Side stage stairs
-    for (const side of [-1, 1]) {
-      for (let s = 0; s < 4; s++) {
-        const step = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.35, 0.45), this.mats.darkSteel);
-        step.position.set(
-          side * (rig.stageWidth / 2 + 0.72),
-          0.18 + s * (rig.stageHeight / 4),
-          rig.stageDepth / 2 - 1.2 - s * 0.45
-        );
-        stageGroup.add(step);
+      for (const side of [-1, 1]) {
+        for (let s = 0; s < 4; s++) {
+          const step = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.35, 0.45), this.mats.darkSteel);
+          step.position.set(side * (rig.stageWidth / 2 + 0.72), 0.18 + s * (rig.stageHeight / 4),
+            rig.stageDepth / 2 - 1.2 - s * 0.45);
+          stageGroup.add(step);
+        }
       }
     }
 
     // DJ / Live Console Booth
     if (rig.audioRig.djBooth) {
       const dj = createDjBooth(this.mats);
-      dj.group.position.set(0, rig.stageHeight, 0.6);
+      dj.group.position.set(0, stageSurfaceHeight(rig, 0, 0.6), 0.6);
       stageGroup.add(dj.group);
       this.djStripMat = dj.stripMat;
     }
@@ -694,7 +758,8 @@ export class StageEngine {
         const rowCount = Math.min(columns, count - level * columns);
         const sx = (i % columns - (rowCount - 1) / 2) * spacing;
         const subGroup = createSubwoofer(this.mats, speakerProfile);
-        subGroup.position.set(sx, (0.5 + level) * sub.height, rig.stageDepth / 2 + sub.depth / 2 + 0.12);
+        const sz = rig.stageDepth / 2 + sub.depth / 2 + 0.12;
+        subGroup.position.set(sx, stageSurfaceHeight(rig, sx, sz) + (0.5 + level) * sub.height, sz);
         stageGroup.add(subGroup);
       }
     }
@@ -703,7 +768,8 @@ export class StageEngine {
     for (let i = 0; i < wedgeCount; i++) {
       const x = wedgeCount === 1 ? 0 : (i / (wedgeCount - 1) - 0.5) * rig.stageWidth * 0.68;
       const wedge = createMonitorWedge(this.mats, speakerProfile);
-      wedge.position.set(x, rig.stageHeight, rig.stageDepth * 0.5 - 0.65);
+      const z = rig.stageDepth * 0.5 - 0.65;
+      wedge.position.set(x, stageSurfaceHeight(rig, x, z), z);
       wedge.rotation.y = x * 0.032;
       stageGroup.add(wedge);
     }
@@ -711,8 +777,8 @@ export class StageEngine {
 
     // 3. Giant Concert LED Video Wall + Side IMAG Wings
     if (rig.ledWall.enabled) {
-      const wallY = rig.stageHeight + rig.ledWall.height / 2 + 0.35;
       const wallZ = -rig.stageDepth / 2 + 0.4;
+      const wallY = stageSurfaceHeight(rig, 0, wallZ) + rig.ledWall.height / 2 + 0.35;
       const aspect = rig.ledWall.width / rig.ledWall.height;
 
       const ledMat = this.createLedMaterial(aspect);
@@ -721,7 +787,8 @@ export class StageEngine {
       let wallGeo: THREE.BufferGeometry;
       if (rig.ledWall.curved) {
         // Gentle arena concave curve wrapping the upstage!
-        const radius = rig.ledWall.width * 1.45;
+        // Keep the rack on the rear of the deck, behind the upstage truss.
+        const radius = rig.ledWall.width * 6;
         const thetaLen = rig.ledWall.width / radius;
         wallGeo = new THREE.CylinderGeometry(
           radius,
@@ -740,8 +807,23 @@ export class StageEngine {
         }
         const wallMesh = new THREE.Mesh(wallGeo, ledMat);
         wallMesh.material.side = THREE.BackSide;
-        wallMesh.position.set(0, wallY, wallZ + radius - 1.2);
+        wallMesh.position.set(0, wallY, wallZ + radius);
         this.rigGroup.add(wallMesh);
+
+        // A closed annular section forms the dark back, narrow bezel and end caps.
+        const profile = new THREE.Shape();
+        const halfArc = thetaLen / 2 + 0.10 / radius;
+        const start = Math.PI / 2 - halfArc;
+        const end = Math.PI / 2 + halfArc;
+        profile.absarc(0, 0, radius + 0.035, start, end, false);
+        profile.absarc(0, 0, radius + 0.29, end, start, true);
+        profile.closePath();
+        const housing = new THREE.Mesh(new THREE.ExtrudeGeometry(profile, {
+          depth: rig.ledWall.height + 0.20, bevelEnabled: false, curveSegments: 36,
+        }), this.mats.darkSteel);
+        housing.rotation.x = -Math.PI / 2;
+        housing.position.set(0, wallY - rig.ledWall.height / 2 - 0.10, wallMesh.position.z);
+        this.rigGroup.add(housing);
       } else {
         wallGeo = new THREE.PlaneGeometry(rig.ledWall.width, rig.ledWall.height);
         const wallMesh = new THREE.Mesh(wallGeo, ledMat);
@@ -759,7 +841,7 @@ export class StageEngine {
 
       // Optional Side IMAG Wings flanking the main stage
       if (rig.ledWall.sideWings) {
-        const wingW = 5.4;
+        const wingW = LED_WING_WIDTH;
         const wingH = rig.ledWall.height * 0.82;
         const wingMat = this.createLedMaterial(wingW / wingH);
         this.ledWallMats.push(wingMat);
@@ -774,7 +856,7 @@ export class StageEngine {
           backing.position.z = -0.16;
           wingGroup.add(screen, backing);
           wingGroup.position.set(
-            side * (rig.ledWall.width / 2 + wingW / 2 + 2.2),
+            side * (rig.ledWall.width / 2 + wingW / 2 + LED_WING_GAP),
             wallY,
             wallZ + 2.2
           );
@@ -789,12 +871,13 @@ export class StageEngine {
     let globalLaserIndex = 0;
     let globalStrobeIndex = 0;
 
-    rig.trussPods.forEach((pod, podIdx) => {
+    rig.trussPods.forEach((pod) => {
       const podGroup = new THREE.Group();
       podGroup.position.set(pod.x, pod.baseY, pod.z);
       podGroup.rotation.y = pod.rotationY;
 
-      const built = buildTrussGeometry(pod.shape, pod.width, this.mats);
+      const fixtureCount = pod.fixtures.reduce((count, group) => count + group.count, 0);
+      const built = buildTrussGeometry(pod.shape, pod.width, this.mats, pod.path, fixtureCount);
       podGroup.add(built.group);
 
       // Attach CM Lodestar / Kinesys Chain Hoist Motors at every anchor point
@@ -814,18 +897,23 @@ export class StageEngine {
         const slotIdx = Math.min(built.mountSlots.length - 1,
           Math.floor((position + 0.5) / hung.length * built.mountSlots.length));
         const slot = built.mountSlots[slotIdx];
+        if (!slot) return;
 
+        const start = patch.unitStart(fg, i);
+        const buffer = fg.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
         if (fg.type === 'beam' || fg.type === 'wash') {
+          const lateral = slot.pos.x * Math.cos(pod.rotationY) + slot.pos.z * Math.sin(pod.rotationY);
           const inst = this.createMovingFixture(
             fg.type,
             false,
             globalMovingIndex++,
-            podIdx,
+            lateral / Math.max(2, pod.width / 2),
             fg.dmxUniverse,
-            fg.dmxStartChannel + i * (fg.type === 'beam' ? 16 : 12)
+            start
           );
           inst.root.position.copy(slot.pos);
           inst.root.rotation.y = slot.rotY;
+          inst.mountYaw = pod.rotationY + slot.rotY;
           podGroup.add(inst.root);
           this.movingFixtures.push(inst);
         } else if (fg.type === 'laser') {
@@ -833,24 +921,26 @@ export class StageEngine {
             globalLaserIndex++,
             false,
             fg.dmxUniverse,
-            fg.dmxStartChannel + i * 18
+            start
           );
           laser.root.position.copy(slot.pos).add(new THREE.Vector3(0, -0.1, 0.12));
-          laser.root.rotation.y = slot.rotY;
+          laser.root.rotation.y = pod.shape === 'circle' || pod.shape === 'path' ? -pod.rotationY : slot.rotY;
           podGroup.add(laser.root);
           this.laserUnits.push(laser);
         } else if (fg.type === 'strobe') {
           const st = this.createStrobeBar(globalStrobeIndex++);
-          st.mesh.position.copy(slot.pos).add(new THREE.Vector3(0, 0.04, 0.24));
+          st.mesh.position.copy(slot.pos);
           st.mesh.rotation.y = slot.rotY;
+          st.mesh.translateY(0.04).translateZ(0.24);
           podGroup.add(st.mesh);
-          this.strobes.push({ lensMat: st.lensMat, index: st.index });
+          this.strobes.push({ lensMat: st.lensMat, index: st.index, buffer, start });
         } else if (fg.type === 'blinder') {
           const bl = this.createBlinderBank();
-          bl.group.position.copy(slot.pos).add(new THREE.Vector3(0, -0.04, 0.28));
+          bl.group.position.copy(slot.pos);
           bl.group.rotation.y = slot.rotY;
+          bl.group.translateY(-0.04).translateZ(0.28);
           podGroup.add(bl.group);
-          this.blinders.push({ lensMat: bl.lensMat });
+          this.blinders.push({ lensMat: bl.lensMat, buffer, start });
         }
       });
 
@@ -874,9 +964,13 @@ export class StageEngine {
       for (let i = 0; i < count; i++) {
         const t = count === 1 ? 0.5 : i / (count - 1);
         const px = fx.x + (count === 1 ? 0 : THREE.MathUtils.lerp(-fx.spread / 2, fx.spread / 2, t));
-        const py = rig.stageHeight;
         const pz = fx.z;
+        const py = stageSurfaceHeight(rig, px, pz);
 
+        const start = patch.unitStart(fx, i);
+        if (start && (fx.type === 'co2' || fx.type === 'smoke' || fx.type === 'hazer')) {
+          this.atmosphereDmx.push({ type: fx.type, start, buffer: fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2 });
+        }
         if (fx.type === 'co2') {
           const jet = this.createCo2JetUnit();
           jet.position.set(px, py, pz);
@@ -896,7 +990,7 @@ export class StageEngine {
             globalLaserIndex++,
             true,
             fx.dmxUniverse,
-            fx.dmxStartChannel + i * 18
+            start
           );
           fl.root.position.set(px, py + 0.22, pz);
           this.rigGroup.add(fl.root);
@@ -906,9 +1000,9 @@ export class StageEngine {
             'beam',
             true,
             globalMovingIndex++,
-            99,
+            px / Math.max(2, rig.stageWidth / 2),
             fx.dmxUniverse,
-            fx.dmxStartChannel + i * 16
+            start
           );
           fb.root.position.set(px, py + 0.08, pz);
           this.rigGroup.add(fb.root);
@@ -919,7 +1013,7 @@ export class StageEngine {
 
     this.assignOpeningGroups(rig.stageWidth);
     this.particles.setEmitters(smokeEmitters, co2Emitters);
-    this.beamPools = new BeamPools(this.movingFixtures.length, rig.stageWidth, rig.stageDepth, rig.stageHeight);
+    this.beamPools = new BeamPools(this.movingFixtures.length, rig.stageWidth, rig.stageDepth, rig.stageHeight, rig.platforms);
     this.scene.add(this.beamPools.group);
     if (this.activeView === 'foh' && this.fitFohOnResize) this.setCameraPreset('foh');
     if (this.activeView === 'pa_closeup') this.setCameraPreset('pa_closeup');
@@ -980,7 +1074,7 @@ export class StageEngine {
     type: 'beam' | 'wash',
     isFloor: boolean,
     index: number,
-    podIndex: number,
+    fanPosition: number,
     dmxUniverse: 1 | 2,
     dmxStart: number
   ): MovingFixtureInstance {
@@ -1070,16 +1164,16 @@ export class StageEngine {
       type,
       isFloor,
       index,
-      podIndex,
+      fanPosition,
       openingStep: DEMO_BLACKOUT_STEPS,
+      directedDimmer: 0,
       root,
       yoke,
       head,
       lensMat,
       beamMesh,
       beamMat,
-      basePan: 0,
-      baseTilt: isFloor ? 0.25 : 0.25,
+      mountYaw: 0,
       currentPan: 0,
       currentTilt: 0,
       dmxUniverse,
@@ -1324,16 +1418,25 @@ export class StageEngine {
   }
 
   private updateScene(dt: number, audio: AudioMetrics) {
+    // The frame loop still clears the canvas and publishes telemetry while the desk is idle.
+    if (this.standby) return false;
     const demo = this.currentState.autoDirector ? audio.demo : undefined;
     // Render opening fades on the audio clock, between the slower console readouts.
     const s = demo && demo.step < 224 ? applyDemoLighting(this.currentState, demo) : this.currentState;
     const b = this.currentBump;
     const t = this.elapsed;
+    if (demo) this.directedStep = demo.step;
+    const manualMix = demo ? 0 : this.manualFadeStart === undefined ? 1 : demoFade(t - this.manualFadeStart, 0, 0.8);
+    if (manualMix === 1) {
+      this.manualFadeStart = undefined;
+      this.directedStep = undefined;
+    }
+    const openingStep = this.directedStep;
 
     // Effective master blackout / dimmer
-    const darkOpening = demo && demo.step <= DEMO_BLACKOUT_STEPS && !(b.blinder || b.strobe || b.laser);
-    const master = s.blackout || this.standby || darkOpening ? 0 : s.masterDimmer;
-    const roomGain = demo ? demoFade(demo.step, 96, 208) : 1;
+    const darkOpening = demo && demo.step <= DEMO_BLACKOUT_STEPS;
+    const master = s.blackout || darkOpening ? 0 : s.masterDimmer;
+    const roomGain = openingStep === undefined ? 1 : THREE.MathUtils.lerp(demoFade(openingStep, 96, 208), 1, manualMix);
     this.houseAmbient.intensity = 0.36 * roomGain;
     this.scene.environmentIntensity = 0.55 * roomGain;
     (this.scene.background as THREE.Color).copy(this.backgroundColor).multiplyScalar(roomGain);
@@ -1436,9 +1539,8 @@ export class StageEngine {
           break;
         case 'fan':
           // Fan each bar symmetrically using its physical mounting position.
-          targetPan = Math.PI * 0.5 - fx.root.rotation.y;
-          targetTilt = -(fx.root.position.x / Math.max(2, (this.trussPods[fx.podIndex]?.config.width ?? 16) / 2)) *
-            (0.48 + Math.sin(t * moveSpd * 0.55) * 0.24) * spread;
+          targetPan = Math.PI * 0.5;
+          targetTilt = -fx.fanPosition * (0.48 + Math.sin(t * moveSpd * 0.55) * 0.24) * spread;
           break;
         case 'sweep':
           targetPan = Math.sin(t * moveSpd + i * 0.22) * 1.1 * spread;
@@ -1470,15 +1572,21 @@ export class StageEngine {
           break;
       }
 
-      // Floor beams aim upward & outward into the arena sky/crowd!
-      if (fx.isFloor && s.movementMode !== 'fan') {
-        targetTilt = -Math.abs(targetTilt) * 0.65 - 0.15;
-      } else if (fx.isFloor) {
-        targetTilt = -targetTilt;
+      // Pan is relative to the audience (+Z), even on a radial or rotated mount.
+      // A ceiling head emits along local −Y, while its floor counterpart emits along +Y.
+      targetPan -= fx.mountYaw;
+      if (s.movementMode === 'fan') {
+        if (fx.isFloor) targetTilt = -targetTilt;
+      } else {
+        if (!fx.isFloor) targetTilt = -targetTilt;
+        else if (s.movementMode !== 'manual') targetTilt = Math.abs(targetTilt) * 0.65 + 0.15;
       }
 
-      fx.currentPan = THREE.MathUtils.lerp(fx.currentPan, targetPan, Math.min(1, dt * 8));
-      fx.currentTilt = THREE.MathUtils.lerp(fx.currentTilt, targetTilt, Math.min(1, dt * 8));
+      const moveFraction = Math.min(1, dt * 8);
+      const turn = THREE.MathUtils.euclideanModulo(targetPan - fx.currentPan + Math.PI, 2 * Math.PI) - Math.PI;
+      fx.currentPan += turn * moveFraction;
+      if (Math.abs(fx.currentPan) > Math.PI) fx.currentPan -= Math.sign(fx.currentPan) * 2 * Math.PI;
+      fx.currentTilt = THREE.MathUtils.lerp(fx.currentTilt, targetTilt, moveFraction);
       fx.yoke.rotation.y = fx.currentPan;
       fx.head.rotation.x = fx.currentTilt;
 
@@ -1499,7 +1607,10 @@ export class StageEngine {
       if (demo && firstPair && fx.type === 'wash' && demo.step < 128) {
         baseInt = THREE.MathUtils.lerp(s.beamIntensity, s.washIntensity, demoFade(demo.step, 96, 128));
       }
-      const finalInt = Math.min(1.6, groupGain * baseInt * master * strobeGate * (1.0 + audioBoost * 0.48));
+      // Release each lantern from its last rendered level, including fixtures still out.
+      if (demo) fx.directedDimmer = groupGain * baseInt;
+      const dimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, baseInt, manualMix) : baseInt;
+      const finalInt = Math.min(1.6, dimmer * master * strobeGate * (1.0 + audioBoost * 0.48));
 
       fx.beamMat.uniforms.uColor.value.copy(tempCol);
       fx.beamMat.uniforms.uIntensity.value = finalInt;
@@ -1516,10 +1627,10 @@ export class StageEngine {
       // Glowing optical fixture lens
       fx.lensMat.color.copy(tempCol).multiplyScalar(finalInt * 2.6);
 
-      // Write real DMX channels (Pan, Tilt, Dimmer, R, G, B, Zoom, Strobe)
+      // Invalid or conflicting fixture footprints have start 0 and make no writes.
       const uBuf = fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
       const ch = fx.dmxStart - 1;
-      if (ch >= 0 && ch + 8 < 512) {
+      if (ch >= 0) {
         uBuf[ch + 0] = Math.round(THREE.MathUtils.clamp((fx.currentPan / 3.14 + 0.5) * 255, 0, 255));
         uBuf[ch + 1] = Math.round(THREE.MathUtils.clamp((fx.currentTilt / 2.2 + 0.5) * 255, 0, 255));
         uBuf[ch + 2] = Math.round(THREE.MathUtils.clamp(finalInt * 255, 0, 255));
@@ -1606,7 +1717,7 @@ export class StageEngine {
       // Write Laser DMX Universe channels
       const uBuf = l.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
       const ch = l.dmxStart - 1;
-      if (ch >= 0 && ch + 8 < 512) {
+      if (ch >= 0) {
         uBuf[ch + 0] = Math.round(Math.min(1, laserInt) * 255);
         uBuf[ch + 1] = patIdx * 32;
         uBuf[ch + 2] = Math.round(s.laser.spreadX * 255);
@@ -1623,6 +1734,7 @@ export class StageEngine {
     const warmAmber = new THREE.Color(0xffbe55);
     for (const bl of this.blinders) {
       bl.lensMat.color.copy(warmAmber).multiplyScalar(effBlinder * 4.2);
+      if (bl.start) bl.buffer[bl.start - 1] = Math.round(effBlinder * 255);
     }
     this.blinderLight.intensity = effBlinder * 75;
 
@@ -1630,9 +1742,13 @@ export class StageEngine {
       effectiveStrobe > 0.03 && strobeFlashOn
         ? 3.8 * master
         : s.audioReactive && audio.beat && master > 0.2
-          ? 2.2 * master * (demo ? demoFade(demo.step, 256, 384) : 1)
+          ? 2.2 * master * (openingStep === undefined ? 1 : THREE.MathUtils.lerp(demoFade(openingStep, 256, 384), 1, manualMix))
           : 0;
     for (const st of this.strobes) {
+      if (st.start) {
+        st.buffer[st.start - 1] = Math.round(255 * strobeBarBright / 3.8);
+        st.buffer[st.start] = Math.round(255 * effectiveStrobe);
+      }
       st.lensMat.color
         .copy(strobeFlashOn ? new THREE.Color(0xffffff) : primaryColor)
         .multiplyScalar(strobeBarBright);
@@ -1701,6 +1817,10 @@ export class StageEngine {
     // 9. Smoke Machines, Haze, & CO2 Cryo Cannons
     const effSmoke = b.smoke ? 1.0 : s.atmo.smokeOutput;
     const effCo2 = b.co2 || s.atmo.co2Active || (s.atmo.co2AutoOnDrop && audio.drop && s.audioReactive);
+    for (const fx of this.atmosphereDmx) {
+      const output = fx.type === 'co2' ? Number(effCo2) : fx.type === 'smoke' ? effSmoke : s.atmo.hazeLevel;
+      fx.buffer[fx.start - 1] = Math.round(output * 255);
+    }
     const stageTint = primaryColor.clone().lerp(accentColor, 0.35);
     this.particles.group.visible = roomGain > 0 || b.smoke || b.co2;
     this.particles.update(dt, t, s.atmo.hazeLevel, effSmoke, effCo2, stageTint, activeLightPower);
@@ -1750,7 +1870,8 @@ export class StageEngine {
     if (this.customTex) this.customTex.dispose();
     if (this.customVideoEl) {
       this.customVideoEl.pause();
-      this.customVideoEl.src = '';
+      this.customVideoEl.removeAttribute('src');
+      this.customVideoEl.load();
     }
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode === this.container) {

@@ -189,7 +189,7 @@ export const RIG_TEMPLATES: Record<string, RigConfig> = {
     ],
     floorFx: [
       { id: 'fx-co2', type: 'co2', modelName: 'MagicFX CO2Jet II', count: 6, x: 0, z: 4.9, spread: 16, dmxUniverse: 2, dmxStartChannel: 300 },
-      { id: 'fx-smoke', type: 'smoke', modelName: 'JEM ZR45 Smoke Machine', count: 4, x: 0, z: 3.4, spread: 14, dmxUniverse: 2, dmxStartChannel: 312 },
+      { id: 'fx-smoke', type: 'smoke', modelName: 'JEM ZR45 Smoke Machine', count: 4, x: 0, z: 3.4, spread: 11.8, dmxUniverse: 2, dmxStartChannel: 312 },
       { id: 'fx-hazer', type: 'hazer', modelName: 'MDG ATMe Touring Hazer', count: 2, x: 0, z: -2.5, spread: 18, dmxUniverse: 2, dmxStartChannel: 320 },
       { id: 'fx-flaser', type: 'floor_laser', modelName: 'KVANT Spectrum 25W', count: 3, x: 0, z: 2.2, spread: 11, dmxUniverse: 2, dmxStartChannel: 326 },
       { id: 'fx-fbeam', type: 'floor_beam', modelName: 'MegaPointe Floor Beam', count: 6, x: 0, z: -3.2, spread: 15, dmxUniverse: 2, dmxStartChannel: 380 },
@@ -249,11 +249,11 @@ export const RIG_TEMPLATES: Record<string, RigConfig> = {
         z: 0.4,
         rotationY: 0,
         motorized: true,
-        motorMinY: 6.0,
+        motorMinY: 10.9,
         motorMaxY: 14.2,
         fixtures: [
           { id: 'fm-m-b', type: 'beam', modelName: 'Sharpy X-Beam 350', count: 10, dmxUniverse: 1, dmxStartChannel: 217 },
-          { id: 'fm-m-s', type: 'strobe', modelName: 'Atomic Pro JDC-1', count: 6, dmxUniverse: 1, dmxStartChannel: 377 },
+          { id: 'fm-m-s', type: 'strobe', modelName: 'Atomic Pro JDC-1', count: 6, dmxUniverse: 2, dmxStartChannel: 465 },
         ],
       },
       {
@@ -275,11 +275,11 @@ export const RIG_TEMPLATES: Record<string, RigConfig> = {
       },
     ],
     floorFx: [
-      { id: 'fx-co2', type: 'co2', modelName: 'MagicFX CO2Jet II', count: 8, x: 0, z: 5.8, spread: 22, dmxUniverse: 2, dmxStartChannel: 340 },
-      { id: 'fx-smoke', type: 'smoke', modelName: 'JEM ZR45 Smoke Machine', count: 6, x: 0, z: 4.0, spread: 20, dmxUniverse: 2, dmxStartChannel: 356 },
-      { id: 'fx-hazer', type: 'hazer', modelName: 'MDG ATMe Touring Hazer', count: 2, x: 0, z: -2.0, spread: 22, dmxUniverse: 2, dmxStartChannel: 368 },
-      { id: 'fx-flaser', type: 'floor_laser', modelName: 'KVANT Spectrum 25W', count: 5, x: 0, z: 2.5, spread: 18, dmxUniverse: 2, dmxStartChannel: 374 },
-      { id: 'fx-fbeam', type: 'floor_beam', modelName: 'MegaPointe Floor Beam', count: 8, x: 0, z: -3.5, spread: 21, dmxUniverse: 2, dmxStartChannel: 464 },
+      { id: 'fx-co2', type: 'co2', modelName: 'MagicFX CO2Jet II', count: 8, x: 0, z: 5.8, spread: 22, dmxUniverse: 2, dmxStartChannel: 341 },
+      { id: 'fx-smoke', type: 'smoke', modelName: 'JEM ZR45 Smoke Machine', count: 6, x: 0, z: 4.0, spread: 20, dmxUniverse: 2, dmxStartChannel: 357 },
+      { id: 'fx-hazer', type: 'hazer', modelName: 'MDG ATMe Touring Hazer', count: 2, x: 0, z: -2.0, spread: 22, dmxUniverse: 2, dmxStartChannel: 369 },
+      { id: 'fx-flaser', type: 'floor_laser', modelName: 'KVANT Spectrum 25W', count: 5, x: 0, z: 2.5, spread: 18, dmxUniverse: 2, dmxStartChannel: 375 },
+      { id: 'fx-fbeam', type: 'floor_beam', modelName: 'MegaPointe Floor Beam', count: 8, x: 0, z: -3.5, spread: 21, dmxUniverse: 1, dmxStartChannel: 377 },
     ],
   },
 

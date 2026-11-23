@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  AudioLines, Camera, ChevronDown, DollarSign, Eye, EyeOff, Layers, Mic, Pause,
+  AudioLines, Camera, ChevronDown, DollarSign, DraftingCompass, Eye, EyeOff, Layers, Mic, Pause,
   Play, Radio, SlidersHorizontal, Sparkles, Upload, Wrench,
 } from 'lucide-react';
 import { AudioMetrics, CameraPreset } from '../types/show';
@@ -12,6 +12,8 @@ interface TopBarProps {
   audio: AudioMetrics;
   volume: number;
   bpm: number;
+  openingBar?: number;
+  blackout: boolean;
   autoDirector: boolean;
   audioReactive: boolean;
   activeCamera: CameraPreset;
@@ -21,6 +23,8 @@ interface TopBarProps {
   oneNightCostLabel: string;
   cinemaMode: boolean;
   onTogglePlay: () => void;
+  onStartDemo: () => void;
+  onDesignStage: () => void;
   onUploadAudio: (file: File) => void;
   onToggleMic: () => void;
   onVolumeChange: (v: number) => void;
@@ -45,9 +49,9 @@ export const CAMERAS: { id: CameraPreset; label: string }[] = [
 ];
 
 export const TopBar: React.FC<TopBarProps> = ({
-  fps, fixtureCount, laserCount, audio, volume, bpm, autoDirector, audioReactive,
+  fps, fixtureCount, laserCount, audio, volume, bpm, openingBar, blackout, autoDirector, audioReactive,
   activeCamera, rigDrawerOpen, dmxDrawerOpen, costModalOpen, oneNightCostLabel,
-  cinemaMode, onTogglePlay, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
+  cinemaMode, onTogglePlay, onStartDemo, onDesignStage, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
   onToggleAutoDirector, onToggleAudioReactive, onSelectCamera, onToggleRigDrawer,
   onToggleDmxDrawer, onToggleCostModal, onToggleCinemaMode,
 }) => {
@@ -99,11 +103,15 @@ export const TopBar: React.FC<TopBarProps> = ({
         <Layers aria-hidden="true" />
         <div>
           <h1>Stageforge <span>3D</span></h1>
-          <p>{fixtureCount} fixtures <i>·</i> {laserCount} lasers <i>·</i> {fps} fps</p>
+          <p>{blackout ? 'Master blackout' : openingBar ? `Opening blackout · Bar ${openingBar} of 2` :
+            <>{fixtureCount} fixtures <i>·</i> {laserCount} lasers <i>·</i> {fps} fps</>}</p>
         </div>
       </div>
       <div className="transport-playback">
         {playButton}
+        <button type="button" className="transport-btn" aria-label="Design stage" title="Design stage" onClick={onDesignStage}>
+          <DraftingCompass /><span className="transport-extra-label">Design stage</span>
+        </button>
         <div ref={audioPanelRef}>
           <button ref={audioButtonRef} type="button" className="transport-btn" aria-label="Audio settings"
             title="Audio settings" aria-controls="sound-settings" aria-expanded={audioOpen}
@@ -124,10 +132,15 @@ export const TopBar: React.FC<TopBarProps> = ({
                 <button className="transport-btn" onClick={() => fileRef.current?.click()}><Upload /> Load track</button>
                 <button className="transport-btn" onClick={onToggleMic} aria-pressed={audio.source === 'mic'}><Mic /> Mic input</button>
               </div>
+              {audio.source !== 'none' && <button className="transport-btn" onClick={() => {
+                setAudioOpen(false);
+                onStartDemo();
+                audioButtonRef.current?.focus();
+              }}><Play /> {audio.source === 'synth' ? 'Restart demo' : 'Return to demo'}</button>}
               <label className="audio-level"><span>Volume</span><input aria-label="Audio volume" type="range" min={0} max={1} step={0.02} value={volume}
                 onChange={(e) => onVolumeChange(Number(e.target.value))} /><output>{Math.round(volume * 100)}%</output></label>
               <div className="audio-tempo">
-                <span>Tempo</span>
+                <span>Demo tempo</span>
                 <button aria-label="Decrease tempo" onClick={() => onBpmChange(bpm - 2)}>−</button>
                 <output>{bpm} BPM</output>
                 <button aria-label="Increase tempo" onClick={() => onBpmChange(bpm + 2)}>+</button>

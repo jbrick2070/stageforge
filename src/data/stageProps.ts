@@ -15,8 +15,8 @@ export function createStageProp(kind: StagePropKind, id: string, x = 0, z = 0): 
 export function scenicPreset(venue: VenueType): StageProp[] {
   if (venue === 'arena') {
     return [
-      { ...createStageProp('tentacle', 'wing-left', -8.1, 0.2), scale: 1.22, rotation: 165 },
-      { ...createStageProp('tentacle', 'wing-right', 8.1, 0.2), scale: 1.22, rotation: 15 },
+      { ...createStageProp('tentacle', 'wing-left', -8.1, 2.6), scale: 1.22, rotation: 165 },
+      { ...createStageProp('tentacle', 'wing-right', 8.1, 2.6), scale: 1.22, rotation: 15 },
     ];
   }
   if (venue === 'festival') {
@@ -27,8 +27,8 @@ export function scenicPreset(venue: VenueType): StageProp[] {
     ];
   }
   return [
-    createStageProp('marquee', 'tower-left', -5.8, -1),
-    createStageProp('marquee', 'tower-right', 5.8, -1),
+    createStageProp('marquee', 'tower-left', -6.35, 1.1),
+    createStageProp('marquee', 'tower-right', 6.35, 1.1),
   ];
 }
 

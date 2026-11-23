@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { ScenicBuilder } from './ScenicBuilder';
-import { isStageProp } from '../data/stageProps';
+import { addPatchedUnits, allocateDmx } from '../data/dmxPatch';
+import { parseRigJson } from '../data/rigImport';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
 import {
   X,
@@ -29,6 +30,8 @@ interface RigBuilderDrawerProps {
   rig: RigConfig;
   onClose: () => void;
   onChangeRig: (next: RigConfig) => void;
+  onDesignStage: () => void;
+  onOpenSavedDesign?: () => void;
 }
 
 export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
@@ -36,8 +39,12 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   rig,
   onClose,
   onChangeRig,
+  onDesignStage,
+  onOpenSavedDesign,
 }) => {
   const importRef = useRef<HTMLInputElement>(null);
+  const importRequest = useRef(0);
+  const [patchError, setPatchError] = useState('');
   const [importError, setImportError] = useState('');
 
   if (!open) return null;
@@ -52,9 +59,12 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   };
 
   const addTrussPod = (shape: TrussShape) => {
+    const patch = allocateDmx(rig, 'beam', 6, 1);
+    if (!patch) { setPatchError('No free DMX block for six beam fixtures.'); return; }
+    setPatchError('');
     const idx = rig.trussPods.length + 1;
     const newPod: TrussPodConfig = {
-      id: `pod-${Date.now()}`,
+      id: crypto.randomUUID(),
       name: `${shape === 'circle' ? 'Halo Ring' : shape === 'chevron' ? 'Kinetic Wing' : 'Box Truss'} ${idx}`,
       shape,
       width: shape === 'circle' ? 6.5 : 14,
@@ -67,12 +77,12 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
       motorMaxY: 13.5,
       fixtures: [
         {
-          id: `fix-${Date.now()}`,
+          id: crypto.randomUUID(),
           type: 'beam',
           modelName: FIXTURE_CATALOG.beam.modelName,
           count: 6,
-          dmxUniverse: 1,
-          dmxStartChannel: 1,
+          dmxUniverse: patch.dmxUniverse,
+          dmxStartChannel: patch.dmxStartChannel,
         },
       ],
     };
@@ -83,83 +93,36 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     onChangeRig({ ...rig, trussPods: rig.trussPods.filter((p) => p.id !== podId) });
   };
 
-  const addFixtureToPod = (podId: string, type: FixtureType) => {
-    const meta = FIXTURE_CATALOG[type];
-    onChangeRig({
-      ...rig,
-      trussPods: rig.trussPods.map((p) => {
-        if (p.id !== podId) return p;
-        const existing = p.fixtures.find((f) => f.type === type);
-        if (existing) {
-          return {
-            ...p,
-            fixtures: p.fixtures.map((f) =>
-              f.type === type ? { ...f, count: Math.min(16, f.count + 2) } : f
-            ),
-          };
-        }
-        return {
-          ...p,
-          fixtures: [
-            ...p.fixtures,
-            {
-              id: `fg-${Date.now()}`,
-              type,
-              modelName: meta.modelName,
-              count: type === 'laser' ? 2 : 4,
-              dmxUniverse: type === 'laser' ? 2 : 1,
-              dmxStartChannel: 1,
-            },
-          ],
-        };
-      }),
-    });
+  const addFixtureToPod = (podId: string, type: FixtureType, groupId?: string) => {
+    const pod = rig.trussPods.find(p => p.id === podId);
+    if (!pod) return;
+    const existing = pod.fixtures.find(f => groupId ? f.id === groupId : f.type === type);
+    const count = groupId ? 1 : existing ? Math.max(0, Math.min(2, 16 - existing.count)) : type === 'laser' ? 2 : 4;
+    if (!count) return;
+    const group = { id: crypto.randomUUID(), type, modelName: existing?.modelName ?? FIXTURE_CATALOG[type].modelName,
+      count, dmxUniverse: type === 'laser' ? 2 as const : 1 as const, dmxStartChannel: 1 };
+    const fixtures = addPatchedUnits(rig, pod.fixtures, group, existing);
+    if (!fixtures) { setPatchError(`No free DMX block for ${count} × ${group.modelName}.`); return; }
+    setPatchError('');
+    updatePod(podId, { fixtures });
   };
 
-  const updateFixtureCount = (podId: string, fgId: string, delta: number) => {
-    onChangeRig({
-      ...rig,
-      trussPods: rig.trussPods.map((p) => {
-        if (p.id !== podId) return p;
-        return {
-          ...p,
-          fixtures: p.fixtures
-            .map((f) => (f.id === fgId ? { ...f, count: f.count + delta } : f))
-            .filter((f) => f.count > 0),
-        };
-      }),
-    });
+  const removeFixture = (pod: TrussPodConfig, groupId: string) => {
+    setPatchError('');
+    updatePod(pod.id, { fixtures: pod.fixtures.map(f => f.id === groupId ? { ...f, count: f.count - 1 } : f).filter(f => f.count > 0) });
   };
 
-  const addFloorFx = (type: FloorFxType) => {
-    const meta = FLOOR_FX_CATALOG[type];
-    const existing = rig.floorFx.find((f) => f.type === type);
-    if (existing) {
-      onChangeRig({
-        ...rig,
-        floorFx: rig.floorFx.map((f) =>
-          f.type === type ? { ...f, count: Math.min(12, f.count + 2) } : f
-        ),
-      });
-      return;
-    }
-    onChangeRig({
-      ...rig,
-      floorFx: [
-        ...rig.floorFx,
-        {
-          id: `fx-${Date.now()}`,
-          type,
-          modelName: meta.modelName,
-          count: type === 'hazer' ? 2 : 4,
-          x: 0,
-          z: type === 'co2' ? 4.8 : type === 'floor_beam' ? -3.0 : 2.2,
-          spread: 14,
-          dmxUniverse: 2,
-          dmxStartChannel: 300,
-        },
-      ],
-    });
+  const addFloorFx = (type: FloorFxType, groupId?: string) => {
+    const existing = rig.floorFx.find(f => groupId ? f.id === groupId : f.type === type);
+    const count = existing ? Math.max(0, Math.min(groupId ? 1 : 2, 12 - existing.count)) : type === 'hazer' ? 2 : 4;
+    if (!count) return;
+    const group = { x: 0, z: type === 'co2' ? 4.8 : type === 'floor_beam' ? -3 : 2.2, spread: 14,
+      modelName: FLOOR_FX_CATALOG[type].modelName, dmxUniverse: 2 as const, dmxStartChannel: 1, ...existing,
+      id: crypto.randomUUID(), type, count };
+    const floorFx = addPatchedUnits(rig, rig.floorFx, group, existing);
+    if (!floorFx) { setPatchError(`No free DMX block for ${count} × ${group.modelName}.`); return; }
+    setPatchError('');
+    onChangeRig({ ...rig, floorFx });
   };
 
   const exportJson = () => {
@@ -171,25 +134,19 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
 
-  const importJson = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const parsed = JSON.parse(String(reader.result)) as RigConfig;
-        if (!parsed || typeof parsed.name !== 'string' || !parsed.ledWall || !parsed.audioRig ||
-          (parsed.audioRig.speakerProfile !== undefined && !Object.hasOwn(SPEAKER_PROFILES, parsed.audioRig.speakerProfile)) ||
-          ![parsed.stageWidth, parsed.stageDepth, parsed.stageHeight].every(n => Number.isFinite(n) && n > 0) ||
-          !Array.isArray(parsed.trussPods) || !parsed.trussPods.every(p => p && Array.isArray(p.fixtures)) ||
-          !Array.isArray(parsed.floorFx) || (parsed.props !== undefined &&
-            (!Array.isArray(parsed.props) || !parsed.props.every(isStageProp) ||
-              new Set(parsed.props.map(p => p.id)).size !== parsed.props.length))) throw new Error();
-        onChangeRig(parsed);
-        setImportError('');
-      } catch {
-        setImportError('Could not read this rig. Choose a StageForge rig JSON file with valid equipment and prop settings.');
-      }
-    };
-    reader.readAsText(file);
+  const importJson = async (file: File) => {
+    const request = ++importRequest.current;
+    try {
+      const source = await file.text();
+      if (request !== importRequest.current) return;
+      const next = parseRigJson(source);
+      onChangeRig(next);
+      setImportError('');
+    } catch (error) {
+      if (request !== importRequest.current) return;
+      const detail = error instanceof Error ? error.message : 'Choose a StageForge rig JSON file.';
+      setImportError(`Could not read this rig. ${detail}`);
+    }
   };
 
   return (
@@ -216,7 +173,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
           <input
             ref={importRef}
             type="file"
-            accept="application/json"
+            accept=".json,application/json"
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -241,9 +198,14 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
         </div>
       </div>
 
+      {patchError && <p role="alert" className="px-3 py-1.5 text-xs text-amber-300">{patchError}</p>}
       {/* Scrollable Builder Sections */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3.5 text-xs">
         {importError && <p role="alert" className="text-rose-300">{importError}</p>}
+        <div className="flex gap-2">
+          <button className="transport-btn" onClick={onDesignStage}>Edit stage plan</button>
+          {onOpenSavedDesign && <button className="transport-btn" onClick={onOpenSavedDesign}>Open saved design</button>}
+        </div>
         <ScenicBuilder rig={rig} onChange={onChangeRig} />
         {/* 1. Stage Presets */}
         <div>
@@ -460,8 +422,8 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                 {/* Pod Position & Width Sliders */}
                 <div className="grid grid-cols-3 gap-1.5 font-mono-tech text-[9px] text-zinc-400">
                   <label>
-                    WIDTH {pod.width.toFixed(0)}m
-                    <input
+                    {pod.shape === 'path' ? 'LENGTH' : 'WIDTH'} {pod.width.toFixed(1)}m
+                    {pod.shape === 'path' ? <button type="button" className="block underline" onClick={onDesignStage}>Edit path</button> : <input
                       type="range"
                       min={4}
                       max={28}
@@ -469,7 +431,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                       value={pod.width}
                       onChange={(e) => updatePod(pod.id, { width: parseFloat(e.target.value) })}
                       className="console-slider w-full mt-0.5"
-                    />
+                    />}
                   </label>
                   <label>
                     HEIGHT {pod.baseY.toFixed(1)}m
@@ -512,14 +474,14 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                       </div>
                       <div className="flex items-center gap-1.5 font-mono-tech">
                         <button
-                          onClick={() => updateFixtureCount(pod.id, fg.id, -1)}
+                          onClick={() => removeFixture(pod, fg.id)}
                           className="w-4 h-4 rounded bg-black/60 hover:bg-white/15 cursor-pointer"
                         >
                           -
                         </button>
                         <span className="text-cyan-300 w-4 text-center">{fg.count}</span>
                         <button
-                          onClick={() => updateFixtureCount(pod.id, fg.id, 1)}
+                          onClick={() => addFixtureToPod(pod.id, fg.type, fg.id)}
                           className="w-4 h-4 rounded bg-black/60 hover:bg-white/15 cursor-pointer"
                         >
                           +
@@ -585,14 +547,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                   </button>
                   <span className="text-sky-300 w-4 text-center">{fx.count}</span>
                   <button
-                    onClick={() =>
-                      onChangeRig({
-                        ...rig,
-                        floorFx: rig.floorFx.map((item) =>
-                          item.id === fx.id ? { ...item, count: Math.min(12, item.count + 1) } : item
-                        ),
-                      })
-                    }
+                    onClick={() => addFloorFx(fx.type, fx.id)}
                     className="w-4 h-4 rounded bg-black/60 hover:bg-white/15 cursor-pointer"
                   >
                     +

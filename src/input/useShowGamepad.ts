@@ -10,6 +10,7 @@ const holds: [number, keyof BumpState][] = [
   [1, 'blinder'], [2, 'laser'], [3, 'co2'], [6, 'smoke'], [7, 'strobe'],
 ];
 type Handlers = {
+  enabled: boolean;
   command: (action: Command) => void;
   hold: (effect: keyof BumpState, down: boolean) => void;
   orbit: (horizontal: number, vertical: number) => void;
@@ -59,7 +60,7 @@ export function useShowGamepad(handlers: Handlers) {
       }
       const pad = pads.find(p => p?.connected && p.mapping === 'standard');
       const editable = document.activeElement?.matches('textarea, input:not([type=button]):not([type=range]), [contenteditable=true]');
-      const ready = activeWindow && !document.hidden && !editable;
+      const ready = latest.current.enabled && activeWindow && !document.hidden && !editable;
       if (!pad || !ready) {
         if (current) reset();
         report(pad ? 'connected' : 'waiting');

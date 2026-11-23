@@ -1,5 +1,6 @@
 import type { RigConfig, StagePropKind } from '../types/show';
 import { PROP_CATALOG } from './stageProps';
+import { pathLength } from './stageDesign';
 
 export interface CostLineItem {
   category: 'Rigging & Motors' | 'Lighting' | 'Lasers' | 'LED Video' | 'Audio / Speakers' | 'Smoke & FX' | 'Stage & FOH' | 'Scenery (simulation allowance)';
@@ -48,10 +49,11 @@ export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate 
   const equipmentItems: CostLineItem[] = [];
 
   // 1. Stage deck & FOH control
-  const stageArea = rig.stageWidth * rig.stageDepth;
-  equipmentItems.push({
+  const stageArea = rig.platforms ? rig.platforms.reduce((area, p) => area + p.width * p.depth, 0) : rig.stageWidth * rig.stageDepth;
+  if (stageArea > 0) equipmentItems.push({
     category: 'Stage & FOH',
-    label: `${rig.venue.toUpperCase()} Stage Deck & Barricade (${rig.stageWidth}m × ${rig.stageDepth}m)`,
+    label: rig.platforms ? `Custom stage deck (${rig.platforms.length} modules)` :
+      `${rig.venue.toUpperCase()} Stage Deck & Barricade (${rig.stageWidth}m × ${rig.stageDepth}m)`,
     qty: `${Math.round(stageArea)} m²`,
     buyCost: stageArea * 680,
     rentalCost: stageArea * 38,
@@ -79,9 +81,11 @@ export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate 
   let blinderCount = 0;
 
   for (const pod of rig.trussPods) {
-    const meters = pod.shape === 'circle' ? Math.PI * pod.width : pod.width;
+    const path = pod.shape === 'path' ? pod.path : undefined;
+    const meters = path ? pathLength(path) : pod.shape === 'circle' ? Math.PI * pod.width : pod.width;
     totalTrussMeters += meters;
-    const anchors = pod.shape === 'circle' ? 4 : pod.shape === 'chevron' ? 3 : pod.width >= 14 ? 3 : 2;
+    const anchors = path ? new Set(path.map(p => p.x + ',' + p.z)).size :
+      pod.shape === 'circle' ? 4 : pod.shape === 'chevron' ? 3 : pod.width >= 14 ? 3 : 2;
     if (pod.motorized) totalMotors += anchors;
 
     for (const fg of pod.fixtures) {
@@ -96,7 +100,7 @@ export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate 
   if (totalTrussMeters > 0) {
     equipmentItems.push({
       category: 'Rigging & Motors',
-      label: 'Prolyte Box / Circle Aluminum Truss',
+      label: 'Aluminum truss sections',
       qty: `${Math.round(totalTrussMeters)} m`,
       buyCost: Math.round(totalTrussMeters * 460),
       rentalCost: Math.round(totalTrussMeters * 26),

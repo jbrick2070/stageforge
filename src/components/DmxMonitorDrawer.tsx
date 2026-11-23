@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { X, Radio } from 'lucide-react';
+import { buildDmxPatch, DMX_CHANNELS } from '../data/dmxPatch';
 import { RigConfig } from '../types/show';
 
 interface DmxMonitorDrawerProps {
@@ -22,7 +23,22 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
 
   const [bank, setBank] = useState(0);
 
+  const patch = useMemo(() => buildDmxPatch(rig), [rig.trussPods, rig.floorFx]);
+  const rows = useMemo(() => patch.rows.filter(row => row.group.dmxUniverse === universe), [patch, universe]);
+  const channelNames = useMemo(() => {
+    const names = Array.from({ length: 512 }, () => [] as string[]);
+    for (const row of rows) {
+      for (let address = row.start; address <= Math.min(row.end, 512); address++) {
+        const index = Math.floor((address - row.start) / row.width);
+        const channel = DMX_CHANNELS[row.group.type][(address - row.start) % row.width] ?? 'Reserved';
+        const disabled = patch.unitStart(row.group, index) ? '' : ' · output disabled';
+        names[address - 1].push(`${row.group.modelName} #${index + 1} · ${channel}${disabled}`);
+      }
+    }
+    return names.map(parts => parts.join(' / ') || 'Unpatched');
+  }, [patch, rows]);
   if (!open) return null;
+  const invalid = rows.some(row => row.conflicts.length > 0 || row.end > 512);
 
   const data = universe === 1 ? universe1 : universe2;
 
@@ -90,6 +106,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
         </div>
       </div>
 
+      {invalid && <p role="status" className="px-3 py-1 text-[10px] text-amber-300">Patch conflict or overflow. Affected fixtures have no DMX output. See Patch for addresses.</p>}
       {view === 'grid' && (
         <div className="flex gap-1 px-3 py-1.5 border-b border-white/10" aria-label="DMX channel banks">
           {[0, 1, 2, 3].map(n => (
@@ -107,9 +124,13 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
               const i = bank * 128 + offset;
               const val = data[i] || 0;
               const pct = val / 255;
+              const address = i + 1;
+              const title = `U${universe}.${String(address).padStart(3, '0')} · ${channelNames[i]} · ${val}`;
               return (
                 <div
                   key={i}
+                  title={title}
+                  aria-label={title}
                   className="rounded border border-white/10 px-1 py-0.5 text-center font-mono-tech relative overflow-hidden"
                   style={{
                     background: `rgba(${universe === 1 ? '0, 240, 255' : '16, 185, 129'}, ${
@@ -127,35 +148,17 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
           </div>
         ) : (
           <div className="space-y-1.5 font-mono-tech text-[10px]">
-            {rig.trussPods.map((pod) =>
-              pod.fixtures.filter((fg) => fg.dmxUniverse === universe).map((fg) => (
-                <div
-                  key={fg.id}
-                  className="flex items-center justify-between bg-black/45 border border-white/10 rounded px-2 py-1.5"
-                >
-                  <div>
-                    <div className="text-white font-semibold">{fg.modelName} ×{fg.count}</div>
-                    <div className="text-[9px] text-zinc-400">{pod.name}</div>
-                  </div>
-                  <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
-                    U{fg.dmxUniverse}.{String(fg.dmxStartChannel).padStart(3, '0')}
-                  </span>
-                </div>
-              ))
-            )}
-            {rig.floorFx.filter((fx) => fx.dmxUniverse === universe).map((fx) => (
-              <div
-                key={fx.id}
-                className="flex items-center justify-between bg-black/45 border border-white/10 rounded px-2 py-1.5"
-              >
-                <div>
-                  <div className="text-white font-semibold">{fx.modelName} ×{fx.count}</div>
-                  <div className="text-[9px] text-zinc-400">Stage Floor Deck</div>
-                </div>
-                <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                  U{fx.dmxUniverse}.{String(fx.dmxStartChannel).padStart(3, '0')}
-                </span>
-              </div>
+            {rows.map(({ group, location, width, start, end, conflicts }, index) => (
+              <details key={index} className="bg-black/45 border border-white/10 rounded px-2 py-1.5">
+                <summary className="cursor-pointer">
+                  <span className="font-semibold text-white">{group.modelName} ×{group.count}</span>
+                  <span className="ml-2 text-cyan-300">U{universe}.{String(start).padStart(3, '0')}–{String(end).padStart(3, '0')}</span>
+                  <span className="block text-zinc-400">{location} · {width} channels per fixture</span>
+                  {conflicts.length > 0 && <span className="block text-amber-300">Overlapping channels {formatRanges(conflicts)}</span>}
+                  {end > 512 && <span className="block text-amber-300">Outside universe from channel {Math.max(513, start)}</span>}
+                </summary>
+                <p className="pt-1 text-zinc-300">{DMX_CHANNELS[group.type].map((name, i) => `${i + 1} ${name}`).join(' · ')}</p>
+              </details>
             ))}
           </div>
         )}
@@ -163,3 +166,13 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
     </aside>
   );
 };
+
+function formatRanges(channels: number[]): string {
+  const ranges: string[] = [];
+  for (let i = 0; i < channels.length; i++) {
+    const start = channels[i];
+    while (i + 1 < channels.length && channels[i + 1] === channels[i] + 1) i++;
+    ranges.push(start === channels[i] ? String(start) : `${start}–${channels[i]}`);
+  }
+  return ranges.join(', ');
+}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   X,
   DollarSign,
@@ -14,14 +14,12 @@ import { RigConfig } from '../types/show';
 import { calculateProductionEstimate, formatUSD } from '../data/productionEstimator';
 
 interface CostEstimatorModalProps {
-  open: boolean;
   rig: RigConfig;
   onClose: () => void;
   onDeployRig?: () => void;
 }
 
 export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
-  open,
   rig,
   onClose,
   onDeployRig,
@@ -30,26 +28,39 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
   const [loadInStep, setLoadInStep] = useState(0);
   const [approved, setApproved] = useState(false);
 
-  if (!open) return null;
-
-  const est = calculateProductionEstimate(rig);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const dialog = dialogRef.current!;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialog.showModal();
+    return () => {
+      window.clearInterval(timer.current);
+      dialog.close();
+      opener?.focus();
+    };
+  }, []);
+  const est = useMemo(() => calculateProductionEstimate(rig), [rig]);
   const steps = [
     `Unloading ${est.trucksNeeded} × 53ft semi-truck${est.trucksNeeded > 1 ? 's' : ''} (${Math.round(est.totalWeightLbs).toLocaleString()} lbs)...`,
     `High-steel riggers hoisting trusses & kinetic chain motors...`,
-    `Flying L-Acoustics line arrays & stacking ${rig.audioRig.subWall ? rig.audioRig.subCount : 0} arena subwoofers...`,
+    rig.audioRig.lineArrays ? 'Flying the left and right speaker arrays…' :
+      rig.audioRig.subWall ? `Positioning ${rig.audioRig.subCount} subwoofers…` : 'Checking the stage audio patch…',
     `Patching DMX Universes, LED wall processors & LSO laser clearance...`,
     `Crew call complete — SHOW READY FOR FOH!`,
   ];
 
   const handleSimulateLoadIn = () => {
+    dialogRef.current?.querySelector('button')?.focus();
     setSimulatingLoadIn(true);
     setApproved(false);
     setLoadInStep(0);
     let step = 0;
-    const interval = window.setInterval(() => {
+    window.clearInterval(timer.current);
+    timer.current = window.setInterval(() => {
       step++;
       if (step >= steps.length) {
-        window.clearInterval(interval);
+        window.clearInterval(timer.current);
         setSimulatingLoadIn(false);
         setApproved(true);
         onDeployRig?.();
@@ -60,8 +71,20 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
-      <div role="dialog" aria-modal="true" aria-labelledby="production-estimate-title" className="production-estimate glass-panel rounded-2xl border border-white/15 w-full max-w-4xl max-h-[86vh] flex flex-col overflow-hidden shadow-[0_0_60px_rgba(0,0,0,0.9)]">
+    <dialog ref={dialogRef} aria-modal="true" aria-labelledby="production-estimate-title"
+      onCancel={event => { event.preventDefault(); onClose(); }}
+      onClick={event => { if (event.target === event.currentTarget) onClose(); }}
+      onKeyDown={event => {
+        if (event.key !== 'Tab') return;
+        const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>('button:enabled');
+        const first = buttons[0], last = buttons[buttons.length - 1];
+        if (event.shiftKey ? document.activeElement === first : document.activeElement === last) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        }
+      }}
+      className="fixed inset-0 m-0 w-full h-full max-w-none max-h-none border-0 bg-black/70 text-white backdrop-blur-md flex items-center justify-center p-4">
+      <div className="production-estimate glass-panel rounded-2xl border border-white/15 w-full max-w-4xl max-h-[86vh] flex flex-col overflow-hidden shadow-[0_0_60px_rgba(0,0,0,0.9)]">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 bg-black/65 border-b border-white/10">
           <div>
@@ -221,7 +244,7 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
           </div>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 };
 

@@ -275,14 +275,14 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
               <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-4">
                 {/* Vertical grandMA-style DMX Channel Fader Bank */}
                 <div className="flex items-center justify-around bg-black/40 border border-white/10 rounded-lg px-2 py-2 gap-1">
-                  <VerticalDmxFader label="MAST" ch="U1.001" value={state.masterDimmer} onChange={(v) => onPatchState({ masterDimmer: v })} />
-                  <VerticalDmxFader label="BEAM" ch="U1.003" value={state.beamIntensity} onChange={(v) => onPatchState({ beamIntensity: v })} />
-                  <VerticalDmxFader label="WASH" ch="U1.433" value={state.washIntensity} onChange={(v) => onPatchState({ washIntensity: v })} />
-                  <VerticalDmxFader label="ZOOM" ch="U1.007" value={state.beamZoom} onChange={(v) => onPatchState({ beamZoom: v })} />
-                  <VerticalDmxFader label="SPEED" ch="U1.010" value={state.movementSpeed} onChange={(v) => onPatchState({ movementSpeed: v })} />
-                  <VerticalDmxFader label="SPREAD" ch="U1.011" value={state.movementSpread} onChange={(v) => onPatchState({ movementSpread: v })} />
-                  <VerticalDmxFader label="STROBE" ch="U1.008" value={state.strobeRate} onChange={(v) => onPatchState({ strobeRate: v })} />
-                  <VerticalDmxFader label="BLIND" ch="U1.129" value={state.blinderLevel} onChange={(v) => onPatchState({ blinderLevel: v })} />
+                  <VerticalDmxFader label="MAST" value={state.masterDimmer} onChange={(v) => onPatchState({ masterDimmer: v })} />
+                  <VerticalDmxFader label="BEAM" value={state.beamIntensity} onChange={(v) => onPatchState({ beamIntensity: v })} />
+                  <VerticalDmxFader label="WASH" value={state.washIntensity} onChange={(v) => onPatchState({ washIntensity: v })} />
+                  <VerticalDmxFader label="ZOOM" value={state.beamZoom} onChange={(v) => onPatchState({ beamZoom: v })} />
+                  <VerticalDmxFader label="SPEED" value={state.movementSpeed} onChange={(v) => onPatchState({ movementSpeed: v })} />
+                  <VerticalDmxFader label="SPREAD" value={state.movementSpread} onChange={(v) => onPatchState({ movementSpread: v })} />
+                  <VerticalDmxFader label="STROBE" value={state.strobeRate} onChange={(v) => onPatchState({ strobeRate: v })} />
+                  <VerticalDmxFader label="BLIND" value={state.blinderLevel} onChange={(v) => onPatchState({ blinderLevel: v })} />
                 </div>
 
                 {/* Movement Choreography + Custom Colors + Prism */}
@@ -370,7 +370,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <span className="font-mono-tech text-[10px] tracking-widest text-emerald-400">
-                      LASER VISUALS ENGINE (ILDA / DMX U2)
+                      LASER VISUALS ENGINE
                     </span>
                     <div className="flex items-center gap-1.5">
                       <button
@@ -741,10 +741,9 @@ const InlineSlider: React.FC<{
 
 const VerticalDmxFader: React.FC<{
   label: string;
-  ch: string;
   value: number;
   onChange: (v: number) => void;
-}> = ({ label, ch, value, onChange }) => (
+}> = ({ label, value, onChange }) => (
   <div className="flex flex-col items-center gap-1">
     <span className="font-mono-tech text-[9px] text-cyan-300">{Math.round(value * 255)}</span>
     <input
@@ -759,7 +758,6 @@ const VerticalDmxFader: React.FC<{
       className="vertical-fader"
     />
     <span className="font-mono-tech text-[9px] font-bold text-zinc-200 leading-none">{label}</span>
-    <span className="font-mono-tech text-[8px] text-zinc-500 leading-none">{ch}</span>
   </div>
 );
 

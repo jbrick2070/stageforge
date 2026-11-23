@@ -8,6 +8,20 @@ interface ScheduledStep {
   duration: number;
 }
 
+interface FileSource {
+  element: HTMLAudioElement;
+  node: MediaElementAudioSourceNode;
+  url: string;
+}
+
+function releaseFile(file: FileSource) {
+  file.node.disconnect();
+  file.element.pause();
+  file.element.removeAttribute('src');
+  file.element.load();
+  URL.revokeObjectURL(file.url);
+}
+
 const SCHEDULE_AHEAD = 0.15; // Audio seconds; covers main-thread rendering jitter.
 const PUMP_INTERVAL_MS = 25;
 
@@ -17,9 +31,8 @@ export class AudioEngine {
   private masterGain: GainNode | null = null;
   private freqData: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(256));
 
-  private audioEl: HTMLAudioElement | null = null;
-  private mediaSrc: MediaElementAudioSourceNode | null = null;
-  private fileUrl: string | null = null;
+  private activeFile: FileSource | null = null;
+  private pendingFile: FileSource | null = null;
   private micStream: MediaStream | null = null;
   private micSrc: MediaStreamAudioSourceNode | null = null;
   private sourceGeneration = 0;
@@ -142,7 +155,7 @@ export class AudioEngine {
     };
   }
 
-  private ensureContext(): AudioContext {
+  private ensureContext(resume = true): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext();
       this.analyser = this.ctx.createAnalyser();
@@ -156,7 +169,7 @@ export class AudioEngine {
       this.masterGain.connect(this.ctx.destination);
     }
     const ctx = this.ctx;
-    if (ctx.state === 'suspended' || this.pendingSuspend) {
+    if (resume && (ctx.state === 'suspended' || this.pendingSuspend)) {
       void ctx.resume().catch(() => {});
       // A rapid pause/resume or source change can race a queued suspend command.
       void this.pendingSuspend?.then(() => {
@@ -180,7 +193,17 @@ export class AudioEngine {
   }
 
   public stopAll() {
-    this.sourceGeneration++;
+    this.cancelPendingSource();
+    this.releaseActiveSource();
+  }
+
+  private cancelPendingSource() {
+    if (this.pendingFile) releaseFile(this.pendingFile);
+    this.pendingFile = null;
+    return ++this.sourceGeneration;
+  }
+
+  private releaseActiveSource() {
     this.playing = false;
     this.source = 'none';
     this.trackName = 'No Audio Loaded';
@@ -190,13 +213,8 @@ export class AudioEngine {
     this.releaseScore();
     this.heldStep = 0;
     this.lastDemoBeat = -1;
-    if (this.audioEl && this.fileUrl) {
-      this.audioEl.pause();
-      this.audioEl.removeAttribute('src');
-      this.audioEl.load();
-      URL.revokeObjectURL(this.fileUrl);
-      this.fileUrl = null;
-    }
+    if (this.activeFile) releaseFile(this.activeFile);
+    this.activeFile = null;
     if (this.micSrc) {
       this.micSrc.disconnect();
       this.micSrc = null;
@@ -284,31 +302,31 @@ export class AudioEngine {
   }
 
   public async loadAudioFile(file: File): Promise<string> {
-    this.stopAll();
-    const ctx = this.ensureContext();
-    const generation = this.sourceGeneration;
-
-    if (!this.audioEl) {
-      this.audioEl = new Audio();
-      this.audioEl.loop = true;
-      this.audioEl.crossOrigin = 'anonymous';
-      this.mediaSrc = ctx.createMediaElementSource(this.audioEl);
-      this.mediaSrc.connect(this.masterGain!);
-    }
-
-    this.fileUrl = URL.createObjectURL(file);
-    this.audioEl.src = this.fileUrl;
+    const generation = this.cancelPendingSource();
+    const ctx = this.ensureContext(this.source !== 'synth' || this.playing);
+    const element = new Audio();
+    element.loop = true;
+    const node = ctx.createMediaElementSource(element);
+    const candidate = { element, node, url: URL.createObjectURL(file) };
+    this.pendingFile = candidate;
     try {
-      await this.audioEl.play();
+      // The disconnected source stays silent until the browser accepts the file.
+      element.src = candidate.url;
+      await element.play();
+      if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+      node.connect(this.masterGain!);
     } catch (error) {
       if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
-      this.stopAll();
+      this.cancelPendingSource();
       throw error;
     }
-    if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+    this.pendingFile = null;
+    this.releaseActiveSource();
+    this.activeFile = candidate;
     this.source = 'file';
     this.trackName = file.name.replace(/\.[^/.]+$/, '');
     this.playing = true;
+    this.ensureContext();
     return this.trackName;
   }
 
@@ -338,16 +356,16 @@ export class AudioEngine {
       }
       return this.playing;
     }
-    if (this.source === 'file' && this.audioEl) {
-      const generation = ++this.sourceGeneration;
+    if (this.source === 'file' && this.activeFile) {
+      const { element } = this.activeFile;
       if (this.playing) {
-        this.audioEl.pause();
+        element.pause();
         this.playing = false;
       } else {
         this.ensureContext();
         this.playing = true;
-        void this.audioEl.play().catch(() => {
-          if (generation === this.sourceGeneration) this.playing = false;
+        void element.play().catch(() => {
+          if (this.activeFile?.element === element && element.paused) this.playing = false;
         });
       }
       return this.playing;
@@ -360,40 +378,41 @@ export class AudioEngine {
   }
 
   public async startMicInput(): Promise<void> {
-    this.stopAll();
-    const ctx = this.ensureContext();
-    const generation = this.sourceGeneration;
-    let stream: MediaStream;
+    const generation = this.cancelPendingSource();
+    const ctx = this.ensureContext(this.source !== 'synth' || this.playing);
+    let stream: MediaStream | undefined;
+    let node: MediaStreamAudioSourceNode | undefined;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+      if (!stream.getAudioTracks().some(track => track.readyState === 'live')) {
+        throw new DOMException('Microphone disconnected', 'NotReadableError');
+      }
+      node = ctx.createMediaStreamSource(stream);
+      node.connect(this.analyser!);
     } catch (error) {
+      node?.disconnect();
+      stream?.getTracks().forEach(track => track.stop());
       if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
       throw error;
     }
-    if (generation !== this.sourceGeneration) {
-      stream.getTracks().forEach(track => track.stop());
-      throw new DOMException('Source changed', 'AbortError');
-    }
+    this.releaseActiveSource();
     this.micStream = stream;
-    try {
-      this.micSrc = ctx.createMediaStreamSource(stream);
-      this.micSrc.connect(this.analyser!);
-    } catch (error) {
-      this.stopAll();
-      throw error;
-    }
+    this.micSrc = node;
     for (const track of stream.getAudioTracks()) {
       track.addEventListener('ended', () => {
-        if (stream === this.micStream) this.stopAll();
+        if (stream === this.micStream) this.releaseActiveSource();
       }, { once: true });
     }
     this.source = 'mic';
     this.trackName = 'Live Mic / Line-In';
     this.playing = true;
+    this.ensureContext();
   }
 
   public getStatus() {
     return {
+      demoFinished: this.source === 'synth' && !this.playing && this.heldStep >= DEMO_TOTAL_STEPS,
       playing: this.playing,
       source: this.source,
       trackName: this.trackName,
@@ -403,9 +422,6 @@ export class AudioEngine {
 
   public dispose() {
     this.stopAll();
-    this.mediaSrc?.disconnect();
-    this.mediaSrc = null;
-    this.audioEl = null;
     this.masterGain?.disconnect();
     this.masterGain = null;
     this.analyser?.disconnect();
