@@ -14,7 +14,7 @@ const { cueLook, differsFromCue } = await compiler.ssrLoadModule('/src/data/cueL
 const { frameDelta } = await compiler.ssrLoadModule('/src/input/useShowTimeline.ts');
 const example = JSON.parse(await readFile(new URL('../public/examples/amber-walk-on.stageforge.show.json', import.meta.url), 'utf8'));
 const parse = value => parseShowFile(JSON.stringify(value));
-const write = show => makeShowFile(show.rig, show.cues, show.look, show.activeCueId, show.controls, show.timeline, show.media);
+const write = show => makeShowFile(show.rig, show.cues, show.look, show.activeCueId, show.controls, show.timeline, show.media, show.stage);
 
 test('v1 remains writable and a v2 cue or take preserves independently focused and colored groups', () => {
   const authored = parse(example);
@@ -122,8 +122,39 @@ test('export discards session URLs, private fields and media paths throughout th
   assert.deepEqual(parse(saved), saved);
 });
 
+test('native walls, stage design and timed secondary screen events survive a v3 round trip', () => {
+  const stage = {
+    format: 'stageforge-native-stage', version: 1,
+    walls: [{ id: 'main-led' }, { id: 'side-led', label: 'Side', x: 3, y: 2, z: -4, yaw: 12, width: 2, height: 1 }],
+    screenEvents: [{ atMs: 5000, target: 'side-led', kind: 'video', name: 'swirls.mp4', playing: true, offsetSeconds: 1 }],
+    layout: { replace: true, trusses: [{ x: -1, z: 2, endX: 4, endZ: 3, height: 5 }],
+      hangs: [{ x: 0, y: 2, z: 1, yaw: 30, tilt: -5, count: 4, splay: 4 }],
+      props: [{ x: 4, z: 0, type: 'inflatable', height: 3 }] },
+  };
+  const saved = write({ ...example, stage });
+  assert.equal(saved.version, 3);
+  assert.deepEqual(parse(saved).stage, stage);
+  assert.deepEqual(write(parse(saved)), saved);
+  assert.equal(write({ ...saved, timeline: { durationMs: 1000, events: [] } }).timeline.durationMs, 5000);
+  for (const change of [
+    next => next.walls.push(next.walls[0]),
+    next => { next.screenEvents[0].target = 'main-led'; },
+    next => { next.screenEvents[0].target = 'absent'; },
+    next => { next.screenEvents[0].name = '../private.mp4'; },
+    next => { next.layout.hangs[0].count = 0; },
+    next => { next.screenEvents[0].atMs = 999999; },
+  ]) {
+    const invalid = structuredClone(saved);
+    change(invalid.stage);
+    assert.throws(() => parse(invalid));
+  }
+  for (const version of [1, 2]) {
+    assert.throws(() => parse({ ...saved, version, $schema: saved.$schema.replace('v3','v' + version) }));
+  }
+});
+
 const badEdits = [
-  ['unsupported file version', s => { s.version = 3; }],
+  ['unsupported file version', s => { s.version = 4; }],
   ['wrong schema', s => { s.$schema = 'https://other.invalid'; }],
   ['missing complete look field', s => { delete s.look.bpm; }],
   ['bad look color', s => { s.look.primaryColor = 'url(...)'; }],

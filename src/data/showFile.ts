@@ -1,5 +1,6 @@
 import schemaV1 from '../../public/schemas/show-v1.schema.json';
 import schemaV2 from '../../public/schemas/show-v2.schema.json';
+import schemaV3 from '../../public/schemas/show-v3.schema.json';
 import type { BumpState, CameraPreset, MusicRef, RigConfig, ScreenRef, ShowCue, ShowState } from '../types/show';
 import { parseRigJson } from './rigImport';
 import { focusMarks } from '../engine/focusAim';
@@ -9,6 +10,20 @@ export type { MusicRef, ScreenRef } from '../types/show';
 export const SHOW_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v1.schema.json';
 
 const V2_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v2.schema.json';
+const V3_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v3.schema.json';
+
+export interface NativeStage {
+  format: 'stageforge-native-stage';
+  version: 1;
+  walls: Array<{ id: string; label?: string; x?: number; y?: number; z?: number; yaw?: number; width?: number; height?: number }>;
+  screenEvents: Array<Omit<ScreenRef, 'target'> & { target: string; atMs: number }>;
+  layout?: {
+    replace?: boolean;
+    trusses?: Array<{ x: number; z: number; endX: number; endZ: number; height: number }>;
+    hangs?: Array<{ x: number; y: number; z: number; yaw: number; tilt: number; count: number; splay: number }>;
+    props?: Array<{ x: number; z: number; type: 'inflatable' | 'scenic'; height: number }>;
+  };
+}
 
 export interface ShowControls {
   camera: CameraPreset;
@@ -49,9 +64,9 @@ export function referencedFiles(media: ShowMedia | undefined, cues: ShowCue[], t
 }
 
 export interface StageForgeShowFile {
-  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL;
+  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL;
   format: 'stageforge-show';
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   rig: RigConfig;
   cues: ShowCue[];
   look: ShowState;
@@ -59,6 +74,7 @@ export interface StageForgeShowFile {
   controls?: ShowControls;
   timeline?: ShowTimeline;
   media?: ShowMedia;
+  stage?: NativeStage;
 }
 
 // The public schema also supplies the reader's field allowlist and value bounds.
@@ -88,7 +104,7 @@ interface Rule {
 }
 
 type ShowSchema = Rule & { $defs: Record<string, Rule> };
-const versions = { 1: schemaV1 as ShowSchema, 2: schemaV2 as ShowSchema };
+const versions = { 1: schemaV1 as ShowSchema, 2: schemaV2 as ShowSchema, 3: schemaV3 as ShowSchema };
 const compiledPatterns = new Map<string, RegExp>();
 
 class ShowFormatError extends Error {}
@@ -217,7 +233,7 @@ function checkLook(look: Partial<ShowState>, refs: RigReferences, path: string) 
 
 function decode(value: unknown, writing: boolean): StageForgeShowFile {
   const version = value && typeof value === 'object' && 'version' in value ? value.version : undefined;
-  if (version !== 1 && version !== 2) invalid('show.version', 'has an unsupported value');
+  if (version !== 1 && version !== 2 && version !== 3) invalid('show.version', 'has an unsupported value');
   const schema = versions[version];
   const show = read(value, schema, 'show', writing, schema) as StageForgeShowFile;
   // Share ID, geometry, patch count and motor-range checks with the legacy rig reader.
@@ -241,16 +257,34 @@ function decode(value: unknown, writing: boolean): StageForgeShowFile {
       last = event.atMs;
     }
   }
+  if (show.stage) {
+    const walls = new Set<string>();
+    for (const wall of show.stage.walls) {
+      if (walls.has(wall.id)) invalid('show.stage.walls', 'contains a duplicate wall ID');
+      walls.add(wall.id);
+    }
+    let previous = 0;
+    for (const [i, event] of show.stage.screenEvents.entries()) {
+      const path = 'show.stage.screenEvents[' + i + ']';
+      if (!walls.has(event.target) || event.target === 'main-led') invalid(path + '.target', 'must identify a secondary wall');
+      if (event.atMs < previous || event.atMs > (show.timeline?.durationMs ?? 0)) invalid(path + '.atMs', 'falls outside the ordered timeline');
+      previous = event.atMs;
+    }
+  }
   return show;
 }
 
 export function makeShowFile(
   rig: RigConfig, cues: ShowCue[], look: ShowState, activeCueId: string | null,
-  controls?: ShowControls, timeline?: ShowTimeline, media?: ShowMedia,
+  controls?: ShowControls, timeline?: ShowTimeline, media?: ShowMedia, stage?: NativeStage,
 ): StageForgeShowFile {
   const refs = rigReferences(rig);
+  // A browser take may end before a secondary wall's last native event.
+  // Both tracks share the file's duration when either one is edited.
+  const stageEnd = stage?.screenEvents.at(-1)?.atMs ?? 0;
+  if (stageEnd > (timeline?.durationMs ?? 0)) timeline = { durationMs: stageEnd, events: timeline?.events ?? [] };
   const show = decode({
-    $schema: V2_SCHEMA_URL, format: 'stageforge-show', version: 2, rig,
+    $schema: stage ? V3_SCHEMA_URL : V2_SCHEMA_URL, format: 'stageforge-show', version: stage ? 3 : 2, rig, stage,
     cues: cues.map(cue => ({
       ...cue, state: portableLook(cue.state, refs), screen: cue.screen && portableMedia(cue.screen),
     })),
@@ -264,6 +298,7 @@ export function makeShowFile(
     },
     media: media && { music: portableMedia(media.music), screen: portableMedia(media.screen) },
   }, true);
+  if (stage) return show;
   // Emit the oldest schema that represents every field, including saved cues and takes.
   const legacy = { ...show, version: 1 as const, $schema: SHOW_SCHEMA_URL as typeof SHOW_SCHEMA_URL };
   try {

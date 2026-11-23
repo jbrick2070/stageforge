@@ -35,7 +35,7 @@ type Tool = 'select' | 'platform' | 'path' | 'pan';
 type Selection = { kind: 'platform' | 'truss'; id: string; node?: number };
 type View = { x: number; z: number; width: number };
 type Drag = { origin: PlanPoint; at: PlanPoint; pointer: number; selection?: Selection; pan?: View };
-type EditorProps = { rig: RigConfig; onChange: (rig: RigConfig) => void; onClose: () => void };
+type EditorProps = { rig: RigConfig; onChange: (rig: RigConfig, replacing: boolean) => void; onClose: () => void };
 const guides = [
   { id: 'select', name: 'Select', Icon: MousePointer2 },
   { id: 'platform', name: 'Platform', Icon: Square },
@@ -297,7 +297,9 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
       ? knots(truss).map((p) => podWorldPoint(truss, p))
       : [];
   const vertex = selected?.node !== undefined ? vertices[selected.node] : undefined;
-  const commit = (next: RigConfig) => {
+  const newDesignDrafts = useRef(new WeakSet<RigConfig>());
+  const commit = (next: RigConfig, replacing = false) => {
+    if (replacing || newDesignDrafts.current.has(draft)) newDesignDrafts.current.add(next);
     setHistory((h) => ({ past: [...h.past.slice(-79), h.now], now: next, future: [] }));
     setMessage('');
   };
@@ -525,7 +527,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
       setMessage(error instanceof Error ? error.message : 'Check the geometry before applying this design.');
       return;
     }
-    onChange(next);
+    onChange(next, newDesignDrafts.current.has(draft));
     onClose();
   };
   const selectedKey = platform ? `p:${platform.id}` : truss ? `t:${truss.id}` : '';
@@ -955,7 +957,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
               className="sd-new"
               onClick={() => {
                 const blank = createBlankDesign(draft);
-                commit(blank);
+                commit(blank, true);
                 choose('select');
                 setSelected(undefined);
                 setView(frameDesign(blank, aspect));

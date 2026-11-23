@@ -2,7 +2,9 @@
 
 A `.stageforge.show.json` file stores a rig, its ordered cue list and the lighting desk as plain UTF-8 JSON. Version 1 can also carry a recorded sequence, camera and volume settings, and the names and positions of sound and screen media. The schema uses JSON Schema Draft 2020-12. [Version 1 schema](../public/schemas/show-v1.schema.json) · [Amber Walk-on example](../public/examples/amber-walk-on.stageforge.show.json)
 
-Version 2 adds per-group optics, independent moving-head looks, per-projector laser settings and LED cabinet grids. The writer selects v1 whenever the rig, cues and entire take fit that schema. Projects using the new fields identify themselves as v2. Both schemas are bundled for offline validation. [Version 2 schema](../public/schemas/show-v2.schema.json)
+Version 2 adds per-group optics, independent moving-head looks, per-projector laser settings and LED cabinet grids. The writer selects v1 whenever the rig, cues and entire take fit that schema. [Version 2 schema](../public/schemas/show-v2.schema.json)
+
+Version 3 adds a required `stage` object for editable trusses, speaker hangs, scenery, wall placements and independent secondary-screen events. The primary wall still follows the standard show timeline. The web desk previews its supported fields and preserves the native stage when saving the same show. Starting a separate rig clears that stage. All three schemas ship with the web reader for offline validation. [Version 3 schema](../public/schemas/show-v3.schema.json)
 
 ## Opening the examples
 
@@ -14,8 +16,9 @@ Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay tak
 
 | Field | Meaning |
 | --- | --- |
-| `$schema` | The public schema URL ending in `show-v1.schema.json` or `show-v2.schema.json`, matching the version. |
-| `format`, `version` | The string `"stageforge-show"` and the integer `1` or `2`. |
+| `$schema` | The public schema URL ending in `show-v1.schema.json`, `show-v2.schema.json` or `show-v3.schema.json`, matching the version. |
+| `format`, `version` | The string `"stageforge-show"` and the integer `1`, `2` or `3`. |
+| `stage` | Present in v3. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
 | `rig` | Stage dimensions and venue, optional platforms and scenic props, trusses with their fixtures, floor effects, sound system and LED wall. Positions and lengths use metres. |
 | `cues` | Array in playback order. Each cue has a unique `id`, a display `name`, `tag`, hex `accent` and a partial desk `state`. Optional `screen` sets the main-wall media. |
 | `look`, `activeCueId` | Complete current desk settings and the current cue ID, or `null`. Desk changes made after calling a cue belong in `look`. |

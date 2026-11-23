@@ -9,7 +9,7 @@ import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
-import { makeShowFile, parseShowFile, referencedFiles } from './data/showFile';
+import { makeShowFile, parseShowFile, referencedFiles, type NativeStage } from './data/showFile';
 import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
 import { ShowFiles, type FileAction } from './components/ShowFiles';
 import { CueListEditor } from './components/CueListEditor';
@@ -77,6 +77,7 @@ export const App: React.FC = () => {
   const audioEngineRef = useRef<AudioEngine | null>(null);
 
   const [savedDesign, setSavedDesign] = useState(readSavedDesign);
+  const nativeStage = useRef<NativeStage | undefined>(undefined);
   const [rig, setRig] = useState<RigConfig>(() => savedDesign ?? structuredClone(RIG_TEMPLATES.arena_mainstage));
   const [showState, setShowState] = useState<ShowState>(() => structuredClone(INITIAL_SHOW_STATE));
   const [bump, setBump] = useState<BumpState>(EMPTY_BUMP);
@@ -648,10 +649,12 @@ export const App: React.FC = () => {
     try { object = JSON.parse(json); } catch { throw new Error('Choose a valid StageForge JSON file.'); }
     if (!object || typeof object !== 'object' || !('format' in object)) {
       const next = normalizeDesign(parseRigJson(json));
+      nativeStage.current = undefined;
       timeline.stop();
       applyRig(next, true); previewRig(); showToast(`Opened ${next.name}.`); return;
     }
     const file = parseShowFile(json);
+    nativeStage.current = file.stage;
     timeline.replace(file.timeline);
     setFollow(null); directorArmed.current = false;
     audioEngineRef.current?.stopAll(); setAudioMetrics(EMPTY_AUDIO);
@@ -676,7 +679,7 @@ export const App: React.FC = () => {
     if (action === 'show') {
       const validActiveCue = cues.some(c => c.id === activeCueId) ? activeCueId : null;
       const file = makeShowFile(rig, cues, showState, validActiveCue, { camera: activeCamera, volume }, timeline.snapshot(),
-        { music: readMusic(), screen: readScreen() });
+        { music: readMusic(), screen: readScreen() }, nativeStage.current);
       downloadStageFile(rig.name, 'stageforge.show.json', new Blob([JSON.stringify(file, null, 2) + '\n'], { type: 'application/json' }));
     } else if (action === 'glb') {
       if (!engineRef.current) throw new Error('The 3D stage is still loading.');
@@ -886,7 +889,10 @@ export const App: React.FC = () => {
           onClose={() => setRigDrawerOpen(false)}
           onDesignStage={() => setDesignerRig(rig)}
           onOpenSavedDesign={savedDesign ? () => setDesignerRig(savedDesign) : undefined}
-          onChangeRig={applyRig}
+          onChangeRig={(next, replacing) => {
+            if (replacing) nativeStage.current = undefined;
+            applyRig(next);
+          }}
         />
       )}
 
@@ -902,8 +908,9 @@ export const App: React.FC = () => {
       )}
 
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
-      {designerRig && <StageDesigner rig={designerRig} onClose={() => setDesignerRig(null)} onChange={design => {
+      {designerRig && <StageDesigner rig={designerRig} onClose={() => setDesignerRig(null)} onChange={(design, replacing) => {
         const next = normalizeDesign(design);
+        if (replacing || designerRig !== rig) nativeStage.current = undefined;
         applyRig(next, true);
         previewRig();
         setDesignerRig(null);

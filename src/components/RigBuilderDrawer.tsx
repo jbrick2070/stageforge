@@ -33,7 +33,7 @@ interface RigBuilderDrawerProps {
   open: boolean;
   rig: RigConfig;
   onClose: () => void;
-  onChangeRig: (next: RigConfig) => void;
+  onChangeRig: (next: RigConfig, replacing?: boolean) => void;
   onDesignStage: () => void;
   onOpenSavedDesign?: () => void;
 }
@@ -172,7 +172,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
       const source = await file.text();
       if (request !== importRequest.current) return;
       const next = parseRigJson(source);
-      onChangeRig(normalizeDesign(next));
+      onChangeRig(normalizeDesign(next), true);
       setImportError('');
     } catch (error) {
       if (request !== importRequest.current) return;
@@ -248,7 +248,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
             {Object.entries(RIG_TEMPLATES).map(([key, tmpl]) => (
               <button
                 key={key}
-                onClick={() => onChangeRig(structuredClone(tmpl))}
+                onClick={() => onChangeRig(structuredClone(tmpl), true)}
                 className={`px-2 py-1.5 rounded-lg border text-left transition cursor-pointer ${
                   rig.name === tmpl.name
                     ? 'bg-cyan-500/20 border-cyan-400 text-white'

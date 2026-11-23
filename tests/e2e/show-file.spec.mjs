@@ -10,11 +10,11 @@ async function openFiles(page) {
   return page.getByRole('dialog', { name: 'Show files' });
 }
 
-async function saveShow(page, dialog, path) {
+async function saveShow(page, dialog, path, expectedName = 'amber-walk-on.stageforge.show.json') {
   const saving = page.waitForEvent('download');
   await dialog.getByRole('button', { name: 'Save show JSON' }).click();
   const download = await saving;
-  expect(download.suggestedFilename()).toBe('amber-walk-on.stageforge.show.json');
+  expect(download.suggestedFilename()).toBe(expectedName);
   await download.saveAs(path);
   return JSON.parse(await readFile(path, 'utf8'));
 }
@@ -31,6 +31,29 @@ function rehearsalTrack() {
   wav.write('data', 36); wav.writeUInt32LE(samples, 40);
   return { name: 'Rehearsal #2.wav', mimeType: 'audio/wav', buffer: wav };
 }
+
+test('a web save preserves native stage data and a replacement rig starts without it', async ({ page }, info) => {
+  const nativeFile = fileURLToPath(new URL('../fixtures/native-authoring-v3.stageforge.show.json', import.meta.url));
+  const { stage } = JSON.parse(await readFile(nativeFile, 'utf8'));
+  await page.goto('/');
+  const files = await openFiles(page);
+  await files.getByLabel('Open show file').setInputFiles(nativeFile);
+  await expect(files).toBeHidden();
+  await openFiles(page);
+  const saved = await saveShow(page, files, info.outputPath('native.stageforge.show.json'), 'split-rig-rehearsal.stageforge.show.json');
+  expect(saved.version).toBe(3);
+  expect(saved.stage).toEqual(stage);
+  await files.getByRole('button', { name: 'Close Show files' }).click();
+  await page.getByRole('button', { name: 'Rig builder', exact: true }).click();
+  await page.getByRole('button', { name: /Small Proscenium Theatre/ }).click();
+  await page.getByRole('button', { name: 'Close Rig Builder' }).click();
+  await openFiles(page);
+  const download = page.waitForEvent('download');
+  await files.getByRole('button', { name: 'Save show JSON' }).click();
+  const replacing = JSON.parse(await readFile(await (await download).path(), 'utf8'));
+  expect(replacing.stage).toBeUndefined();
+  expect(replacing.version).toBeLessThan(3);
+});
 
 test('open an authored show, run and edit its cues, reject an invalid file during playback, then reopen the download', async ({ page }, info) => {
   await page.goto('/');
