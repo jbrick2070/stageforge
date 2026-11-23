@@ -15,6 +15,20 @@ export const HEAD_PIVOT = YOKE_OFFSET + HEAD_OFFSET;
 
 /** Typical moving-head travel: 540 degrees pan, 270 degrees tilt (+/-135 degrees from the hang axis). */
 export const TILT_LIMIT = (135 * Math.PI) / 180;
+export const PAN_LIMIT = (270 * Math.PI) / 180;
+
+/** Select the nearest equivalent pan angle the yoke can physically reach. */
+export function reachablePan(target: number, current: number) {
+  const turn = Math.PI * 2;
+  let next = target + Math.round((current - target) / turn) * turn;
+  if (next > PAN_LIMIT) next -= turn;
+  if (next < -PAN_LIMIT) next += turn;
+  return next;
+}
+
+export function axisDmx(angle: number, limit: number) {
+  return Math.round(255 * Math.max(0, Math.min(1, (angle + limit) / (2 * limit))));
+}
 
 /** How far the focus offset faders move the spot from its point, in metres, at full travel. */
 export const FOCUS_NUDGE_RANGE = 4;
@@ -87,7 +101,7 @@ export function aimAngles(local: Vec3, isFloor: boolean, currentPan = 0, current
   const pan = Math.atan2(dir * vx, dir * vz);
   const alternate = { pan: wrap(pan + Math.PI), tilt: -tilt };
   const cost = (a: { pan: number; tilt: number }) =>
-    Math.abs(wrap(a.pan - currentPan)) + Math.abs(a.tilt - currentTilt);
+    Math.abs(reachablePan(a.pan, currentPan) - currentPan) + Math.abs(a.tilt - currentTilt);
   const primary = { pan, tilt };
   const best = cost(alternate) < cost(primary) ? alternate : primary;
   // A point beyond the tilt range (above the truss) gets the closest reachable angle.

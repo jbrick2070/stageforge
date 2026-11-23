@@ -962,9 +962,16 @@ const VENUE_ROOF: Record<VenueType, number> = {
   club: 5.2, // structural soffit of a low-ceiling room
 };
 
+// Large or off-centre designs expand the room envelope. Keep decorative detail bounded.
+function detailPositions(start: number, end: number, pitch: number, budget: number) {
+  const count = Math.min(budget, Math.max(0, Math.floor((end - start) / pitch) + 1));
+  const step = count === budget ? (end - start) / (budget - 1) : pitch;
+  return Array.from({ length: count }, (_, i) => start + i * step);
+}
+
 /** Velour hung in soft pleats; faces the audience (+Z). */
 function pleatedDrape(width: number, height: number, material: THREE.Material, depth = 0.1) {
-  const geometry = new THREE.PlaneGeometry(width, height, Math.max(8, Math.round(width * 6)), 1);
+  const geometry = new THREE.PlaneGeometry(width, height, THREE.MathUtils.clamp(Math.round(width * 6), 8, 384), 1);
   const folds = geometry.getAttribute('position');
   for (let i = 0; i < folds.count; i++) {
     const x = folds.getX(i);
@@ -1031,12 +1038,13 @@ function buildTheatreHouse(
     addBox(group, plaster, s * (stageHouseW / 2), towerH / 2, (prosZ + backZ) / 2, 0.6, towerH, prosZ - backZ);
   }
   addBox(group, plaster, 0, towerH / 2, backZ, stageHouseW, towerH, 0.6);
-  for (let z = backZ + 0.6; z < prosZ - 0.4; z += 0.6) {
+  for (const z of detailPositions(backZ + 0.6, prosZ - 0.4, 0.6, 128)) {
     addBox(group, mats.darkSteel, 0, roofY, z, stageHouseW - 0.8, 0.1, 0.1);
   }
 
   // Black legs and borders mask the wings and the flies between the electrics.
-  for (let z = prosZ - 2.2; z > -stageDepth / 2 + 1.2; z -= 2.6) {
+  for (const offset of detailPositions(2.2, prosZ + stageDepth / 2 - 1.2, 2.6, 20)) {
+    const z = prosZ - offset;
     for (const s of [-1, 1]) {
       const leg = pleatedDrape(1.8, openH + 1.4, velour, 0.08);
       leg.position.set(s * (openW / 2 + 0.6), (openH + 1.4) / 2, z);
@@ -1063,12 +1071,13 @@ function buildTheatreHouse(
     seatW = 0.52;
   const halfUsable = houseW / 2 - 1.3; // side aisles along the walls
   const aisleX = halfUsable * 0.38;
+  const seatPositions = detailPositions(-halfUsable + seatW / 2, halfUsable - seatW / 2 + 1e-6, seatW, 96);
   const seats: SeatSlot[] = [];
   for (let r = 0; r < rows; r++) {
     const y = r * rise,
       z = firstZ + r * pitch;
     if (y > 0) addBox(group, tierMat, 0, y / 2, z, houseW - 0.6, y, pitch);
-    for (let x = -halfUsable + seatW / 2; x <= halfUsable - seatW / 2 + 1e-6; x += seatW) {
+    for (const x of seatPositions) {
       if (Math.abs(Math.abs(x) - aisleX) < 0.6) continue;
       addBox(group, seatMat, x, y + 0.42, z, seatW - 0.05, 0.1, 0.46);
       addBox(group, seatMat, x, y + 0.72, z + 0.26, seatW - 0.05, 0.6, 0.08);
@@ -1081,7 +1090,7 @@ function buildTheatreHouse(
   const rearZ = firstZ + rows * pitch + 2.0;
   for (const s of [-1, 1]) {
     addBox(group, plaster, s * (houseW / 2), houseCeiling / 2, (prosZ + rearZ) / 2, 0.6, houseCeiling, rearZ - prosZ);
-    for (let z = prosZ + 3; z < rearZ - 1.5; z += 3.5) {
+    for (const z of detailPositions(prosZ + 3, rearZ - 1.5, 3.5, 12)) {
       addBox(group, houseLamp, s * (houseW / 2 - 0.32), 3.4, z, 0.06, 0.35, 0.22);
     }
     // FOH box-boom pipes on the side walls.
@@ -1139,10 +1148,12 @@ function buildClubRoom(
   group.add(soffit);
 
   // Unistrut grid and two runs of spiral duct under the soffit.
-  for (let x = -halfW + 1; x <= halfW - 1; x += 2) {
+  for (const x of detailPositions(-halfW + 1, halfW - 1, 2, 96)) {
     addBox(group, mats.darkSteel, x, roofY - 0.02, (backZ + rearZ) / 2, 0.04, 0.04, rearZ - backZ - 1);
   }
-  for (let z = backZ + 1.5; z < rearZ - 1; z += 3) addBox(group, mats.darkSteel, 0, roofY - 0.06, z, 2 * halfW - 1, 0.04, 0.04);
+  for (const z of detailPositions(backZ + 1.5, rearZ - 1, 3, 96)) {
+    addBox(group, mats.darkSteel, 0, roofY - 0.06, z, 2 * halfW - 1, 0.04, 0.04);
+  }
   for (const s of [-1, 1]) {
     const duct = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, rearZ - backZ - 2, 14, 1), galvanised);
     duct.rotation.x = Math.PI / 2;

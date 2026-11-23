@@ -1,6 +1,6 @@
 # StageForge 3D
 
-StageForge is a browser-based concert simulator. Design a stage, light it from an eight-cue desk, and watch from seven cameras, including a close-up of the PA. The app uses React, Three.js and the Web Audio API.
+StageForge is a concert stage designer and simulator for Windows, Apple Silicon Macs and desktop browsers. Build a stage, light it from an eight-cue desk, and watch from seven cameras, including a close-up of the PA. Phones open in the player, with **Show desk** available when needed.
 
 [Launch StageForge in your browser](https://jbrick2070.github.io/stageforge/)
 
@@ -18,6 +18,16 @@ npm run dev
 Open the local URL printed by Vite. The default is [127.0.0.1:5173](http://127.0.0.1:5173/).
 
 Run `npm test` to check rig compatibility, deck surfaces and truss patching. To compile the TypeScript and build a production copy, run `npm run build`. Run `npm run preview` to inspect the generated site locally.
+
+## Desktop apps
+
+The Electron editions bundle the renderer, fonts, fixtures and demo score. They run offline and keep their own saved stage. To move a stage between the browser and either app, export the rig as a `.stageforge.json` file and open it on the destination.
+
+- On **Windows x64**, open the portable StageForge executable.
+- On an **Apple Silicon Mac**, extract the ZIP and open **StageForge.app**.
+- Use **File → Open rig** and **File → Export rig** for design files, and **View → Toggle Full Screen** for a show. In the plan editor, **Apply design** commits your draft before you export.
+
+To build from source, run `npm ci`, then `npm run desktop:win` on Windows or `npm run desktop:mac` on an Apple Silicon Mac. The packages appear in `desktop/build/release/`. Run `npm run desktop:start` to open the desktop app during development. These local builds do not carry a publisher certificate or Apple notarization.
 
 ## Build a stage
 

@@ -39,7 +39,7 @@ import {
   createSharedMaterials,
   type VenueRoom,
 } from './geometryBuilders';
-import { FocusMark, HEAD_OFFSET, YOKE_OFFSET, aimAngles, focusMarks, focusPoint } from './focusAim';
+import { FocusMark, HEAD_OFFSET, YOKE_OFFSET, PAN_LIMIT, TILT_LIMIT, aimAngles, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
 import { buildDmxPatch } from '../data/dmxPatch';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import { AtmosphericParticles } from './ParticleSystem';
@@ -1077,8 +1077,9 @@ export class StageEngine {
     this.particles.setEmitters(smokeEmitters, co2Emitters);
     this.beamPools = new BeamPools(this.movingFixtures.length, rig.stageWidth, rig.stageDepth, rig.stageHeight, rig.platforms);
     this.scene.add(this.beamPools.group);
-    if (this.activeView === 'foh' && this.fitFohOnResize) this.setCameraPreset('foh');
-    if (this.activeView === 'pa_closeup') this.setCameraPreset('pa_closeup');
+    if ((old && old.venue !== rig.venue) || (this.activeView === 'foh' && this.fitFohOnResize) || this.activeView === 'pa_closeup') {
+      this.setCameraPreset(this.activeView);
+    }
   }
 
   private assignOpeningGroups(stageWidth: number) {
@@ -1657,9 +1658,7 @@ export class StageEngine {
       }
 
       const moveFraction = Math.min(1, dt * 8);
-      const turn = THREE.MathUtils.euclideanModulo(targetPan - fx.currentPan + Math.PI, 2 * Math.PI) - Math.PI;
-      fx.currentPan += turn * moveFraction;
-      if (Math.abs(fx.currentPan) > Math.PI) fx.currentPan -= Math.sign(fx.currentPan) * 2 * Math.PI;
+      fx.currentPan = THREE.MathUtils.lerp(fx.currentPan, reachablePan(targetPan, fx.currentPan), moveFraction);
       fx.currentTilt = THREE.MathUtils.lerp(fx.currentTilt, targetTilt, moveFraction);
       fx.yoke.rotation.y = fx.currentPan;
       fx.head.rotation.x = fx.currentTilt;
@@ -1705,8 +1704,8 @@ export class StageEngine {
       const uBuf = fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
       const ch = fx.dmxStart - 1;
       if (ch >= 0) {
-        uBuf[ch + 0] = Math.round(THREE.MathUtils.clamp((fx.currentPan / 3.14 + 0.5) * 255, 0, 255));
-        uBuf[ch + 1] = Math.round(THREE.MathUtils.clamp((fx.currentTilt / 2.2 + 0.5) * 255, 0, 255));
+        uBuf[ch + 0] = axisDmx(fx.currentPan, PAN_LIMIT);
+        uBuf[ch + 1] = axisDmx(fx.currentTilt, TILT_LIMIT);
         uBuf[ch + 2] = Math.round(THREE.MathUtils.clamp(finalInt * 255, 0, 255));
         uBuf[ch + 3] = Math.round(tempCol.r * 255);
         uBuf[ch + 4] = Math.round(tempCol.g * 255);

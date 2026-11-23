@@ -21,6 +21,9 @@ test('existing rigs round-trip, and an empty design has no deck', () => {
     assert.deepEqual(parseRigJson(JSON.stringify(rig)), rig);
     assert.equal(getPlatforms(rig).length, 1);
     assert.equal(stageSurfaceHeight(rig, 0, 0), rig.stageHeight);
+    const blankRoom = createBlankDesign(rig);
+    assert.deepEqual([blankRoom.venue, blankRoom.stageWidth, blankRoom.stageDepth], [rig.venue, rig.stageWidth, rig.stageDepth]);
+    assert.deepEqual(getPlatforms(blankRoom), []);
   }
   const blank = createBlankDesign();
   assert.deepEqual(getPlatforms(blank), []);

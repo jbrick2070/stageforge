@@ -7,7 +7,7 @@ import { useShowGamepad } from './input/useShowGamepad';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
 import { normalizeDesign } from './data/stageDesign';
-import { parseRigJson } from './data/rigImport';
+import { downloadRig, parseRigJson } from './data/rigImport';
 import { StageDesigner } from './components/StageDesigner';
 import { BottomConsole } from './components/BottomConsole';
 import { RigBuilderDrawer } from './components/RigBuilderDrawer';
@@ -89,7 +89,9 @@ export const App: React.FC = () => {
   const [designerRig, setDesignerRig] = useState<RigConfig | null>(null);
   const pendingDesign = useRef<RigConfig | null>(null);
   const saveTimer = useRef<number | undefined>(undefined);
-  const [cinemaMode, setCinemaMode] = useState(false);
+  const [cinemaMode, setCinemaMode] = useState(() =>
+    window.matchMedia('(pointer: coarse) and (max-width: 700px), (pointer: coarse) and (max-height: 500px)').matches
+  );
   const [toast, setToast] = useState<string | null>(null);
   const [dmxSnapshot, setDmxSnapshot] = useState<{ u1: Uint8Array; u2: Uint8Array }>({
     u1: new Uint8Array(512),
@@ -484,7 +486,7 @@ export const App: React.FC = () => {
     autoDirRef.current = false;
     setShowState(s => s.autoDirector ? { ...s, autoDirector: false } : s);
   };
-  const applyRig = (next: RigConfig, saveNow = false) => {
+  const applyRig = useCallback((next: RigConfig, saveNow = false) => {
     // Loading a preset leaves storage alone, but the first edit to one becomes the saved design,
     // as long as that doesn't replace a design already saved in the single slot.
     if (next.schemaVersion !== 1 && !savedDesign && !isPristinePreset(next)) next = { ...next, schemaVersion: 1 };
@@ -495,7 +497,27 @@ export const App: React.FC = () => {
     window.clearTimeout(saveTimer.current);
     if (saveNow) flushDesign();
     else saveTimer.current = window.setTimeout(flushDesign, 250);
-  };
+  }, [savedDesign, flushDesign]);
+  useEffect(() => window.stageforgeDesktop?.onRigCommand((command, json) => {
+    if (designerRig) {
+      window.alert('Apply or cancel the open stage plan before opening or exporting a rig.');
+      return;
+    }
+    if (command === 'export') {
+      downloadRig(rig);
+      return;
+    }
+    if (json === undefined) return;
+    try {
+      const next = normalizeDesign(parseRigJson(json));
+      applyRig(next, true);
+      previewRig();
+      showToast(`Opened ${next.name}.`);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Could not open this StageForge rig.');
+    }
+  }), [rig, designerRig, applyRig, previewRig, showToast]);
+
   const controller = useShowGamepad({
     enabled: !costModalOpen && !designerRig,
     command: action => {

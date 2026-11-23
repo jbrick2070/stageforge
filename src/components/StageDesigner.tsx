@@ -945,7 +945,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
             <button
               className="sd-new"
               onClick={() => {
-                const blank = createBlankDesign();
+                const blank = createBlankDesign(draft);
                 commit(blank);
                 choose('select');
                 setSelected(undefined);

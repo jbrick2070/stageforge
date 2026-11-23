@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ScenicBuilder } from './ScenicBuilder';
 import { addPatchedUnits, allocateDmx } from '../data/dmxPatch';
-import { parseRigJson } from '../data/rigImport';
+import { downloadRig, parseRigJson } from '../data/rigImport';
+import { normalizeDesign } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
 import {
   X,
@@ -159,22 +160,13 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     onChangeRig({ ...rig, floorFx });
   };
 
-  const exportJson = () => {
-    const blob = new Blob([JSON.stringify(rig, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${rig.name.toLowerCase().replace(/\s+/g, '-')}.stageforge.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  };
-
   const importJson = async (file: File) => {
     const request = ++importRequest.current;
     try {
       const source = await file.text();
       if (request !== importRequest.current) return;
       const next = parseRigJson(source);
-      onChangeRig(next);
+      onChangeRig(normalizeDesign(next));
       setImportError('');
     } catch (error) {
       if (request !== importRequest.current) return;
@@ -193,12 +185,12 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
             STAGE & RIG BUILDER
           </h2>
           <p className="font-mono-tech text-[9px] text-zinc-400">
-            SCENERY, RIGGING &amp; PRODUCTION
+            {rig.name}
           </p>
         </div>
         <div className="flex items-center gap-1">
           <button
-            onClick={exportJson}
+            onClick={() => downloadRig(rig)}
             className="p-1.5 rounded bg-white/5 hover:bg-white/15 text-zinc-300 cursor-pointer"
             title="Export Custom Rig JSON"
           >

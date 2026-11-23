@@ -11,10 +11,19 @@ const compiler = await createServer({
 after(() => compiler.close());
 
 const THREE = await compiler.ssrLoadModule('three');
-const { aimAngles, focusMarks, focusPoint, HEAD_OFFSET, TILT_LIMIT, YOKE_OFFSET, FOCUS_NUDGE_RANGE } =
+const { aimAngles, focusMarks, focusPoint, HEAD_OFFSET, TILT_LIMIT, PAN_LIMIT, reachablePan, axisDmx, YOKE_OFFSET, FOCUS_NUDGE_RANGE } =
   await compiler.ssrLoadModule('/src/engine/focusAim.ts');
 const { createBlankDesign, withPlatforms } = await compiler.ssrLoadModule('/src/data/stageDesign.ts');
 const { RIG_TEMPLATES } = await compiler.ssrLoadModule('/src/data/presets.ts');
+
+test('audience focus uses the full DMX travel and pans continuously across 180 degrees', () => {
+  const radians = degrees => degrees * Math.PI / 180;
+  assert.deepEqual([-135, -83, -79, 0, 135].map(d => axisDmx(radians(d), TILT_LIMIT)), [0, 49, 53, 128, 255]);
+  for (const [from, target, expected] of [[179, -179, 181], [-179, 179, -181], [269, -85, -85]]) {
+    assert.ok(Math.abs(reachablePan(radians(target), radians(from)) - radians(expected)) < 1e-10);
+  }
+  assert.equal(axisDmx(PAN_LIMIT, PAN_LIMIT), 255);
+});
 
 // Mirrors StageEngine.createMovingFixture: pod → root (slot yaw) → yoke (pan) → head (tilt).
 function hang(isFloor, podRotation, slot, slotYaw) {

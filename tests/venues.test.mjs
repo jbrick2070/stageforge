@@ -29,6 +29,14 @@ test('every preset patches without DMX conflicts', () => {
   }
 });
 
+test('a wide theatre plan keeps its dimensions and a bounded seating sample', () => {
+  const rig = RIG_TEMPLATES.small_theatre;
+  const venue = build({ ...rig, stageWidth: 240, audioRig: { ...rig.audioRig, crowdDensity: 1 } });
+  assert.ok(venue.room.halfWidth >= 120);
+  assert.ok(venue.crowdBaseTransforms.length > 300);
+  assert.ok(venue.crowdBaseTransforms.length <= 14 * 96);
+});
+
 test('the small theatre: electrics upstage of the proscenium, FOH bridge in the house, a seated rake', () => {
   const rig = RIG_TEMPLATES.small_theatre;
   const venue = build(rig);

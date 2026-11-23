@@ -5,12 +5,16 @@ export const MAX_PLATFORMS = 24;
 export const MAX_PATH_POINTS = 64;
 export const MIN_TRUSS_SPAN = 0.25;
 
-export function createBlankDesign(): RigConfig {
+export function createBlankDesign(room: RigConfig = RIG_TEMPLATES.blank_stage): RigConfig {
   const rig = structuredClone(RIG_TEMPLATES.blank_stage);
   return {
     ...rig,
     schemaVersion: 1,
     name: 'Untitled stage',
+    venue: room.venue,
+    stageWidth: room.stageWidth,
+    stageDepth: room.stageDepth,
+    stageHeight: room.stageHeight,
     platforms: [],
     trussPods: [],
     floorFx: [],
