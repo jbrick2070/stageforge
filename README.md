@@ -2,6 +2,8 @@
 
 StageForge is a browser-based concert simulator. Design a stage, light it from an eight-cue desk, and watch from seven cameras, including a close-up of the PA. The app uses React, Three.js and the Web Audio API.
 
+[Launch StageForge in your browser](https://jbrick2070.github.io/stageforge/)
+
 ![Arena show with steel-blue and amber lighting, inflatable tentacles and flown line arrays](docs/stageforge-arena.webp)
 
 ## Run locally
