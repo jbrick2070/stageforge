@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test';
 
 const ON_TARGET = 0.15; // metres between a beam's axis and its focus point
 const BEAM_COUNT = 8;
+// Software WebGL can need several seconds of rendered frames to finish a pan.
+const settle = { timeout: 15_000 };
 
 /** A small club stage: deck, drum riser and thrust under a bent upstage truss of 4 beams + 4 washes. */
 async function seedClubStage(page) {
@@ -73,28 +75,28 @@ test('heads stay on their focus point when the truss is re-shaped and follow the
   await focus.getByRole('button', { name: 'Drum riser' }).click();
   await expect(focus.getByRole('button', { name: 'Drum riser' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByText('OFFSET X')).toBeVisible();
-  await expect.poll(() => worstMiss(page, riser), { timeout: 5000 }).toBeLessThan(ON_TARGET);
+  await expect.poll(() => worstMiss(page, riser), settle).toBeLessThan(ON_TARGET);
 
   // Drag the stage-right end of the truss downstage and wider: every mount moves, the look doesn't.
   const before = await mountPositions(page);
   await editDesign(page, 'Bent truss', [['Selected vertex', 'Vertex 4'], ['Vertex X', '6.5'], ['Vertex Z', '0']]);
   await expect.poll(() => mountPositions(page)).not.toEqual(before);
-  await expect.poll(() => worstMiss(page, riser), { timeout: 5000 }).toBeLessThan(ON_TARGET);
+  await expect.poll(() => worstMiss(page, riser), settle).toBeLessThan(ON_TARGET);
 
   // Re-block the riser 2 m stage right: the focus point travels with it.
   await editDesign(page, 'Drum riser', [['Center X', '2']]);
-  await expect.poll(() => worstMiss(page, { ...riser, x: 2 }), { timeout: 5000 }).toBeLessThan(ON_TARGET);
+  await expect.poll(() => worstMiss(page, { ...riser, x: 2 }), settle).toBeLessThan(ON_TARGET);
   expect(await worstMiss(page, riser)).toBeGreaterThan(0.5);
 
   // Another point, then an offset in metres from it (fader at 75% = +2 m of the ±4 m range).
   await focus.getByRole('button', { name: 'Thrust' }).click();
-  await expect.poll(() => worstMiss(page, { x: 0, y: 1, z: 3 }), { timeout: 5000 }).toBeLessThan(ON_TARGET);
+  await expect.poll(() => worstMiss(page, { x: 0, y: 1, z: 3 }), settle).toBeLessThan(ON_TARGET);
   await page.getByRole('slider', { name: 'OFFSET X' }).fill('0.75');
   await expect(page.getByText('2.0 m')).toBeVisible();
-  await expect.poll(() => worstMiss(page, { x: 2, y: 1, z: 3 }), { timeout: 5000 }).toBeLessThan(ON_TARGET);
+  await expect.poll(() => worstMiss(page, { x: 2, y: 1, z: 3 }), settle).toBeLessThan(ON_TARGET);
 
   // Free hands the rig back to raw pan/tilt.
   await focus.getByRole('button', { name: 'Free' }).click();
   await expect(page.getByText('TILT', { exact: true })).toBeVisible();
-  await expect.poll(() => worstMiss(page, { x: 0, y: 1, z: 3 }), { timeout: 5000 }).toBeGreaterThan(1);
+  await expect.poll(() => worstMiss(page, { x: 0, y: 1, z: 3 }), settle).toBeGreaterThan(1);
 });
