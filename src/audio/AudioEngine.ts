@@ -1,4 +1,15 @@
 import { AudioMetrics } from '../types/show';
+import { DEMO_TOTAL_STEPS, getDemoPosition } from '../data/demoShow';
+import { DemoScore } from './demoScore';
+
+interface ScheduledStep {
+  step: number;
+  time: number;
+  duration: number;
+}
+
+const SCHEDULE_AHEAD = 0.15; // Audio seconds; covers main-thread rendering jitter.
+const PUMP_INTERVAL_MS = 25;
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -13,9 +24,14 @@ export class AudioEngine {
   private micSrc: MediaStreamAudioSourceNode | null = null;
   private sourceGeneration = 0;
 
-  // Built-in concert synth sequencer
+  private score: DemoScore | null = null;
   private synthTimer: number | null = null;
-  private synthStep = 0;
+  private nextStep = 0;
+  private nextStepTime = 0;
+  private scheduled: ScheduledStep[] = [];
+  private heldStep = 0;
+  private lastDemoBeat = -1;
+  private pendingSuspend: Promise<void> | null = null;
   private bpm = 128;
 
   private source: 'none' | 'synth' | 'file' | 'mic' = 'none';
@@ -32,11 +48,15 @@ export class AudioEngine {
   public getMetrics(dt: number): AudioMetrics {
     this.beatPulse = Math.max(0, this.beatPulse - dt * 3.8);
 
+    const audibleStep = this.source === 'synth' ? this.currentDemoStep() : undefined;
+    if (audibleStep === DEMO_TOTAL_STEPS && this.playing) this.finishDemo();
+    const demo = audibleStep === undefined ? undefined : getDemoPosition(audibleStep);
+
     if (!this.analyser || !this.playing) {
-      // Gentle simulated clock beat when no live audio is playing so beat-reactive effects can still breathe if desired
       this.spectrum32.fill(0);
       return {
         playing: false,
+        demo,
         source: this.source,
         trackName: this.trackName,
         energy: 0,
@@ -80,24 +100,35 @@ export class AudioEngine {
       this.spectrum32[b] = acc / (step * 255);
     }
 
-    // Adaptive beat onset detector
-    this.bassHistory.push(bass);
-    if (this.bassHistory.length > 42) this.bassHistory.shift();
-    const avgBass =
-      this.bassHistory.reduce((a, b) => a + b, 0) / Math.max(1, this.bassHistory.length);
-
-    const now = performance.now();
     let beat = false;
-    if (bass > 0.36 && bass > avgBass * 1.24 && now - this.lastBeatTime > 260) {
-      beat = true;
-      this.lastBeatTime = now;
-      this.beatPulse = 1.0;
+    let drop = false;
+    if (demo && audibleStep !== undefined) {
+      const beatIndex = Math.floor(audibleStep / 4);
+      const started = this.scheduled.length > 0 && this.outputTime() >= this.scheduled[0].time;
+      beat = started && beatIndex !== this.lastDemoBeat;
+      if (beat) {
+        this.lastDemoBeat = beatIndex;
+        // Keep the musical pulse even on a soft opening; let louder attacks carry more light.
+        this.beatPulse = Math.min(1, 0.22 + bass * 1.15);
+      }
+      drop = (demo.sectionId === 'drop' || demo.sectionId === 'finale') &&
+        demo.barInSection === 0 && demo.stepInBar < 4;
+    } else {
+      this.bassHistory.push(bass);
+      if (this.bassHistory.length > 42) this.bassHistory.shift();
+      const avgBass = this.bassHistory.reduce((a, b) => a + b, 0) / this.bassHistory.length;
+      const now = performance.now();
+      if (bass > 0.36 && bass > avgBass * 1.24 && now - this.lastBeatTime > 260) {
+        beat = true;
+        this.lastBeatTime = now;
+        this.beatPulse = 1;
+      }
+      drop = bass > 0.72 && energy > 0.52;
     }
-
-    const drop = bass > 0.72 && energy > 0.52;
 
     return {
       playing: this.playing,
+      demo,
       source: this.source,
       trackName: this.trackName,
       energy,
@@ -124,8 +155,15 @@ export class AudioEngine {
       this.masterGain.connect(this.analyser);
       this.masterGain.connect(this.ctx.destination);
     }
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume();
+    const ctx = this.ctx;
+    if (ctx.state === 'suspended' || this.pendingSuspend) {
+      void ctx.resume().catch(() => {});
+      // A rapid pause/resume or source change can race a queued suspend command.
+      void this.pendingSuspend?.then(() => {
+        if (this.ctx === ctx && ctx.state === 'suspended' && (this.source !== 'synth' || this.playing)) {
+          void ctx.resume().catch(() => {});
+        }
+      });
     }
     return this.ctx;
   }
@@ -138,10 +176,7 @@ export class AudioEngine {
   }
 
   public setBpm(bpm: number) {
-    this.bpm = Math.max(70, Math.min(180, bpm));
-    if (this.source === 'synth' && this.playing) {
-      this.restartSynthClock();
-    }
+    if (Number.isFinite(bpm)) this.bpm = Math.max(70, Math.min(180, bpm));
   }
 
   public stopAll() {
@@ -152,10 +187,9 @@ export class AudioEngine {
     this.bassHistory.length = 0;
     this.lastBeatTime = 0;
     this.beatPulse = 0;
-    if (this.synthTimer !== null) {
-      window.clearInterval(this.synthTimer);
-      this.synthTimer = null;
-    }
+    this.releaseScore();
+    this.heldStep = 0;
+    this.lastDemoBeat = -1;
     if (this.audioEl && this.fileUrl) {
       this.audioEl.pause();
       this.audioEl.removeAttribute('src');
@@ -173,150 +207,80 @@ export class AudioEngine {
     }
   }
 
-  public startDemoSynth(bpm = 128) {
+  public startDemoSynth(bpm = this.bpm) {
     this.stopAll();
-    this.ensureContext();
-    this.bpm = bpm;
+    const ctx = this.ensureContext();
+    this.setBpm(bpm);
     this.source = 'synth';
-    this.trackName = 'Arena Anthem (Live Synth)';
+    this.trackName = 'Arena Anthem';
     this.playing = true;
-    this.synthStep = 0;
-    this.restartSynthClock();
+    this.score = new DemoScore(ctx, this.masterGain!);
+    this.nextStep = 0;
+    this.nextStepTime = ctx.currentTime + 0.025;
+    this.startPump();
   }
 
-  private restartSynthClock() {
+  private outputTime() {
+    const ctx = this.ctx!;
+    const stamp = ctx.getOutputTimestamp?.();
+    if (stamp?.contextTime !== undefined && stamp.performanceTime) {
+      return Math.min(ctx.currentTime, stamp.contextTime + (performance.now() - stamp.performanceTime) / 1000);
+    }
+    return Math.max(0, ctx.currentTime - (ctx.outputLatency || 0));
+  }
+
+  private currentDemoStep() {
+    if (!this.playing || this.scheduled.length === 0) return this.heldStep;
+    const now = this.outputTime();
+    // Keep the currently audible sixteenth even when a tempo change is already queued.
+    while (this.scheduled.length > 1 && this.scheduled[1].time <= now) this.scheduled.shift();
+    const event = this.scheduled[0];
+    return Math.max(0, Math.min(DEMO_TOTAL_STEPS, event.step + (now - event.time) / event.duration));
+  }
+
+  private startPump() {
+    this.stopPump();
+    this.scheduleAhead();
+    if (this.playing) this.synthTimer = window.setInterval(() => this.scheduleAhead(), PUMP_INTERVAL_MS);
+  }
+
+  private stopPump() {
     if (this.synthTimer !== null) window.clearInterval(this.synthTimer);
-    const sixteenthMs = (60 / this.bpm / 4) * 1000;
-    this.playSynthStep();
-    this.synthTimer = window.setInterval(() => {
-      if (!this.playing || this.source !== 'synth') return;
-      this.playSynthStep();
-    }, sixteenthMs);
+    this.synthTimer = null;
   }
 
-  private playSynthStep() {
-    if (!this.ctx || !this.masterGain) return;
-    const t = this.ctx.currentTime;
-    const step = this.synthStep % 64;
-    const bar = Math.floor(step / 16); // 0..3
-    const beatStep = step % 16;
-
-    // 4-on-the-floor arena kick
-    if (beatStep % 4 === 0) {
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(145, t);
-      osc.frequency.exponentialRampToValueAtTime(42, t + 0.11);
-      gain.gain.setValueAtTime(0.95, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
-      osc.connect(gain);
-      gain.connect(this.masterGain);
-      osc.start(t);
-      osc.stop(t + 0.26);
+  private scheduleAhead() {
+    if (!this.ctx || !this.score || !this.playing) return;
+    const now = this.ctx.currentTime;
+    const stepSeconds = 15 / this.bpm;
+    // When a tab wakes late, catch the next sixteenth rather than firing missed notes together.
+    if (this.nextStepTime < now - 0.025) {
+      const missed = Math.min(DEMO_TOTAL_STEPS - this.nextStep, Math.ceil((now - this.nextStepTime) / stepSeconds));
+      this.nextStep += missed;
+      this.nextStepTime += missed * stepSeconds;
     }
-
-    // Offbeat open hi-hat
-    if (beatStep % 4 === 2) {
-      const bufSize = Math.floor(this.ctx.sampleRate * 0.08);
-      const buffer = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufSize * 0.35));
-      const noise = this.ctx.createBufferSource();
-      noise.buffer = buffer;
-      const hp = this.ctx.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = 6800;
-      const gain = this.ctx.createGain();
-      gain.gain.setValueAtTime(0.22, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-      noise.connect(hp);
-      hp.connect(gain);
-      gain.connect(this.masterGain);
-      noise.start(t);
+    while (this.nextStep < DEMO_TOTAL_STEPS && this.nextStepTime < now + SCHEDULE_AHEAD) {
+      this.score.schedule(this.nextStep, this.nextStepTime, stepSeconds);
+      this.scheduled.push({ step: this.nextStep, time: this.nextStepTime, duration: stepSeconds });
+      this.nextStep++;
+      this.nextStepTime += stepSeconds;
     }
+    this.currentDemoStep();
+    if (this.nextStep === DEMO_TOTAL_STEPS && this.outputTime() >= this.nextStepTime) this.finishDemo();
+  }
 
-    // Clap on 4 & 12
-    if (beatStep === 4 || beatStep === 12) {
-      const bufSize = Math.floor(this.ctx.sampleRate * 0.13);
-      const buffer = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufSize * 0.25));
-      const noise = this.ctx.createBufferSource();
-      noise.buffer = buffer;
-      const bp = this.ctx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.value = 1400;
-      bp.Q.value = 1.2;
-      const gain = this.ctx.createGain();
-      gain.gain.setValueAtTime(0.32, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
-      noise.connect(bp);
-      bp.connect(gain);
-      gain.connect(this.masterGain);
-      noise.start(t);
-    }
+  private releaseScore() {
+    this.stopPump();
+    this.score?.dispose();
+    this.score = null;
+    this.scheduled.length = 0;
+  }
 
-    // Rolling festival bassline (F minor / D# / C# / C progression)
-    const bassRoots = [43.65, 38.89, 34.65, 32.70]; // F1, Eb1, Db1, C1
-    const root = bassRoots[bar];
-    if (beatStep % 2 === 1 || beatStep % 4 === 2) {
-      const osc = this.ctx.createOscillator();
-      const filter = this.ctx.createBiquadFilter();
-      const gain = this.ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(root * (beatStep % 4 === 2 ? 2 : 1), t);
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(480, t);
-      filter.frequency.exponentialRampToValueAtTime(140, t + 0.12);
-      filter.Q.value = 4.5;
-      gain.gain.setValueAtTime(0.28, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
-      osc.connect(filter);
-      filter.connect(gain);
-      gain.connect(this.masterGain);
-      osc.start(t);
-      osc.stop(t + 0.16);
-    }
-
-    // Euphoric laser-trance arp lead
-    const arpNotes = [
-      [349.23, 415.30, 523.25, 622.25, 523.25, 415.30, 698.46, 523.25],
-      [311.13, 392.00, 466.16, 622.25, 466.16, 392.00, 622.25, 466.16],
-      [277.18, 349.23, 415.30, 554.37, 415.30, 349.23, 554.37, 415.30],
-      [261.63, 329.63, 392.00, 523.25, 659.25, 523.25, 392.00, 329.63],
-    ];
-    if (beatStep % 2 === 0) {
-      const note = arpNotes[bar][(beatStep / 2) % 8];
-      const osc1 = this.ctx.createOscillator();
-      const osc2 = this.ctx.createOscillator();
-      const filter = this.ctx.createBiquadFilter();
-      const gain = this.ctx.createGain();
-
-      osc1.type = 'sawtooth';
-      osc2.type = 'sawtooth';
-      osc1.frequency.setValueAtTime(note, t);
-      osc2.frequency.setValueAtTime(note * 1.005, t); // supersaw detune
-
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(2400 + (bar === 3 ? 1600 : 0), t);
-      filter.frequency.exponentialRampToValueAtTime(520, t + 0.18);
-
-      gain.gain.setValueAtTime(0.11, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.19);
-
-      osc1.connect(filter);
-      osc2.connect(filter);
-      filter.connect(gain);
-      gain.connect(this.masterGain);
-
-      osc1.start(t);
-      osc2.start(t);
-      osc1.stop(t + 0.2);
-      osc2.stop(t + 0.2);
-    }
-
-    this.synthStep++;
+  private finishDemo() {
+    this.playing = false;
+    this.heldStep = DEMO_TOTAL_STEPS;
+    this.beatPulse = 0;
+    this.releaseScore();
   }
 
   public async loadAudioFile(file: File): Promise<string> {
@@ -355,15 +319,22 @@ export class AudioEngine {
     }
     if (this.source === 'synth') {
       if (this.playing) {
+        this.heldStep = this.currentDemoStep();
         this.playing = false;
-        if (this.synthTimer !== null) {
-          window.clearInterval(this.synthTimer);
-          this.synthTimer = null;
-        }
+        this.beatPulse = 0;
+        this.stopPump();
+        // Suspending keeps sustained chords, delay tails and pre-scheduled attacks in place.
+        const suspended = this.ctx!.suspend().catch(() => {});
+        this.pendingSuspend = suspended;
+        void suspended.then(() => {
+          if (this.pendingSuspend === suspended) this.pendingSuspend = null;
+        });
+      } else if (this.heldStep >= DEMO_TOTAL_STEPS) {
+        this.startDemoSynth(this.bpm);
       } else {
-        this.ensureContext();
         this.playing = true;
-        this.restartSynthClock();
+        this.ensureContext();
+        this.startPump();
       }
       return this.playing;
     }

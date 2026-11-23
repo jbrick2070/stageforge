@@ -375,6 +375,21 @@ export class StageEngine {
     this.currentBump = bump;
   }
 
+  private orbitOffset = new THREE.Vector3();
+  private orbitAngles = new THREE.Spherical();
+
+  public orbitBy(horizontal: number, vertical: number) {
+    this.fitFohOnResize = false;
+    this.cameraLerpActive = false;
+    this.orbitAuto = false;
+    this.orbitOffset.subVectors(this.camera.position, this.controls.target);
+    this.orbitAngles.setFromVector3(this.orbitOffset);
+    this.orbitAngles.theta += horizontal;
+    this.orbitAngles.phi = THREE.MathUtils.clamp(this.orbitAngles.phi + vertical, 0.05, this.controls.maxPolarAngle);
+    this.camera.position.copy(this.controls.target).add(this.orbitOffset.setFromSpherical(this.orbitAngles));
+    this.controls.update();
+  }
+
   public setCameraPreset(preset: CameraPreset) {
     this.activeView = preset;
     this.fitFohOnResize = preset === 'foh';

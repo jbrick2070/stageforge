@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StageEngine } from './engine/StageEngine';
 import { AudioEngine } from './audio/AudioEngine';
-import { TopBar } from './components/TopBar';
+import { CAMERAS, TopBar } from './components/TopBar';
+import { ShowOverlay } from './components/ShowOverlay';
+import { useShowGamepad } from './input/useShowGamepad';
+import { applyDemoLighting } from './data/demoLighting';
+import { getDemoPosition } from './data/demoShow';
 import { BottomConsole } from './components/BottomConsole';
 import { RigBuilderDrawer } from './components/RigBuilderDrawer';
 import { DmxMonitorDrawer } from './components/DmxMonitorDrawer';
@@ -48,6 +52,12 @@ export const App: React.FC = () => {
   const [rig, setRig] = useState<RigConfig>(() => structuredClone(RIG_TEMPLATES.arena_mainstage));
   const [showState, setShowState] = useState<ShowState>(() => structuredClone(INITIAL_SHOW_STATE));
   const [bump, setBump] = useState<BumpState>(EMPTY_BUMP);
+  const [controllerBump, setControllerBump] = useState<BumpState>(EMPTY_BUMP);
+  const liveBump = useMemo(() => {
+    const result = { ...bump };
+    for (const key of Object.keys(controllerBump) as (keyof BumpState)[]) result[key] ||= controllerBump[key];
+    return result;
+  }, [bump, controllerBump]);
   const [cues, setCues] = useState<ShowCue[]>(() => structuredClone(SHOW_CUES));
   const [activeCueId, setActiveCueId] = useState<string | null>('cue-1');
 
@@ -74,6 +84,7 @@ export const App: React.FC = () => {
   cuesRef.current = cues;
   const autoCueIndexRef = useRef(0);
   const lastAutoSwitchRef = useRef(0);
+  const lastDemoTick = useRef(-1);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -86,11 +97,15 @@ export const App: React.FC = () => {
   }, [toast]);
 
   // Trigger a show cue cleanly preserving user's custom media/text/master
-  const triggerCue = useCallback((cue: ShowCue) => {
+  const triggerCue = useCallback((cue: ShowCue, automatic = false) => {
+    if (!automatic) autoDirRef.current = false;
     setActiveCueId(cue.id);
     setShowState((prev) => ({
       ...prev,
       ...cue.state,
+      autoDirector: automatic && prev.autoDirector,
+      bpm: prev.bpm,
+      masterDimmer: prev.masterDimmer,
       blackout: false,
       laser: cue.state.laser ? { ...prev.laser, ...cue.state.laser } : prev.laser,
       motors: cue.state.motors
@@ -134,14 +149,21 @@ export const App: React.FC = () => {
             u2: new Uint8Array(engine.dmxUniverse2),
           });
         }
-        // Auto Lighting Director (switches cues dynamically on musical phrases!)
-        if (autoDirRef.current) {
+        if (metrics.demo) {
+          const position = metrics.demo;
+          const tick = Math.floor(position.step / 2);
+          if (autoDirRef.current && (metrics.playing || position.finished) && tick !== lastDemoTick.current) {
+            lastDemoTick.current = tick;
+            setActiveCueId(null);
+            setShowState(s => s.autoDirector ? applyDemoLighting(s, position) : s);
+          }
+        } else if (autoDirRef.current) {
           const now = performance.now();
           const intervalMs = metrics.playing ? 7500 : 6500;
           if (now - lastAutoSwitchRef.current > intervalMs && (!metrics.playing || metrics.beat || now - lastAutoSwitchRef.current > intervalMs + 2000)) {
             lastAutoSwitchRef.current = now;
             autoCueIndexRef.current = (autoCueIndexRef.current + 1) % cuesRef.current.length;
-            triggerCue(cuesRef.current[autoCueIndexRef.current]);
+            triggerCue(cuesRef.current[autoCueIndexRef.current], true);
           }
         }
       }
@@ -171,8 +193,8 @@ export const App: React.FC = () => {
 
   // Sync momentary bump overrides
   useEffect(() => {
-    engineRef.current?.setBumpState(bump);
-  }, [bump]);
+    engineRef.current?.setBumpState(liveBump);
+  }, [liveBump]);
 
   // Rebuild 3D rig whenever user edits stage/trusses/fixtures/templates
   const firstRigMount = useRef(true);
@@ -286,7 +308,14 @@ export const App: React.FC = () => {
   const handleTogglePlay = () => {
     const ae = audioEngineRef.current;
     if (!ae) return;
+    const startShow = ae.getStatus().source === 'none' || audioMetrics.demo?.finished;
     const playing = ae.togglePlayPause();
+    if (startShow && playing && ae.getStatus().source === 'synth') {
+      autoDirRef.current = true;
+      lastDemoTick.current = -1;
+      setActiveCueId(null);
+      setShowState(s => applyDemoLighting({ ...s, autoDirector: true }, getDemoPosition(0)));
+    }
     showToast(playing ? `Playing: ${ae.getStatus().trackName}` : 'Audio Paused');
   };
 
@@ -356,10 +385,60 @@ export const App: React.FC = () => {
     return `${formatUSD(est.oneNightShowTotal)}/NT`;
   }, [rig]);
 
+  const toggleDirector = () => {
+    const next = !autoDirRef.current;
+    autoDirRef.current = next;
+    lastDemoTick.current = -1;
+    lastAutoSwitchRef.current = performance.now();
+    setShowState(s => ({ ...s, autoDirector: next }));
+    showToast(next ? 'Auto-LD on' : 'Manual lighting control');
+  };
+  const takeDesk = () => {
+    setActiveCueId(null);
+    autoDirRef.current = false;
+    setShowState(s => s.autoDirector ? { ...s, autoDirector: false } : s);
+  };
+  const controller = useShowGamepad({
+    command: action => {
+      switch (action) {
+        case 'play':
+          if (!audioMetrics.playing && navigator.userActivation && !navigator.userActivation.hasBeenActive) {
+            showToast('Click Play once to enable browser audio.');
+          } else handleTogglePlay();
+          break;
+        case 'prevCue':
+        case 'nextCue': {
+          const index = cues.findIndex(c => c.id === activeCueId);
+          const next = action === 'nextCue' ? index + 1 : (index < 0 ? 0 : index) - 1;
+          const cue = cues[(next + cues.length) % cues.length];
+          triggerCue(cue);
+          showToast(cue.name);
+          break;
+        }
+        case 'prevCamera':
+        case 'nextCamera': {
+          const index = CAMERAS.findIndex(c => c.id === activeCamera);
+          const next = (index + (action === 'nextCamera' ? 1 : -1) + CAMERAS.length) % CAMERAS.length;
+          handleCamera(CAMERAS[next].id);
+          break;
+        }
+        case 'masterUp':
+        case 'masterDown':
+          setShowState(s => ({ ...s, masterDimmer: Math.max(0, Math.min(1, s.masterDimmer + (action === 'masterUp' ? 0.05 : -0.05))) }));
+          break;
+        case 'auto': toggleDirector(); break;
+        case 'cinema': setCinemaMode(v => !v); break;
+      }
+    },
+    hold: (key, active) => setControllerBump(s => ({ ...s, [key]: active })),
+    orbit: (x, y) => engineRef.current?.orbitBy(x, y),
+  });
+
   return (
     <main data-cinema={cinemaMode} className="stage-workstation relative w-screen h-screen bg-[#040509] overflow-hidden">
       {/* Full-Viewport HQ 3D WebGL2 Canvas */}
       <div ref={viewportRef} className="stage-viewport w-full h-full cursor-grab active:cursor-grabbing" />
+      <ShowOverlay demo={audioMetrics.demo} controller={controller} cinema={cinemaMode} />
 
       {/* Top Transport, Audio, Cameras & Tools Bar */}
       <TopBar
@@ -389,13 +468,7 @@ export const App: React.FC = () => {
           setShowState((s) => ({ ...s, bpm: clamped }));
           audioEngineRef.current?.setBpm(clamped);
         }}
-        onToggleAutoDirector={() => {
-          setShowState((s) => {
-            const next = !s.autoDirector;
-            showToast(next ? 'Auto-LD Director ON — Sit back & enjoy the show!' : 'Auto-LD OFF — Manual FOH Control');
-            return { ...s, autoDirector: next };
-          });
-        }}
+        onToggleAutoDirector={toggleDirector}
         onToggleAudioReactive={() =>
           setShowState((s) => ({ ...s, audioReactive: !s.audioReactive }))
         }
@@ -454,31 +527,32 @@ export const App: React.FC = () => {
       {!cinemaMode && (
         <BottomConsole
           state={showState}
-          bump={bump}
+          bump={liveBump}
           rig={rig}
           cues={cues}
           activeCueId={activeCueId}
           onPatchState={(patch) => {
-            setActiveCueId(null);
+            if (Object.keys(patch).some(key => key !== 'masterDimmer' && key !== 'blackout')) takeDesk();
             setShowState((s) => ({ ...s, ...patch }));
           }}
           onPatchLaser={(patch) => {
-            setActiveCueId(null);
+            takeDesk();
             setShowState((s) => ({ ...s, laser: { ...s.laser, ...patch } }));
           }}
           onPatchMotors={(patch) => {
-            setActiveCueId(null);
+            takeDesk();
             setShowState((s) => ({ ...s, motors: { ...s.motors, ...patch } }));
           }}
           onPatchAtmo={(patch) => {
-            setActiveCueId(null);
+            takeDesk();
             setShowState((s) => ({ ...s, atmo: { ...s.atmo, ...patch } }));
           }}
           onPatchLed={(patch) => {
-            setActiveCueId(null);
+            takeDesk();
             setShowState((s) => ({ ...s, led: { ...s.led, ...patch } }));
           }}
           onSetPodMotor={(podId, height, tilt) => {
+            takeDesk();
             setShowState((s) => ({
               ...s,
               motors: {

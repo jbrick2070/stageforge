@@ -1,4 +1,5 @@
 import type { SpeakerProfileId } from '../data/speakerProfiles';
+import type { DemoPosition } from '../data/demoShow';
 
 export type VenueType = 'arena' | 'warehouse' | 'festival';
 
@@ -228,6 +229,7 @@ export interface ShowCue {
 }
 
 export interface AudioMetrics {
+  demo?: DemoPosition;
   playing: boolean;
   source: 'none' | 'synth' | 'file' | 'mic';
   trackName: string;

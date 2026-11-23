@@ -116,6 +116,23 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
 }
 .stage-viewport { grid-area: stage; position: relative; min-height: 0; min-width: 0; overflow: hidden; }
 .stage-viewport canvas { display: block; }
+.stage-show-hud { position: relative; grid-area: stage; z-index: 12; pointer-events: none; min-width: 0; min-height: 0; }
+.demo-progress, .controller-guide summary, .controller-card { background: #101418eb; color: #f2f4f4; border: 1px solid #41484c; border-radius: 5px; }
+.demo-progress { position: absolute; left: 12px; bottom: 10px; width: min(238px, 61%); padding: 8px 11px; font-size: 12px; }
+.demo-progress > div { display: flex; justify-content: space-between; gap: 6px; align-items: baseline; }
+.demo-progress span { color: #b4c1c2; font: 10px monospace; }
+.demo-progress progress { display: block; width: 100%; height: 3px; margin-top: 6px; border: none; accent-color: #99edd8; background: #343e40; }
+.demo-progress progress::-webkit-progress-bar { background: #343e40; }
+.demo-progress progress::-webkit-progress-value { background: #99edd8; }
+.controller-guide { position: absolute; bottom: 10px; right: 10px; pointer-events: auto; }
+.controller-guide summary { display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer; font-size: 11px; list-style: none; }
+.controller-guide summary::-webkit-details-marker { display: none; }
+.controller-guide summary[data-connected=true] { color: #99edd8; border-color: #568e80; }
+.controller-card { position: absolute; bottom: calc(100% + 5px); right: 0; width: min(280px,calc(100vw - 24px)); padding: 12px; font-size: 12px; max-height: min(55vh, 290px); overflow: auto; }
+.controller-card strong { font-size: 14px; }
+.controller-card p { color: #b9c8c7; margin: 3px 0 10px; }
+.controller-card dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: baseline; }
+.controller-card dt { font: 11px monospace; color: #99edd8; } .controller-card dd { margin: 0; }
 .stage-workstation[data-cinema="true"] { grid-template: "stage" minmax(0, 1fr) / minmax(0, 1fr); }
 .stage-transport, .stage-dock, .cinema-tools, .audio-popover { --mint: #99edd8; --line: #34383e; --muted: #a4a9b1; }
 .stage-transport {

@@ -34,7 +34,7 @@ interface TopBarProps {
   onToggleCinemaMode: () => void;
 }
 
-const CAMERAS: { id: CameraPreset; label: string }[] = [
+export const CAMERAS: { id: CameraPreset; label: string }[] = [
   { id: 'foh', label: 'Front of house' },
   { id: 'front_row', label: 'Front row' },
   { id: 'wide_arena', label: 'Wide arena' },
@@ -74,7 +74,8 @@ export const TopBar: React.FC<TopBarProps> = ({
     };
   }, [audioOpen]);
 
-  const playLabel = audio.playing ? 'Pause' : audio.source === 'file' ? 'Play track' : 'Play demo';
+  const playLabel = audio.playing ? 'Pause' : audio.demo?.finished ? 'Replay demo' :
+    audio.source === 'synth' ? 'Resume demo' : audio.source === 'file' ? 'Play track' : 'Play demo';
   const playButton = (
     <button type="button" className="transport-btn play-btn" onClick={onTogglePlay}>
       {audio.playing ? <Pause /> : <Play />} {playLabel}

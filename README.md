@@ -30,9 +30,9 @@ Open **Rig builder** and choose an arena, festival, warehouse or starter rig. Co
 
 ## Run a show
 
-1. Select **Play demo**, or open **Audio** to load a track or use a microphone. **Beat sync** connects show parameters to the audio.
+1. Select **Play demo** for a two-minute concert at 128 BPM. The walk-on introduces the hook, the first drop lands at 0:45, and the breakdown at 1:00 makes room for a second build. The finale arrives at 1:30 and resolves into a curtain call. Pause and resume preserve your position. **Replay demo** starts again from bar one. Open **Audio** to change tempo, load your own track or use a microphone.
 2. Select a pad in **Show cues**. Adjust the fixture palette, dimmer, haze, lasers or bloom. To save a look for this session, choose **Store cue** and then a destination pad.
-3. Use **Lighting**, **Lasers** and **Motors & FX** for individual controls, or enable **Auto-LD** to cycle through cues.
+3. **Auto-LD** follows the demo score from the first bar. Select a cue or edit a fixture to take over the lights while the music continues. Turn **Auto-LD** back on to rejoin the current phrase. The master dimmer, blackout, camera and momentary effects stay under your control.
 4. Open **DMX** to inspect simulated channel values and fixture patches in either 512-channel universe. **Cost & crew** shows an illustrative production estimate for the current rig.
 
 | Keyboard | Action |
@@ -44,6 +44,21 @@ Open **Rig builder** and choose an arena, festival, warehouse or starter rig. Co
 | 1–6 | Select show camera |
 | 7 | Inspect the PA up close |
 | H | Toggle cinema mode |
+
+## Xbox controller
+
+Connect a standard-mapped Xbox controller by USB or Bluetooth, focus the show, and press a button to connect. Open **Controller** on the stage for its connection status and bindings. If the browser asks for an audio gesture, click **Play demo** once.
+
+| Controller | Action |
+| --- | --- |
+| A | Play, pause, resume or replay |
+| D-pad left / right | Previous / next cue |
+| D-pad up / down | Raise / lower the master by 5 percentage points |
+| LB / RB | Previous / next camera |
+| Right stick | Orbit the camera |
+| B / X / Y | Hold blinders / laser hit / CO₂ |
+| LT / RT | Hold smoke / strobe |
+| View / Menu | Toggle Auto-LD / cinema mode |
 
 ## License
 
