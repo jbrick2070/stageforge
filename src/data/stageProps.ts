@@ -26,10 +26,14 @@ export function scenicPreset(venue: VenueType): StageProp[] {
       { ...createStageProp('arch', 'upstage-arch', 0, -2.8), scale: 1.12 },
     ];
   }
-  return [
-    createStageProp('marquee', 'tower-left', -6.35, 1.1),
-    createStageProp('marquee', 'tower-right', 6.35, 1.1),
-  ];
+  if (venue === 'warehouse') {
+    return [
+      createStageProp('marquee', 'tower-left', -6.35, 1.1),
+      createStageProp('marquee', 'tower-right', 6.35, 1.1),
+    ];
+  }
+  // Theatres and clubs start without scenery; the room itself is the look.
+  return [];
 }
 
 export function isStageProp(value: unknown): value is StageProp {

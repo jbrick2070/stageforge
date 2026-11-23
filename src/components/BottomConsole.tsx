@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Zap,
   Sparkles,
@@ -28,6 +28,7 @@ import {
   ShowState,
 } from '../types/show';
 import { COLOR_PALETTES } from '../data/presets';
+import { FOCUS_NUDGE_RANGE, focusMarks } from '../engine/focusAim';
 
 type ConsoleTab = 'show' | 'dmx' | 'laser' | 'motors_fx';
 
@@ -57,8 +58,12 @@ const MOVEMENT_MODES: { id: MovementMode; label: string }[] = [
   { id: 'flyout', label: 'Flyout' },
   { id: 'ballyhoo', label: 'Ballyhoo' },
   { id: 'crowd_scan', label: 'Crowd' },
-  { id: 'manual', label: 'Manual XY' },
+  { id: 'manual', label: 'Position' },
 ];
+
+// Free position ranges as rendered by StageEngine (radians at full fader travel).
+const FREE_PAN_DEG = Math.round((1.45 * 180) / Math.PI);
+const FREE_TILT_DEG = Math.round((1.15 * 180) / Math.PI);
 
 const LASER_PATTERNS: { id: LaserPattern; label: string; desc: string }[] = [
   { id: 'liquid_sky', label: 'Liquid Sky', desc: 'Rolling wave canopy' },
@@ -118,6 +123,8 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   onSetBump,
 }) => {
   const [tab, setTab] = useState<ConsoleTab>('show');
+  const marks = useMemo(() => focusMarks(rig), [rig]);
+  const focusMark = marks.find((m) => m.id === state.focusMarkId);
   const [collapsed, setCollapsed] = useState(() => window.matchMedia('(max-height: 500px)').matches);
   const [storeMode, setStoreMode] = useState(false);
   const mediaInputRef = useRef<HTMLInputElement>(null);
@@ -322,21 +329,48 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
 
                   {/* Manual Pan/Tilt OR Custom Dual Color Pickers */}
                   {state.movementMode === 'manual' ? (
-                    <div className="grid grid-cols-2 gap-2 bg-black/40 p-2 rounded-lg border border-white/10">
-                      <InlineSlider
-                        label="PAN"
-                        value={(state.manualPan + 1) / 2}
-                        display={`${Math.round(state.manualPan * 180)}°`}
-                        onChange={(v) => onPatchState({ manualPan: v * 2 - 1 })}
-                        color="#a855f7"
-                      />
-                      <InlineSlider
-                        label="TILT"
-                        value={(state.manualTilt + 1) / 2}
-                        display={`${Math.round(state.manualTilt * 110)}°`}
-                        onChange={(v) => onPatchState({ manualTilt: v * 2 - 1 })}
-                        color="#a855f7"
-                      />
+                    <div className="flex flex-col gap-1.5 bg-black/40 p-2 rounded-lg border border-white/10">
+                      <div role="group" aria-label="Focus point" className="flex items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none]">
+                        <span className="shrink-0 font-mono-tech text-[9px] tracking-widest text-zinc-500 mr-0.5">FOCUS</span>
+                        {[{ id: null, name: 'Free' }, ...marks].map((m) => {
+                          const active = (focusMark?.id ?? null) === m.id;
+                          return (
+                            <button
+                              key={m.id ?? 'free'}
+                              aria-pressed={active}
+                              title={m.id ? `Converge every moving head on ${m.name}` : 'Raw pan/tilt for the whole rig'}
+                              onClick={() => onPatchState({ focusMarkId: m.id, manualPan: 0, manualTilt: m.id ? 0 : 0.2 })}
+                              className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-mono-tech border cursor-pointer truncate max-w-[7.5rem] ${
+                                active
+                                  ? 'bg-purple-500/30 border-purple-400 text-purple-100'
+                                  : 'bg-black/40 border-white/10 text-zinc-400 hover:text-white'
+                              }`}
+                            >
+                              {m.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <InlineSlider
+                          label={focusMark ? 'OFFSET X' : 'PAN'}
+                          value={(state.manualPan + 1) / 2}
+                          display={focusMark
+                            ? `${(state.manualPan * FOCUS_NUDGE_RANGE).toFixed(1)} m`
+                            : `${Math.round(state.manualPan * FREE_PAN_DEG)}°`}
+                          onChange={(v) => onPatchState({ manualPan: v * 2 - 1 })}
+                          color="#a855f7"
+                        />
+                        <InlineSlider
+                          label={focusMark ? 'OFFSET Z' : 'TILT'}
+                          value={(state.manualTilt + 1) / 2}
+                          display={focusMark
+                            ? `${(state.manualTilt * FOCUS_NUDGE_RANGE).toFixed(1)} m`
+                            : `${Math.round(state.manualTilt * FREE_TILT_DEG)}°`}
+                          onChange={(v) => onPatchState({ manualTilt: v * 2 - 1 })}
+                          color="#a855f7"
+                        />
+                      </div>
                     </div>
                   ) : (
                     <div className="flex items-center justify-between bg-black/40 px-2.5 py-1.5 rounded-lg border border-white/10">

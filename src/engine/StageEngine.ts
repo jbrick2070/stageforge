@@ -37,7 +37,9 @@ import {
   createMonitorWedge,
   createSubwoofer,
   createSharedMaterials,
+  type VenueRoom,
 } from './geometryBuilders';
+import { FocusMark, HEAD_OFFSET, YOKE_OFFSET, aimAngles, focusMarks, focusPoint } from './focusAim';
 import { buildDmxPatch } from '../data/dmxPatch';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import { AtmosphericParticles } from './ParticleSystem';
@@ -158,6 +160,9 @@ export class StageEngine {
 
   // Dynamic rig root so rebuilding templates is clean & leak-free
   private rigGroup = new THREE.Group();
+  private focusWorld = new THREE.Vector3();
+  private focusLocal = new THREE.Vector3();
+  private focusMarkCache?: { rig: RigConfig; marks: FocusMark[] };
   private particles: AtmosphericParticles;
 
   // Dynamic scene references
@@ -170,7 +175,10 @@ export class StageEngine {
   private atmosphereDmx: (DmxOutput & { type: 'hazer' | 'smoke' | 'co2' })[] = [];
   private djStripMat: THREE.MeshBasicMaterial | null = null;
   private crowdMesh: THREE.InstancedMesh | null = null;
-  private crowdBaseTransforms: { x: number; z: number; scaleY: number; phase: number; rotY: number }[] = [];
+  private crowdBaseTransforms: { x: number; y: number; z: number; scaleY: number; phase: number; rotY: number }[] = [];
+  private crowdSeated = false;
+  /** Interior of a small room (theatre, club); null for arena/warehouse/festival framing. */
+  private room: VenueRoom | null = null;
   private crowdDummy = new THREE.Object3D();
 
   // LED Wall
@@ -422,6 +430,27 @@ export class StageEngine {
     this.currentBump = bump;
   }
 
+  /** Focus points follow the stage plan, so they are re-derived whenever the design changes. */
+  private getFocusMarks(): FocusMark[] {
+    const rig = this.currentRig;
+    if (!rig) return [];
+    if (this.focusMarkCache?.rig !== rig) this.focusMarkCache = { rig, marks: focusMarks(rig) };
+    return this.focusMarkCache.marks;
+  }
+
+  /** Test probe: each moving head's beam axis in world space (origin at the tilt pivot). */
+  public beamAxes() {
+    const origin = new THREE.Vector3(),
+      tip = new THREE.Vector3();
+    return this.movingFixtures.map((fx) => {
+      fx.head.updateWorldMatrix(true, false);
+      fx.head.getWorldPosition(origin);
+      tip.set(0, fx.isFloor ? 1 : -1, 0).applyMatrix4(fx.head.matrixWorld);
+      const dir = tip.sub(origin).normalize();
+      return { origin: origin.toArray(), dir: dir.toArray(), isFloor: fx.isFloor };
+    });
+  }
+
   public releaseDirector(crossfade: boolean) {
     this.manualFadeStart = crossfade && this.directedStep !== undefined && this.directedStep < 384
       ? this.elapsed : undefined;
@@ -453,11 +482,14 @@ export class StageEngine {
       case 'foh':
         {
           const rig = this.currentRig;
-          const rearLimit = rig?.venue === 'warehouse' ? 32 : rig?.venue === 'arena' ? 45 : 60;
+          const room = this.room;
+          // Keep the eye inside the room: in front of the rear wall and under the ceiling.
+          const rearLimit = room ? room.rearZ - 1.5 : rig?.venue === 'warehouse' ? 32 : rig?.venue === 'arena' ? 45 : 60;
+          const eyeCeiling = room ? room.ceilingY : this.roofY;
           if (rig && (rig.platforms !== undefined || rig.trussPods.some(pod => pod.shape === 'path'))) {
             // The first rig child is the venue shell. Remaining children are stage equipment.
             const subjects = [...this.rigGroup.children.slice(1), ...Array.from(this.scenicPieces.values(), p => p.root)];
-            const frame = fitAuthoredFoh(subjects, this.ledWallMats, this.camera.aspect, this.roofY, rearLimit, CAMERA_FOV);
+            const frame = fitAuthoredFoh(subjects, this.ledWallMats, this.camera.aspect, eyeCeiling, rearLimit, CAMERA_FOV);
             this.cameraTargetPos.copy(frame.position);
             this.cameraTargetLook.copy(frame.target);
             this.controls.maxDistance = Math.max(68, frame.distance * 1.2);
@@ -475,26 +507,48 @@ export class StageEngine {
           const screenWidth = wall?.enabled ? wall.width + (wall.sideWings ? 2 * (LED_WING_WIDTH + LED_WING_GAP) : 0) : 0;
           const width = Math.max((this.currentRig?.stageWidth ?? 22) + 8, screenWidth + 1);
           const halfAngle = Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV / 2));
-          const desiredZ = Math.max(25, 1 + width / (2 * halfAngle * this.camera.aspect));
+          const stageFront = (this.currentRig?.stageDepth ?? 11) / 2;
+          const fitZ = 1 + width / (2 * halfAngle * this.camera.aspect);
+          // Arenas frame from at least 25 m; a small room frames the stage from a mix-position distance.
+          const desiredZ = room
+            ? Math.max(stageFront + 8, fitZ, stageFront + 0.6 * (room.rearZ - stageFront))
+            : Math.max(25, fitZ);
           // Keep FOH under the roof (rear edge at z=35 in the warehouse, 51 in the arena).
           const z = Math.min(desiredZ, rearLimit);
-          const stageFront = (this.currentRig?.stageDepth ?? 11) / 2;
           fov = THREE.MathUtils.radToDeg(2 * Math.atan(halfAngle * (desiredZ - stageFront) / (z - stageFront)));
-          this.cameraTargetPos.set(3.8, 6.6, z);
-          this.cameraTargetLook.set(0, 5.8, -0.6);
+          if (room) {
+            // Mid-house (theatre) or just ahead of the mix position (club), at audience eye height.
+            // Aim a little down so the nearest heads sit along the bottom of the frame.
+            this.cameraTargetPos.set(1.2, Math.min(6.6, room.ceilingY * 0.45 + 1), z);
+            this.cameraTargetLook.set(0, (rig?.stageHeight ?? 1) + room.ceilingY * 0.15, -0.6);
+          } else {
+            this.cameraTargetPos.set(3.8, 6.6, z);
+            this.cameraTargetLook.set(0, 5.8, -0.6);
+          }
         }
         break;
       case 'front_row':
         this.cameraTargetPos.set(0, 2.5, 11.4);
-        this.cameraTargetLook.set(0, 6.2, -2.5);
+        this.cameraTargetLook.set(0, this.room ? Math.min(6.2, this.room.ceilingY * 0.55) : 6.2, -2.5);
         break;
       case 'wide_arena':
-        this.cameraTargetPos.set(22, 12.8, 30.5);
-        this.cameraTargetLook.set(0, 5.2, 0);
+        if (this.room) {
+          this.cameraTargetPos.set(this.room.halfWidth * 0.75, this.room.ceilingY * 0.82, this.room.rearZ - 1.2);
+          this.cameraTargetLook.set(0, this.room.ceilingY * 0.35, 0);
+        } else {
+          this.cameraTargetPos.set(22, 12.8, 30.5);
+          this.cameraTargetLook.set(0, 5.2, 0);
+        }
         break;
       case 'stage_side':
-        this.cameraTargetPos.set(-14.5, 4.6, 5.5);
-        this.cameraTargetLook.set(2.5, 5.5, 3.5);
+        if (this.room) {
+          const x = -Math.min(14.5, this.room.halfWidth - 0.8);
+          this.cameraTargetPos.set(x, Math.min(4.6, this.room.ceilingY - 0.8), 5.5);
+          this.cameraTargetLook.set(2.5, Math.min(5.5, this.room.ceilingY * 0.55), 3.5);
+        } else {
+          this.cameraTargetPos.set(-14.5, 4.6, 5.5);
+          this.cameraTargetLook.set(2.5, 5.5, 3.5);
+        }
         break;
       case 'pa_closeup': {
         const rig = this.currentRig;
@@ -517,11 +571,16 @@ export class StageEngine {
         break;
       }
       case 'overhead':
-        this.cameraTargetPos.set(0.5, 22.0, 20.0);
-        this.cameraTargetLook.set(0, 3.8, 0);
+        if (this.room) {
+          this.cameraTargetPos.set(0.5, this.room.ceilingY - 0.5, this.room.rearZ * 0.55);
+          this.cameraTargetLook.set(0, 1.0, 0);
+        } else {
+          this.cameraTargetPos.set(0.5, 22.0, 20.0);
+          this.cameraTargetLook.set(0, 3.8, 0);
+        }
         break;
       case 'orbit':
-        this.cameraTargetLook.set(0, 5.6, 0);
+        this.cameraTargetLook.set(0, this.room ? Math.min(5.6, this.room.ceilingY * 0.45) : 5.6, 0);
         break;
     }
     if (this.camera.fov !== fov) {
@@ -686,11 +745,14 @@ export class StageEngine {
     this.djStripMat = null;
 
     // 1. Venue architecture + animated arena crowd
-    const venueBuild = buildVenueArchitecture(rig.venue, rig.audioRig.crowdDensity, this.mats, rig.stageWidth, rig.stageDepth);
+    const venueBuild = buildVenueArchitecture(rig.venue, rig.audioRig.crowdDensity, this.mats, rig.stageWidth,
+      rig.stageDepth, rig.stageHeight);
     this.rigGroup.add(venueBuild.group);
     this.houseColors = venueBuild.practicals.map(material => ({ color: material.color, full: material.color.clone() }));
     this.crowdMesh = venueBuild.crowdMesh;
     this.crowdBaseTransforms = venueBuild.crowdBaseTransforms;
+    this.crowdSeated = venueBuild.seated;
+    this.room = venueBuild.room;
     this.roofY = venueBuild.roofY;
     this.sideFills.forEach((light, i) => {
       const x = (i === 0 ? -1 : 1) * (rig.stageWidth / 2 + 1.35);
@@ -1088,7 +1150,7 @@ export class StageEngine {
 
     // Pan Yoke
     const yoke = new THREE.Group();
-    yoke.position.y = dir * 0.18;
+    yoke.position.y = dir * YOKE_OFFSET;
     root.add(yoke);
 
     const armH = 0.32;
@@ -1101,7 +1163,7 @@ export class StageEngine {
 
     // Tilt Head
     const head = new THREE.Group();
-    head.position.y = dir * (armH - 0.04);
+    head.position.y = dir * HEAD_OFFSET;
     yoke.add(head);
 
     const headR = type === 'wash' ? 0.16 : 0.13;
@@ -1523,6 +1585,12 @@ export class StageEngine {
     const moveSpd = 0.35 + s.movementSpeed * 3.1;
     const spread = 0.25 + s.movementSpread * 1.15;
 
+    // Aim mode: every head solves its own pan/tilt onto a named place on the stage plan.
+    const focus = s.movementMode === 'manual'
+      ? focusPoint(this.getFocusMarks(), s.focusMarkId, s.manualPan, s.manualTilt)
+      : null;
+    if (focus) this.focusWorld.set(focus.x, focus.y, focus.z);
+
     this.beamPools?.begin();
     for (const fx of this.movingFixtures) {
       const i = fx.index;
@@ -1532,6 +1600,11 @@ export class StageEngine {
       let targetPan = 0;
       let targetTilt = 0.28;
 
+      if (focus) {
+        fx.root.updateWorldMatrix(true, false);
+        const local = fx.root.worldToLocal(this.focusLocal.copy(this.focusWorld));
+        ({ pan: targetPan, tilt: targetTilt } = aimAngles(local, fx.isFloor, fx.currentPan, fx.currentTilt));
+      } else {
       switch (s.movementMode) {
         case 'manual':
           targetPan = s.manualPan * 1.45;
@@ -1580,6 +1653,7 @@ export class StageEngine {
       } else {
         if (!fx.isFloor) targetTilt = -targetTilt;
         else if (s.movementMode !== 'manual') targetTilt = Math.abs(targetTilt) * 0.65 + 0.15;
+      }
       }
 
       const moveFraction = Math.min(1, dt * 8);
@@ -1800,12 +1874,14 @@ export class StageEngine {
 
     // 8. Animated Silhouetted Arena Crowd Bounce!
     if (this.crowdMesh && this.crowdBaseTransforms.length > 0) {
-      const bounceAmp = (s.audioReactive && audio.playing ? 0.06 + audio.bass * 0.16 : 0.045) * (0.5 + master * 0.5);
+      // A seated house sways rather than jumps.
+      const bounceAmp = (s.audioReactive && audio.playing ? 0.06 + audio.bass * 0.16 : 0.045) * (0.5 + master * 0.5)
+        * (this.crowdSeated ? 0.12 : 1);
       const bounceFreq = (s.bpm / 60) * Math.PI * 2;
       for (let i = 0; i < this.crowdBaseTransforms.length; i++) {
         const c = this.crowdBaseTransforms[i];
         const hop = Math.abs(Math.sin(t * bounceFreq * 0.5 + c.phase)) * bounceAmp;
-        this.crowdDummy.position.set(c.x, hop, c.z);
+        this.crowdDummy.position.set(c.x, c.y + hop, c.z);
         this.crowdDummy.scale.set(1, c.scaleY + hop * 0.25, 1);
         this.crowdDummy.rotation.set(0, c.rotY, Math.sin(t * 2.2 + c.phase) * 0.05);
         this.crowdDummy.updateMatrix();
@@ -1830,11 +1906,15 @@ export class StageEngine {
 
     // 10. Camera Smooth Transitions & Arena Drone Orbit
     if (this.orbitAuto) {
-      const radius = 29;
+      // Small rooms orbit inside their walls and under the ceiling.
+      const room = this.room;
+      const radius = room ? Math.max(3, room.halfWidth - 1.2) : 29;
       const angle = t * 0.16;
       this.camera.position.x = Math.sin(angle) * radius;
       this.camera.position.z = Math.cos(angle) * radius * 0.72 + 12;
-      this.camera.position.y = 7.5 + Math.sin(t * 0.28) * 3.4;
+      this.camera.position.y = room
+        ? room.ceilingY * 0.6 + Math.sin(t * 0.28) * room.ceilingY * 0.15
+        : 7.5 + Math.sin(t * 0.28) * 3.4;
       this.controls.target.lerp(this.cameraTargetLook, dt * 3);
     } else if (this.cameraLerpActive) {
       this.camera.position.lerp(this.cameraTargetPos, Math.min(1, dt * 4.5));

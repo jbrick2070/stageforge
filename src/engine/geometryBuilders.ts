@@ -940,30 +940,291 @@ function crowdGeometry() {
   return geometry;
 }
 
+/** Interior bounds of a small room, so cameras stay inside its walls and under its ceiling. */
+export interface VenueRoom {
+  halfWidth: number;
+  rearZ: number;
+  ceilingY: number;
+}
+
+interface SeatSlot {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** Hoist/fly grid height: the steel the rig hangs from. */
+const VENUE_ROOF: Record<VenueType, number> = {
+  arena: 15.8,
+  warehouse: 11.2,
+  festival: 16.5,
+  theatre: 17, // fly-tower grid above the stage house
+  club: 5.2, // structural soffit of a low-ceiling room
+};
+
+/** Velour hung in soft pleats; faces the audience (+Z). */
+function pleatedDrape(width: number, height: number, material: THREE.Material, depth = 0.1) {
+  const geometry = new THREE.PlaneGeometry(width, height, Math.max(8, Math.round(width * 6)), 1);
+  const folds = geometry.getAttribute('position');
+  for (let i = 0; i < folds.count; i++) {
+    const x = folds.getX(i);
+    folds.setZ(i, Math.cos(x * 5.0 + 0.2 * Math.sin(x * 1.4)) * depth);
+  }
+  geometry.computeVertexNormals();
+  return new THREE.Mesh(geometry, material);
+}
+
 /**
- * Venue architecture (Arena / Warehouse / Festival) + Instanced Animated Crowd
+ * A ~350-seat proscenium house: apron, proscenium arch with gathered house tabs, a fly tower,
+ * black legs and borders masking the wings, a cyclorama, an orchestra-pit rail and a raked stalls.
+ */
+function buildTheatreHouse(
+  group: THREE.Group,
+  mats: SharedMaterials,
+  practicals: THREE.MeshBasicMaterial[],
+  houseLamp: THREE.MeshBasicMaterial,
+  stageWidth: number,
+  stageDepth: number,
+  stageHeight: number,
+  roofY: number,
+): { room: VenueRoom; seats: SeatSlot[] } {
+  const front = stageDepth / 2;
+  const prosZ = front - 1.5; // 1.5 m apron (forestage) in front of the proscenium line
+  const openW = Math.max(8, stageWidth - 1.2);
+  const openH = 7.6;
+  const houseCeiling = 10.5;
+  const houseW = Math.max(18, openW + 8);
+  const stageHouseW = Math.max(openW + 9, stageWidth + 3); // wing space either side
+  const backZ = -stageDepth / 2 - 1.2;
+
+  const plaster = new THREE.MeshStandardMaterial({ color: 0x2b2627, roughness: 0.92 });
+  const velour = new THREE.MeshStandardMaterial({ color: 0x131115, roughness: 0.98 });
+  const houseRed = new THREE.MeshStandardMaterial({ color: 0x5e121b, roughness: 0.95 });
+  const trim = new THREE.MeshStandardMaterial({ color: 0x6d5734, roughness: 0.55, metalness: 0.35 });
+  const cyclorama = new THREE.MeshStandardMaterial({ color: 0xc4c7ce, roughness: 1 });
+  const seatMat = new THREE.MeshStandardMaterial({ color: 0x4b1a21, roughness: 0.9 });
+  const tierMat = new THREE.MeshStandardMaterial({ color: 0x241c1e, roughness: 0.95 });
+
+  // Proscenium wall, gilded arch trim, and the fly tower above the house ceiling.
+  const sideW = (houseW - openW) / 2;
+  for (const s of [-1, 1]) {
+    addBox(group, plaster, s * (openW / 2 + sideW / 2), houseCeiling / 2, prosZ, sideW, houseCeiling, 0.8);
+    addBox(group, trim, s * (openW / 2 + 0.14), openH / 2, prosZ + 0.43, 0.28, openH, 0.08);
+  }
+  addBox(group, plaster, 0, (openH + houseCeiling) / 2, prosZ, openW, houseCeiling - openH, 0.8);
+  addBox(group, trim, 0, openH + 0.14, prosZ + 0.43, openW + 0.56, 0.28, 0.08);
+  addBox(group, plaster, 0, (houseCeiling + roofY + 1) / 2, prosZ, stageHouseW, roofY + 1 - houseCeiling, 0.8);
+
+  // House tabs flown out and gathered at the sides, under a matching valance.
+  for (const s of [-1, 1]) {
+    const tab = pleatedDrape(1.4, openH, houseRed, 0.12);
+    tab.position.set(s * (openW / 2 - 0.7), openH / 2, prosZ - 0.5);
+    group.add(tab);
+  }
+  const valance = pleatedDrape(openW, 1.0, houseRed, 0.06);
+  valance.position.set(0, openH - 0.5, prosZ - 0.42);
+  group.add(valance);
+
+  // Stage house walls and the fly grid the electrics hang from.
+  const towerH = roofY + 1;
+  for (const s of [-1, 1]) {
+    addBox(group, plaster, s * (stageHouseW / 2), towerH / 2, (prosZ + backZ) / 2, 0.6, towerH, prosZ - backZ);
+  }
+  addBox(group, plaster, 0, towerH / 2, backZ, stageHouseW, towerH, 0.6);
+  for (let z = backZ + 0.6; z < prosZ - 0.4; z += 0.6) {
+    addBox(group, mats.darkSteel, 0, roofY, z, stageHouseW - 0.8, 0.1, 0.1);
+  }
+
+  // Black legs and borders mask the wings and the flies between the electrics.
+  for (let z = prosZ - 2.2; z > -stageDepth / 2 + 1.2; z -= 2.6) {
+    for (const s of [-1, 1]) {
+      const leg = pleatedDrape(1.8, openH + 1.4, velour, 0.08);
+      leg.position.set(s * (openW / 2 + 0.6), (openH + 1.4) / 2, z);
+      group.add(leg);
+    }
+    const border = pleatedDrape(openW + 3, 1.6, velour, 0.05);
+    border.position.set(0, openH + 1.2, z - 0.25);
+    group.add(border);
+  }
+
+  // Cyclorama with a black ground row along its base.
+  const cycZ = -stageDepth / 2 + 0.45;
+  const cyc = new THREE.Mesh(new THREE.PlaneGeometry(openW + 3, 9.5), cyclorama);
+  cyc.position.set(0, stageHeight + 4.75, cycZ);
+  group.add(cyc);
+  addBox(group, velour, 0, stageHeight + 0.25, cycZ + 0.6, openW + 3, 0.5, 0.1);
+
+  // Orchestra-pit rail, then a raked stalls split by two aisles into three banks.
+  addBox(group, plaster, 0, 0.5, front + 2.1, houseW - 2, 1.0, 0.25);
+  const rows = 14,
+    pitch = 0.95,
+    rise = 0.17,
+    firstZ = front + 3.2,
+    seatW = 0.52;
+  const halfUsable = houseW / 2 - 1.3; // side aisles along the walls
+  const aisleX = halfUsable * 0.38;
+  const seats: SeatSlot[] = [];
+  for (let r = 0; r < rows; r++) {
+    const y = r * rise,
+      z = firstZ + r * pitch;
+    if (y > 0) addBox(group, tierMat, 0, y / 2, z, houseW - 0.6, y, pitch);
+    for (let x = -halfUsable + seatW / 2; x <= halfUsable - seatW / 2 + 1e-6; x += seatW) {
+      if (Math.abs(Math.abs(x) - aisleX) < 0.6) continue;
+      addBox(group, seatMat, x, y + 0.42, z, seatW - 0.05, 0.1, 0.46);
+      addBox(group, seatMat, x, y + 0.72, z + 0.26, seatW - 0.05, 0.6, 0.08);
+      seats.push({ x, y, z: z + 0.05 });
+    }
+    for (const s of [-1, 1]) addBox(group, houseLamp, s * aisleX, y + 0.06, z - 0.42, 0.06, 0.03, 0.06);
+  }
+
+  // House shell: side walls with sconces, rear wall with the control-booth window, ceiling.
+  const rearZ = firstZ + rows * pitch + 2.0;
+  for (const s of [-1, 1]) {
+    addBox(group, plaster, s * (houseW / 2), houseCeiling / 2, (prosZ + rearZ) / 2, 0.6, houseCeiling, rearZ - prosZ);
+    for (let z = prosZ + 3; z < rearZ - 1.5; z += 3.5) {
+      addBox(group, houseLamp, s * (houseW / 2 - 0.32), 3.4, z, 0.06, 0.35, 0.22);
+    }
+    // FOH box-boom pipes on the side walls.
+    addBox(group, mats.darkSteel, s * (houseW / 2 - 0.6), 4.2, prosZ + 2.6, 0.06, 5.5, 0.06);
+  }
+  addBox(group, plaster, 0, houseCeiling / 2, rearZ, houseW, houseCeiling, 0.6);
+  const boothGlass = new THREE.MeshBasicMaterial({ color: 0x1d3550 });
+  practicals.push(boothGlass);
+  addBox(group, boothGlass, 0, 4.6, rearZ - 0.32, 4, 0.9, 0.04);
+  const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(houseW, rearZ - prosZ), plaster);
+  ceiling.rotation.x = Math.PI / 2;
+  ceiling.position.set(0, houseCeiling, (prosZ + rearZ) / 2);
+  group.add(ceiling);
+
+  // Exit signs stay lit through blackouts.
+  const exitSign = new THREE.MeshBasicMaterial({ color: 0x2bd46b });
+  for (const s of [-1, 1]) {
+    addBox(group, exitSign, s * (houseW / 2 - 1.6), 2.6, rearZ - 0.33, 0.6, 0.22, 0.04);
+    addBox(group, exitSign, s * (houseW / 2 - 0.33), 2.6, prosZ + 1.6, 0.04, 0.22, 0.6);
+  }
+
+  return { room: { halfWidth: houseW / 2, rearZ, ceilingY: houseCeiling }, seats };
+}
+
+/**
+ * A ~300-capacity club: black box room under a low soffit with unistrut and ductwork,
+ * a back bar along one wall, a front-of-house mix riser and a standing floor.
+ */
+function buildClubRoom(
+  group: THREE.Group,
+  mats: SharedMaterials,
+  practicals: THREE.MeshBasicMaterial[],
+  stageWidth: number,
+  stageDepth: number,
+  roofY: number,
+): { room: VenueRoom; floor: { minX: number; maxX: number; minZ: number; maxZ: number } } {
+  const front = stageDepth / 2;
+  const halfW = Math.max(7.5, stageWidth / 2 + 4.5);
+  const backZ = -stageDepth / 2 - 0.9;
+  const rearZ = front + 19;
+  const wallH = roofY + 0.4;
+
+  const paint = new THREE.MeshStandardMaterial({ color: 0x17181c, roughness: 0.9 });
+  const velour = new THREE.MeshStandardMaterial({ color: 0x111014, roughness: 0.98 });
+  const galvanised = new THREE.MeshStandardMaterial({ color: 0x5d6168, roughness: 0.45, metalness: 0.6 });
+  const barWood = new THREE.MeshStandardMaterial({ color: 0x2e211a, roughness: 0.7 });
+  const barTop = new THREE.MeshStandardMaterial({ color: 0x0f0f11, roughness: 0.3 });
+
+  for (const s of [-1, 1]) addBox(group, paint, s * halfW, wallH / 2, (backZ + rearZ) / 2, 0.4, wallH, rearZ - backZ);
+  addBox(group, paint, 0, wallH / 2, backZ, 2 * halfW, wallH, 0.4);
+  addBox(group, paint, 0, wallH / 2, rearZ, 2 * halfW, wallH, 0.4);
+  const soffit = new THREE.Mesh(new THREE.PlaneGeometry(2 * halfW, rearZ - backZ), paint);
+  soffit.rotation.x = Math.PI / 2;
+  soffit.position.set(0, roofY + 0.35, (backZ + rearZ) / 2);
+  group.add(soffit);
+
+  // Unistrut grid and two runs of spiral duct under the soffit.
+  for (let x = -halfW + 1; x <= halfW - 1; x += 2) {
+    addBox(group, mats.darkSteel, x, roofY - 0.02, (backZ + rearZ) / 2, 0.04, 0.04, rearZ - backZ - 1);
+  }
+  for (let z = backZ + 1.5; z < rearZ - 1; z += 3) addBox(group, mats.darkSteel, 0, roofY - 0.06, z, 2 * halfW - 1, 0.04, 0.04);
+  for (const s of [-1, 1]) {
+    const duct = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, rearZ - backZ - 2, 14, 1), galvanised);
+    duct.rotation.x = Math.PI / 2;
+    duct.position.set(s * (halfW - 1.4), roofY - 0.1, (backZ + rearZ) / 2);
+    group.add(duct);
+  }
+
+  // Black velour upstage of the deck.
+  const drape = pleatedDrape(2 * halfW - 0.8, roofY, velour, 0.1);
+  drape.position.set(0, roofY / 2, backZ + 0.35);
+  group.add(drape);
+
+  // Back bar along the house-right wall: counter with LED lip, backlit shelves, neon.
+  const barX = -halfW + 1.35,
+    barZ = front + 10;
+  addBox(group, barWood, barX, 0.55, barZ, 0.7, 1.1, 8);
+  addBox(group, barTop, barX, 1.12, barZ, 0.8, 0.05, 8.1);
+  const barGlow = new THREE.MeshBasicMaterial({ color: 0xff8a3d });
+  const bottleGlow = new THREE.MeshBasicMaterial({ color: 0x7fb6c4 });
+  practicals.push(barGlow, bottleGlow);
+  addBox(group, barGlow, barX + 0.37, 1.0, barZ, 0.03, 0.05, 8);
+  for (let level = 0; level < 3; level++) {
+    addBox(group, barTop, -halfW + 0.42, 1.3 + level * 0.45, barZ, 0.3, 0.035, 7);
+    for (let k = 0; k < 14; k++) {
+      addBox(group, bottleGlow, -halfW + 0.42, 1.43 + level * 0.45, barZ - 3.25 + k * 0.5, 0.07, 0.22, 0.07);
+    }
+  }
+  const neon = new THREE.MeshBasicMaterial({ color: 0xff3aa8 });
+  const neonX = -halfW + 0.3;
+  addBox(group, neon, neonX, 3.5, barZ, 0.03, 0.04, 3.0);
+  addBox(group, neon, neonX, 2.7, barZ, 0.03, 0.04, 3.0);
+  for (const dz of [-1.5, 1.5]) addBox(group, neon, neonX, 3.1, barZ + dz, 0.03, 0.8, 0.04);
+
+  // Front-of-house mix position on a low riser with a rail.
+  const fohZ = front + 13.6;
+  addBox(group, paint, 0, 0.2, fohZ + 0.4, 3.2, 0.4, 2.2);
+  addBox(group, barWood, 0, 0.85, fohZ, 2.2, 0.9, 0.8);
+  const consoleGlow = new THREE.MeshBasicMaterial({ color: 0x3d7bd9 });
+  practicals.push(consoleGlow);
+  addBox(group, consoleGlow, 0, 1.31, fohZ, 1.9, 0.02, 0.5);
+  addBox(group, mats.darkSteel, 0, 1.2, fohZ - 0.75, 3.2, 0.05, 0.05);
+
+  for (const s of [-1, 1]) addBox(group, paint, s * (halfW - 2.6), roofY / 2, front + 7, 0.5, roofY, 0.5);
+  const exitSign = new THREE.MeshBasicMaterial({ color: 0x2bd46b });
+  for (const s of [-1, 1]) addBox(group, exitSign, s * (halfW - 1.4), 2.4, rearZ - 0.23, 0.6, 0.22, 0.04);
+
+  return {
+    room: { halfWidth: halfW, rearZ, ceilingY: roofY },
+    floor: { minX: -halfW + 2.4, maxX: halfW - 1.0, minZ: front + 0.9, maxZ: front + 12.2 },
+  };
+}
+
+/**
+ * Venue architecture (Arena / Warehouse / Festival / Theatre / Club) + Instanced Animated Crowd
  */
 export function buildVenueArchitecture(
   venue: VenueType,
   crowdDensity: number,
   mats: SharedMaterials,
   stageWidth = 22,
-  stageDepth = 11
+  stageDepth = 11,
+  stageHeight = 1.8,
 ): {
   group: THREE.Group;
   crowdMesh: THREE.InstancedMesh | null;
   practicals: (THREE.MeshBasicMaterial | THREE.PointsMaterial)[];
-  crowdBaseTransforms: { x: number; z: number; scaleY: number; phase: number; rotY: number }[];
+  crowdBaseTransforms: { x: number; y: number; z: number; scaleY: number; phase: number; rotY: number }[];
   roofY: number;
+  room: VenueRoom | null;
+  seated: boolean;
 } {
   const group = new THREE.Group();
-  const roofY = venue === 'warehouse' ? 11.2 : venue === 'festival' ? 16.5 : 15.8;
+  const roofY = VENUE_ROOF[venue];
   const practicals: (THREE.MeshBasicMaterial | THREE.PointsMaterial)[] = [];
+  let room: VenueRoom | null = null;
+  let seats: SeatSlot[] | null = null;
+  let standingFloor: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
 
   // Vast dark arena / festival floor with subtle specular bounce for stage lights & lasers!
   const floorMat = new THREE.MeshStandardMaterial({
-    color: venue === 'festival' ? 0x292a25 : 0x33363c,
-    roughness: venue === 'warehouse' ? 0.46 : 0.67,
+    color: venue === 'festival' ? 0x292a25 : venue === 'theatre' ? 0x2a2124 : venue === 'club' ? 0x2a2b2e : 0x33363c,
+    roughness: venue === 'warehouse' ? 0.46 : venue === 'club' ? 0.32 : venue === 'theatre' ? 0.95 : 0.67,
     metalness: 0.08,
   });
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(140, 140), floorMat);
@@ -974,7 +1235,13 @@ export function buildVenueArchitecture(
   const houseLamp = new THREE.MeshBasicMaterial({ color: 0xaa805b });
   practicals.push(houseLamp);
   const seatMat = new THREE.MeshStandardMaterial({ color: 0x36404c, roughness: 0.85 });
-  if (venue === 'arena' || venue === 'warehouse') {
+  if (venue === 'theatre') {
+    ({ room, seats } = buildTheatreHouse(group, mats, practicals as THREE.MeshBasicMaterial[], houseLamp,
+      stageWidth, stageDepth, stageHeight, roofY));
+  } else if (venue === 'club') {
+    ({ room, floor: standingFloor } = buildClubRoom(group, mats, practicals as THREE.MeshBasicMaterial[],
+      stageWidth, stageDepth, roofY));
+  } else if (venue === 'arena' || venue === 'warehouse') {
     const hallW = venue === 'warehouse' ? 28 : 54;
     const hallD = venue === 'warehouse' ? 46 : 78;
 
@@ -1113,27 +1380,30 @@ export function buildVenueArchitecture(
     practicals.push(stars.material);
   }
 
-  // Front-of-stage crowd barricade fence
+  // Front-of-stage crowd barricade fence (concert venues; theatres and clubs have none)
   const barricadeLen = stageWidth + (venue === 'warehouse' ? 2 : 6);
   const barricadeZ = stageDepth / 2 + 2.4;
-  const barTop = new THREE.Mesh(new THREE.BoxGeometry(barricadeLen, 0.1, 0.14), mats.darkSteel);
-  barTop.position.set(0, 1.12, barricadeZ);
-  group.add(barTop);
-  const postGaps = Math.min(MAX_BARRICADE_BAYS, Math.floor(barricadeLen / 2.2));
-  const postSpacing = Math.max(2.2, barricadeLen / MAX_BARRICADE_BAYS);
-  for (let i = 0; i <= postGaps; i++) {
-    const x = -barricadeLen / 2 + i * postSpacing;
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.12, 0.45), mats.darkSteel);
-    post.position.set(x, 0.56, barricadeZ);
-    group.add(post);
+  if (!room) {
+    const barTop = new THREE.Mesh(new THREE.BoxGeometry(barricadeLen, 0.1, 0.14), mats.darkSteel);
+    barTop.position.set(0, 1.12, barricadeZ);
+    group.add(barTop);
+    const postGaps = Math.min(MAX_BARRICADE_BAYS, Math.floor(barricadeLen / 2.2));
+    const postSpacing = Math.max(2.2, barricadeLen / MAX_BARRICADE_BAYS);
+    for (let i = 0; i <= postGaps; i++) {
+      const x = -barricadeLen / 2 + i * postSpacing;
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.12, 0.45), mats.darkSteel);
+      post.position.set(x, 0.56, barricadeZ);
+      group.add(post);
+    }
   }
 
   batchHardware(group);
 
-  // Instanced Arena Crowd Silhouettes
-  const maxCrowd = Math.floor(680 * THREE.MathUtils.clamp(crowdDensity, 0, 1));
+  // Instanced crowd: standing on the floor, or seated in a theatre's stalls.
+  const density = THREE.MathUtils.clamp(crowdDensity, 0, 1);
+  const maxCrowd = Math.floor((seats ? seats.length : standingFloor ? 300 : 680) * density);
   let crowdMesh: THREE.InstancedMesh | null = null;
-  const crowdBaseTransforms: { x: number; z: number; scaleY: number; phase: number; rotY: number }[] = [];
+  const crowdBaseTransforms: { x: number; y: number; z: number; scaleY: number; phase: number; rotY: number }[] = [];
 
   if (maxCrowd > 0) {
     const personGeo = crowdGeometry();
@@ -1144,7 +1414,7 @@ export function buildVenueArchitecture(
     crowdMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     const dummy = new THREE.Mesh(personGeo, personMat);
     const colors = [0x5c6579, 0x5e5156, 0x87939e, 0x858079, 0x666e62, 0x755d64, 0x688491];
-    const phoneCount = Math.floor(maxCrowd * 0.09);
+    const phoneCount = seats ? 0 : Math.floor(maxCrowd * 0.09);
     // A feathered contact patch anchors feet to the floor even without shadow maps.
     const footprint = new THREE.CircleGeometry(1, 10);
     footprint.rotateX(-Math.PI / 2).scale(0.42, 1, 0.32).translate(0, 0.012, 0);
@@ -1159,25 +1429,45 @@ export function buildVenueArchitecture(
       return seed / 4294967296;
     };
 
+    // A theatre fills a random selection of its seats; density is the house's occupancy.
+    const seatOrder = seats ? seats.map((_, i) => i) : [];
+    for (let i = seatOrder.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [seatOrder[i], seatOrder[j]] = [seatOrder[j], seatOrder[i]];
+    }
+
     for (let i = 0; i < maxCrowd; i++) {
-      // Scatter into distinct floor spaces. Increasing density fills gaps in the same crowd.
-      const cell = (i * 229) % 713;
-      const row = (Math.floor(cell / 31) + 0.18 + random() * 0.64) / 23;
-      const column = (cell % 31 + 0.22 + random() * 0.56) / 31;
-      const z = barricadeZ + 0.6 + row * (15 + 8 * row);
-      const maxX = venue === 'warehouse' ? 9.2 + 2 * row : 14.0 + 4 * row;
-      const x = (column * 2 - 1) * maxX;
-      const scaleY = 0.88 + random() * 0.24;
+      let x: number,
+        y = 0,
+        z: number;
+      if (seats) {
+        ({ x, y, z } = seats[seatOrder[i]]);
+      } else {
+        // Scatter into distinct floor spaces. Increasing density fills gaps in the same crowd.
+        const cell = (i * 229) % 713;
+        const row = (Math.floor(cell / 31) + 0.18 + random() * 0.64) / 23;
+        const column = (cell % 31 + 0.22 + random() * 0.56) / 31;
+        if (standingFloor) {
+          z = standingFloor.minZ + row * (standingFloor.maxZ - standingFloor.minZ);
+          x = standingFloor.minX + column * (standingFloor.maxX - standingFloor.minX);
+        } else {
+          z = barricadeZ + 0.6 + row * (15 + 8 * row);
+          const maxX = venue === 'warehouse' ? 9.2 + 2 * row : 14.0 + 4 * row;
+          x = (column * 2 - 1) * maxX;
+        }
+      }
+      // Seated figures are scaled so heads sit at seated eye height above the cushion.
+      const scaleY = seats ? 0.68 + random() * 0.06 : 0.88 + random() * 0.24;
       const phase = random() * Math.PI * 2;
-      const rotY = Math.atan2(-x, -z) + (random() - 0.5) * 0.45;
-      const pose = random();
+      const rotY = (seats ? Math.atan2(-x * 0.3, -z) : Math.atan2(-x, -z)) + (random() - 0.5) * (seats ? 0.12 : 0.45);
+      const pose = seats ? 0 : random();
       dummy.morphTargetInfluences![0] = i < phoneCount || (pose > 0.64 && pose < 0.85) ? 1 : 0;
       dummy.morphTargetInfluences![1] = i >= phoneCount && pose >= 0.85 ? 1 : 0;
       crowdMesh.setMorphAt(i, dummy);
       crowdMesh.setColorAt(i, new THREE.Color(colors[Math.floor(random() * colors.length)]));
 
-      crowdBaseTransforms.push({ x, z, scaleY, phase, rotY });
-      dummy.position.set(x, 0, z);
+      crowdBaseTransforms.push({ x, y, z, scaleY, phase, rotY });
+      dummy.position.set(x, y, z);
       dummy.scale.set(1, scaleY, 1);
       dummy.rotation.set(0, rotY, 0);
       dummy.updateMatrix();
@@ -1201,5 +1491,5 @@ export function buildVenueArchitecture(
     }
   }
 
-  return { group, practicals, crowdMesh, crowdBaseTransforms, roofY };
+  return { group, practicals, crowdMesh, crowdBaseTransforms, roofY, room, seated: !!seats };
 }

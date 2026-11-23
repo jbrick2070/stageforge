@@ -1,4 +1,4 @@
-import type { RigConfig } from '../types/show';
+import { VENUE_TYPES, type RigConfig } from '../types/show';
 import { FIXTURE_CATALOG, FLOOR_FX_CATALOG } from './presets';
 import { SPEAKER_PROFILES } from './speakerProfiles';
 import { isStageProp } from './stageProps';
@@ -58,7 +58,7 @@ function checkRig(value: unknown): asserts value is RigConfig {
   checkFields(value, 'rig', {
     schemaVersion: optional((v) => v === 1),
     name: text,
-    venue: (v) => v === 'arena' || v === 'festival' || v === 'warehouse',
+    venue: (v) => (VENUE_TYPES as readonly unknown[]).includes(v),
     stageWidth: positive,
     stageDepth: positive,
     stageHeight: positive,

@@ -21,7 +21,7 @@ import {
   RigConfig,
   TrussPodConfig,
   TrussShape,
-  VenueType,
+  VENUE_TYPES,
 } from '../types/show';
 import { FIXTURE_CATALOG, FLOOR_FX_CATALOG, RIG_TEMPLATES } from '../data/presets';
 
@@ -244,7 +244,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
         {/* 1. Stage Presets */}
         <div>
           <div className="font-mono-tech text-[10px] text-cyan-400 tracking-widest mb-1.5">
-            LOAD CONCERT RIG TEMPLATE
+            LOAD VENUE & RIG PRESET
           </div>
           <div className="grid grid-cols-2 gap-1.5">
             {Object.entries(RIG_TEMPLATES).map(([key, tmpl]) => (
@@ -272,7 +272,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
             <Tv className="w-3.5 h-3.5 text-fuchsia-400" /> VENUE, LED WALL & SOUND
           </div>
           <div className="grid grid-cols-3 gap-1">
-            {(['arena', 'warehouse', 'festival'] as VenueType[]).map((v) => (
+            {VENUE_TYPES.map((v) => (
               <button
                 key={v}
                 onClick={() => onChangeRig({ ...rig, venue: v })}

@@ -1,7 +1,9 @@
 import type { SpeakerProfileId } from '../data/speakerProfiles';
 import type { DemoPosition } from '../data/demoShow';
 
-export type VenueType = 'arena' | 'warehouse' | 'festival';
+export type VenueType = 'arena' | 'warehouse' | 'festival' | 'theatre' | 'club';
+
+export const VENUE_TYPES: readonly VenueType[] = ['arena', 'warehouse', 'festival', 'theatre', 'club'];
 
 export type TrussShape = 'box' | 'circle' | 'chevron' | 'path';
 
@@ -176,8 +178,9 @@ export interface ShowState {
   movementMode: MovementMode;
   movementSpeed: number;
   movementSpread: number;
-  manualPan: number; // -1..1
-  manualTilt: number; // -1..1
+  manualPan: number; // -1..1 (free position: pan; on a focus point: X offset)
+  manualTilt: number; // -1..1 (free position: tilt; on a focus point: Z offset)
+  focusMarkId?: string | null; // Focus point the heads converge on in 'manual' (Position) mode; see engine/focusAim.
   strobeRate: number; // 0..1
   blinderLevel: number; // 0..1
 

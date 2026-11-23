@@ -320,7 +320,7 @@ export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate 
   // 7. Real-World Union Crew & Labor Estimate (Load-In + Show Call + Load-Out)
   const totalFixtures = allBeams + washCount + strobeCount + blinderCount;
   const totalLasers = laserCount + floorLaserCount;
-  const shiftHours = rig.venue === 'festival' ? 16 : rig.venue === 'arena' ? 14 : 10;
+  const shiftHours = rig.venue === 'festival' ? 16 : rig.venue === 'arena' ? 14 : rig.venue === 'club' ? 8 : 10;
 
   const riggerCount = Math.max(2, Math.ceil((totalMotors + (rig.audioRig.lineArrays ? 4 : 0)) / 3));
   const lightingCrew = Math.max(2, Math.ceil(totalFixtures / 10));

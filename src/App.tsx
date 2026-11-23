@@ -49,6 +49,9 @@ const EMPTY_BUMP: BumpState = {
 
 const SAVED_DESIGN_KEY = 'stageforge.design.v1';
 
+const PRESET_JSON = new Set(Object.values(RIG_TEMPLATES).map((t) => JSON.stringify(t)));
+const isPristinePreset = (rig: RigConfig) => PRESET_JSON.has(JSON.stringify(rig));
+
 function readSavedDesign(): RigConfig | null {
   try {
     const json = localStorage.getItem(SAVED_DESIGN_KEY);
@@ -220,8 +223,12 @@ export const App: React.FC = () => {
       showToast
     );
     engineRef.current = engine;
+    // Read-only probe for browser tests: `?probe` exposes each head's beam axis.
+    const probe = new URLSearchParams(window.location.search).has('probe');
+    if (probe) (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe = { beamAxes: () => engine.beamAxes() };
 
     return () => {
+      if (probe) delete (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe;
       engine.dispose();
       audio.dispose();
       engineRef.current = null;
@@ -478,6 +485,9 @@ export const App: React.FC = () => {
     setShowState(s => s.autoDirector ? { ...s, autoDirector: false } : s);
   };
   const applyRig = (next: RigConfig, saveNow = false) => {
+    // Loading a preset leaves storage alone, but the first edit to one becomes the saved design,
+    // as long as that doesn't replace a design already saved in the single slot.
+    if (next.schemaVersion !== 1 && !savedDesign && !isPristinePreset(next)) next = { ...next, schemaVersion: 1 };
     setRig(next);
     if (next.schemaVersion !== 1) return;
     setSavedDesign(next);
