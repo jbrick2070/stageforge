@@ -10,6 +10,10 @@ A custom truss is one pod with a world position, elevation, rotation and an orde
 
 ## Editing and playback
 
+Monitor wedges follow the front edge of each deck at their position across the stage. On a thrust stage the middle pair can sit on the thrust while the outside pair stay on the main deck. The video wall follows the upstage edge, even on an off-centre stage. If the requested wall is too tall for the overhead grid, StageForge scales its preview and GLB at the original aspect ratio. Rig builder shows the fitted size and retains the requested dimensions in the show file.
+
+New trusses use the selected venue's grid height to set their starting elevation. The stage designer shows the available height and flags a truss with less than 0.3 m of overhead clearance.
+
 The plan editor owns a draft while it is open. Applying the draft updates the rig as one change. Closing without applying leaves the running stage available. Rig builder handles fixture inventory, patching, PA, video and scenery. The show director operates the fixtures actually installed in the design. A bare venue can therefore be equipped progressively.
 
 The renderer constructs deck surfaces and truss spans from the document. Floor fixtures and scenery use the deck height at their position. Beam pools use the same rectangles and elevations for light and shadow. The DMX allocator indexes fixture groups separately from geometry, so reshaping a run does not consume new addresses.

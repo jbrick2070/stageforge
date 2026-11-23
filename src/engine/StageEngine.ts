@@ -42,6 +42,7 @@ import {
 import { FocusMark, HEAD_OFFSET, YOKE_OFFSET, PAN_LIMIT, TILT_LIMIT, aimAngles, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
 import { buildDmxPatch } from '../data/dmxPatch';
 import { stageSurfaceHeight } from '../data/stageDesign';
+import { ledPlacement, monitorPositions } from '../data/stageEquipment';
 import { AtmosphericParticles } from './ParticleSystem';
 import { BeamPools, MOVING_HEAD_OPTICS } from './beamPools';
 import { fitAuthoredFoh } from './fohFraming';
@@ -189,6 +190,7 @@ export class StageEngine {
   private textTex: THREE.CanvasTexture;
   private lastTourText = '';
   private customTex: THREE.Texture | null = null;
+  private missingScreenTex: THREE.CanvasTexture | null = null;
   private customVideoEl: HTMLVideoElement | null = null;
   private screenWantsPlay = true;
   private screenRunning = false;
@@ -552,8 +554,12 @@ export class StageEngine {
       case 'stage_side':
         if (this.room) {
           const x = -Math.min(14.5, this.room.halfWidth - 0.8);
-          this.cameraTargetPos.set(x, Math.min(4.6, this.room.ceilingY - 0.8), 5.5);
-          this.cameraTargetLook.set(2.5, Math.min(5.5, this.room.ceilingY * 0.55), 3.5);
+          const rig = this.currentRig;
+          const front = rig ? rig.stageDepth / 2 : 5.5;
+          // Stand just upstage of the flown stack, looking across the deck.
+          const sideZ = rig?.audioRig.lineArrays ? Math.min(5.5, front - 2.4) : 5.5;
+          this.cameraTargetPos.set(x, Math.min(4.6, this.room.ceilingY - 0.8), sideZ);
+          this.cameraTargetLook.set(2.5, Math.min(5.5, this.room.ceilingY * 0.55), Math.min(3.5, sideZ));
         } else {
           this.cameraTargetPos.set(-14.5, 4.6, 5.5);
           this.cameraTargetLook.set(2.5, 5.5, 3.5);
@@ -569,11 +575,10 @@ export class StageEngine {
           this.cameraTargetPos.set(x - 2.4, y - 0.6, z + 6.1);
           this.cameraTargetLook.set(x + 0.55, y, z);
         } else {
-          const monitors = rig.audioRig.monitorCount ?? 0;
-          const speakerX = monitors > 1 ? -rig.stageWidth * 0.34 : 0;
-          const speakerZ = monitors ? rig.stageDepth / 2 - 0.65 : rig.stageDepth / 2 + 0.6;
-          const surfaceY = stageSurfaceHeight(rig, speakerX, speakerZ);
-          const speakerY = surfaceY + (monitors ? 0.25 : rig.audioRig.subWall ? 0.5 : 0);
+          const [monitor] = monitorPositions(rig);
+          const speakerX = monitor?.x ?? 0;
+          const speakerZ = monitor?.z ?? rig.stageDepth / 2 + 0.6;
+          const speakerY = monitor ? monitor.y + 0.25 : (rig.audioRig.subWall ? 0.5 : 0);
           this.cameraTargetPos.set(speakerX - 2.4, speakerY + 1.3, speakerZ + 4.7);
           this.cameraTargetLook.set(speakerX, speakerY, speakerZ);
         }
@@ -626,6 +631,53 @@ export class StageEngine {
       ctx.fillText(lines.slice(1).join(' // ').toUpperCase(), 512, 322, 880);
     }
     this.textTex.needsUpdate = true;
+  }
+
+  public setMissingScreen(name: string | null) {
+    if ((this.missingScreenTex?.name ?? null) === name) return;
+    this.missingScreenTex?.dispose();
+    this.missingScreenTex = null;
+    if (name) {
+      const slate = document.createElement('canvas');
+      slate.width = 1024;
+      slate.height = 512;
+      const ctx = slate.getContext('2d')!;
+      ctx.fillStyle = '#12171f';
+      ctx.fillRect(0, 0, slate.width, slate.height);
+      ctx.strokeStyle = '#ffbe50';
+      ctx.lineWidth = 12;
+      ctx.strokeRect(20, 20, 984, 472);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffbe50';
+      ctx.font = 'bold 88px sans-serif';
+      ctx.fillText('MISSING MEDIA', 512, 211, 920);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 50px sans-serif';
+      // Keep both the identifying prefix and file extension legible even for long filenames.
+      let label = name;
+      if (ctx.measureText(label).width > 900) {
+        const characters = Array.from(name);
+        let count = Math.ceil(characters.length / 2);
+        do {
+          count--;
+          label = characters.slice(0, count).join('') + '…' + characters.slice(-count).join('');
+        } while (count > 1 && ctx.measureText(label).width > 900);
+      }
+      ctx.fillText(label, 512, 322, 920);
+      this.missingScreenTex = new THREE.CanvasTexture(slate);
+      this.missingScreenTex.name = name;
+      this.missingScreenTex.colorSpace = THREE.SRGBColorSpace;
+    }
+    this.bindScreenTexture();
+  }
+
+  private bindScreenTexture() {
+    const texture = this.customTex ?? this.missingScreenTex;
+    for (const material of this.ledWallMats) {
+      material.uniforms.uCustomTex.value = texture ?? this.textTex;
+      material.uniforms.uHasCustom.value = texture ? 1 : 0;
+    }
   }
 
   public screenTransport(): { playing: boolean; offsetSeconds: number } {
@@ -696,10 +748,7 @@ export class StageEngine {
       this.customTex.dispose();
       this.customTex = null;
     }
-    for (const m of this.ledWallMats) {
-      m.uniforms.uHasCustom.value = 0;
-      m.uniforms.uCustomTex.value = this.textTex;
-    }
+    this.bindScreenTexture();
 
     if (!url || !type) return;
     const failed = () => {
@@ -725,10 +774,7 @@ export class StageEngine {
       const vTex = new THREE.VideoTexture(video);
       vTex.colorSpace = THREE.SRGBColorSpace;
       this.customTex = vTex;
-      for (const m of this.ledWallMats) {
-        m.uniforms.uCustomTex.value = vTex;
-        m.uniforms.uHasCustom.value = 1;
-      }
+      this.bindScreenTexture();
     } else {
       new THREE.TextureLoader().load(url, (tex) => {
         if (generation !== this.mediaGeneration) {
@@ -737,10 +783,7 @@ export class StageEngine {
         }
         tex.colorSpace = THREE.SRGBColorSpace;
         this.customTex = tex;
-        for (const m of this.ledWallMats) {
-          m.uniforms.uCustomTex.value = tex;
-          m.uniforms.uHasCustom.value = 1;
-        }
+        this.bindScreenTexture();
       }, undefined, failed);
     }
   }
@@ -917,25 +960,21 @@ export class StageEngine {
       }
     }
 
-    const wedgeCount = Math.min(8, Math.max(0, Math.floor(rig.audioRig.monitorCount ?? 0)));
-    for (let i = 0; i < wedgeCount; i++) {
-      const x = wedgeCount === 1 ? 0 : (i / (wedgeCount - 1) - 0.5) * rig.stageWidth * 0.68;
+    for (const [i, { x, y, z, rotationY }] of monitorPositions(rig).entries()) {
       const wedge = createMonitorWedge(this.mats, speakerProfile);
       wedge.name = `Monitor wedge ${i + 1}`;
       wedge.userData = { kind: 'monitor', model: SPEAKER_PROFILES[speakerProfile].monitor.label };
-      const z = rig.stageDepth * 0.5 - 0.65;
-      wedge.position.set(x, stageSurfaceHeight(rig, x, z), z);
-      wedge.rotation.y = x * 0.032;
+      wedge.position.set(x, y, z);
+      wedge.rotation.y = rotationY;
       stageGroup.add(wedge);
     }
     this.rigGroup.add(stageGroup);
 
     // 3. Giant Concert LED Video Wall + Side IMAG Wings
-    if (rig.ledWall.enabled) {
-      const wallZ = -rig.stageDepth / 2 + 0.4;
-      const wallY = stageSurfaceHeight(rig, 0, wallZ) + rig.ledWall.height / 2 + 0.35;
-      const aspect = rig.ledWall.width / rig.ledWall.height;
-
+    const wall = ledPlacement(rig);
+    if (rig.ledWall.enabled && wall.height > 0) {
+      const { y: wallY, z: wallZ } = wall;
+      const aspect = wall.width / wall.height;
       const ledMat = this.createLedMaterial(aspect);
       this.ledWallMats.push(ledMat);
 
@@ -943,12 +982,12 @@ export class StageEngine {
       if (rig.ledWall.curved) {
         // Gentle arena concave curve wrapping the upstage!
         // Keep the rack on the rear of the deck, behind the upstage truss.
-        const radius = rig.ledWall.width * 6;
-        const thetaLen = rig.ledWall.width / radius;
+        const radius = wall.width * 6;
+        const thetaLen = wall.width / radius;
         wallGeo = new THREE.CylinderGeometry(
           radius,
           radius,
-          rig.ledWall.height,
+          wall.height,
           36,
           1,
           true,
@@ -963,7 +1002,7 @@ export class StageEngine {
         const wallMesh = new THREE.Mesh(wallGeo, ledMat);
         wallMesh.material.side = THREE.BackSide;
         wallMesh.name = 'Curved LED wall';
-        wallMesh.position.set(0, wallY, wallZ + radius);
+        wallMesh.position.set(wall.x, wallY, wallZ + radius);
         this.rigGroup.add(wallMesh);
 
         // A closed annular section forms the dark back, narrow bezel and end caps.
@@ -975,33 +1014,33 @@ export class StageEngine {
         profile.absarc(0, 0, radius + 0.29, end, start, true);
         profile.closePath();
         const housing = new THREE.Mesh(new THREE.ExtrudeGeometry(profile, {
-          depth: rig.ledWall.height + 0.20, bevelEnabled: false, curveSegments: 36,
+          depth: wall.height + 0.20, bevelEnabled: false, curveSegments: 36,
         }), this.mats.darkSteel);
         housing.rotation.x = -Math.PI / 2;
         housing.name = 'Curved LED wall housing';
-        housing.position.set(0, wallY - rig.ledWall.height / 2 - 0.10, wallMesh.position.z);
+        housing.position.set(wall.x, wallY - wall.height / 2 - 0.10, wallMesh.position.z);
         this.rigGroup.add(housing);
       } else {
-        wallGeo = new THREE.PlaneGeometry(rig.ledWall.width, rig.ledWall.height);
+        wallGeo = new THREE.PlaneGeometry(wall.width, wall.height);
         const wallMesh = new THREE.Mesh(wallGeo, ledMat);
-        wallMesh.position.set(0, wallY, wallZ);
+        wallMesh.position.set(wall.x, wallY, wallZ);
         wallMesh.name = 'LED wall';
         this.rigGroup.add(wallMesh);
 
         // Dark rear structural frame behind flat LED wall
         const frame = new THREE.Mesh(
-          new THREE.BoxGeometry(rig.ledWall.width + 0.5, rig.ledWall.height + 0.5, 0.35),
+          new THREE.BoxGeometry(wall.width + 0.5, wall.height + 0.5, 0.35),
           this.mats.darkSteel
         );
-        frame.position.set(0, wallY, wallZ - 0.22);
+        frame.position.set(wall.x, wallY, wallZ - 0.22);
         frame.name = 'LED wall housing';
         this.rigGroup.add(frame);
       }
 
       // Optional Side IMAG Wings flanking the main stage
       if (rig.ledWall.sideWings) {
-        const wingW = LED_WING_WIDTH;
-        const wingH = rig.ledWall.height * 0.82;
+        const wingW = LED_WING_WIDTH * wall.scale;
+        const wingH = wall.height * 0.82;
         const wingMat = this.createLedMaterial(wingW / wingH);
         this.ledWallMats.push(wingMat);
 
@@ -1016,7 +1055,7 @@ export class StageEngine {
           backing.position.z = -0.16;
           wingGroup.add(screen, backing);
           wingGroup.position.set(
-            side * (rig.ledWall.width / 2 + wingW / 2 + LED_WING_GAP),
+            wall.x + side * (wall.width / 2 + wingW / 2 + LED_WING_GAP * wall.scale),
             wallY,
             wallZ + 2.2
           );
@@ -1228,9 +1267,9 @@ export class StageEngine {
         uMid: { value: 0 },
         uHigh: { value: 0 },
         uBeatPulse: { value: 0 },
-        uCustomTex: { value: this.customTex || this.textTex },
+        uCustomTex: { value: this.customTex ?? this.missingScreenTex ?? this.textTex },
         uTextTex: { value: this.textTex },
-        uHasCustom: { value: this.customTex ? 1 : 0 },
+        uHasCustom: { value: (this.customTex || this.missingScreenTex) ? 1 : 0 },
         uAspect: { value: aspect },
       },
     });
@@ -2051,6 +2090,7 @@ export class StageEngine {
     this.composer.dispose();
     this.particles.dispose();
     this.textTex.dispose();
+    this.missingScreenTex?.dispose();
     if (this.customTex) this.customTex.dispose();
     if (this.customVideoEl) {
       this.customVideoEl.pause();

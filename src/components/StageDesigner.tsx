@@ -28,6 +28,7 @@ import {
   withPlatforms,
 } from '../data/stageDesign';
 import type { PlanPoint, RigConfig, StagePlatform, TrussPodConfig } from '../types/show';
+import { GRID_HEIGHT } from '../data/stageEquipment';
 import './StageDesigner.css';
 
 type Tool = 'select' | 'platform' | 'path' | 'pan';
@@ -253,7 +254,8 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
   const [nextPoint, setNextPoint] = useState<PlanPoint>({ x: 0, z: 0 });
   const [hover, setHover] = useState<PlanPoint>();
   const [snap, setSnap] = useState(0.5);
-  const [elevation, setElevation] = useState(7);
+  const gridHeight = GRID_HEIGHT[draft.venue];
+  const [elevation, setElevation] = useState(() => Math.min(7, gridHeight - 0.8));
   const [message, setMessage] = useState('');
   const [aspect, setAspect] = useState(1.5);
   const [view, setView] = useState<View>(() => frameDesign(rig, 1.5));
@@ -288,6 +290,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
   const platforms = getPlatforms(showing);
   const platform = selected?.kind === 'platform' ? platforms.find((p) => p.id === selected.id) : undefined;
   const truss = selected?.kind === 'truss' ? showing.trussPods.find((p) => p.id === selected.id) : undefined;
+  const inspectedElevation = tool === 'path' ? elevation : truss?.baseY;
   const vertices = platform
     ? corners(platform)
     : truss
@@ -382,6 +385,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
   const finishPath = () => {
     if (points.length < 2) return;
     const p = makeTrussPath(points, elevation);
+    p.motorMaxY = Math.max(elevation, Math.min(p.motorMaxY, gridHeight - 0.3));
     p.name = `Truss path ${draft.trussPods.length + 1}`;
     commit({ ...draft, trussPods: [...draft.trussPods, p] });
     choose('select');
@@ -743,6 +747,11 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
             <h3>
               {tool === 'path' ? 'Draw truss path' : tool === 'platform' ? 'Draw platform' : 'Selection'}
             </h3>
+            {inspectedElevation !== undefined && <p>
+              {draft.venue === 'club' ? 'Ceiling' : 'Rigging grid'} {gridHeight} m
+              {inspectedElevation > gridHeight - 0.3 &&
+                <strong className="sd-clearance-warning"> · Truss has less than 0.3 m overhead clearance</strong>}
+            </p>}
             {tool === 'path' ? (
               <>
                 <div className="sd-path-actions">
@@ -765,8 +774,8 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                     value={nextPoint.z}
                     onChange={(z) => setNextPoint((p) => ({ ...p, z }))}
                   />
-                  <Field label="Elevation" value={elevation} min={0} onChange={setElevation} />
                 </div>
+                <Field label="Truss elevation" value={elevation} min={0} onChange={setElevation} />
                 <button onClick={() => addPoint(nextPoint)}>Add point</button>
                 <button disabled={!points.length} onClick={() => setPoints(points.slice(0, -1))}>
                   Remove last point

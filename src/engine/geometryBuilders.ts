@@ -1,3 +1,4 @@
+import { GRID_HEIGHT } from '../data/stageEquipment';
 import { trussMounts } from '../data/trussMounts';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -936,15 +937,6 @@ interface SeatSlot {
   z: number;
 }
 
-/** Hoist/fly grid height: the steel the rig hangs from. */
-const VENUE_ROOF: Record<VenueType, number> = {
-  arena: 15.8,
-  warehouse: 11.2,
-  festival: 16.5,
-  theatre: 17, // fly-tower grid above the stage house
-  club: 5.2, // structural soffit of a low-ceiling room
-};
-
 // Large or off-centre designs expand the room envelope. Keep decorative detail bounded.
 function detailPositions(start: number, end: number, pitch: number, budget: number) {
   const count = Math.min(budget, Math.max(0, Math.floor((end - start) / pitch) + 1));
@@ -1209,7 +1201,7 @@ export function buildVenueArchitecture(
   seated: boolean;
 } {
   const group = new THREE.Group();
-  const roofY = VENUE_ROOF[venue];
+  const roofY = GRID_HEIGHT[venue];
   const practicals: (THREE.MeshBasicMaterial | THREE.PointsMaterial)[] = [];
   let room: VenueRoom | null = null;
   let seats: SeatSlot[] | null = null;

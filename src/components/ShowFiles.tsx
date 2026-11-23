@@ -70,7 +70,7 @@ export function ShowFiles({ name, media, timeline, missing, cueNames, onOpen, on
     <dl><dt>Music</dt><dd>{media.music.kind === 'none' ? 'None' : media.music.name}</dd>
       <dt>Main LED wall</dt><dd>{media.screen.kind === 'none' ? 'No file assigned' : media.screen.name + (media.screen.kind === 'video' ? (media.screen.playing ? ' · playing' : ' · paused') : ' · image')}</dd></dl>
     {missing.length > 0 && <p>Files to relink: {missing.join(', ')}</p>}
-    <button onClick={() => relink.current?.click()}>Relink media files…</button>
+    <button disabled={!missing.length} onClick={() => relink.current?.click()}>Relink media files…</button>
     <input type="file" hidden multiple ref={relink} aria-label="Relink media files" accept="audio/*,video/*,image/*"
       onChange={e => { setNote(onRelink(Array.from(e.target.files ?? []))); e.target.value = ''; }}/>
     {timeline && <details className="take-list"><summary>Recorded actions · {timecode(timeline.durationMs)} · {timeline.events.length} events</summary>

@@ -4,11 +4,12 @@ import { AudioEngine } from './audio/AudioEngine';
 import { CAMERAS, TopBar } from './components/TopBar';
 import { ShowOverlay } from './components/ShowOverlay';
 import { useShowGamepad } from './input/useShowGamepad';
+import { cueLook, differsFromCue } from './data/cueLook';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
-import { makeShowFile, parseShowFile } from './data/showFile';
+import { makeShowFile, parseShowFile, referencedFiles } from './data/showFile';
 import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
 import { ShowFiles, type FileAction } from './components/ShowFiles';
 import { CueListEditor } from './components/CueListEditor';
@@ -86,6 +87,7 @@ export const App: React.FC = () => {
   }, [bump, controllerBump]);
   const [cues, setCues] = useState<ShowCue[]>(() => structuredClone(SHOW_CUES));
   const [activeCueId, setActiveCueId] = useState<string | null>(null);
+  const [cueModified, setCueModified] = useState(false);
 
   const [audioMetrics, setAudioMetrics] = useState<AudioMetrics>(EMPTY_AUDIO);
   const [volume, setVolume] = useState(0.72);
@@ -97,8 +99,9 @@ export const App: React.FC = () => {
   const [designerRig, setDesignerRig] = useState<RigConfig | null>(null);
   const [filesOpen, setFilesOpen] = useState(false);
   const [cueEditor, setCueEditor] = useState(false);
-  const [followId, setFollowId] = useState<string | null>(null);
+  const [follow, setFollow] = useState<number | 'held' | null>(null);
   const [screen, setScreen] = useState<ScreenRef>(NO_SCREEN);
+  const [captureVideoPosition, setCaptureVideoPosition] = useState(false);
   const [linkedVersion, setLinkedVersion] = useState(0);
   const assets = useRef(new Map<string, { file: File; url?: string }>());
   const mediaUrls = useRef(new Set<string>());
@@ -107,6 +110,8 @@ export const App: React.FC = () => {
   const directorArmed = useRef(true);
   const replayLook = useRef(showState);
   const replayScreen = useRef<ScreenRef>(NO_SCREEN);
+  const replayScreenClock = useRef(0);
+  const replayMusicClock = useRef(0);
   const pendingDesign = useRef<RigConfig | null>(null);
   const saveTimer = useRef<number | undefined>(undefined);
   const [cinemaMode, setCinemaMode] = useState(() =>
@@ -159,29 +164,47 @@ export const App: React.FC = () => {
     return actual && actual.kind !== 'none' ? actual : { ...expectedMusic.current, playing: false };
   };
   const readScreen = (): ScreenRef => {
-    if (screen.kind !== 'video') return screen;
+    if (screen.kind !== 'video' || !showState.led.customMediaUrl) return screen;
     const active = showState.led.enabled && showState.led.visualMode === 'custom' && rig.ledWall.enabled;
     const transport = engineRef.current?.screenTransport();
-    return { ...screen, ...(transport && showState.led.customMediaUrl ? transport : {}), playing: !!(active && transport?.playing) };
+    return { ...screen, ...transport, playing: !!(active && transport?.playing) };
+  };
+  const cueScreen = (): ScreenRef => {
+    const ref = readScreen();
+    return ref.kind === 'video' && !captureVideoPosition ? { ...ref, offsetSeconds: 0 } : ref;
+  };
+  const replayScreenOffset = () => (replayScreen.current.offsetSeconds ?? 0) +
+    (replayScreen.current.playing ? (performance.now() - replayScreenClock.current) / 1000 : 0);
+  const restoreReplayMusic = (ref: MusicRef, lateMs: number) => {
+    void audioEngineRef.current?.restoreTimelineMusic(ref, assets.current.get('file:' + ref.name)?.file, replayLook.current.bpm, lateMs)
+      .catch(e => { if (e?.name !== 'AbortError') showToast(e instanceof Error ? e.message : 'Audio could not play.'); });
   };
   const timeline = useShowTimeline(
-    () => ({ look: showState, cueId: activeCueId, camera: activeCamera, volume, bump: liveBump, music: readMusic(), screen: readScreen() }),
+    () => ({ look: showState, cueId: activeCueId, cueModified: !!activeCueId && cueModified,
+      camera: activeCamera, volume, bump: liveBump, music: readMusic(), screen: readScreen() }),
     (event: TimelineEvent, lateMs) => {
       const ae = audioEngineRef.current, engine = engineRef.current;
-      if (event.screen) { replayScreen.current = event.screen; setScreen(event.screen); }
+      if (event.screen) {
+        replayScreen.current = event.screen;
+        replayScreenClock.current = performance.now() - lateMs;
+        setScreen(event.screen);
+      }
       if (event.look || event.screen) {
         const next = wallLook({ ...replayLook.current, ...event.look }, replayScreen.current);
         replayLook.current = next; autoDirRef.current = next.autoDirector;
         setShowState(next); engine?.setShowState(next); ae?.setBpm(next.bpm);
       }
-      if (event.screen) engine?.restoreScreenTransport(event.screen.playing,
-        (event.screen.offsetSeconds ?? 0) + (event.screen.playing ? lateMs / 1000 : 0));
+      if (event.screen) engine?.restoreScreenTransport(event.screen.playing, replayScreenOffset());
       if (event.music) {
         expectedMusic.current = event.music;
-        void ae?.restoreTimelineMusic(event.music, assets.current.get('file:' + event.music.name)?.file, replayLook.current.bpm, lateMs)
-          .catch(e => { if (e?.name !== 'AbortError') showToast(e instanceof Error ? e.message : 'Audio could not play.'); });
+        replayMusicClock.current = performance.now() - lateMs;
+        restoreReplayMusic(event.music, lateMs);
       }
-      if (event.cueId !== undefined) setActiveCueId(event.cueId);
+      if (event.cueId !== undefined) {
+        setActiveCueId(event.cueId);
+        const cue = cues.find(c => c.id === event.cueId);
+        setCueModified(event.atMs === 0 && differsFromCue(replayLook.current, cue, replayScreen.current));
+      } else if (event.look) setCueModified(true);
       if (event.bump) { setBump(event.bump); setControllerBump(EMPTY_BUMP); engine?.setBumpState(event.bump); }
       if (event.camera) { setActiveCamera(event.camera); engine?.setCameraPreset(event.camera); }
       if (event.volume !== undefined) { setVolume(event.volume); ae?.setVolume(event.volume); }
@@ -192,6 +215,12 @@ export const App: React.FC = () => {
       expectedMusic.current = { ...music, playing: false };
       audioEngineRef.current?.stopAll();
       engineRef.current?.restoreScreenTransport(false);
+      const ref = replayScreen.current;
+      if (ref.kind === 'video') {
+        const linked = assets.current.has('video:' + ref.name);
+        const offsetSeconds = linked ? engineRef.current?.screenTransport().offsetSeconds : replayScreenOffset();
+        setScreen({ ...ref, playing: false, offsetSeconds });
+      }
       setBump(EMPTY_BUMP); setControllerBump(EMPTY_BUMP);
     },
   );
@@ -233,46 +262,28 @@ export const App: React.FC = () => {
       previewRig();
       engineRef.current?.releaseDirector(false);
       autoDirRef.current = false;
-      setFollowId(cue.followSeconds ? cue.id : null);
     }
+    const index = cuesRef.current.findIndex(c => c.id === cue.id);
+    setFollow(!automatic && cue.followSeconds && index >= 0 && index + 1 < cuesRef.current.length
+      ? performance.now() + cue.followSeconds * 1000 : null);
     if (cue.screen) setScreen({ ...cue.screen });
     if (cue.state.bpm !== undefined) audioEngineRef.current?.setBpm(cue.state.bpm);
     setActiveCueId(cue.id);
+    setCueModified(false);
     setShowState((prev) => {
-      const captured = cue.state.masterDimmer !== undefined;
-      const next = {
-      ...prev,
-      ...cue.state,
-      autoDirector: automatic && prev.autoDirector,
-      bpm: cue.state.bpm ?? prev.bpm,
-      masterDimmer: cue.state.masterDimmer ?? prev.masterDimmer,
-      blackout: cue.state.blackout ?? false,
-      laser: cue.state.laser ? { ...prev.laser, ...cue.state.laser } : prev.laser,
-      motors: cue.state.motors
-        ? { ...prev.motors, ...cue.state.motors, podTargets: captured || Object.keys(cue.state.motors.podTargets).length ? cue.state.motors.podTargets : prev.motors.podTargets }
-        : prev.motors,
-      atmo: cue.state.atmo ? { ...prev.atmo, ...cue.state.atmo } : prev.atmo,
-      led: cue.state.led
-        ? {
-            ...prev.led,
-            ...cue.state.led,
-            tourText: captured ? cue.state.led.tourText : prev.led.tourText,
-            customMediaUrl: prev.led.customMediaUrl,
-            customMediaType: prev.led.customMediaType,
-          }
-        : prev.led,
-      };
+      const next = cueLook(prev, cue, automatic);
       return cue.screen ? wallLook(next, cue.screen) : next;
     });
   }, [previewRig]);
   const currentIndex = cues.findIndex(c => c.id === activeCueId);
-  const nextCue = cues[currentIndex + 1];
-  const followSeconds = followId === activeCueId ? cues[currentIndex]?.followSeconds : undefined;
+  const followingCue = cues[currentIndex + 1];
+  const nextCue = followingCue ?? cues[0];
+  const previousCue = cues[currentIndex > 0 ? currentIndex - 1 : cues.length - 1];
   useEffect(() => {
-    if (!followSeconds || !nextCue || showState.autoDirector || timeline.mode === 'playing') return;
-    const id = window.setTimeout(() => triggerCue(nextCue), followSeconds * 1000);
+    if (typeof follow !== 'number' || !followingCue) return;
+    const id = window.setTimeout(() => triggerCue(followingCue), Math.max(0, follow - performance.now()));
     return () => window.clearTimeout(id);
-  }, [followId, followSeconds, nextCue, showState.autoDirector, timeline.mode, triggerCue]);
+  }, [follow, followingCue, triggerCue]);
 
   // Mount Three.js StageEngine + AudioEngine once
   useEffect(() => {
@@ -343,6 +354,11 @@ export const App: React.FC = () => {
   }, [showState]);
 
   useEffect(() => {
+    const missingScreen = screen.kind !== 'none' && !assets.current.has(screen.kind + ':' + screen.name);
+    engineRef.current?.setMissingScreen(missingScreen ? screen.name : null);
+  }, [screen, linkedVersion]);
+
+  useEffect(() => {
     if (replaying.current) return;
     if (screen.kind === 'video' && showState.led.enabled && showState.led.visualMode === 'custom') {
       engineRef.current?.restoreScreenTransport(screen.playing, screen.offsetSeconds);
@@ -380,6 +396,7 @@ export const App: React.FC = () => {
         case 'Space':
           e.preventDefault();
           previewRig();
+          setCueModified(true);
           setShowState((s) => ({ ...s, blackout: !s.blackout }));
           break;
         case 'KeyB':
@@ -470,7 +487,7 @@ export const App: React.FC = () => {
   const startDemo = () => {
     const ae = audioEngineRef.current;
     if (!ae) return;
-    directorArmed.current = true; expectedMusic.current = NO_MUSIC; setFollowId(null);
+    directorArmed.current = true; expectedMusic.current = NO_MUSIC; setFollow(null);
     ae.startDemoSynth(showState.bpm);
     const demo = getDemoPosition(0);
     const opening = applyDemoLighting({ ...showState, autoDirector: true }, demo);
@@ -556,14 +573,17 @@ export const App: React.FC = () => {
         c.id === cueId
           ? {
               ...c,
+              tag: 'USER',
               accent: showState.primaryColor,
               state: structuredClone(showState),
-              screen: readScreen(),
+              screen: cueScreen(),
             }
           : c
       )
     );
     setActiveCueId(cueId);
+    setCueModified(false);
+    if (cueId !== activeCueId) setFollow(null);
     showToast(`Saved current rig look to cue pad!`);
   };
 
@@ -589,7 +609,7 @@ export const App: React.FC = () => {
   }, [rig]);
 
   const toggleDirector = () => {
-    directorArmed.current = true; setFollowId(null);
+    directorArmed.current = true; setFollow(null);
     previewRig();
     const next = !autoDirRef.current;
     if (!next) engineRef.current?.releaseDirector(true);
@@ -603,7 +623,7 @@ export const App: React.FC = () => {
   };
   const takeDesk = () => {
     previewRig();
-    setActiveCueId(null);
+    setCueModified(true);
     if (autoDirRef.current) engineRef.current?.releaseDirector(true);
     autoDirRef.current = false;
     setShowState(s => s.autoDirector ? { ...s, autoDirector: false } : s);
@@ -630,7 +650,7 @@ export const App: React.FC = () => {
     }
     const file = parseShowFile(json);
     timeline.replace(file.timeline);
-    setFollowId(null); directorArmed.current = false;
+    setFollow(null); directorArmed.current = false;
     audioEngineRef.current?.stopAll(); setAudioMetrics(EMPTY_AUDIO);
     setControllerBump(EMPTY_BUMP); setBump(EMPTY_BUMP);
     expectedMusic.current = file.media?.music ?? NO_MUSIC;
@@ -638,12 +658,15 @@ export const App: React.FC = () => {
     const look = wallLook(file.look, wall);
     applyRig(normalizeDesign(file.rig), true);
     setCues(file.cues); setActiveCueId(file.activeCueId);
+    setCueModified(differsFromCue(look, file.cues.find(c => c.id === file.activeCueId), wall));
     setShowState(look); autoDirRef.current = look.autoDirector;
-    setScreen(wall); setVolume(file.controls?.volume ?? 0.72); setActiveCamera(file.controls?.camera ?? 'foh');
+    setScreen(wall); setCaptureVideoPosition(false); setVolume(file.controls?.volume ?? 0.72); setActiveCamera(file.controls?.camera ?? 'foh');
     audioEngineRef.current?.setBpm(look.bpm); audioEngineRef.current?.setVolume(file.controls?.volume ?? 0.72);
     engineRef.current?.releaseDirector(false); engineRef.current?.setShowState(look); previewRig();
     engineRef.current?.setCameraPreset(file.controls?.camera ?? 'foh');
-    showToast(`Opened ${file.rig.name} · ${file.cues.length} cues.`);
+    const missingCount = [...referencedFiles(file.media, file.cues, file.timeline)].filter(key => !assets.current.has(key)).length;
+    const warning = missingCount ? ` · ${missingCount} missing media ${missingCount === 1 ? 'file' : 'files'}` : '';
+    showToast(`Opened ${file.rig.name} · ${file.cues.length} cues${warning}.`);
   };
   const saveDocument = async (action: FileAction) => {
     if (action === 'rig') return downloadRig(rig);
@@ -671,23 +694,26 @@ export const App: React.FC = () => {
     openDocument(json);
   };
   const media = { music: readMusic(), screen: readScreen() };
-  const referencedMedia = useMemo(() => {
-    const refs = [media.music, media.screen, ...cues.map(c => c.screen),
-      ...(timeline.timeline?.events.flatMap(e => [e.music, e.screen]) ?? [])];
-    const result = new Map<string, 'file' | 'video' | 'image'>();
-    for (const r of refs) {
-      if (r && (r.kind === 'file' || r.kind === 'image' || r.kind === 'video')) result.set(r.kind + ':' + r.name, r.kind);
-    }
-    return result;
-  }, [cues, timeline.timeline, media.music.name, media.music.kind, media.screen.name, media.screen.kind]);
-  const missing = useMemo(() => [...referencedMedia.keys()].filter(k => !assets.current.has(k)).map(k => k.slice(k.indexOf(':') + 1)), [referencedMedia, linkedVersion]);
+  const referencedMedia = useMemo(() => referencedFiles(media, cues, timeline.timeline),
+    [cues, timeline.timeline, media.music.name, media.music.kind, media.screen.name, media.screen.kind]);
+  const missing = useMemo(() => [...referencedMedia].filter(k => !assets.current.has(k)).map(k => k.slice(k.indexOf(':') + 1)), [referencedMedia, linkedVersion]);
   const onRelink = (files: File[]) => {
     let count = 0;
     for (const f of files) {
       for (const kind of ['file','video','image'] as const) {
-        if (!referencedMedia.has(kind + ':' + f.name)) continue;
+        const key = kind + ':' + f.name;
+        if (!referencedMedia.has(key) || assets.current.has(key)) continue;
         const asset = registerAsset(kind, f);
-        if (kind !== 'file' && kind === screen.kind && screen.name === f.name) {
+        if (replaying.current && replayMusicClock.current > 0 && kind === 'file' && expectedMusic.current.kind === 'file' && expectedMusic.current.name === f.name) {
+          restoreReplayMusic(expectedMusic.current, performance.now() - replayMusicClock.current);
+        } else if (replaying.current && kind === replayScreen.current.kind && replayScreen.current.name === f.name) {
+          const ref = replayScreen.current;
+          const look = wallLook(replayLook.current, ref);
+          replayLook.current = look;
+          setShowState(look);
+          engineRef.current?.setShowState(look);
+          engineRef.current?.restoreScreenTransport(ref.playing, replayScreenOffset());
+        } else if (kind !== 'file' && kind === screen.kind && screen.name === f.name) {
           setShowState(s => ({ ...s, led: { ...s.led, customMediaType: kind, customMediaUrl: asset.url! } }));
         }
         count++;
@@ -724,10 +750,8 @@ export const App: React.FC = () => {
           break;
         case 'prevCue':
         case 'nextCue': {
-          if (!cues.length) break;
-          const index = cues.findIndex(c => c.id === activeCueId);
-          const next = action === 'nextCue' ? index + 1 : (index < 0 ? 0 : index) - 1;
-          const cue = cues[(next + cues.length) % cues.length];
+          const cue = action === 'nextCue' ? nextCue : previousCue;
+          if (!cue) break;
           triggerCue(cue);
           showToast(cue.name);
           break;
@@ -742,6 +766,7 @@ export const App: React.FC = () => {
         case 'masterUp':
         case 'masterDown':
           previewRig();
+          setCueModified(true);
           setShowState(s => ({ ...s, masterDimmer: Math.max(0, Math.min(1, s.masterDimmer + (action === 'masterUp' ? 0.05 : -0.05))) }));
           break;
         case 'auto': toggleDirector(); break;
@@ -768,7 +793,14 @@ export const App: React.FC = () => {
         fixtureCount={counts.fixtures}
         laserCount={counts.lasers}
         audio={audioMetrics}
-        linkedMusic={expectedMusic.current}
+        linkedMusic={media.music}
+        trackDuration={audioEngineRef.current?.trackDuration() ?? 0}
+        onSeekTrack={seconds => {
+          if (media.music.kind !== 'file') return;
+          expectedMusic.current = { ...media.music, offsetSeconds: seconds };
+          audioEngineRef.current?.seekTrack(seconds);
+          setAudioMetrics(metrics => ({ ...metrics }));
+        }}
         volume={volume}
         bpm={showState.bpm}
         openingBar={demoOpeningBlack ? audioMetrics.demo!.bar + 1 : undefined}
@@ -793,13 +825,15 @@ export const App: React.FC = () => {
         }}
         onBpmChange={(nextBpm) => {
           const clamped = Math.max(70, Math.min(180, nextBpm));
+          setCueModified(true);
           setShowState((s) => ({ ...s, bpm: clamped }));
           audioEngineRef.current?.setBpm(clamped);
         }}
         onToggleAutoDirector={toggleDirector}
-        onToggleAudioReactive={() =>
-          setShowState((s) => ({ ...s, audioReactive: !s.audioReactive }))
-        }
+        onToggleAudioReactive={() => {
+          setCueModified(true);
+          setShowState((s) => ({ ...s, audioReactive: !s.audioReactive }));
+        }}
         onSelectCamera={handleCamera}
         onToggleRigDrawer={() => {
           previewRig();
@@ -815,11 +849,19 @@ export const App: React.FC = () => {
       />
 
       {/* Live Status Toast & Blackout Pill */}
+      {missing.length > 0 && <button type="button" className="media-relink-alert" onClick={() => setFilesOpen(true)}>
+        {missing.length} missing media {missing.length === 1 ? 'file' : 'files'} · Relink
+      </button>}
       {filesOpen && <ShowFiles name={rig.name} media={media} timeline={timeline.timeline} missing={missing} cueNames={new Map(cues.map(c => [c.id, c.name]))}
         onOpen={openDocument} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onClose={() => setFilesOpen(false)}/>}
       {cueEditor && <CueListEditor cues={cues} capture={() => ({ id: crypto.randomUUID(), name: 'New look',
-        tag: 'USER', accent: showState.primaryColor, state: structuredClone(showState), screen: readScreen() })}
-        onApply={next => { setFollowId(null); setCues(next); if (!next.some(c => c.id === activeCueId)) setActiveCueId(null); }}
+        tag: 'USER', accent: showState.primaryColor, state: structuredClone(showState), screen: cueScreen() })}
+        onApply={next => {
+          const index = next.findIndex(c => c.id === activeCueId);
+          if (index < 0) { setActiveCueId(null); setCueModified(false); }
+          if (index < 0 || !next[index + 1] || next[index].followSeconds !== cues[currentIndex]?.followSeconds) setFollow(null);
+          setCues(next);
+        }}
         onClose={() => setCueEditor(false)}/>}
       {toast && !demoOpeningBlack && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
@@ -877,9 +919,10 @@ export const App: React.FC = () => {
           rig={rig}
           cues={cues}
           activeCueId={activeCueId}
+          cueModified={cueModified}
           onPatchState={(patch) => {
             if (Object.keys(patch).some(key => key !== 'masterDimmer' && key !== 'blackout' && key !== 'bloomStrength')) takeDesk();
-            else previewRig();
+            else { previewRig(); setCueModified(true); }
             setShowState((s) => ({ ...s, ...patch }));
           }}
           onPatchLaser={(patch) => {
@@ -920,10 +963,12 @@ export const App: React.FC = () => {
           onUploadScreen={file => {
             const kind = file.type.startsWith('video/') ? 'video' : 'image';
             const asset = registerAsset(kind, file);
-            takeDesk(); setScreen({ target: 'main-led', kind, name: file.name, playing: kind === 'video', offsetSeconds: 0 });
-            setShowState(s => ({ ...s, led: { ...s.led, customMediaUrl: asset.url!, customMediaType: kind, visualMode: 'custom', enabled: true } }));
+            takeDesk(); setCaptureVideoPosition(false); setScreen({ target: 'main-led', kind, name: file.name, playing: kind === 'video', offsetSeconds: 0 });
+            setShowState(s => ({ ...s, led: { ...s.led, brightness: s.led.brightness <= 0.05 ? 1 : s.led.brightness,
+              customMediaUrl: asset.url!, customMediaType: kind, visualMode: 'custom', enabled: true } }));
           }}
           screenName={media.screen.name} videoPlaying={media.screen.playing}
+          captureVideoPosition={captureVideoPosition} onCaptureVideoPosition={setCaptureVideoPosition}
           onToggleVideo={() => {
             if (missing.includes(screen.name)) { setFilesOpen(true); return; }
             takeDesk();
@@ -932,14 +977,15 @@ export const App: React.FC = () => {
             if (next.playing) setShowState(s => ({ ...s, led: { ...s.led, enabled: true, visualMode: 'custom' } }));
           }}
           onEditCues={() => setCueEditor(true)}
-          onGo={() => { const cue = nextCue ?? cues[0]; if (cue) triggerCue(cue); }}
-          onHold={() => setFollowId(null)}
-          followPending={!!(followSeconds && nextCue)}
+          onGo={() => { if (nextCue) triggerCue(nextCue); }}
+          onResetCue={() => { if (cues[0]) triggerCue(cues[0]); }}
+          onHold={() => setFollow('held')}
+          follow={follow}
           take={{ mode: timeline.mode, timeMs: timeline.timeMs, hasTake: !!timeline.timeline?.events.length,
             record: () => { if (!timeline.timeline?.events.length || window.confirm('Replace the recorded take in this session?')) timeline.record(); },
             play: () => {
               if (missing.length) showToast(`Playing with missing media. Relink ${missing.join(', ')} in Files.`);
-              setFollowId(null); replaying.current = true; replayLook.current = showState; replayScreen.current = NO_SCREEN;
+              setFollow(null); replaying.current = true; replayLook.current = showState; replayScreen.current = NO_SCREEN; replayMusicClock.current = 0;
               engineRef.current?.releaseDirector(false); previewRig(); timeline.play();
             }, stop: timeline.stop }}
           onSetBump={(key, active) => setBump((b) => ({ ...b, [key]: active }))}

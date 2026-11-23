@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AudioLines, Camera, ChevronDown, DollarSign, DraftingCompass, Eye, EyeOff, Layers, Mic, Pause,
-  Play, Radio, SlidersHorizontal, Sparkles, Upload, Wrench, FolderOpen,
+  Play, Radio, RotateCcw, SlidersHorizontal, Sparkles, Upload, Wrench, FolderOpen,
 } from 'lucide-react';
 import { AudioMetrics, CameraPreset, MusicRef } from '../types/show';
 
@@ -11,6 +11,8 @@ interface TopBarProps {
   laserCount: number;
   audio: AudioMetrics;
   linkedMusic: MusicRef;
+  trackDuration: number;
+  onSeekTrack: (seconds: number) => void;
   volume: number;
   bpm: number;
   openingBar?: number;
@@ -50,8 +52,12 @@ export const CAMERAS: { id: CameraPreset; label: string }[] = [
   { id: 'pa_closeup', label: 'PA close-up' },
 ];
 
+function clockTime(seconds: number) {
+  return Math.floor(seconds / 60) + ':' + String(Math.floor(seconds % 60)).padStart(2, '0');
+}
+
 export const TopBar: React.FC<TopBarProps> = ({
-  fps, fixtureCount, laserCount, audio, linkedMusic, volume, bpm, openingBar, blackout, autoDirector, audioReactive,
+  fps, fixtureCount, laserCount, audio, linkedMusic, trackDuration, onSeekTrack, volume, bpm, openingBar, blackout, autoDirector, audioReactive,
   activeCamera, rigDrawerOpen, dmxDrawerOpen, costModalOpen, oneNightCostLabel,
   cinemaMode, onTogglePlay, onStartDemo, onDesignStage, onShowFiles, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
   onToggleAutoDirector, onToggleAudioReactive, onSelectCamera, onToggleRigDrawer,
@@ -127,7 +133,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           {audioOpen && (
             <section id="sound-settings" aria-label="Audio settings" className="audio-popover">
               <div className="audio-source">
-                <AudioLines /><strong>{audio.source === 'none' ? 'Demo synth' : audio.trackName}</strong>
+                <AudioLines /><strong>{audio.source === 'none' ? linkedMusic.kind === 'file' ? linkedMusic.name : 'Demo synth' : audio.trackName}</strong>
                 <div className="audio-meter" aria-hidden="true">
                   {Array.from({ length: 12 }, (_, i) => (
                     <i key={i} style={{ height: `${Math.max(2, (audio.spectrum[i * 2] || 0) * 22)}px` }} />
@@ -138,6 +144,14 @@ export const TopBar: React.FC<TopBarProps> = ({
                 <button className="transport-btn" onClick={() => fileRef.current?.click()}><Upload /> Load track</button>
                 <button className="transport-btn" onClick={onToggleMic} aria-pressed={audio.source === 'mic'}><Mic /> Mic input</button>
               </div>
+              {linkedMusic.kind === 'file' && <>
+                {trackDuration > 0 && <label className="audio-level"><span>Position</span>
+                  <input aria-label="Track position" type="range" min={0} max={trackDuration} step={0.1}
+                    value={linkedMusic.offsetSeconds ?? 0} onChange={e => onSeekTrack(Number(e.target.value))} />
+                  <output>{clockTime(linkedMusic.offsetSeconds ?? 0)} / {clockTime(trackDuration)}</output>
+                </label>}
+                <button className="transport-btn" onClick={() => onSeekTrack(0)}><RotateCcw /> Restart 0:00</button>
+              </>}
               {audio.source !== 'none' && <button className="transport-btn" onClick={() => {
                 setAudioOpen(false);
                 onStartDemo();

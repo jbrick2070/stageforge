@@ -14,6 +14,7 @@ const THREE = await compiler.ssrLoadModule('three');
 const { buildVenueArchitecture } = await compiler.ssrLoadModule('/src/engine/geometryBuilders.ts');
 const { RIG_TEMPLATES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { buildDmxPatch } = await compiler.ssrLoadModule('/src/data/dmxPatch.ts');
+const { monitorPositions, ledPlacement } = await compiler.ssrLoadModule('/src/data/stageEquipment.ts');
 
 // The venue shell only needs plain materials; the canvas-textured ones are for the deck and PA.
 const mats = new Proxy({}, { get: (cache, key) => (cache[key] ??= new THREE.MeshStandardMaterial()) });
@@ -27,6 +28,21 @@ test('every preset patches without DMX conflicts', () => {
       assert.ok(row.end <= 512, `${key}: ${row.group.id} runs past channel 512`);
     }
   }
+});
+
+test('floor-only venues and decks above the grid keep finite equipment positions', () => {
+  const club = Object.values(RIG_TEMPLATES).find(r => r.venue === 'club');
+  const rig = { ...club, platforms: [], audioRig: { ...club.audioRig, monitorCount: 1 } };
+  assert.deepEqual(monitorPositions(rig).map(m => [m.x, m.y, m.rotationY]), [[0, 0, 0]]);
+  assert.ok(ledPlacement(rig).height > 0);
+  rig.platforms = [{ id: 'offset', name: 'Offset', x: 12, z: 3, width: 4, depth: 2, height: 5.3 }];
+  const [monitor] = monitorPositions(rig);
+  assert.equal(monitor.x, 12);
+  assert.equal(monitor.rotationY, 0);
+  const wall = ledPlacement(rig);
+  assert.equal(wall.x, 12);
+  assert.equal(wall.height, 0);
+  assert.ok(Object.values(wall).every(Number.isFinite));
 });
 
 test('a wide theatre plan keeps its dimensions and a bounded seating sample', () => {

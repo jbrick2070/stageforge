@@ -43,9 +43,13 @@ Open **Files** next to **Design stage**. Choose the format for the next person w
 
 Use **Show cues → Edit cue list** to name and order your cues. **Add current look** captures the live desk. Set **Follow after** to advance automatically after a cue, or leave it empty to wait for **GO**. **Hold follow** cancels a pending advance.
 
+The desk shows the current cue and the next one. Changing a look marks the current cue **Modified** and keeps its place. **GO** and Xbox D-pad right advance from there. A timed follow keeps counting through a manual edit. After the final cue, **Next** shows the first cue with a **Wrap** indicator. Removing cues in the editor moves forward and offers **Undo remove**.
+
 Choose **Record take**, perform the show, then **Stop recording**. **Replay take** starts its recorded action sequence at zero. **Files → Recorded actions** shows what changed at each timestamp. **Save show JSON** writes the complete project. StageForge records desk and transport changes, including momentary effects, camera selections, music, and the main LED wall. The recording uses stage lighting parameters rather than a sampled DMX packet stream.
 
 The project identifies local music, video and still images by filename. Carry those files with the show. On the destination, use **Files → Relink media files** to select them. The built-in score travels with the app. Live microphone samples and uploaded media bytes stay outside the JSON.
+
+If a file is missing, click the missing-media button to relink it. A cue that calls an unavailable clip shows its filename on the LED wall. New video cues start at zero unless you select **Store cues at current video position** or edit the cue's start time. For a local soundtrack, use **Audio → Restart 0:00** or scrub to your rehearsal mark before recording.
 
 The project specification, schema, sample show and implementation are public under the repository's MIT license. [Show format](docs/show-format.md) · [JSON Schema](public/schemas/show-v1.schema.json) · [Example show](public/examples/amber-walk-on.stageforge.show.json) · [License](LICENSE)
 

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ScenicBuilder } from './ScenicBuilder';
 import { addPatchedUnits, allocateDmx } from '../data/dmxPatch';
 import { downloadRig, parseRigJson } from '../data/rigImport';
+import { GRID_HEIGHT, ledPlacement } from '../data/stageEquipment';
 import { normalizeDesign } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
 import {
@@ -87,6 +88,8 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   if (!open) return null;
   const profileId = rig.audioRig.speakerProfile ?? 'touring';
   const speakerProfile = SPEAKER_PROFILES[profileId];
+  const gridHeight = GRID_HEIGHT[rig.venue];
+  const wall = ledPlacement(rig);
 
   const updatePod = (podId: string, patch: Partial<TrussPodConfig>) => {
     onChangeRig({
@@ -106,12 +109,12 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
       shape,
       width: shape === 'circle' ? 6.5 : 14,
       x: 0,
-      baseY: 10.2,
+      baseY: Math.min(10.2, gridHeight - 0.8),
       z: (Math.random() - 0.5) * 6,
       rotationY: 0,
       motorized: true,
-      motorMinY: 5.2,
-      motorMaxY: 13.5,
+      motorMinY: Math.min(5.2, gridHeight - 2.0),
+      motorMaxY: Math.min(13.5, gridHeight - 0.3),
       fixtures: [
         {
           id: crypto.randomUUID(),
@@ -312,6 +315,13 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
             />
           </div>
 
+          {rig.ledWall.enabled && wall.scale < 1 && (
+            <p className="text-xs text-amber-200">
+              {wall.height > 0
+                ? `LED wall fits at ${wall.width.toFixed(1)} × ${wall.height.toFixed(1)} m under the ${gridHeight} m grid.`
+                : `No clearance for the LED wall under the ${gridHeight} m grid at this deck height.`}
+            </p>
+          )}
           <label className="flex items-center gap-2">
             <span className="font-mono-tech text-[10px] text-zinc-300">Speaker system</span>
             <select aria-label="Speaker system" value={profileId}

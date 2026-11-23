@@ -377,6 +377,17 @@ export class AudioEngine {
     return this.trackName;
   }
 
+  public trackDuration() {
+    const duration = this.activeFile?.element.duration;
+    return duration !== undefined && Number.isFinite(duration) ? duration : 0;
+  }
+
+  public seekTrack(seconds: number) {
+    if (this.activeFile && Number.isFinite(seconds)) {
+      this.activeFile.element.currentTime = Math.max(0, Math.min(seconds, this.trackDuration()));
+    }
+  }
+
   public timelineMusic(): MusicRef {
     if (this.source === 'file' && this.activeFile) {
       return { kind: 'file', name: this.activeFile.file.name, playing: this.playing,

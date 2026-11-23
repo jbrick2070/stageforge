@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ShowState } from '../types/show';
 import type { ShowTimeline, TimelineEvent } from '../data/showFile';
 
-export type DeskFrame = Required<Omit<TimelineEvent, 'atMs' | 'look'>> & { look: ShowState };
+export type DeskFrame = Required<Omit<TimelineEvent, 'atMs' | 'look'>> & { look: ShowState; cueModified: boolean };
 type Mode = 'idle' | 'recording' | 'playing';
 
 function changed(a: unknown, b: unknown) {
@@ -28,7 +28,8 @@ export function frameDelta(before: DeskFrame, after: DeskFrame, atMs: number, el
     }
     if (Object.keys(patch).length) event.look = patch;
   }
-  if (before.cueId !== after.cueId) event.cueId = after.cueId;
+  // A refire can restore the current cue without changing its ID.
+  if (before.cueId !== after.cueId || (before.cueModified && !after.cueModified)) event.cueId = after.cueId;
   if (before.camera !== after.camera) event.camera = after.camera;
   if (before.volume !== after.volume) event.volume = after.volume;
   if (changed(before.bump, after.bump)) event.bump = after.bump;
@@ -99,7 +100,8 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
   const record = () => {
     if (session.current) return;
     const frame = live.current.sample();
-    session.current = { mode: 'recording', started: performance.now(), events: [{ atMs: 0, ...frame }],
+    const { cueModified: _modified, ...snapshot } = frame;
+    session.current = { mode: 'recording', started: performance.now(), events: [{ atMs: 0, ...snapshot }],
       durationMs: 0, sampledMs: 0, previous: frame, index: 0 };
     setMode('recording');
     startClock();

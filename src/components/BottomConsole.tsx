@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Zap,
   Sparkles,
@@ -39,6 +39,7 @@ interface BottomConsoleProps {
   rig: RigConfig;
   cues: ShowCue[];
   activeCueId: string | null;
+  cueModified: boolean;
   onPatchState: (patch: Partial<ShowState>) => void;
   onPatchLaser: (patch: Partial<ShowState['laser']>) => void;
   onPatchMotors: (patch: Partial<ShowState['motors']>) => void;
@@ -49,12 +50,15 @@ interface BottomConsoleProps {
   onSaveCue: (cueId: string) => void;
   onUploadScreen: (file: File) => void;
   screenName: string;
+  captureVideoPosition: boolean;
+  onCaptureVideoPosition: (capture: boolean) => void;
   videoPlaying: boolean;
   onToggleVideo: () => void;
   onEditCues: () => void;
   onGo: () => void;
+  onResetCue: () => void;
   onHold: () => void;
-  followPending: boolean;
+  follow: number | 'held' | null;
   take: { mode: 'idle' | 'recording' | 'playing'; timeMs: number; hasTake: boolean; record: () => void; play: () => void; stop: () => void };
   onSetBump: (key: keyof BumpState, active: boolean) => void;
 }
@@ -116,12 +120,22 @@ const LED_MODES: { id: LedVisualMode; label: string }[] = [
   { id: 'custom', label: 'Custom Media' },
 ];
 
+function FollowCountdown({ deadline }: { deadline: number }) {
+  const [now, setNow] = useState(() => performance.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(performance.now()), 100);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <span className="cue-countdown">Follow in {(Math.max(0, deadline - now) / 1000).toFixed(1)} s</span>;
+}
+
 export const BottomConsole: React.FC<BottomConsoleProps> = ({
   state,
   bump,
   rig,
   cues,
   activeCueId,
+  cueModified,
   onPatchState,
   onPatchLaser,
   onPatchMotors,
@@ -130,7 +144,8 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   onSetPodMotor,
   onTriggerCue,
   onSaveCue,
-  onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onHold, followPending, take,
+  captureVideoPosition, onCaptureVideoPosition,
+  onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onResetCue, onHold, follow, take,
   onSetBump,
 }) => {
   const [tab, setTab] = useState<ConsoleTab>('show');
@@ -141,6 +156,9 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   const mediaInputRef = useRef<HTMLInputElement>(null);
 
   const handleMediaUpload = onUploadScreen;
+  const currentIndex = cues.findIndex(cue => cue.id === activeCueId);
+  const nextIndex = currentIndex + 1 < cues.length ? currentIndex + 1 : 0;
+  const cueLabel = (index: number) => cues[index] ? `${String(index + 1).padStart(2, '0')} ${cues[index].name}` : '—';
 
   return (
     <section aria-label="Lighting desk" className="stage-dock">
@@ -175,11 +193,25 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
               <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-4">
                 {/* 8 Cue Executor Pads */}
                 <div>
+                  <div className="cue-stack" role="group" aria-label="Cue stack">
+                    <div className="cue-stack-position" role="status">
+                      <span><small>Now</small> <strong>{cueLabel(currentIndex)}</strong>
+                        {currentIndex >= 0 && cueModified && <em>Modified</em>}</span>
+                      <span><small>Next</small> <strong>{cueLabel(nextIndex)}</strong>
+                        {currentIndex >= 0 && nextIndex === 0 && <em>Wrap</em>}</span>
+                    </div>
+                    {typeof follow === 'number' && <div className="cue-actions cue-follow">
+                      <FollowCountdown key={follow} deadline={follow}/>
+                      <button onClick={onHold}>Hold follow</button>
+                    </div>}
+                    {follow === 'held' && <span className="cue-countdown">Follow held · manual GO</span>}
+                  </div>
                   <div className="cue-actions">
                     <button className="cue-go" disabled={!cues.length || take.mode === 'playing'} onClick={onGo}>GO</button>
-                    {followPending && <button onClick={onHold}>Hold follow</button>}
+                    <button onClick={onResetCue} disabled={!cues.length || take.mode === 'playing'}>Reset to cue 1</button>
                     <button onClick={onEditCues} disabled={take.mode !== 'idle'}>Edit cue list</button>
                     <button
+                      disabled={take.mode === 'playing'}
                       onClick={() => setStoreMode((s) => !s)}
                       className={`px-2 py-0.5 rounded text-[10px] font-mono-tech flex items-center gap-1 border cursor-pointer transition ${
                         storeMode
@@ -205,6 +237,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                       return (
                         <button
                           key={cue.id}
+                          disabled={take.mode === 'playing'}
                           onClick={() => {
                             if (storeMode) {
                               onSaveCue(cue.id);
@@ -223,6 +256,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                         >
                           <span className="cue-meta">
                             <span>{String(idx + 1).padStart(2, '0')}</span>
+                            {cue.followSeconds && <span aria-label={`Follow after ${cue.followSeconds} seconds`}>↻ {cue.followSeconds}s</span>}
                             {isActive ? <Check aria-hidden="true" /> : <span>{cue.tag}</span>}
                           </span>
                           <strong>{cue.name}</strong>
@@ -655,6 +689,10 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                         <Upload className="w-3 h-3" /> MEDIA
                       </button>
                     </div>
+                    {state.led.customMediaType === 'video' && <label className="capture-video-position">
+                      <input type="checkbox" checked={captureVideoPosition} onChange={e => onCaptureVideoPosition(e.target.checked)} />
+                      Store cues at current video position
+                    </label>}
                   </div>
                 </div>
               </div>

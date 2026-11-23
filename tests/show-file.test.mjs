@@ -10,9 +10,38 @@ const compiler = await createServer({
 after(() => compiler.close());
 const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
 const { RIG_TEMPLATES, INITIAL_SHOW_STATE, SHOW_CUES } = await compiler.ssrLoadModule('/src/data/presets.ts');
+const { cueLook, differsFromCue } = await compiler.ssrLoadModule('/src/data/cueLook.ts');
+const { frameDelta } = await compiler.ssrLoadModule('/src/input/useShowTimeline.ts');
 const example = JSON.parse(await readFile(new URL('../public/examples/amber-walk-on.stageforge.show.json', import.meta.url), 'utf8'));
 const parse = value => parseShowFile(JSON.stringify(value));
 const write = show => makeShowFile(show.rig, show.cues, show.look, show.activeCueId, show.controls, show.timeline, show.media);
+
+test('reopened v1 cues compare their authored values and ignore inherited fields, URL resolution and JSON key order', () => {
+  const previous = structuredClone(INITIAL_SHOW_STATE);
+  const screen = { kind: 'none', target: 'main-led', playing: false, name: '' };
+  previous.led.tourText = 'Festival';
+  previous.motors.podTargets = { front: { height: 1, tilt: 0 }, rear: { height: 0.5, tilt: 0.3 } };
+  const partial = SHOW_CUES[1];
+  const look = cueLook(previous, partial);
+  look.masterDimmer = 0.42;
+  assert.equal(differsFromCue(look, partial, screen), false);
+  assert.equal(differsFromCue({ ...look, primaryColor: '#abcdef' }, partial, screen), true);
+  const captured = { ...partial, state: structuredClone(look) };
+  const reopened = structuredClone(look);
+  reopened.motors.podTargets = { rear: { tilt: 0.3, height: 0.5 }, front: { tilt: 0, height: 1 } };
+  reopened.led.customMediaUrl = 'blob:session';
+  assert.equal(differsFromCue(reopened, captured, screen), false);
+  assert.equal(differsFromCue({ ...reopened, masterDimmer: 1 }, captured, screen), true);
+});
+
+test('a recorded override retains its cue cursor and refiring the same cue records its ID', () => {
+  const frame = { ...example.timeline.events[0], cueModified: false };
+  const edited = { ...frame, cueModified: true, look: { ...frame.look, masterDimmer: 0.6 } };
+  assert.deepEqual(frameDelta(frame, edited, 100, 100), { atMs: 100, look: { masterDimmer: 0.6 } });
+  assert.deepEqual(frameDelta(edited, frame, 200, 100), {
+    atMs: 200, look: { masterDimmer: frame.look.masterDimmer }, cueId: frame.cueId,
+  });
+});
 
 test('the public example round-trips its ordered cues, playback clock and media transport', () => {
   const show = parse(example);

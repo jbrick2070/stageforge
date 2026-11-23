@@ -13,6 +13,10 @@
 .desk-dialog button, .cue-actions button { cursor: pointer; background: #293035; border: 1px solid #485659; border-radius: 4px; padding: 5px 9px; }
 .desk-dialog button:disabled, .cue-actions button:disabled { opacity: .45; cursor: default; }
 .desk-dialog label { display: grid; gap: 3px; margin: 10px 0; }
+.desk-dialog .cue-remove { color: #ffc1b8; overflow-wrap: anywhere; }
+.cue-removal { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; }
+.cue-removal span { min-width: 0; overflow-wrap: anywhere; }
+.cue-removal button { flex: none; }
 .desk-dialog select, .desk-dialog input:not([type=file]) { background: #101518; border: 1px solid #485659; color: inherit; padding: 5px 7px; border-radius: 4px; }
 .file-formats { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
 .file-formats button { display: flex; justify-content: space-between; align-items: center; }
@@ -21,6 +25,13 @@
 .cue-actions { gap: 4px; margin-bottom: 5px; }
 .cue-actions button { font: 600 10px/1.2 Inter, sans-serif; padding: 4px 7px; }
 .cue-actions .cue-go { background: #b0e0c6; color: #14221b; }
+.cue-stack { margin-bottom: 6px; padding: 6px 8px; border-left: 2px solid #91d1b1; background: #20272a; color: #e5eeed; font: 500 11px/1.35 Inter, sans-serif; }
+.cue-stack-position { display: flex; flex-wrap: wrap; gap: 3px 14px; }
+.cue-stack-position > span { overflow-wrap: anywhere; }
+.cue-stack-position small { margin-right: 3px; color: #acbcb8; font: 600 9px/1.2 monospace; text-transform: uppercase; }
+.cue-stack-position em { margin-left: 5px; color: #f3c277; font-style: normal; }
+.cue-stack .cue-follow { margin: 3px 0 0; }
+.cue-countdown { color: #f3c277; font-variant-numeric: tabular-nums; }
 .take-list { margin-top: 12px; }
 .take-list summary { cursor: pointer; }
 .take-list ol { max-height: 220px; padding: 0; overflow: auto; }
@@ -143,6 +154,18 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
 }
 .stage-viewport { grid-area: stage; position: relative; min-height: 0; min-width: 0; overflow: hidden; background: #000; }
 .stage-viewport canvas { display: block; }
+.media-relink-alert {
+  grid-area: stage; align-self: start; justify-self: start; z-index: 15;
+  margin: 9px 12px; padding: 5px 10px; border-radius: 4px;
+  border: 1px solid #977241; background: #32251a; color: #ffda9f;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.media-relink-alert:focus-visible { outline: 2px solid #ffda9f; outline-offset: 2px; }
+@media (max-width: 600px) {
+  .stage-workstation[data-cinema="true"] .media-relink-alert { margin-top: 51px; }
+}
+.capture-video-position { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #d5c9d8; }
+.capture-video-position input { accent-color: #e879f9; }
 .stage-show-hud { position: relative; grid-area: stage; z-index: 12; pointer-events: none; min-width: 0; min-height: 0; }
 .stage-workstation[data-demo-blackout="true"] .stage-show-hud { visibility: hidden; }
 .demo-progress, .controller-guide summary, .controller-card { background: #101418eb; color: #f2f4f4; border: 1px solid #41484c; border-radius: 5px; }
@@ -278,14 +301,19 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
   .stage-workstation .rig-builder-panel, .stage-workstation .dmx-monitor-panel { position: fixed; inset: 8px 8px auto auto; z-index: 45; height: min(650px, calc(100dvh - 16px)); }
 }
 @media (max-width: 429px) {
-  .transport-brand p { font-size: 8px; }
+  .transport-brand, .transport-brand > div { min-width: 0; }
+  .transport-brand > svg { display: none; }
+  .transport-brand h1 { white-space: nowrap; }
+  .transport-brand p { overflow: hidden; text-overflow: ellipsis; font-size: 8px; }
+  .transport-playback > button[aria-label="Auto-LD"] span { display: none; }
   .transport-tools .transport-btn { padding-inline: 5px; gap: 3px; font-size: 10px; }
-  .transport-tools .camera-select select { width: 117px; }
+  .transport-tools .camera-select { position: relative; padding: 0; }
+  .transport-tools .camera-select select { width: 133px; margin: 0; padding: 0 19px 0 25px; }
+  .transport-tools .camera-select svg:first-child { position: absolute; left: 5px; }
   .desk-tab { padding-inline: 6px; gap: 4px; }
   .desk-tab svg { width: 12px; }
 }
 @media (max-width: 359px) {
-  .transport-brand > svg { display: none; }
   .transport-tools .transport-btn span { display: none; }
   .desk-tab svg { display: none; }
 }
@@ -309,5 +337,4 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
 }
 @media (min-width: 360px) and (max-width: 429px) {
   .transport-tools .tool-name-detail { display: none; }
-  .transport-brand > svg { display: none; }
 }

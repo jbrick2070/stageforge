@@ -32,6 +32,18 @@ export interface ShowMedia {
   screen: ScreenRef;
 }
 
+export function referencedFiles(media: ShowMedia | undefined, cues: ShowCue[], timeline?: ShowTimeline) {
+  const refs = [media?.music, media?.screen, ...cues.map(cue => cue.screen),
+    ...(timeline?.events.flatMap(event => [event.music, event.screen]) ?? [])];
+  const keys = new Set<string>();
+  for (const ref of refs) {
+    if (ref && (ref.kind === 'file' || ref.kind === 'image' || ref.kind === 'video')) {
+      keys.add(ref.kind + ':' + ref.name);
+    }
+  }
+  return keys;
+}
+
 export interface StageForgeShowFile {
   $schema: typeof SHOW_SCHEMA_URL;
   format: 'stageforge-show';
