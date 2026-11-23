@@ -2,6 +2,6 @@
 
 interface Window {
   stageforgeDesktop?: {
-    onRigCommand(listener: (command: 'open' | 'export', json?: string) => void): () => void;
+    onRigCommand(listener: (command: 'open' | 'export' | 'show' | 'dxf' | 'glb' | 'csv', json?: string) => void): () => void;
   };
 }

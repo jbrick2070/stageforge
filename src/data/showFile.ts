@@ -1,0 +1,236 @@
+import schemaJson from '../../public/schemas/show-v1.schema.json';
+import type { BumpState, CameraPreset, MusicRef, RigConfig, ScreenRef, ShowCue, ShowState } from '../types/show';
+import { parseRigJson } from './rigImport';
+import { focusMarks } from '../engine/focusAim';
+
+export type { MusicRef, ScreenRef } from '../types/show';
+export const SHOW_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v1.schema.json';
+
+export interface ShowControls {
+  camera: CameraPreset;
+  volume: number;
+}
+
+export interface TimelineEvent {
+  atMs: number;
+  look?: Partial<ShowState>;
+  cueId?: string | null;
+  camera?: CameraPreset;
+  volume?: number;
+  bump?: BumpState;
+  music?: MusicRef;
+  screen?: ScreenRef;
+}
+
+export interface ShowTimeline {
+  durationMs: number;
+  events: TimelineEvent[];
+}
+
+export interface ShowMedia {
+  music: MusicRef;
+  screen: ScreenRef;
+}
+
+export interface StageForgeShowFile {
+  $schema: typeof SHOW_SCHEMA_URL;
+  format: 'stageforge-show';
+  version: 1;
+  rig: RigConfig;
+  cues: ShowCue[];
+  look: ShowState;
+  activeCueId: string | null;
+  controls?: ShowControls;
+  timeline?: ShowTimeline;
+  media?: ShowMedia;
+}
+
+// The public schema also supplies the reader's field allowlist and value bounds.
+interface Rule {
+  $ref?: string;
+  type?: string | string[];
+  const?: unknown;
+  enum?: unknown[];
+  pattern?: string;
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  exclusiveMinimum?: number;
+  minItems?: number;
+  maxItems?: number;
+  items?: Rule;
+  prefixItems?: Rule[];
+  required?: string[];
+  properties?: Record<string, Rule>;
+  propertyNames?: Rule;
+  additionalProperties?: false | Rule;
+  minProperties?: number;
+  maxProperties?: number;
+  if?: { properties: Record<string, { const?: unknown; enum?: string[] }> };
+  then?: { required?: string[]; properties?: Record<string, Rule> };
+}
+
+const schema: Rule & { $defs: Record<string, Rule> } = schemaJson as Rule & { $defs: Record<string, Rule> };
+const compiledPatterns = new Map<string, RegExp>();
+
+function invalid(path: string, reason: string): never {
+  throw new Error(path + ' ' + reason + '.');
+}
+
+function read(value: unknown, rule: Rule, path: string, writing: boolean): unknown {
+  if (rule.$ref) {
+    const target = schema.$defs[rule.$ref.slice('#/$defs/'.length)];
+    // Look snapshots share the cue layout, with the desk fields required.
+    return read(value, rule.required ? { ...target, required: rule.required } : target, path, writing);
+  }
+  if ('const' in rule && value !== rule.const) invalid(path, 'has an unsupported value');
+  if (rule.enum && !rule.enum.includes(value)) invalid(path, 'has an unsupported value');
+  if (!rule.type) return value;
+  const types = Array.isArray(rule.type) ? rule.type : [rule.type];
+  const kind = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  if (!types.includes(kind) && !(types.includes('integer') && Number.isSafeInteger(value)))
+    invalid(path, 'must be ' + types.join(' or '));
+
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < (rule.minimum ?? -Infinity) ||
+        value > (rule.maximum ?? Infinity) || value <= (rule.exclusiveMinimum ?? -Infinity))
+      invalid(path, 'is out of range');
+  } else if (typeof value === 'string') {
+    if (rule.minLength !== undefined || rule.maxLength !== undefined) {
+      const length = [...value].length;
+      if (length < (rule.minLength ?? 0) || length > (rule.maxLength ?? Infinity)) invalid(path, 'has an invalid length');
+    }
+    if (rule.pattern) {
+      let pattern = compiledPatterns.get(rule.pattern);
+      if (!pattern) compiledPatterns.set(rule.pattern, pattern = new RegExp(rule.pattern, 'u'));
+      if (!pattern.test(value)) invalid(path, 'has invalid text');
+    }
+  } else if (Array.isArray(value)) {
+    if (value.length < (rule.minItems ?? 0) || value.length > (rule.maxItems ?? Infinity))
+      invalid(path, 'has an invalid number of entries');
+    return value.map((item, i) => read(item, rule.prefixItems?.[i] ?? rule.items!, path + '[' + i + ']', writing));
+  } else if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const required = rule.required ?? [];
+    for (const key of required) {
+      if (!Object.hasOwn(record, key) || record[key] === undefined) invalid(path + '.' + key, 'is required');
+    }
+    const conditional = rule.if && Object.entries(rule.if.properties).every(([key, condition]) =>
+      condition.enum ? condition.enum.includes(record[key] as string) : record[key] === condition.const);
+    if (conditional) {
+      for (const key of rule.then?.required ?? []) if (!Object.hasOwn(record, key)) invalid(path + '.' + key, 'is required');
+      for (const [key, child] of Object.entries(rule.then?.properties ?? {})) read(record[key], child, path + '.' + key, writing);
+    }
+    const output: [string, unknown][] = [];
+    for (const [key, item] of Object.entries(record)) {
+      if (writing && item === undefined) continue;
+      const child = rule.properties && Object.hasOwn(rule.properties, key) ? rule.properties[key] : rule.additionalProperties;
+      if (!child) {
+        if (!writing) invalid(path + '.' + key, 'is not a show field');
+        continue;
+      }
+      if (rule.propertyNames) read(key, rule.propertyNames, path + ' key', writing);
+      output.push([key, read(item, child, path + '.' + key, writing)]);
+    }
+    if (output.length < (rule.minProperties ?? 0) || output.length > (rule.maxProperties ?? Infinity))
+      invalid(path, 'has an invalid number of fields');
+    return Object.fromEntries(output);
+  }
+  return value;
+}
+
+function rigReferences(rig: RigConfig) {
+  return {
+    pods: new Set(rig.trussPods.map(pod => pod.id)),
+    marks: new Set(focusMarks(rig).map(mark => mark.id)),
+  };
+}
+type RigReferences = ReturnType<typeof rigReferences>;
+
+function portableLook<T extends Partial<ShowState>>(look: T, refs: RigReferences): T {
+  const result = { ...look };
+  if (look.led) result.led = { ...look.led, customMediaUrl: null, customMediaType: null };
+  if (look.motors) {
+    result.motors = {
+      ...look.motors,
+      podTargets: Object.fromEntries(Object.entries(look.motors.podTargets).filter(([id]) => refs.pods.has(id))),
+    };
+  }
+  if (look.focusMarkId && !refs.marks.has(look.focusMarkId)) result.focusMarkId = null;
+  return result;
+}
+
+function portableMedia<T extends ScreenRef | MusicRef>(ref: T): T {
+  // Browsers normally return File.name. Other hosts can supply full paths.
+  let name = ref.name;
+  const candidate = name.trimStart();
+  if (candidate.startsWith('//') || (/^[a-z][a-z0-9+.-]*:/i.test(candidate) && !/^[a-z]:[\\/]/i.test(candidate))) name = '';
+  name = name.split(/[\\/]/).pop()!;
+  if (!name.trim() && ref.kind !== 'none') name = ref.kind === 'live' ? 'Live mic' : ref.kind === 'demo' ? 'Demo' : 'Local media';
+  return { ...ref, name };
+}
+
+function checkLook(look: Partial<ShowState>, refs: RigReferences, path: string) {
+  if (look.focusMarkId && !refs.marks.has(look.focusMarkId)) invalid(path + '.focusMarkId', 'does not identify a focus mark');
+  if (look.motors && Object.keys(look.motors.podTargets).some(id => !refs.pods.has(id)))
+    invalid(path + '.motors.podTargets', 'contains an unknown pod ID');
+}
+
+function decode(value: unknown, writing: boolean): StageForgeShowFile {
+  const show = read(value, schema, 'show', writing) as StageForgeShowFile;
+  // Share ID, geometry, patch count and motor-range checks with the legacy rig reader.
+  const rig = parseRigJson(JSON.stringify(show.rig));
+  show.rig = read(rig, schema.$defs.rig, 'show.rig', false) as RigConfig;
+  const refs = rigReferences(show.rig);
+  const ids = new Set<string>();
+  show.cues.forEach((cue, i) => {
+    if (ids.has(cue.id)) invalid('show.cues[' + i + '].id', 'duplicates another cue');
+    ids.add(cue.id);
+    checkLook(cue.state, refs, 'show.cues[' + i + '].state');
+  });
+  if (show.activeCueId !== null && !ids.has(show.activeCueId)) invalid('show.activeCueId', 'does not identify a cue');
+  checkLook(show.look, refs, 'show.look');
+  if (show.timeline) {
+    let last = 0;
+    for (const [index, event] of show.timeline.events.entries()) {
+      const path = 'show.timeline.events[' + index + ']';
+      if (event.atMs < last || event.atMs > show.timeline.durationMs) invalid(path + '.atMs', 'falls outside the ordered timeline');
+      if (event.look) checkLook(event.look, refs, path + '.look');
+      last = event.atMs;
+    }
+  }
+  return show;
+}
+
+export function makeShowFile(
+  rig: RigConfig, cues: ShowCue[], look: ShowState, activeCueId: string | null,
+  controls?: ShowControls, timeline?: ShowTimeline, media?: ShowMedia,
+): StageForgeShowFile {
+  const refs = rigReferences(rig);
+  return decode({
+    $schema: SHOW_SCHEMA_URL, format: 'stageforge-show', version: 1, rig,
+    cues: cues.map(cue => ({
+      ...cue, state: portableLook(cue.state, refs), screen: cue.screen && portableMedia(cue.screen),
+    })),
+    look: portableLook(look, refs), activeCueId, controls,
+    timeline: timeline && {
+      durationMs: timeline.durationMs,
+      events: timeline.events.map(event => ({
+        ...event, look: event.look && portableLook(event.look, refs),
+        music: event.music && portableMedia(event.music), screen: event.screen && portableMedia(event.screen),
+      })),
+    },
+    media: media && { music: portableMedia(media.music), screen: portableMedia(media.screen) },
+  }, true);
+}
+
+export function parseShowFile(source: string): StageForgeShowFile {
+  let value: unknown;
+  try {
+    value = JSON.parse(source);
+  } catch {
+    throw new Error('Choose a valid StageForge show JSON file.');
+  }
+  return decode(value, false);
+}

@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const listeners = new Set();
 let pending;
 ipcRenderer.on('stageforge:rig-command', (_event, command, source) => {
-  if (command !== 'export' && !(command === 'open' && typeof source === 'string')) return;
+  if (!['export', 'show', 'dxf', 'glb', 'csv'].includes(command) && !(command === 'open' && typeof source === 'string')) return;
   const args = command === 'open' ? [command, source] : [command];
   if (!listeners.size) pending = args;
   else for (const listener of listeners) listener(...args);

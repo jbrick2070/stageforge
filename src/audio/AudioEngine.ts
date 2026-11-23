@@ -1,4 +1,4 @@
-import { AudioMetrics } from '../types/show';
+import type { AudioMetrics, MusicRef } from '../types/show';
 import { DEMO_TOTAL_STEPS, getDemoPosition } from '../data/demoShow';
 import { DemoScore } from './demoScore';
 
@@ -9,17 +9,44 @@ interface ScheduledStep {
 }
 
 interface FileSource {
+  file: File;
   element: HTMLAudioElement;
   node: MediaElementAudioSourceNode;
   url: string;
+  abort: AbortController;
 }
 
 function releaseFile(file: FileSource) {
+  file.abort.abort();
   file.node.disconnect();
   file.element.pause();
   file.element.removeAttribute('src');
   file.element.load();
   URL.revokeObjectURL(file.url);
+}
+
+function seekLoop(element: HTMLMediaElement, offset: number) {
+  const time = Number.isFinite(offset) ? Math.max(0, offset) : 0;
+  const target = Number.isFinite(element.duration) && element.duration > 0 ? time % element.duration : time;
+  if (Math.abs(element.currentTime - target) > 0.015) element.currentTime = target;
+}
+
+function fileMetadata(file: FileSource) {
+  const { element, abort } = file;
+  return new Promise<void>((resolve, reject) => {
+    if (element.readyState >= 1) return resolve();
+    const clean = () => {
+      element.removeEventListener('loadedmetadata', ready);
+      element.removeEventListener('error', failed);
+      abort.signal.removeEventListener('abort', cancelled);
+    };
+    const ready = () => { clean(); resolve(); };
+    const failed = () => { clean(); reject(new Error('The selected audio file could not be decoded.')); };
+    const cancelled = () => { clean(); reject(new DOMException('Source changed', 'AbortError')); };
+    element.addEventListener('loadedmetadata', ready);
+    element.addEventListener('error', failed);
+    abort.signal.addEventListener('abort', cancelled);
+  });
 }
 
 const SCHEDULE_AHEAD = 0.15; // Audio seconds; covers main-thread rendering jitter.
@@ -226,15 +253,24 @@ export class AudioEngine {
   }
 
   public startDemoSynth(bpm = this.bpm) {
+    this.restoreDemo(0, bpm, true);
+  }
+
+  private restoreDemo(step: number, bpm: number, playing: boolean) {
     this.stopAll();
-    const ctx = this.ensureContext();
     this.setBpm(bpm);
     this.source = 'synth';
     this.trackName = 'Arena Anthem';
-    this.playing = true;
+    this.heldStep = Math.max(0, Math.min(DEMO_TOTAL_STEPS, step));
+    this.playing = playing && this.heldStep < DEMO_TOTAL_STEPS;
+    if (!this.playing) return;
+    const ctx = this.ensureContext();
     this.score = new DemoScore(ctx, this.masterGain!);
-    this.nextStep = 0;
-    this.nextStepTime = ctx.currentTime + 0.025;
+    const duration = 15 / this.bpm;
+    const origin = ctx.currentTime + 0.025;
+    this.nextStep = Math.ceil(this.heldStep);
+    this.nextStepTime = origin + (this.nextStep - this.heldStep) * duration;
+    this.scheduled.push({ step: this.heldStep, time: origin, duration });
     this.startPump();
   }
 
@@ -253,7 +289,7 @@ export class AudioEngine {
     // Keep the currently audible sixteenth even when a tempo change is already queued.
     while (this.scheduled.length > 1 && this.scheduled[1].time <= now) this.scheduled.shift();
     const event = this.scheduled[0];
-    return Math.max(0, Math.min(DEMO_TOTAL_STEPS, event.step + (now - event.time) / event.duration));
+    return Math.max(this.heldStep, Math.min(DEMO_TOTAL_STEPS, event.step + (now - event.time) / event.duration));
   }
 
   private startPump() {
@@ -302,18 +338,29 @@ export class AudioEngine {
   }
 
   public async loadAudioFile(file: File): Promise<string> {
+    return this.openAudioFile(file, true);
+  }
+
+  private async openAudioFile(file: File, playing: boolean, position?: () => number): Promise<string> {
     const generation = this.cancelPendingSource();
-    const ctx = this.ensureContext(this.source !== 'synth' || this.playing);
+    const ctx = this.ensureContext(playing && (this.source !== 'synth' || this.playing));
     const element = new Audio();
     element.loop = true;
+    element.preload = 'auto';
     const node = ctx.createMediaElementSource(element);
-    const candidate = { element, node, url: URL.createObjectURL(file) };
+    const candidate = { file, element, node, url: URL.createObjectURL(file), abort: new AbortController() };
     this.pendingFile = candidate;
     try {
       // The disconnected source stays silent until the browser accepts the file.
       element.src = candidate.url;
-      await element.play();
+      if (position) {
+        await fileMetadata(candidate);
+        if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+        seekLoop(element, position());
+      }
+      if (playing) await element.play();
       if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+      if (position) seekLoop(element, position());
       node.connect(this.masterGain!);
     } catch (error) {
       if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
@@ -325,9 +372,69 @@ export class AudioEngine {
     this.activeFile = candidate;
     this.source = 'file';
     this.trackName = file.name.replace(/\.[^/.]+$/, '');
-    this.playing = true;
-    this.ensureContext();
+    this.playing = playing;
+    if (playing) this.ensureContext();
     return this.trackName;
+  }
+
+  public timelineMusic(): MusicRef {
+    if (this.source === 'file' && this.activeFile) {
+      return { kind: 'file', name: this.activeFile.file.name, playing: this.playing,
+        offsetSeconds: this.activeFile.element.currentTime };
+    }
+    if (this.source === 'synth') return { kind: 'demo', name: this.trackName, playing: this.playing, demoStep: this.currentDemoStep() };
+    if (this.source === 'mic') return { kind: 'live', name: 'Live input', playing: this.playing };
+    return { kind: 'none', name: '', playing: false };
+  }
+
+  public async restoreTimelineMusic(ref: MusicRef, file: File | undefined, bpm: number, lateMs: number) {
+    this.setBpm(bpm);
+    const late = Number.isFinite(lateMs) ? Math.max(0, lateMs) / 1000 : 0;
+    if (ref.kind === 'live' || ref.kind === 'none') {
+      if (ref.kind === 'live' && ref.playing && this.source === 'mic') this.cancelPendingSource();
+      else this.stopAll();
+      return;
+    }
+    if (ref.kind === 'demo') {
+      const step = Math.min(DEMO_TOTAL_STEPS, (ref.demoStep ?? 0) + (ref.playing ? late * this.bpm / 15 : 0));
+      if (this.source === 'synth' && this.playing === ref.playing && Math.abs(this.currentDemoStep() - step) < 0.15) {
+        this.cancelPendingSource();
+        return;
+      }
+      this.restoreDemo(step, this.bpm, ref.playing);
+      return;
+    }
+    const active = this.activeFile;
+    const selected = file ?? (active?.file.name === ref.name ? active.file : undefined);
+    if (!selected) {
+      this.stopAll();
+      throw new Error(`Relink “${ref.name}” to play the recorded music.`);
+    }
+    const started = performance.now();
+    const position = () => (ref.offsetSeconds ?? 0) + (ref.playing ? late + (performance.now() - started) / 1000 : 0);
+    if (active?.file !== selected) {
+      this.stopAll();
+      await this.openAudioFile(selected, ref.playing, position);
+      return;
+    }
+    const generation = this.cancelPendingSource();
+    const element = active.element;
+    seekLoop(element, position());
+    this.playing = ref.playing;
+    if (!ref.playing) element.pause();
+    else {
+      this.ensureContext();
+      if (element.paused) {
+        try {
+          await element.play();
+          if (generation === this.sourceGeneration) seekLoop(element, position());
+        } catch (error) {
+          if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+          this.playing = false;
+          throw error;
+        }
+      }
+    }
   }
 
   public togglePlayPause(): boolean {
@@ -349,6 +456,8 @@ export class AudioEngine {
         });
       } else if (this.heldStep >= DEMO_TOTAL_STEPS) {
         this.startDemoSynth(this.bpm);
+      } else if (!this.score) {
+        this.restoreDemo(this.heldStep, this.bpm, true);
       } else {
         this.playing = true;
         this.ensureContext();

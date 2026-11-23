@@ -47,6 +47,8 @@ import { BeamPools, MOVING_HEAD_OPTICS } from './beamPools';
 import { fitAuthoredFoh } from './fohFraming';
 import { buildScenicPiece, ScenicPiece } from './scenicProps';
 import { SPEAKER_PROFILES } from '../data/speakerProfiles';
+import { PROP_CATALOG } from '../data/stageProps';
+import { exportStageGlb, nameFixtureUnit } from './stageGlb';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS, demoFade } from '../data/demoLighting';
 
 interface MovingFixtureInstance {
@@ -188,6 +190,11 @@ export class StageEngine {
   private lastTourText = '';
   private customTex: THREE.Texture | null = null;
   private customVideoEl: HTMLVideoElement | null = null;
+  private screenWantsPlay = true;
+  private screenRunning = false;
+  private pendingScreenOffset?: number;
+  private screenSeekClock = 0;
+  private videoPlayRequest?: Promise<void>;
   private lastCustomUrl: string | null = null;
   private mediaGeneration = 0;
 
@@ -373,6 +380,7 @@ export class StageEngine {
     this.scene.add(this.particles.group);
 
     this.rebuildRig(initialRig);
+    this.setShowState(initialState);
     this.setCameraPreset('foh');
     this.camera.position.copy(this.cameraTargetPos);
     this.controls.target.copy(this.cameraTargetLook);
@@ -423,6 +431,7 @@ export class StageEngine {
     if (state.led.customMediaUrl !== this.lastCustomUrl) {
       this.updateCustomLedMedia(state.led.customMediaUrl, state.led.customMediaType);
     }
+    this.syncScreenPlayback();
   }
 
   public setBumpState(bump: BumpState) {
@@ -619,9 +628,64 @@ export class StageEngine {
     this.textTex.needsUpdate = true;
   }
 
+  public screenTransport(): { playing: boolean; offsetSeconds: number } {
+    const video = this.customVideoEl;
+    if (!video) return { playing: false, offsetSeconds: 0 };
+    const loadingTime = this.screenRunning ? (performance.now() - this.screenSeekClock) / 1000 : 0;
+    const offsetSeconds = this.pendingScreenOffset === undefined ? video.currentTime : this.pendingScreenOffset + loadingTime;
+    return { playing: this.screenRunning, offsetSeconds };
+  }
+
+  public restoreScreenTransport(playing: boolean, offsetSeconds?: number) {
+    if (!this.customVideoEl) return;
+    this.screenWantsPlay = playing;
+    if (offsetSeconds !== undefined && Number.isFinite(offsetSeconds)) {
+      this.pendingScreenOffset = Math.max(0, offsetSeconds);
+      this.screenSeekClock = performance.now();
+    }
+    this.syncScreenPlayback();
+  }
+
+  private syncScreenPlayback() {
+    const video = this.customVideoEl;
+    if (!video) return;
+    const now = performance.now();
+    if (this.pendingScreenOffset !== undefined && this.screenRunning) {
+      this.pendingScreenOffset += (now - this.screenSeekClock) / 1000;
+    }
+    this.screenSeekClock = now;
+    const led = this.currentState.led;
+    this.screenRunning = !!this.currentRig?.ledWall.enabled && led.enabled && led.visualMode === 'custom' && this.screenWantsPlay;
+    if (video.readyState < 1) return;
+    if (this.pendingScreenOffset !== undefined) {
+      const offset = this.pendingScreenOffset;
+      const target = Number.isFinite(video.duration) && video.duration > 0 ? offset % video.duration : offset;
+      if (Math.abs(video.currentTime - target) > 0.015) video.currentTime = target;
+      this.pendingScreenOffset = undefined;
+    }
+    if (!this.screenRunning) {
+      if (!video.paused) video.pause();
+      this.videoPlayRequest = undefined;
+    } else if (video.paused && !this.videoPlayRequest) {
+      const play = video.play();
+      this.videoPlayRequest = play;
+      void play.catch(error => {
+        if (this.customVideoEl !== video || this.videoPlayRequest !== play || error?.name === 'AbortError') return;
+        this.screenWantsPlay = this.screenRunning = false;
+        this.onMediaError?.('The LED video could not play. Try playing it again or choose another file.');
+      }).finally(() => {
+        if (this.videoPlayRequest === play) this.videoPlayRequest = undefined;
+      });
+    }
+  }
+
   private updateCustomLedMedia(url: string | null, type: 'image' | 'video' | null) {
     const generation = ++this.mediaGeneration;
     this.lastCustomUrl = url;
+    this.screenWantsPlay = true;
+    this.screenRunning = false;
+    this.pendingScreenOffset = undefined;
+    this.videoPlayRequest = undefined;
     if (this.customVideoEl) {
       this.customVideoEl.pause();
       this.customVideoEl.removeAttribute('src');
@@ -647,13 +711,17 @@ export class StageEngine {
 
     if (type === 'video') {
       const video = document.createElement('video');
-      video.src = url;
+      this.customVideoEl = video;
+      video.preload = 'auto';
       video.loop = true;
       video.muted = true;
       video.playsInline = true;
       video.crossOrigin = 'anonymous';
-      video.play().catch(failed);
-      this.customVideoEl = video;
+      video.addEventListener('error', failed, { once: true });
+      video.addEventListener('loadedmetadata', () => {
+        if (generation === this.mediaGeneration) this.syncScreenPlayback();
+      }, { once: true });
+      video.src = url;
       const vTex = new THREE.VideoTexture(video);
       vTex.colorSpace = THREE.SRGBColorSpace;
       this.customTex = vTex;
@@ -709,6 +777,8 @@ export class StageEngine {
       if (!piece) {
         piece = { ...buildScenicPiece(prop, this.mats.fixtureBody), kind: prop.kind, phase: i * 1.91 };
         this.scenicPieces.set(prop.id, piece);
+        piece.root.name = PROP_CATALOG[prop.kind].label;
+        piece.root.userData = { kind: prop.kind, id: prop.id };
         this.scene.add(piece.root);
       }
       piece.root.position.set(prop.x, stageSurfaceHeight(rig, prop.x, prop.z) + 0.003, prop.z);
@@ -722,9 +792,16 @@ export class StageEngine {
     }
   }
 
+  public async exportCurrentStageGlb(): Promise<Blob> {
+    if (!this.currentRig) throw new Error('There is no stage to export.');
+    const roots = [...this.rigGroup.children, ...Array.from(this.scenicPieces.values(), piece => piece.root)];
+    return exportStageGlb(this.currentRig, roots, this.mats);
+  }
+
   public rebuildRig(rig: RigConfig) {
     const old = this.currentRig;
     this.currentRig = rig;
+    this.syncScreenPlayback();
     this.syncScenery(rig);
     if (old && old.stageWidth === rig.stageWidth && old.stageHeight === rig.stageHeight &&
       old.platforms === rig.platforms &&
@@ -747,6 +824,7 @@ export class StageEngine {
     // 1. Venue architecture + animated arena crowd
     const venueBuild = buildVenueArchitecture(rig.venue, rig.audioRig.crowdDensity, this.mats, rig.stageWidth,
       rig.stageDepth, rig.stageHeight);
+    venueBuild.group.userData.kind = 'venue';
     this.rigGroup.add(venueBuild.group);
     this.houseColors = venueBuild.practicals.map(material => ({ color: material.color, full: material.color.clone() }));
     this.crowdMesh = venueBuild.crowdMesh;
@@ -762,26 +840,34 @@ export class StageEngine {
 
     // 2. Main Concert Stage Deck + Stairs + Edge Trim
     const stageGroup = new THREE.Group();
+    stageGroup.name = 'Stage and PA';
     this.deckTrim = null;
     if (rig.platforms !== undefined) {
-      stageGroup.add(buildPlatformDeck(rig, this.mats));
+      const platforms = buildPlatformDeck(rig, this.mats);
+      platforms.name = 'Platforms';
+      platforms.userData.kind = 'platforms';
+      stageGroup.add(platforms);
     } else {
       const deck = new THREE.Mesh(new THREE.BoxGeometry(rig.stageWidth, rig.stageHeight, rig.stageDepth), this.mats.stageDeck);
       deck.position.y = rig.stageHeight / 2;
+      deck.name = 'Main stage deck';
       stageGroup.add(deck);
 
       const frontTrim = new THREE.Mesh(new THREE.BoxGeometry(rig.stageWidth + 0.1, 0.14, 0.12), this.mats.aluminumTruss);
       frontTrim.position.set(0, rig.stageHeight - 0.06, rig.stageDepth / 2 + 0.04);
+      frontTrim.name = 'Front deck trim';
       stageGroup.add(frontTrim);
 
       this.deckTrim = new THREE.MeshBasicMaterial();
       const edgeGlow = new THREE.Mesh(new THREE.BoxGeometry(rig.stageWidth - 0.6, 0.04, 0.04), this.deckTrim);
       edgeGlow.position.set(0, rig.stageHeight - 0.16, rig.stageDepth / 2 + 0.05);
+      edgeGlow.name = 'Deck edge strip';
       stageGroup.add(edgeGlow);
 
       for (const side of [-1, 1]) {
         for (let s = 0; s < 4; s++) {
           const step = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.35, 0.45), this.mats.darkSteel);
+          step.name = `Stair ${side < 0 ? 'audience left' : 'audience right'} ${s + 1}`;
           step.position.set(side * (rig.stageWidth / 2 + 0.72), 0.18 + s * (rig.stageHeight / 4),
             rig.stageDepth / 2 - 1.2 - s * 0.45);
           stageGroup.add(step);
@@ -792,6 +878,7 @@ export class StageEngine {
     // DJ / Live Console Booth
     if (rig.audioRig.djBooth) {
       const dj = createDjBooth(this.mats);
+      dj.group.name = 'DJ booth';
       dj.group.position.set(0, stageSurfaceHeight(rig, 0, 0.6), 0.6);
       stageGroup.add(dj.group);
       this.djStripMat = dj.stripMat;
@@ -803,6 +890,8 @@ export class StageEngine {
       const hangY = Math.min(this.roofY - 1.65, 11.65);
       for (const side of [-1, 1] as const) {
         const array = createLineArray(side, this.mats, rig.audioRig.boxesPerSide ?? 9, this.roofY - hangY, speakerProfile);
+        array.name = `Line array — audience ${side < 0 ? 'left' : 'right'}`;
+        array.userData = { kind: 'lineArray', model: SPEAKER_PROFILES[speakerProfile].array.label, cabinets: rig.audioRig.boxesPerSide ?? 9 };
         array.position.set(side * (rig.stageWidth / 2 + 1.35), hangY, rig.stageDepth / 2 - 0.4);
         stageGroup.add(array);
       }
@@ -820,6 +909,8 @@ export class StageEngine {
         const rowCount = Math.min(columns, count - level * columns);
         const sx = (i % columns - (rowCount - 1) / 2) * spacing;
         const subGroup = createSubwoofer(this.mats, speakerProfile);
+        subGroup.name = `Subwoofer ${i + 1}`;
+        subGroup.userData = { kind: 'subwoofer', model: SPEAKER_PROFILES[speakerProfile].sub.label };
         const sz = rig.stageDepth / 2 + sub.depth / 2 + 0.12;
         subGroup.position.set(sx, stageSurfaceHeight(rig, sx, sz) + (0.5 + level) * sub.height, sz);
         stageGroup.add(subGroup);
@@ -830,6 +921,8 @@ export class StageEngine {
     for (let i = 0; i < wedgeCount; i++) {
       const x = wedgeCount === 1 ? 0 : (i / (wedgeCount - 1) - 0.5) * rig.stageWidth * 0.68;
       const wedge = createMonitorWedge(this.mats, speakerProfile);
+      wedge.name = `Monitor wedge ${i + 1}`;
+      wedge.userData = { kind: 'monitor', model: SPEAKER_PROFILES[speakerProfile].monitor.label };
       const z = rig.stageDepth * 0.5 - 0.65;
       wedge.position.set(x, stageSurfaceHeight(rig, x, z), z);
       wedge.rotation.y = x * 0.032;
@@ -869,6 +962,7 @@ export class StageEngine {
         }
         const wallMesh = new THREE.Mesh(wallGeo, ledMat);
         wallMesh.material.side = THREE.BackSide;
+        wallMesh.name = 'Curved LED wall';
         wallMesh.position.set(0, wallY, wallZ + radius);
         this.rigGroup.add(wallMesh);
 
@@ -884,12 +978,14 @@ export class StageEngine {
           depth: rig.ledWall.height + 0.20, bevelEnabled: false, curveSegments: 36,
         }), this.mats.darkSteel);
         housing.rotation.x = -Math.PI / 2;
+        housing.name = 'Curved LED wall housing';
         housing.position.set(0, wallY - rig.ledWall.height / 2 - 0.10, wallMesh.position.z);
         this.rigGroup.add(housing);
       } else {
         wallGeo = new THREE.PlaneGeometry(rig.ledWall.width, rig.ledWall.height);
         const wallMesh = new THREE.Mesh(wallGeo, ledMat);
         wallMesh.position.set(0, wallY, wallZ);
+        wallMesh.name = 'LED wall';
         this.rigGroup.add(wallMesh);
 
         // Dark rear structural frame behind flat LED wall
@@ -898,6 +994,7 @@ export class StageEngine {
           this.mats.darkSteel
         );
         frame.position.set(0, wallY, wallZ - 0.22);
+        frame.name = 'LED wall housing';
         this.rigGroup.add(frame);
       }
 
@@ -910,6 +1007,7 @@ export class StageEngine {
 
         for (const side of [-1, 1]) {
           const wingGroup = new THREE.Group();
+          wingGroup.name = `LED wing — audience ${side < 0 ? 'left' : 'right'}`;
           const screen = new THREE.Mesh(new THREE.PlaneGeometry(wingW, wingH), wingMat);
           const backing = new THREE.Mesh(
             new THREE.BoxGeometry(wingW + 0.3, wingH + 0.3, 0.26),
@@ -935,17 +1033,21 @@ export class StageEngine {
 
     rig.trussPods.forEach((pod) => {
       const podGroup = new THREE.Group();
+      podGroup.name = pod.name;
+      podGroup.userData = { kind: 'truss', id: pod.id, shape: pod.shape };
       podGroup.position.set(pod.x, pod.baseY, pod.z);
       podGroup.rotation.y = pod.rotationY;
 
       const fixtureCount = pod.fixtures.reduce((count, group) => count + group.count, 0);
       const built = buildTrussGeometry(pod.shape, pod.width, this.mats, pod.path, fixtureCount);
+      built.group.name = 'Truss structure';
       podGroup.add(built.group);
 
       // Attach CM Lodestar / Kinesys Chain Hoist Motors at every anchor point
       const hoists: { anchorLocal: THREE.Vector3; chainMesh: THREE.Mesh; root: THREE.Group }[] = [];
       for (const anchor of built.anchorPoints) {
         const hoist = createChainHoistUnit(this.mats);
+        hoist.root.name = `Chain hoist ${hoists.length + 1}`;
         hoist.root.position.copy(anchor);
         podGroup.add(hoist.root);
         hoists.push({ anchorLocal: anchor.clone(), chainMesh: hoist.chainMesh, root: hoist.root });
@@ -976,7 +1078,7 @@ export class StageEngine {
           inst.root.position.copy(slot.pos);
           inst.root.rotation.y = slot.rotY;
           inst.mountYaw = pod.rotationY + slot.rotY;
-          podGroup.add(inst.root);
+          podGroup.add(nameFixtureUnit(inst.root, fg, i, start));
           this.movingFixtures.push(inst);
         } else if (fg.type === 'laser') {
           const laser = this.createLaserProjector(
@@ -987,21 +1089,21 @@ export class StageEngine {
           );
           laser.root.position.copy(slot.pos).add(new THREE.Vector3(0, -0.1, 0.12));
           laser.root.rotation.y = pod.shape === 'circle' || pod.shape === 'path' ? -pod.rotationY : slot.rotY;
-          podGroup.add(laser.root);
+          podGroup.add(nameFixtureUnit(laser.root, fg, i, start));
           this.laserUnits.push(laser);
         } else if (fg.type === 'strobe') {
           const st = this.createStrobeBar(globalStrobeIndex++);
           st.mesh.position.copy(slot.pos);
           st.mesh.rotation.y = slot.rotY;
           st.mesh.translateY(0.04).translateZ(0.24);
-          podGroup.add(st.mesh);
+          podGroup.add(nameFixtureUnit(st.mesh, fg, i, start));
           this.strobes.push({ lensMat: st.lensMat, index: st.index, buffer, start });
         } else if (fg.type === 'blinder') {
           const bl = this.createBlinderBank();
           bl.group.position.copy(slot.pos);
           bl.group.rotation.y = slot.rotY;
           bl.group.translateY(-0.04).translateZ(0.28);
-          podGroup.add(bl.group);
+          podGroup.add(nameFixtureUnit(bl.group, fg, i, start));
           this.blinders.push({ lensMat: bl.lensMat, buffer, start });
         }
       });
@@ -1036,17 +1138,17 @@ export class StageEngine {
         if (fx.type === 'co2') {
           const jet = this.createCo2JetUnit();
           jet.position.set(px, py, pz);
-          this.rigGroup.add(jet);
+          this.rigGroup.add(nameFixtureUnit(jet, fx, i, start));
           co2Emitters.push(new THREE.Vector3(px, py + 0.35, pz));
         } else if (fx.type === 'smoke') {
           const sm = this.createSmokeMachineUnit();
           sm.position.set(px, py, pz);
-          this.rigGroup.add(sm);
+          this.rigGroup.add(nameFixtureUnit(sm, fx, i, start));
           smokeEmitters.push(new THREE.Vector3(px, py + 0.32, pz));
         } else if (fx.type === 'hazer') {
           const hz = this.createHazerUnit();
           hz.position.set(px, py, pz);
-          this.rigGroup.add(hz);
+          this.rigGroup.add(nameFixtureUnit(hz, fx, i, start));
         } else if (fx.type === 'floor_laser') {
           const fl = this.createLaserProjector(
             globalLaserIndex++,
@@ -1055,7 +1157,7 @@ export class StageEngine {
             start
           );
           fl.root.position.set(px, py + 0.22, pz);
-          this.rigGroup.add(fl.root);
+          this.rigGroup.add(nameFixtureUnit(fl.root, fx, i, start));
           this.laserUnits.push(fl);
         } else if (fx.type === 'floor_beam') {
           const fb = this.createMovingFixture(
@@ -1067,7 +1169,7 @@ export class StageEngine {
             start
           );
           fb.root.position.set(px, py + 0.08, pz);
-          this.rigGroup.add(fb.root);
+          this.rigGroup.add(nameFixtureUnit(fb.root, fx, i, start));
           this.movingFixtures.push(fb);
         }
       }
@@ -1112,6 +1214,7 @@ export class StageEngine {
 
   private createLedMaterial(aspect: number): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
+      name: 'LED display',
       vertexShader: LED_WALL_VERT,
       fragmentShader: LED_WALL_FRAG,
       uniforms: {
@@ -1151,6 +1254,7 @@ export class StageEngine {
 
     // Pan Yoke
     const yoke = new THREE.Group();
+    yoke.name = 'Pan yoke';
     yoke.position.y = dir * YOKE_OFFSET;
     root.add(yoke);
 
@@ -1164,6 +1268,7 @@ export class StageEngine {
 
     // Tilt Head
     const head = new THREE.Group();
+    head.name = 'Tilt head';
     head.position.y = dir * HEAD_OFFSET;
     yoke.add(head);
 

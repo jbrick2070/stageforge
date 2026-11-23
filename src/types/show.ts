@@ -239,11 +239,29 @@ export interface BumpState {
   motorDrop: boolean;
 }
 
+export interface MusicRef {
+  kind: 'demo' | 'file' | 'live' | 'none';
+  name: string;
+  playing: boolean;
+  offsetSeconds?: number;
+  demoStep?: number;
+}
+
+export interface ScreenRef {
+  target: 'main-led';
+  kind: 'video' | 'image' | 'none';
+  name: string;
+  playing: boolean;
+  offsetSeconds?: number;
+}
+
 export interface ShowCue {
   id: string;
   name: string;
   tag: string;
   accent: string;
+  followSeconds?: number; // Omit for a manual hold.
+  screen?: ScreenRef;
   state: Partial<ShowState>;
 }
 

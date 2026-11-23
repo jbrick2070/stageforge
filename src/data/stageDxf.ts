@@ -1,0 +1,162 @@
+import { DxfWriter, LWPolylineFlags, Units, point2d, point3d } from '@tarikjabiri/dxf';
+import type { DxfBlock, ExtendedData } from '@tarikjabiri/dxf';
+import type { FixtureType, FloorFxType, PlanPoint, RigConfig, StagePropKind, TrussPodConfig } from '../types/show';
+import { buildDmxPatch } from './dmxPatch';
+import { getPlatforms, podWorldPoint, stageSurfaceHeight } from './stageDesign';
+import { PROP_CATALOG } from './stageProps';
+import { trussMounts } from './trussMounts';
+
+type Equipment = FixtureType | FloorFxType;
+type ShapeWriter = Pick<DxfWriter, 'addLWPolyline' | 'addLine' | 'addCircle'>;
+const degrees = 180 / Math.PI;
+
+// StageForge uses Y up, Z downstage. CAD model space uses Z up, Y upstage.
+function cad(p: PlanPoint, elevation: number) {
+  return point3d(p.x, -p.z, elevation);
+}
+function labelText(value: string) {
+  // Keep the ASCII exchange stream intact, including for Unicode names and pasted newlines.
+  return value.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/[\\%\u0080-\uffff]/g, ch =>
+    '\\U+' + ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0'));
+}
+function addProperty(data: ExtendedData, value: string) {
+  // Writer 2.10.1 discards each chunk's final character. Supply a terminator for
+  // each 255-byte DXF group so the full original ASCII value survives round-trip.
+  const encoded = labelText(value);
+  for (let i = 0; i < Math.max(encoded.length, 1); i += 255) {
+    data.string(encoded.slice(i, i + 255) + ' ');
+  }
+}
+function outline(writer: ShapeWriter, points: PlanPoint[], elevation: number, layerName: string, closed: boolean) {
+  writer.addLWPolyline(points.map(p => ({ point: point2d(p.x, -p.z) })), {
+    layerName, elevation, flags: closed ? LWPolylineFlags.Closed : LWPolylineFlags.None,
+  });
+}
+function rectangle(x: number, z: number, width: number, depth: number): PlanPoint[] {
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => ({ x: x+a*width/2, z: z+b*depth/2 }));
+}
+function centerLine(pod: TrussPodConfig): PlanPoint[] {
+  if (pod.shape === 'path') return pod.path ?? [];
+  const half = pod.width / 2;
+  if (pod.shape === 'chevron') {
+    const endZ = -half * Math.tan(0.36);
+    return [{ x: -half, z: endZ }, { x: 0, z: 0 }, { x: half, z: endZ }];
+  }
+  return [{ x: -half, z: 0 }, { x: half, z: 0 }];
+}
+
+// Drafting symbols indicate insertion/orientation; patch and model are attached to each INSERT.
+function fixtureSymbol(block: DxfBlock, type: Equipment) {
+  if (type === 'beam' || type === 'floor_beam' || type === 'wash') {
+    block.addCircle(point3d(0,0,0), type === 'wash' ? 0.19 : 0.14);
+    block.addLine(point3d(0,0,0), point3d(0,-0.23,0));
+  } else if (type === 'laser' || type === 'floor_laser') {
+    outline(block,[{x:-0.16,z:-0.13},{x:0.16,z:-0.13},{x:0,z:0.2}],0,'0',true);
+  } else {
+    const bar = type === 'strobe' || type === 'blinder';
+    outline(block,rectangle(0,0,bar ? 0.52 : 0.3,0.26),0,'0',true);
+    block.addLine(point3d(0,0,0), point3d(0,-0.18,0));
+  }
+}
+
+// Installed support footprints from the scenic models, in local metres.
+function propSymbol(block: DxfBlock, kind: StagePropKind) {
+  const foot = (x: number, width: number, depth: number, elevation=0) =>
+    outline(block, rectangle(x,0,width,depth), elevation,'0',true);
+  switch (kind) {
+    case 'arch': foot(-3.5,1.3,1.3); foot(3.5,1.3,1.3); break;
+    case 'star': foot(-1.12,0.48,0.36); foot(1.12,0.48,0.36); break;
+    case 'tentacle': foot(0,1.85,1.85); break;
+    case 'marquee': foot(0,1.45,1.05); break;
+    case 'riser': foot(0,4,2.35,0.98); break;
+  }
+}
+
+/** Editable R2010 model-space plan. All dimensions, block coordinates and elevations are metres. */
+export function exportStageDxf(rig: RigConfig): string {
+  const drawing = new DxfWriter();
+  drawing.setVariable('$ACADVER', { 1: 'AC1024' });
+  drawing.setUnits(Units.Meters);
+  drawing.setVariable('$MEASUREMENT', { 70: 1 });
+  for (const [name, color] of [['DECKS',4],['TRUSSES',2],['FIXTURES',1],['PROPS',3],['LABELS',7],['PATCH_TAGS',-7]] as const) {
+    drawing.addLayer(name, color, 'Continuous');
+  }
+  drawing.tables.addAppId('STAGEFORGE');
+  const patch = buildDmxPatch(rig);
+  const footprint = new Map(patch.rows.map(row => [row.group, row.width]));
+  const defined = new Set<string>();
+  let minX = 0, downstage = 0;
+  function include(p: PlanPoint) {
+    minX = Math.min(minX, p.x);
+    downstage = Math.max(downstage, p.z);
+  }
+  function label(name: string, p: PlanPoint, elevation: number, size=0.19, layerName='LABELS') {
+    drawing.addText(cad(p,elevation),size,labelText(name),{ layerName });
+  }
+  function fixture(group: RigConfig['floorFx'][number] | TrussPodConfig['fixtures'][number],
+    i: number, p: PlanPoint, elevation: number, rotation: number) {
+    const name = 'SF_' + group.type.toUpperCase();
+    if (!defined.has(name)) { fixtureSymbol(drawing.addBlock(name),group.type); defined.add(name); }
+    const insert = drawing.addInsert(name,cad(p,elevation),{layerName:'FIXTURES',rotationAngle: rotation * degrees});
+    const metadata = insert.addXData('STAGEFORGE');
+    addProperty(metadata,group.modelName);
+    addProperty(metadata,group.id);
+    const address = group.dmxStartChannel + i * footprint.get(group)!;
+    const patchLabel = `U${group.dmxUniverse}.${String(address).padStart(3,'0')}${patch.unitStart(group,i) ? '' : ' (invalid patch)'}`;
+    addProperty(metadata,patchLabel);
+    label(patchLabel,{x:p.x+0.18,z:p.z+0.1},elevation,0.13,'PATCH_TAGS');
+    include(p);
+  }
+
+  for (const deck of getPlatforms(rig)) {
+    const corners = rectangle(deck.x,deck.z,deck.width,deck.depth);
+    outline(drawing,corners,deck.height,'DECKS',true);
+    corners.forEach(include);
+    label(deck.name,{x:corners[0].x+0.12,z:corners[0].z+0.30},deck.height);
+  }
+  for (const pod of rig.trussPods) {
+    let labelAt: PlanPoint;
+    if (pod.shape === 'circle') {
+      drawing.addCircle(cad(pod,pod.baseY),pod.width/2,{layerName:'TRUSSES'});
+      include({x:pod.x-pod.width/2,z:pod.z+pod.width/2});
+      labelAt = {x:pod.x,z:pod.z-pod.width/2};
+    } else {
+      const points = centerLine(pod).map(p => podWorldPoint(pod,p));
+      if (points.length < 2) continue;
+      const first = points[0], last = points[points.length-1];
+      const closed = points.length > 2 && Math.hypot(first.x-last.x,first.z-last.z)<0.0001;
+      outline(drawing,closed ? points.slice(0,-1) : points,pod.baseY,'TRUSSES',closed);
+      points.forEach(include);
+      labelAt = first;
+    }
+    label(pod.name,{x:labelAt.x,z:labelAt.z-0.24},pod.baseY);
+    const hung = pod.fixtures.flatMap(group => Array.from({ length: group.count }, (_, i) =>
+      ({ group, i, fraction: (i+0.5)/group.count }))).sort((a,b) => a.fraction-b.fraction);
+    const slots = trussMounts(pod.shape,pod.width,pod.path,hung.length);
+    hung.forEach(({group,i},n) => {
+      const mount = slots[Math.floor((n+0.5)*slots.length/hung.length)];
+      if (!mount) return;
+      // Projectors on rings and paths face downstage regardless of truss bearing.
+      const frontFacing = group.type === 'laser' && (pod.shape === 'circle' || pod.shape === 'path');
+      fixture(group,i,podWorldPoint(pod,mount),pod.baseY+mount.y,frontFacing ? 0 : pod.rotationY+mount.rotY);
+    });
+  }
+  for (const group of rig.floorFx) {
+    for (let i=0;i<group.count;i++) {
+      const p = {x:group.x+(group.count===1 ? 0 : group.spread*(i/(group.count-1)-0.5)),z:group.z};
+      fixture(group,i,p,stageSurfaceHeight(rig,p.x,p.z),0);
+    }
+  }
+  for (const prop of rig.props ?? []) {
+    const name = 'PROP_' + prop.kind.toUpperCase();
+    if (!defined.has(name)) { propSymbol(drawing.addBlock(name),prop.kind); defined.add(name); }
+    const elevation = stageSurfaceHeight(rig,prop.x,prop.z);
+    const insert = drawing.addInsert(name,cad(prop,elevation),{layerName:'PROPS',rotationAngle:prop.rotation,
+      scaleFactor:point3d(prop.scale,prop.scale,prop.scale)});
+    addProperty(insert.addXData('STAGEFORGE'),prop.id);
+    include(prop);
+    label(PROP_CATALOG[prop.kind].label,{x:prop.x+0.12,z:prop.z+0.4*prop.scale},elevation);
+  }
+  label(`${rig.name}   |   PLAN IN METRES   |   +Y UPSTAGE`,{x:minX,z:downstage+1.2},0,0.3);
+  return drawing.stringify().replace(/\r?\n/g,'\r\n') + '\r\n';
+}

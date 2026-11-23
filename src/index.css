@@ -1,5 +1,32 @@
 @import "tailwindcss";
 
+.desk-dialog { position: fixed; inset: 0; margin: auto; width: min(445px, calc(100vw - 20px)); max-height: 88dvh; overflow: auto; background: #181e22; color: #ebeeee; border: 1px solid #526164; border-radius: 8px; padding: 18px; font: 14px/1.45 Inter, system-ui, sans-serif; }
+.desk-dialog::backdrop { background: #080c10bf; }
+.desk-dialog header, .file-actions, .cue-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.desk-dialog header { justify-content: space-between; margin-bottom: 8px; }
+.desk-dialog h2 { font: 600 21px/1.2 'Space Grotesk', sans-serif; }
+.desk-dialog h3 { font-weight: 650; margin-top: 16px; }
+.desk-dialog p { margin: 7px 0; color: #c3cece; }
+.desk-dialog .file-show-name { color: #a9e2cc; font-weight: 600; }
+.desk-dialog dl { display: grid; grid-template-columns: 100px 1fr; gap: 4px; margin: 8px 0; }
+.desk-dialog dd { overflow-wrap: anywhere; }
+.desk-dialog button, .cue-actions button { cursor: pointer; background: #293035; border: 1px solid #485659; border-radius: 4px; padding: 5px 9px; }
+.desk-dialog button:disabled, .cue-actions button:disabled { opacity: .45; cursor: default; }
+.desk-dialog label { display: grid; gap: 3px; margin: 10px 0; }
+.desk-dialog select, .desk-dialog input:not([type=file]) { background: #101518; border: 1px solid #485659; color: inherit; padding: 5px 7px; border-radius: 4px; }
+.file-formats { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
+.file-formats button { display: flex; justify-content: space-between; align-items: center; }
+.file-formats small, .take-actions output { font: 11px 'JetBrains Mono', monospace; color: #b2c8c3; }
+.file-actions a { color: #b0e0c6; text-decoration: underline; }
+.cue-actions { gap: 4px; margin-bottom: 5px; }
+.cue-actions button { font: 600 10px/1.2 Inter, sans-serif; padding: 4px 7px; }
+.cue-actions .cue-go { background: #b0e0c6; color: #14221b; }
+.take-list { margin-top: 12px; }
+.take-list summary { cursor: pointer; }
+.take-list ol { max-height: 220px; padding: 0; overflow: auto; }
+.take-list li { display: grid; grid-template-columns: 58px minmax(0,1fr); padding: 4px 0; border-top: 1px solid #353e41; font-size: 12px; }
+.take-list time { font: 11px 'JetBrains Mono', monospace; color: #b0e0c6; }
+
 :root {
   color-scheme: dark;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;

@@ -161,10 +161,14 @@ export function parseRigJson(source: string): RigConfig {
 }
 
 export function downloadRig(rig: RigConfig) {
+  downloadStageFile(rig.name, 'stageforge.json', new Blob([JSON.stringify(rig, null, 2)], { type: 'application/json' }));
+}
+
+export function downloadStageFile(name: string, extension: string, blob: Blob) {
   const link = document.createElement('a');
-  link.href = URL.createObjectURL(new Blob([JSON.stringify(rig, null, 2)], { type: 'application/json' }));
-  const filename = rig.name.toLowerCase().replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '');
-  link.download = `${filename || 'stage'}.stageforge.json`;
+  link.href = URL.createObjectURL(blob);
+  const filename = name.toLowerCase().replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '');
+  link.download = `${filename || 'stage'}.${extension}`;
   link.click();
   window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }

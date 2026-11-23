@@ -1,15 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AudioLines, Camera, ChevronDown, DollarSign, DraftingCompass, Eye, EyeOff, Layers, Mic, Pause,
-  Play, Radio, SlidersHorizontal, Sparkles, Upload, Wrench,
+  Play, Radio, SlidersHorizontal, Sparkles, Upload, Wrench, FolderOpen,
 } from 'lucide-react';
-import { AudioMetrics, CameraPreset } from '../types/show';
+import { AudioMetrics, CameraPreset, MusicRef } from '../types/show';
 
 interface TopBarProps {
   fps: number;
   fixtureCount: number;
   laserCount: number;
   audio: AudioMetrics;
+  linkedMusic: MusicRef;
   volume: number;
   bpm: number;
   openingBar?: number;
@@ -25,6 +26,7 @@ interface TopBarProps {
   onTogglePlay: () => void;
   onStartDemo: () => void;
   onDesignStage: () => void;
+  onShowFiles: () => void;
   onUploadAudio: (file: File) => void;
   onToggleMic: () => void;
   onVolumeChange: (v: number) => void;
@@ -49,9 +51,9 @@ export const CAMERAS: { id: CameraPreset; label: string }[] = [
 ];
 
 export const TopBar: React.FC<TopBarProps> = ({
-  fps, fixtureCount, laserCount, audio, volume, bpm, openingBar, blackout, autoDirector, audioReactive,
+  fps, fixtureCount, laserCount, audio, linkedMusic, volume, bpm, openingBar, blackout, autoDirector, audioReactive,
   activeCamera, rigDrawerOpen, dmxDrawerOpen, costModalOpen, oneNightCostLabel,
-  cinemaMode, onTogglePlay, onStartDemo, onDesignStage, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
+  cinemaMode, onTogglePlay, onStartDemo, onDesignStage, onShowFiles, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
   onToggleAutoDirector, onToggleAudioReactive, onSelectCamera, onToggleRigDrawer,
   onToggleDmxDrawer, onToggleCostModal, onToggleCinemaMode,
 }) => {
@@ -79,7 +81,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   }, [audioOpen]);
 
   const playLabel = audio.playing ? 'Pause' : audio.demo?.finished ? 'Replay demo' :
-    audio.source === 'synth' ? 'Resume demo' : audio.source === 'file' ? 'Play track' : 'Play demo';
+    audio.source === 'synth' || (linkedMusic.kind === 'demo' && (linkedMusic.demoStep ?? 0) > 0) ? 'Resume demo' :
+    audio.source === 'file' || linkedMusic.kind === 'file' ? 'Play track' : linkedMusic.kind === 'live' ? 'Live input' : 'Play demo';
   const playButton = (
     <button type="button" className="transport-btn play-btn" onClick={onTogglePlay}>
       {audio.playing ? <Pause /> : <Play />} {playLabel}
@@ -111,6 +114,9 @@ export const TopBar: React.FC<TopBarProps> = ({
         {playButton}
         <button type="button" className="transport-btn" aria-label="Design stage" title="Design stage" onClick={onDesignStage}>
           <DraftingCompass /><span className="transport-extra-label">Design stage</span>
+        </button>
+        <button type="button" className="transport-btn" aria-label="Show files" title="Show files" onClick={onShowFiles}>
+          <FolderOpen/><span className="transport-extra-label">Files</span>
         </button>
         <div ref={audioPanelRef}>
           <button ref={audioButtonRef} type="button" className="transport-btn" aria-label="Audio settings"

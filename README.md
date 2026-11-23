@@ -1,6 +1,6 @@
 # StageForge 3D
 
-StageForge is a concert stage designer and simulator for Windows, Apple Silicon Macs and desktop browsers. Build a stage, light it from an eight-cue desk, and watch from seven cameras, including a close-up of the PA. Phones open in the player, with **Show desk** available when needed.
+StageForge is an open-source concert stage designer and simulator for Windows, Apple Silicon Macs and desktop browsers. Build a stage, program cues, and record or replay a performance from the lighting desk. Phones open in the player, with **Show desk** available when needed.
 
 [Launch StageForge in your browser](https://jbrick2070.github.io/stageforge/)
 
@@ -21,15 +21,35 @@ Run `npm test` to check rig compatibility, deck surfaces and truss patching. To 
 
 ## Desktop apps
 
-The Electron editions bundle the renderer, fonts, fixtures and demo score. They run offline and keep their own saved stage. To move a stage between the browser and either app, export the rig as a `.stageforge.json` file and open it on the destination.
+The Electron editions bundle the renderer, fonts, fixtures and demo score. They run offline and keep their own saved stage. Show files and rig files open in both desktop apps and the browser.
 
 - On **Windows x64**, open the portable StageForge executable.
 - On an **Apple Silicon Mac**, extract the ZIP and open **StageForge.app**.
-- Use **File → Open rig** and **File → Export rig** for design files, and **View → Toggle Full Screen** for a show. In the plan editor, **Apply design** commits your draft before you export.
+- Use **File → Open show or rig** and **File → Save show as** for project files, and the **View** menu for full screen. In the plan editor, **Apply design** commits your draft before you export.
 
 To build from source, run `npm ci`, then `npm run desktop:win` on Windows or `npm run desktop:mac` on an Apple Silicon Mac. The packages appear in `desktop/build/release/`. Run `npm run desktop:start` to open the desktop app during development. These local builds do not carry a publisher certificate or Apple notarization.
 
-## Build a stage
+## Open show files and exchange formats
+
+Open **Files** next to **Design stage**. Choose the format for the next person who will use the file.
+
+| File | Contents |
+| --- | --- |
+| `.stageforge.show.json` | Editable show, rig, ordered cues, lighting and effect parameters, focus targets, camera and volume, timestamped take, music and screen-media references |
+| `.dxf` | Layered CAD plan in metres, including elevations, truss paths and fixture symbols |
+| `.glb` | Self-contained static 3D stage for glTF 2.0 tools, including Blender and Unreal Engine |
+| `.patch.csv` | Simulated DMX addresses and channel functions, one row per channel per fixture |
+| `.stageforge.json` | StageForge rig geometry, scenery and equipment patch |
+
+Use **Show cues → Edit cue list** to name and order your cues. **Add current look** captures the live desk. Set **Follow after** to advance automatically after a cue, or leave it empty to wait for **GO**. **Hold follow** cancels a pending advance.
+
+Choose **Record take**, perform the show, then **Stop recording**. **Replay take** starts its recorded action sequence at zero. **Files → Recorded actions** shows what changed at each timestamp. **Save show JSON** writes the complete project. StageForge records desk and transport changes, including momentary effects, camera selections, music, and the main LED wall. The recording uses stage lighting parameters rather than a sampled DMX packet stream.
+
+The project identifies local music, video and still images by filename. Carry those files with the show. On the destination, use **Files → Relink media files** to select them. The built-in score travels with the app. Live microphone samples and uploaded media bytes stay outside the JSON.
+
+The project specification, schema, sample show and implementation are public under the repository's MIT license. [Show format](docs/show-format.md) · [JSON Schema](public/schemas/show-v1.schema.json) · [Example show](public/examples/amber-walk-on.stageforge.show.json) · [License](LICENSE)
+
+## Draw the stage plan
 
 Choose **Design stage** beside Play to open the plan view. Start a blank design or edit the current rig. Draw deck modules at different heights to make platforms, wings and runways. Click points to draw a truss, then finish the path. Move its vertices to change the span or corners. The plan uses metres, with the audience downstage.
 

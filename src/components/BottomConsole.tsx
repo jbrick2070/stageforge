@@ -29,6 +29,7 @@ import {
 } from '../types/show';
 import { COLOR_PALETTES } from '../data/presets';
 import { FOCUS_NUDGE_RANGE, focusMarks } from '../engine/focusAim';
+import { timecode } from './ShowFiles';
 
 type ConsoleTab = 'show' | 'dmx' | 'laser' | 'motors_fx';
 
@@ -46,6 +47,15 @@ interface BottomConsoleProps {
   onSetPodMotor: (podId: string, height: number, tilt: number) => void;
   onTriggerCue: (cue: ShowCue) => void;
   onSaveCue: (cueId: string) => void;
+  onUploadScreen: (file: File) => void;
+  screenName: string;
+  videoPlaying: boolean;
+  onToggleVideo: () => void;
+  onEditCues: () => void;
+  onGo: () => void;
+  onHold: () => void;
+  followPending: boolean;
+  take: { mode: 'idle' | 'recording' | 'playing'; timeMs: number; hasTake: boolean; record: () => void; play: () => void; stop: () => void };
   onSetBump: (key: keyof BumpState, active: boolean) => void;
 }
 
@@ -120,6 +130,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   onSetPodMotor,
   onTriggerCue,
   onSaveCue,
+  onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onHold, followPending, take,
   onSetBump,
 }) => {
   const [tab, setTab] = useState<ConsoleTab>('show');
@@ -129,11 +140,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   const [storeMode, setStoreMode] = useState(false);
   const mediaInputRef = useRef<HTMLInputElement>(null);
 
-  const handleMediaUpload = (file: File) => {
-    const url = URL.createObjectURL(file);
-    const type = file.type.startsWith('video/') ? 'video' : 'image';
-    onPatchLed({ customMediaUrl: url, customMediaType: type, visualMode: 'custom', enabled: true });
-  };
+  const handleMediaUpload = onUploadScreen;
 
   return (
     <section aria-label="Lighting desk" className="stage-dock">
@@ -168,10 +175,10 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
               <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-4">
                 {/* 8 Cue Executor Pads */}
                 <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="font-mono-tech text-[10px] tracking-widest text-zinc-400 uppercase">
-                      Cue bank
-                    </span>
+                  <div className="cue-actions">
+                    <button className="cue-go" disabled={!cues.length || take.mode === 'playing'} onClick={onGo}>GO</button>
+                    {followPending && <button onClick={onHold}>Hold follow</button>}
+                    <button onClick={onEditCues} disabled={take.mode !== 'idle'}>Edit cue list</button>
                     <button
                       onClick={() => setStoreMode((s) => !s)}
                       className={`px-2 py-0.5 rounded text-[10px] font-mono-tech flex items-center gap-1 border cursor-pointer transition ${
@@ -184,6 +191,13 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                       <Save className="w-3 h-3" />
                       {storeMode ? 'Choose a cue pad' : 'Store cue'}
                     </button>
+                  </div>
+                  <div className="cue-actions take-actions">
+                    {take.mode === 'idle' ? <>
+                      <button onClick={take.record}>{take.hasTake ? 'Record new take' : 'Record take'}</button>
+                      <button onClick={take.play} disabled={!take.hasTake}>Replay take</button>
+                    </> : <button onClick={take.stop}>{take.mode === 'recording' ? 'Stop recording' : 'Stop replay'}</button>}
+                    {(take.mode !== 'idle' || take.hasTake) && <output>{timecode(take.timeMs)}</output>}
                   </div>
                   <div className="cue-bank">
                     {cues.map((cue, idx) => {
@@ -617,7 +631,12 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                       <div className="flex-1">
                         <InlineSlider label="BRIGHT" value={state.led.brightness} onChange={(v) => onPatchLed({ brightness: v })} color="#e879f9" />
                       </div>
+                      {screenName && <span className="max-w-28 truncate text-xs" title={screenName}>{screenName}</span>}
+                      {state.led.customMediaType === 'video' && <button className="transport-btn" onClick={onToggleVideo}>
+                        {videoPlaying ? 'Pause video' : 'Play video'}
+                      </button>}
                       <input
+                        aria-label="Load screen media"
                         ref={mediaInputRef}
                         type="file"
                         accept="image/*,video/*"

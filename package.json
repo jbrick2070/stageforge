@@ -1,6 +1,6 @@
 {
   "name": "stageforge-3d",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,6 +15,7 @@
     "desktop:mac": "npm run desktop:prepare && electron-builder --config desktop/builder.cjs --mac zip --arm64 --publish never"
   },
   "dependencies": {
+    "@tarikjabiri/dxf": "2.10.1",
     "lucide-react": "^1.77.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

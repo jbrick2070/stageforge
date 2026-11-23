@@ -1,3 +1,4 @@
+import { trussMounts } from '../data/trussMounts';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { PlanPoint, RigConfig, TrussShape, VenueType } from '../types/show';
@@ -195,7 +196,7 @@ function addTubeStrut(
 }
 
 /** Build the exposed walkable tops and fascia of a set of rectangular stage modules. */
-export function buildPlatformDeck(rig: RigConfig, mats: SharedMaterials): THREE.Group {
+export function buildPlatformDeck(rig: RigConfig, mats: SharedMaterials, separateModules = false): THREE.Group {
   const group = new THREE.Group();
   const modules = rig.platforms ?? [];
   const coordinates = (values: number[]) => [...new Set(values)].sort((a, b) => a - b);
@@ -203,14 +204,21 @@ export function buildPlatformDeck(rig: RigConfig, mats: SharedMaterials): THREE.
   const zs = coordinates(modules.flatMap(p => [p.z - p.depth / 2, p.z + p.depth / 2]));
   const heights = xs.slice(1).map((x, i) => zs.slice(1).map((z, j) =>
     stageSurfaceHeight(rig, (xs[i] + x) / 2, (zs[j] + z) / 2)));
-  const tops: number[] = [];
-  const sides: number[] = [];
+  // The live renderer batches the deck in two draws. Exchange files keep each
+  // authored module selectable while sharing the same exposed-surface calculation.
+  const surfaces = Array.from({ length: separateModules ? modules.length : 1 }, () => ({
+    tops: [] as number[], sides: [] as number[],
+  }));
   const quad = (out: number[], a: number[], b: number[], c: number[], d: number[]) =>
     out.push(...a, ...b, ...d, ...b, ...c, ...d);
   for (let i = 0; i < heights.length; i++) {
     for (let j = 0; j < heights[i].length; j++) {
       const h = heights[i][j];
       if (h <= 0) continue;
+      const x = (xs[i] + xs[i + 1]) / 2, z = (zs[j] + zs[j + 1]) / 2;
+      const owner = separateModules ? modules.findIndex(p => p.height === h &&
+        Math.abs(x - p.x) <= p.width / 2 && Math.abs(z - p.z) <= p.depth / 2) : 0;
+      const { tops, sides } = surfaces[owner];
       const corners = [[xs[i], h, zs[j]], [xs[i], h, zs[j + 1]], [xs[i + 1], h, zs[j + 1]], [xs[i + 1], h, zs[j]]];
       quad(tops, corners[0], corners[1], corners[2], corners[3]);
       const neighbours = [heights[i - 1]?.[j], heights[i][j + 1], heights[i + 1]?.[j], heights[i][j - 1]];
@@ -222,17 +230,30 @@ export function buildPlatformDeck(rig: RigConfig, mats: SharedMaterials): THREE.
       });
     }
   }
-  for (const [faces, material] of [[tops, mats.stageDeck], [sides, mats.fixtureBody]] as const) {
-    if (!faces.length) continue;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(faces, 3));
-    if (faces === tops) {
-      const uv: number[] = [];
-      for (let i = 0; i < faces.length; i += 3) uv.push(faces[i] / 18, faces[i + 2] / 9);
-      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  for (const [index, { tops, sides }] of surfaces.entries()) {
+    const part = separateModules ? new THREE.Group() : group;
+    if (separateModules) {
+      const { id, name, x, z, width, depth, height } = modules[index];
+      part.name = name;
+      part.userData = { kind: 'platform', id, width, depth, height };
+      part.position.set(x, 0, z);
+      group.add(part);
     }
-    geo.computeVertexNormals();
-    group.add(new THREE.Mesh(geo, material));
+    for (const [faces, material] of [[tops, mats.stageDeck], [sides, mats.fixtureBody]] as const) {
+      if (!faces.length) continue;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(faces, 3));
+      if (faces === tops) {
+        const uv: number[] = [];
+        for (let i = 0; i < faces.length; i += 3) uv.push(faces[i] / 18, faces[i + 2] / 9);
+        geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+      }
+      geo.computeVertexNormals();
+      if (separateModules) geo.translate(-part.position.x, 0, -part.position.z);
+      const surface = new THREE.Mesh(geo, material);
+      surface.name = faces === tops ? 'Deck surface' : 'Deck fascia';
+      part.add(surface);
+    }
   }
   return group;
 }
@@ -244,16 +265,15 @@ const MAX_BARRICADE_BAYS = 96;
 
 // Draw four continuous chords through the corners. Both adjoining spans use
 // the same mitred cross-section, including the closing joint on a loop.
-function buildTrussPath(path: readonly PlanPoint[], mats: SharedMaterials, slotCount: number) {
+function buildTrussPath(path: readonly PlanPoint[], mats: SharedMaterials) {
   const group = new THREE.Group();
   const anchorPoints: THREE.Vector3[] = [];
-  const mountSlots: { pos: THREE.Vector3; rotY: number }[] = [];
   const points: THREE.Vector2[] = [];
   for (const p of path) {
     const point = new THREE.Vector2(p.x, p.z);
     if (!points.length || points[points.length - 1].distanceToSquared(point) > 1e-8) points.push(point);
   }
-  if (points.length < 2) return { group, anchorPoints, mountSlots };
+  if (points.length < 2) return { group, anchorPoints };
   const closed = points[0].distanceToSquared(points[points.length - 1]) < 1e-8;
   const segments = points.slice(1).map((end, i) => {
     const direction = end.clone().sub(points[i]);
@@ -298,18 +318,8 @@ function buildTrussPath(path: readonly PlanPoint[], mats: SharedMaterials, slotC
     anchors.add(key);
     anchorPoints.push(new THREE.Vector3(p.x, 0.29, p.y));
   }
-  let index = 0, offset = 0;
-  for (let i = 0; i < slotCount; i++) {
-    const distance = (i + 0.5) * total / slotCount;
-    while (index < segments.length - 1 && distance > offset + segments[index].length) {
-      offset += segments[index++].length;
-    }
-    const seg = segments[index];
-    const p = seg.start.clone().addScaledVector(seg.direction, distance - offset);
-    mountSlots.push({ pos: new THREE.Vector3(p.x, -0.28, p.y), rotY: -Math.atan2(seg.direction.y, seg.direction.x) });
-  }
   batchHardware(group);
-  return { group, anchorPoints, mountSlots };
+  return { group, anchorPoints };
 }
 
 /** Four-chord touring truss with diagonal lacing and underside fixture mounts. */
@@ -320,10 +330,12 @@ export function buildTrussGeometry(
   path: readonly PlanPoint[] = [],
   fixtureCount?: number
 ): { group: THREE.Group; anchorPoints: THREE.Vector3[]; mountSlots: { pos: THREE.Vector3; rotY: number }[] } {
-  if (shape === 'path') return buildTrussPath(path, mats, fixtureCount ?? 32);
+  const mountSlots = trussMounts(shape, width, path, fixtureCount).map(m => ({
+    pos: new THREE.Vector3(m.x, m.y, m.z), rotY: m.rotY,
+  }));
+  if (shape === 'path') return { ...buildTrussPath(path, mats), mountSlots };
   const group = new THREE.Group();
   const anchorPoints: THREE.Vector3[] = [];
-  const mountSlots: { pos: THREE.Vector3; rotY: number }[] = [];
 
   const chordR = 0.038;
   const braceR = 0.023;
@@ -420,14 +432,6 @@ export function buildTrussGeometry(
       );
     }
 
-    // Pre-generate evenly distributed underside mounting slots
-    const slotCount = Math.max(32, fixtureCount ?? 0);
-    const inset = Math.min(0.65, halfW * 0.2);
-    for (let i = 0; i < slotCount; i++) {
-      const t = i / (slotCount - 1);
-      const sx = THREE.MathUtils.lerp(-halfW + inset, halfW - inset, t);
-      mountSlots.push({ pos: new THREE.Vector3(sx, -hSize - 0.04, 0), rotY: 0 });
-    }
   } else if (shape === 'circle') {
     const radius = width / 2;
     const ringOffsets = [
@@ -463,14 +467,6 @@ export function buildTrussGeometry(
       anchorPoints.push(new THREE.Vector3(Math.cos(a) * radius, hSize + 0.05, Math.sin(a) * radius));
     }
 
-    const slotCount = Math.max(24, fixtureCount ?? 0);
-    for (let i = 0; i < slotCount; i++) {
-      const a = (i / slotCount) * Math.PI * 2;
-      mountSlots.push({
-        pos: new THREE.Vector3(Math.cos(a) * radius, -hSize - 0.04, Math.sin(a) * radius),
-        rotY: -a + Math.PI / 2,
-      });
-    }
   } else {
     // Chevron / Angled Kinetic Wing truss
     const angle = 0.36;
@@ -496,19 +492,6 @@ export function buildTrussGeometry(
       new THREE.Vector3(width * 0.42, hSize + 0.05, -armDepth * 0.84)
     );
 
-    const slotsPerSide = Math.max(8, Math.ceil((fixtureCount ?? 0) / 2));
-    for (let i = 0; i < slotsPerSide; i++) {
-      const t = (i + 0.5) / slotsPerSide;
-      const sx = -width * 0.46 + t * (width * 0.42);
-      const sz = -Math.abs(sx) * Math.tan(angle);
-      mountSlots.push({ pos: new THREE.Vector3(sx, -hSize - 0.04, sz), rotY: -angle });
-    }
-    for (let i = 0; i < slotsPerSide; i++) {
-      const t = (i + 0.5) / slotsPerSide;
-      const sx = width * 0.04 + t * (width * 0.42);
-      const sz = -Math.abs(sx) * Math.tan(angle);
-      mountSlots.push({ pos: new THREE.Vector3(sx, -hSize - 0.04, sz), rotY: angle });
-    }
   }
 
   batchHardware(group);

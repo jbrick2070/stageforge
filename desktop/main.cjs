@@ -7,6 +7,14 @@ const startUrl = 'stageforge://app/';
 const rendererRoot = path.join(__dirname, 'renderer');
 const isMac = process.platform === 'darwin';
 const rigFilters = [{ name: 'StageForge rig', extensions: ['json'] }];
+const showFilters = [{ name: 'StageForge show or rig', extensions: ['json'] }];
+const exportsBySuffix = [
+  ['.stageforge.show.json', 'Save show', showFilters],
+  ['.stageforge.json', 'Export rig', rigFilters],
+  ['.dxf', 'Export CAD plan', [{ name: 'DXF drawing', extensions: ['dxf'] }]],
+  ['.glb', 'Export 3D scene', [{ name: 'glTF binary', extensions: ['glb'] }]],
+  ['.patch.csv', 'Export channel patch', [{ name: 'CSV table', extensions: ['csv'] }]],
+];
 const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'";
 
 protocol.registerSchemesAsPrivileged([{
@@ -54,7 +62,8 @@ function createWindow() {
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
     // The rig drawer links to the speaker manufacturer's product specifications.
-    if (URL.canParse(url) && new URL(url).origin === 'https://www.l-acoustics.com') {
+    if (URL.canParse(url) && (new URL(url).origin === 'https://www.l-acoustics.com' ||
+        url === 'https://github.com/jbrick2070/stageforge/blob/main/docs/show-format.md')) {
       void shell.openExternal(url);
     }
     return { action: 'deny' };
@@ -68,13 +77,13 @@ async function runRigCommand(command) {
   let source;
   if (command === 'open') {
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: 'Open rig', filters: rigFilters, properties: ['openFile'],
+      title: 'Open show or rig', filters: showFilters, properties: ['openFile'],
     });
     if (canceled || !filePaths.length) return;
     try {
       source = await readFile(filePaths[0], 'utf8');
     } catch (error) {
-      dialog.showErrorBox('Could not open rig', error.message);
+      dialog.showErrorBox('Could not open file', error.message);
       return;
     }
   }
@@ -93,9 +102,10 @@ app.whenReady().then(() => {
   protocol.handle('stageforge', serveRenderer);
   const ses = session.defaultSession;
   ses.on('will-download', (_event, item, contents) => {
-    if (contents && isAppPage(contents.getURL()) && item.getFilename().endsWith('.stageforge.json')) {
+    const choice = exportsBySuffix.find(([suffix]) => item.getFilename().endsWith(suffix));
+    if (contents && isAppPage(contents.getURL()) && choice) {
       item.setSaveDialogOptions({
-        title: 'Export rig', filters: rigFilters,
+        title: choice[1], filters: choice[2],
         defaultPath: path.join(app.getPath('downloads'), path.basename(item.getFilename())),
       });
     }
@@ -112,8 +122,14 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(isMac ? [{ role: 'appMenu' }] : []),
     { label: 'File', submenu: [
-      { label: 'Open rig…', accelerator: 'CmdOrCtrl+O', click: () => runRigCommand('open') },
+      { label: 'Open show or rig…', accelerator: 'CmdOrCtrl+O', click: () => runRigCommand('open') },
+      { label: 'Save show as…', accelerator: 'CmdOrCtrl+S', click: () => runRigCommand('show') },
       { label: 'Export rig…', accelerator: 'CmdOrCtrl+Shift+S', click: () => runRigCommand('export') },
+      { label: 'Export', submenu: [
+        { label: 'CAD plan (DXF)…', click: () => runRigCommand('dxf') },
+        { label: '3D scene (GLB)…', click: () => runRigCommand('glb') },
+        { label: 'DMX channel patch (CSV)…', click: () => runRigCommand('csv') },
+      ] },
       { type: 'separator' }, { role: isMac ? 'close' : 'quit' },
     ] },
     { role: 'editMenu' },
