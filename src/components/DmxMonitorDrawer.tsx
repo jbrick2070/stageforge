@@ -157,7 +157,11 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
                   {conflicts.length > 0 && <span className="block text-amber-300">Overlapping channels {formatRanges(conflicts)}</span>}
                   {end > 512 && <span className="block text-amber-300">Outside universe from channel {Math.max(513, start)}</span>}
                 </summary>
-                <p className="pt-1 text-zinc-300">{DMX_CHANNELS[group.type].map((name, i) => `${i + 1} ${name}`).join(' · ')}</p>
+                <p className="pt-1 text-zinc-300">
+                  {DMX_CHANNELS[group.type].map((name, i) => `${i + 1} ${name}`).join(' · ')}
+                  {width > DMX_CHANNELS[group.type].length &&
+                    ` · ${DMX_CHANNELS[group.type].length + 1}${width > DMX_CHANNELS[group.type].length + 1 ? `–${width}` : ''} Reserved`}
+                </p>
               </details>
             ))}
           </div>

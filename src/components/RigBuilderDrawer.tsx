@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ScenicBuilder } from './ScenicBuilder';
 import { addPatchedUnits, allocateDmx } from '../data/dmxPatch';
 import { parseRigJson } from '../data/rigImport';
@@ -32,6 +32,42 @@ interface RigBuilderDrawerProps {
   onChangeRig: (next: RigConfig) => void;
   onDesignStage: () => void;
   onOpenSavedDesign?: () => void;
+}
+
+function TrussDimension({ label, value, low, high, minimum, increment, onChange }: {
+  label: string; value: number; low: number; high: number; minimum?: number; increment: number;
+  onChange: (value: number) => void;
+}) {
+  const [text, setText] = useState(String(value));
+  const [activeRange, setActiveRange] = useState<[number, number] | null>(null);
+  useEffect(() => setText(String(value)), [value]);
+  // Keep the track stable while the user drags an imported value toward the normal range.
+  const range: [number, number] = activeRange ?? [Math.min(low, value), Math.max(high, value)];
+  const accept = (v: number) => {
+    if (Number.isFinite(v) && (minimum === undefined || v >= Math.min(minimum, value)) && v !== value) onChange(v);
+  };
+  const finish = () => {
+    const next = Number(text);
+    if (text.trim() && Number.isFinite(next) && (minimum === undefined || next >= Math.min(minimum, value))) accept(next);
+    else setText(String(value));
+  };
+  return <div className="min-w-0">
+    <label className="flex items-center gap-0.5">{label}
+      <input type="number" aria-label={label + ' in metres'} value={text} step="any"
+        min={minimum === undefined ? undefined : Math.min(minimum, value)}
+        onChange={e => setText(e.target.value)} onBlur={finish} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        className="min-w-0 w-full bg-black/35 text-zinc-200 rounded px-0.5"/>m
+    </label>
+    <input type="range" aria-label={label} min={range[0]} max={range[1]} step="any" value={value}
+      onFocus={() => setActiveRange(range)} onBlur={() => setActiveRange(null)}
+      onKeyDown={e => {
+        if (!['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp'].includes(e.key)) return;
+        e.preventDefault();
+        const direction = e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -1 : 1;
+        accept(Math.min(range[1], Math.max(range[0], Number((value + direction * increment).toFixed(8)))));
+      }}
+      onChange={e => accept(e.currentTarget.valueAsNumber)} className="console-slider w-full mt-0.5"/>
+  </div>;
 }
 
 export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
@@ -97,8 +133,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     const pod = rig.trussPods.find(p => p.id === podId);
     if (!pod) return;
     const existing = pod.fixtures.find(f => groupId ? f.id === groupId : f.type === type);
-    const count = groupId ? 1 : existing ? Math.max(0, Math.min(2, 16 - existing.count)) : type === 'laser' ? 2 : 4;
-    if (!count) return;
+    const count = groupId ? 1 : existing || type === 'laser' ? 2 : 4;
     const group = { id: crypto.randomUUID(), type, modelName: existing?.modelName ?? FIXTURE_CATALOG[type].modelName,
       count, dmxUniverse: type === 'laser' ? 2 as const : 1 as const, dmxStartChannel: 1 };
     const fixtures = addPatchedUnits(rig, pod.fixtures, group, existing);
@@ -114,8 +149,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
 
   const addFloorFx = (type: FloorFxType, groupId?: string) => {
     const existing = rig.floorFx.find(f => groupId ? f.id === groupId : f.type === type);
-    const count = existing ? Math.max(0, Math.min(groupId ? 1 : 2, 12 - existing.count)) : type === 'hazer' ? 2 : 4;
-    if (!count) return;
+    const count = groupId ? 1 : existing || type === 'hazer' ? 2 : 4;
     const group = { x: 0, z: type === 'co2' ? 4.8 : type === 'floor_beam' ? -3 : 2.2, spread: 14,
       modelName: FLOOR_FX_CATALOG[type].modelName, dmxUniverse: 2 as const, dmxStartChannel: 1, ...existing,
       id: crypto.randomUUID(), type, count };
@@ -421,42 +455,14 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
 
                 {/* Pod Position & Width Sliders */}
                 <div className="grid grid-cols-3 gap-1.5 font-mono-tech text-[9px] text-zinc-400">
-                  <label>
-                    {pod.shape === 'path' ? 'LENGTH' : 'WIDTH'} {pod.width.toFixed(1)}m
-                    {pod.shape === 'path' ? <button type="button" className="block underline" onClick={onDesignStage}>Edit path</button> : <input
-                      type="range"
-                      min={4}
-                      max={28}
-                      step={0.5}
-                      value={pod.width}
-                      onChange={(e) => updatePod(pod.id, { width: parseFloat(e.target.value) })}
-                      className="console-slider w-full mt-0.5"
-                    />}
-                  </label>
-                  <label>
-                    HEIGHT {pod.baseY.toFixed(1)}m
-                    <input
-                      type="range"
-                      min={5}
-                      max={14.5}
-                      step={0.2}
-                      value={pod.baseY}
-                      onChange={(e) => updatePod(pod.id, { baseY: parseFloat(e.target.value) })}
-                      className="console-slider w-full mt-0.5"
-                    />
-                  </label>
-                  <label>
-                    DEPTH {pod.z.toFixed(1)}m
-                    <input
-                      type="range"
-                      min={-6}
-                      max={7}
-                      step={0.2}
-                      value={pod.z}
-                      onChange={(e) => updatePod(pod.id, { z: parseFloat(e.target.value) })}
-                      className="console-slider w-full mt-0.5"
-                    />
-                  </label>
+                  {pod.shape === 'path' ? <div>LENGTH {pod.width.toFixed(1)}m
+                    <button type="button" className="block underline" onClick={onDesignStage}>Edit path</button></div> :
+                    <TrussDimension label="WIDTH" value={pod.width} low={0.25} high={Math.max(28, rig.stageWidth)} minimum={0.25}
+                      increment={0.5} onChange={width => updatePod(pod.id, { width })}/>}
+                  <TrussDimension label="HEIGHT" value={pod.baseY} low={0} high={Math.max(14.5, pod.motorMaxY)} minimum={0}
+                    increment={0.2} onChange={baseY => updatePod(pod.id, { baseY, motorMinY: Math.min(baseY, pod.motorMinY), motorMaxY: Math.max(baseY, pod.motorMaxY) })}/>
+                  <TrussDimension label="DEPTH" value={pod.z} low={-Math.max(6, rig.stageDepth)} high={Math.max(7, rig.stageDepth)}
+                    increment={0.2} onChange={z => updatePod(pod.id, { z })}/>
                 </div>
 
                 {/* Mounted Fixtures List */}

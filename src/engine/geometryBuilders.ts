@@ -318,9 +318,9 @@ export function buildTrussGeometry(
   width: number,
   mats: SharedMaterials,
   path: readonly PlanPoint[] = [],
-  slotCount = 32
+  fixtureCount?: number
 ): { group: THREE.Group; anchorPoints: THREE.Vector3[]; mountSlots: { pos: THREE.Vector3; rotY: number }[] } {
-  if (shape === 'path') return buildTrussPath(path, mats, slotCount);
+  if (shape === 'path') return buildTrussPath(path, mats, fixtureCount ?? 32);
   const group = new THREE.Group();
   const anchorPoints: THREE.Vector3[] = [];
   const mountSlots: { pos: THREE.Vector3; rotY: number }[] = [];
@@ -421,7 +421,7 @@ export function buildTrussGeometry(
     }
 
     // Pre-generate evenly distributed underside mounting slots
-    const slotCount = 32;
+    const slotCount = Math.max(32, fixtureCount ?? 0);
     const inset = Math.min(0.65, halfW * 0.2);
     for (let i = 0; i < slotCount; i++) {
       const t = i / (slotCount - 1);
@@ -463,7 +463,7 @@ export function buildTrussGeometry(
       anchorPoints.push(new THREE.Vector3(Math.cos(a) * radius, hSize + 0.05, Math.sin(a) * radius));
     }
 
-    const slotCount = 24;
+    const slotCount = Math.max(24, fixtureCount ?? 0);
     for (let i = 0; i < slotCount; i++) {
       const a = (i / slotCount) * Math.PI * 2;
       mountSlots.push({
@@ -496,7 +496,7 @@ export function buildTrussGeometry(
       new THREE.Vector3(width * 0.42, hSize + 0.05, -armDepth * 0.84)
     );
 
-    const slotsPerSide = 8;
+    const slotsPerSide = Math.max(8, Math.ceil((fixtureCount ?? 0) / 2));
     for (let i = 0; i < slotsPerSide; i++) {
       const t = (i + 0.5) / slotsPerSide;
       const sx = -width * 0.46 + t * (width * 0.42);

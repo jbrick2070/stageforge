@@ -63,7 +63,8 @@ export const App: React.FC = () => {
   const engineRef = useRef<StageEngine | null>(null);
   const audioEngineRef = useRef<AudioEngine | null>(null);
 
-  const [rig, setRig] = useState<RigConfig>(() => structuredClone(RIG_TEMPLATES.arena_mainstage));
+  const [savedDesign, setSavedDesign] = useState(readSavedDesign);
+  const [rig, setRig] = useState<RigConfig>(() => savedDesign ?? structuredClone(RIG_TEMPLATES.arena_mainstage));
   const [showState, setShowState] = useState<ShowState>(() => structuredClone(INITIAL_SHOW_STATE));
   const [bump, setBump] = useState<BumpState>(EMPTY_BUMP);
   const [controllerBump, setControllerBump] = useState<BumpState>(EMPTY_BUMP);
@@ -83,7 +84,8 @@ export const App: React.FC = () => {
   const [dmxDrawerOpen, setDmxDrawerOpen] = useState(false);
   const [costModalOpen, setCostModalOpen] = useState(false);
   const [designerRig, setDesignerRig] = useState<RigConfig | null>(null);
-  const [savedDesign, setSavedDesign] = useState(readSavedDesign);
+  const pendingDesign = useRef<RigConfig | null>(null);
+  const saveTimer = useRef<number | undefined>(undefined);
   const [cinemaMode, setCinemaMode] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [dmxSnapshot, setDmxSnapshot] = useState<{ u1: Uint8Array; u2: Uint8Array }>({
@@ -106,6 +108,31 @@ export const App: React.FC = () => {
   const showToast = useCallback((msg: string) => {
     setToast(msg);
   }, []);
+
+  const flushDesign = useCallback(() => {
+    window.clearTimeout(saveTimer.current);
+    const design = pendingDesign.current;
+    if (!design) return;
+    pendingDesign.current = null;
+    try {
+      localStorage.setItem(SAVED_DESIGN_KEY, JSON.stringify(design));
+    } catch {
+      showToast('Design applied. Export the rig to keep a copy on this device.');
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.hidden) flushDesign();
+    };
+    window.addEventListener('pagehide', flushDesign);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', flushDesign);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      flushDesign();
+    };
+  }, [flushDesign]);
 
   useEffect(() => {
     if (!toast) return;
@@ -450,15 +477,14 @@ export const App: React.FC = () => {
     autoDirRef.current = false;
     setShowState(s => s.autoDirector ? { ...s, autoDirector: false } : s);
   };
-  const applyRig = (next: RigConfig) => {
+  const applyRig = (next: RigConfig, saveNow = false) => {
     setRig(next);
     if (next.schemaVersion !== 1) return;
     setSavedDesign(next);
-    try {
-      localStorage.setItem(SAVED_DESIGN_KEY, JSON.stringify(next));
-    } catch {
-      showToast('Design applied. Export the rig to keep a copy on this device.');
-    }
+    pendingDesign.current = next;
+    window.clearTimeout(saveTimer.current);
+    if (saveNow) flushDesign();
+    else saveTimer.current = window.setTimeout(flushDesign, 250);
   };
   const controller = useShowGamepad({
     enabled: !costModalOpen && !designerRig,
@@ -597,7 +623,7 @@ export const App: React.FC = () => {
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
       {designerRig && <StageDesigner rig={designerRig} onClose={() => setDesignerRig(null)} onChange={design => {
         const next = normalizeDesign(design);
-        applyRig(next);
+        applyRig(next, true);
         previewRig();
         setDesignerRig(null);
       }} />}

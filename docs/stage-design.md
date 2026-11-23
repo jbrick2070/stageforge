@@ -16,4 +16,4 @@ The renderer constructs deck surfaces and truss spans from the document. Floor f
 
 ## Saved rigs
 
-New designs record `schemaVersion: 1`. A legacy rig with no `platforms` uses its original rectangular deck and factory truss shapes. An explicit empty `platforms` array represents bare venue floor. New designs store their deck modules and local truss vertices in JSON. Dimensions used for venue framing and the cumulative length of a custom path are derived when applying or importing a plan. Browser storage holds the latest applied design, and JSON exports are portable named copies.
+New designs record `schemaVersion: 1`. A legacy rig with no `platforms` uses its original rectangular deck and factory truss shapes. An explicit empty `platforms` array represents bare venue floor. New designs store their deck modules and local truss vertices in JSON. Dimensions used for venue framing and the cumulative length of a custom path are derived when applying or importing a plan. On reload the application restores the latest applied design and its equipment from browser storage. JSON exports are portable named copies.
