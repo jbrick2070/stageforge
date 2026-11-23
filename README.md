@@ -1,2 +1,48 @@
-# stageforge
-Concert Setup SIm
+# StageForge 3D
+
+StageForge is a browser-based concert simulator. Design a stage, light it from an eight-cue desk, and watch from seven cameras, including a close-up of the PA. The app uses React, Three.js and the Web Audio API.
+
+![Arena show with steel-blue and amber lighting, inflatable tentacles and flown line arrays](docs/stageforge-arena.webp)
+
+## Run locally
+
+Use Node.js 22.12 or later and a browser with WebGL 2 enabled. From the project directory, run
+
+```sh
+npm ci
+npm run dev
+```
+
+Open the local URL printed by Vite. The default is [127.0.0.1:5173](http://127.0.0.1:5173/).
+
+To compile the TypeScript and build a production copy, run `npm run build`. Run `npm run preview` to inspect the generated site locally.
+
+## Build a stage
+
+Open **Rig builder** and choose an arena, festival, warehouse or starter rig. Configure truss pods, fixtures, hoists and video walls.
+
+- Under **Inflatables & stage props**, add a tentacle, foil star, arch, marquee tower or performance riser. Select a placed piece to change its color, position, size and rotation.
+- Configure the PA with **Flown boxes per side**, **Monitor wedges** and **Subwoofers**. Each flown array supports 4–12 cabinets, the deck supports up to eight monitor wedges, and the sub wall supports 2–16 cabinets in pairs.
+- The arena and festival rigs use original 3D models sized to L-Acoustics’ published cabinet dimensions. **Speaker system** also offers a generic touring rig. The PA models provide a visual reference. The production budget uses illustrative prices. Manufacturer specifications are available for the [K2 array](https://www.l-acoustics.com/products/k2/), [KS28 subwoofer](https://www.l-acoustics.com/products/ks28/) and [X12 monitor](https://www.l-acoustics.com/products/x12/).
+- Use the download and upload buttons at the top of **Rig builder** to save and restore a rig as JSON. The file includes scenery and speaker settings.
+
+## Run a show
+
+1. Select **Play demo**, or open **Audio** to load a track or use a microphone. **Beat sync** connects show parameters to the audio.
+2. Select a pad in **Show cues**. Adjust the fixture palette, dimmer, haze, lasers or bloom. To save a look for this session, choose **Store cue** and then a destination pad.
+3. Use **Lighting**, **Lasers** and **Motors & FX** for individual controls, or enable **Auto-LD** to cycle through cues.
+4. Open **DMX** to inspect simulated channel values and fixture patches in either 512-channel universe. **Cost & crew** shows an illustrative production estimate for the current rig.
+
+| Keyboard | Action |
+| --- | --- |
+| Space | Toggle blackout |
+| B / S | Hold blinders / strobe |
+| C / F | Hold CO₂ / smoke |
+| L / D | Hold laser hit / rig drop |
+| 1–6 | Select show camera |
+| 7 | Inspect the PA up close |
+| H | Toggle cinema mode |
+
+## License
+
+[MIT](LICENSE)

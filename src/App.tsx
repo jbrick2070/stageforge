@@ -1,0 +1,505 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { StageEngine } from './engine/StageEngine';
+import { AudioEngine } from './audio/AudioEngine';
+import { TopBar } from './components/TopBar';
+import { BottomConsole } from './components/BottomConsole';
+import { RigBuilderDrawer } from './components/RigBuilderDrawer';
+import { DmxMonitorDrawer } from './components/DmxMonitorDrawer';
+import { CostEstimatorModal } from './components/CostEstimatorModal';
+import { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } from './data/presets';
+import { calculateProductionEstimate, formatUSD } from './data/productionEstimator';
+import {
+  AudioMetrics,
+  BumpState,
+  CameraPreset,
+  RigConfig,
+  ShowCue,
+  ShowState,
+} from './types/show';
+
+const EMPTY_AUDIO: AudioMetrics = {
+  playing: false,
+  source: 'none',
+  trackName: 'No Audio Loaded',
+  energy: 0,
+  bass: 0,
+  mid: 0,
+  high: 0,
+  beat: false,
+  beatPulse: 0,
+  drop: false,
+  spectrum: new Float32Array(32),
+};
+
+const EMPTY_BUMP: BumpState = {
+  blinder: false,
+  strobe: false,
+  co2: false,
+  smoke: false,
+  laser: false,
+  motorDrop: false,
+};
+
+export const App: React.FC = () => {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const engineRef = useRef<StageEngine | null>(null);
+  const audioEngineRef = useRef<AudioEngine | null>(null);
+
+  const [rig, setRig] = useState<RigConfig>(() => structuredClone(RIG_TEMPLATES.arena_mainstage));
+  const [showState, setShowState] = useState<ShowState>(() => structuredClone(INITIAL_SHOW_STATE));
+  const [bump, setBump] = useState<BumpState>(EMPTY_BUMP);
+  const [cues, setCues] = useState<ShowCue[]>(() => structuredClone(SHOW_CUES));
+  const [activeCueId, setActiveCueId] = useState<string | null>('cue-1');
+
+  const [audioMetrics, setAudioMetrics] = useState<AudioMetrics>(EMPTY_AUDIO);
+  const [volume, setVolume] = useState(0.72);
+  const [fps, setFps] = useState(60);
+  const [activeCamera, setActiveCamera] = useState<CameraPreset>('foh');
+  const [rigDrawerOpen, setRigDrawerOpen] = useState(false);
+  const [dmxDrawerOpen, setDmxDrawerOpen] = useState(false);
+  const [costModalOpen, setCostModalOpen] = useState(false);
+  const [cinemaMode, setCinemaMode] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [dmxSnapshot, setDmxSnapshot] = useState<{ u1: Uint8Array; u2: Uint8Array }>({
+    u1: new Uint8Array(512),
+    u2: new Uint8Array(512),
+  });
+
+  const dmxOpenRef = useRef(false);
+  dmxOpenRef.current = dmxDrawerOpen;
+
+  const autoDirRef = useRef(false);
+  autoDirRef.current = showState.autoDirector;
+  const cuesRef = useRef(cues);
+  cuesRef.current = cues;
+  const autoCueIndexRef = useRef(0);
+  const lastAutoSwitchRef = useRef(0);
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const id = window.setTimeout(() => setToast(null), 2200);
+    return () => window.clearTimeout(id);
+  }, [toast]);
+
+  // Trigger a show cue cleanly preserving user's custom media/text/master
+  const triggerCue = useCallback((cue: ShowCue) => {
+    setActiveCueId(cue.id);
+    setShowState((prev) => ({
+      ...prev,
+      ...cue.state,
+      blackout: false,
+      laser: cue.state.laser ? { ...prev.laser, ...cue.state.laser } : prev.laser,
+      motors: cue.state.motors
+        ? { ...prev.motors, ...cue.state.motors, podTargets: prev.motors.podTargets }
+        : prev.motors,
+      atmo: cue.state.atmo ? { ...prev.atmo, ...cue.state.atmo } : prev.atmo,
+      led: cue.state.led
+        ? {
+            ...prev.led,
+            ...cue.state.led,
+            tourText: prev.led.tourText,
+            customMediaUrl: prev.led.customMediaUrl,
+            customMediaType: prev.led.customMediaType,
+          }
+        : prev.led,
+    }));
+  }, []);
+
+  // Mount Three.js StageEngine + AudioEngine once
+  useEffect(() => {
+    const container = viewportRef.current;
+    if (!container) return;
+
+    const audio = new AudioEngine();
+    audioEngineRef.current = audio;
+
+    const engine = new StageEngine(
+      container,
+      rig,
+      showState,
+      (dt) => audio.getMetrics(dt),
+      (metrics, curFps) => {
+        setFps(curFps);
+        setAudioMetrics({
+          ...metrics,
+          spectrum: new Float32Array(metrics.spectrum),
+        });
+        if (dmxOpenRef.current) {
+          setDmxSnapshot({
+            u1: new Uint8Array(engine.dmxUniverse1),
+            u2: new Uint8Array(engine.dmxUniverse2),
+          });
+        }
+        // Auto Lighting Director (switches cues dynamically on musical phrases!)
+        if (autoDirRef.current) {
+          const now = performance.now();
+          const intervalMs = metrics.playing ? 7500 : 6500;
+          if (now - lastAutoSwitchRef.current > intervalMs && (!metrics.playing || metrics.beat || now - lastAutoSwitchRef.current > intervalMs + 2000)) {
+            lastAutoSwitchRef.current = now;
+            autoCueIndexRef.current = (autoCueIndexRef.current + 1) % cuesRef.current.length;
+            triggerCue(cuesRef.current[autoCueIndexRef.current]);
+          }
+        }
+      }
+    );
+    engineRef.current = engine;
+
+    return () => {
+      engine.dispose();
+      audio.dispose();
+      engineRef.current = null;
+      audioEngineRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync show state to Three.js engine every change
+  useEffect(() => {
+    engineRef.current?.setShowState(showState);
+  }, [showState]);
+
+  useEffect(() => {
+    const url = showState.led.customMediaUrl;
+    return () => {
+      if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
+    };
+  }, [showState.led.customMediaUrl]);
+
+  // Sync momentary bump overrides
+  useEffect(() => {
+    engineRef.current?.setBumpState(bump);
+  }, [bump]);
+
+  // Rebuild 3D rig whenever user edits stage/trusses/fixtures/templates
+  const firstRigMount = useRef(true);
+  useEffect(() => {
+    if (firstRigMount.current) {
+      firstRigMount.current = false;
+      return;
+    }
+    engineRef.current?.rebuildRig(rig);
+  }, [rig]);
+
+  // Global keyboard live show hotkeys (when not typing in a text box)
+  useEffect(() => {
+    const isTyping = (target: EventTarget | null) =>
+      target instanceof HTMLElement && (target.isContentEditable || !!target.closest('input,textarea,select'));
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isTyping(e.target)) return;
+      if (e.code === 'Space' && e.target instanceof Element && e.target.closest('button')) return;
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      switch (e.code) {
+        case 'Space':
+          e.preventDefault();
+          setShowState((s) => ({ ...s, blackout: !s.blackout }));
+          break;
+        case 'KeyB':
+          setBump((b) => ({ ...b, blinder: true }));
+          break;
+        case 'KeyS':
+          setBump((b) => ({ ...b, strobe: true }));
+          break;
+        case 'KeyC':
+          setBump((b) => ({ ...b, co2: true }));
+          break;
+        case 'KeyF':
+          setBump((b) => ({ ...b, smoke: true }));
+          break;
+        case 'KeyL':
+          setBump((b) => ({ ...b, laser: true }));
+          break;
+        case 'KeyD':
+          setBump((b) => ({ ...b, motorDrop: true }));
+          break;
+        case 'KeyH':
+          setCinemaMode((v) => !v);
+          break;
+        case 'Digit1':
+          handleCamera('foh');
+          break;
+        case 'Digit2':
+          handleCamera('front_row');
+          break;
+        case 'Digit3':
+          handleCamera('wide_arena');
+          break;
+        case 'Digit4':
+          handleCamera('stage_side');
+          break;
+        case 'Digit5':
+          handleCamera('overhead');
+          break;
+        case 'Digit6':
+          handleCamera('orbit');
+          break;
+        case 'Digit7':
+          handleCamera('pa_closeup');
+          break;
+      }
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      switch (e.code) {
+        case 'KeyB':
+          setBump((b) => ({ ...b, blinder: false }));
+          break;
+        case 'KeyS':
+          setBump((b) => ({ ...b, strobe: false }));
+          break;
+        case 'KeyC':
+          setBump((b) => ({ ...b, co2: false }));
+          break;
+        case 'KeyF':
+          setBump((b) => ({ ...b, smoke: false }));
+          break;
+        case 'KeyL':
+          setBump((b) => ({ ...b, laser: false }));
+          break;
+        case 'KeyD':
+          setBump((b) => ({ ...b, motorDrop: false }));
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    const releaseBumps = () => setBump(EMPTY_BUMP);
+    window.addEventListener('blur', releaseBumps);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', releaseBumps);
+    };
+  }, []);
+
+  const handleCamera = (cam: CameraPreset) => {
+    setActiveCamera(cam);
+    engineRef.current?.setCameraPreset(cam);
+  };
+
+  const handleTogglePlay = () => {
+    const ae = audioEngineRef.current;
+    if (!ae) return;
+    const playing = ae.togglePlayPause();
+    showToast(playing ? `Playing: ${ae.getStatus().trackName}` : 'Audio Paused');
+  };
+
+  const handleUploadAudio = async (file: File) => {
+    const ae = audioEngineRef.current;
+    if (!ae) return;
+    try {
+      const name = await ae.loadAudioFile(file);
+      showToast(`Loaded Track: ${name}`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      showToast('Could not play audio file');
+    }
+  };
+
+  const handleToggleMic = async () => {
+    const ae = audioEngineRef.current;
+    if (!ae) return;
+    if (audioMetrics.source === 'mic') {
+      ae.stopAll();
+      showToast('Live Mic Stopped');
+      return;
+    }
+    try {
+      await ae.startMicInput();
+      showToast('Live Mic / Room Audio Sync Active');
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      showToast('Microphone permission denied');
+    }
+  };
+
+  const handleSaveCue = (cueId: string) => {
+    setCues((prev) =>
+      prev.map((c) =>
+        c.id === cueId
+          ? {
+              ...c,
+              accent: showState.primaryColor,
+              state: structuredClone(showState),
+            }
+          : c
+      )
+    );
+    setActiveCueId(cueId);
+    showToast(`Saved current rig look to cue pad!`);
+  };
+
+  const counts = useMemo(() => {
+    let fixtures = 0;
+    let lasers = 0;
+    for (const p of rig.trussPods) {
+      for (const f of p.fixtures) {
+        fixtures += f.count;
+        if (f.type === 'laser') lasers += f.count;
+      }
+    }
+    for (const fx of rig.floorFx) {
+      fixtures += fx.count;
+      if (fx.type === 'floor_laser') lasers += fx.count;
+    }
+    return { fixtures, lasers };
+  }, [rig]);
+
+  const oneNightCostLabel = useMemo(() => {
+    const est = calculateProductionEstimate(rig);
+    return `${formatUSD(est.oneNightShowTotal)}/NT`;
+  }, [rig]);
+
+  return (
+    <main data-cinema={cinemaMode} className="stage-workstation relative w-screen h-screen bg-[#040509] overflow-hidden">
+      {/* Full-Viewport HQ 3D WebGL2 Canvas */}
+      <div ref={viewportRef} className="stage-viewport w-full h-full cursor-grab active:cursor-grabbing" />
+
+      {/* Top Transport, Audio, Cameras & Tools Bar */}
+      <TopBar
+        fps={fps}
+        fixtureCount={counts.fixtures}
+        laserCount={counts.lasers}
+        audio={audioMetrics}
+        volume={volume}
+        bpm={showState.bpm}
+        autoDirector={showState.autoDirector}
+        audioReactive={showState.audioReactive}
+        activeCamera={activeCamera}
+        rigDrawerOpen={rigDrawerOpen}
+        dmxDrawerOpen={dmxDrawerOpen}
+        costModalOpen={costModalOpen}
+        oneNightCostLabel={oneNightCostLabel}
+        cinemaMode={cinemaMode}
+        onTogglePlay={handleTogglePlay}
+        onUploadAudio={handleUploadAudio}
+        onToggleMic={handleToggleMic}
+        onVolumeChange={(v) => {
+          setVolume(v);
+          audioEngineRef.current?.setVolume(v);
+        }}
+        onBpmChange={(nextBpm) => {
+          const clamped = Math.max(70, Math.min(180, nextBpm));
+          setShowState((s) => ({ ...s, bpm: clamped }));
+          audioEngineRef.current?.setBpm(clamped);
+        }}
+        onToggleAutoDirector={() => {
+          setShowState((s) => {
+            const next = !s.autoDirector;
+            showToast(next ? 'Auto-LD Director ON — Sit back & enjoy the show!' : 'Auto-LD OFF — Manual FOH Control');
+            return { ...s, autoDirector: next };
+          });
+        }}
+        onToggleAudioReactive={() =>
+          setShowState((s) => ({ ...s, audioReactive: !s.audioReactive }))
+        }
+        onSelectCamera={handleCamera}
+        onToggleRigDrawer={() => setRigDrawerOpen((v) => !v)}
+        onToggleDmxDrawer={() => setDmxDrawerOpen((v) => !v)}
+        onToggleCostModal={() => setCostModalOpen((v) => !v)}
+        onToggleCinemaMode={() => setCinemaMode((v) => !v)}
+      />
+
+      {/* Live Status Toast & Blackout Pill */}
+      {toast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
+          {toast}
+        </div>
+      )}
+
+      {showState.blackout && (
+        <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none px-5 py-2 rounded-xl bg-rose-950/80 border border-rose-500/70 font-mono-tech text-sm tracking-widest text-rose-200 shadow-[0_0_30px_rgba(244,63,94,0.45)]">
+          STAGE BLACKOUT — PRESS [SPACE] TO RESTORE
+        </div>
+      )}
+
+      {/* Slide-Over Rig Builder */}
+      {!cinemaMode && (
+        <RigBuilderDrawer
+          open={rigDrawerOpen}
+          rig={rig}
+          onClose={() => setRigDrawerOpen(false)}
+          onChangeRig={(nextRig) => {
+            setRig(nextRig);
+          }}
+        />
+      )}
+
+      {/* Slide-Over DMX512 Live Monitor */}
+      {!cinemaMode && (
+        <DmxMonitorDrawer
+          open={dmxDrawerOpen}
+          rig={rig}
+          universe1={dmxSnapshot.u1}
+          universe2={dmxSnapshot.u2}
+          onClose={() => setDmxDrawerOpen(false)}
+        />
+      )}
+
+      {/* Real-World Production Cost & Crew Labor Estimator Modal */}
+      <CostEstimatorModal
+        open={costModalOpen}
+        rig={rig}
+        onClose={() => setCostModalOpen(false)}
+        onDeployRig={() => showToast('Virtual Crew Load-In Approved ($0.00) — Show Live!')}
+      />
+
+      {/* Bottom FOH DMX Console & Laser Visuals Deck */}
+      {!cinemaMode && (
+        <BottomConsole
+          state={showState}
+          bump={bump}
+          rig={rig}
+          cues={cues}
+          activeCueId={activeCueId}
+          onPatchState={(patch) => {
+            setActiveCueId(null);
+            setShowState((s) => ({ ...s, ...patch }));
+          }}
+          onPatchLaser={(patch) => {
+            setActiveCueId(null);
+            setShowState((s) => ({ ...s, laser: { ...s.laser, ...patch } }));
+          }}
+          onPatchMotors={(patch) => {
+            setActiveCueId(null);
+            setShowState((s) => ({ ...s, motors: { ...s.motors, ...patch } }));
+          }}
+          onPatchAtmo={(patch) => {
+            setActiveCueId(null);
+            setShowState((s) => ({ ...s, atmo: { ...s.atmo, ...patch } }));
+          }}
+          onPatchLed={(patch) => {
+            setActiveCueId(null);
+            setShowState((s) => ({ ...s, led: { ...s.led, ...patch } }));
+          }}
+          onSetPodMotor={(podId, height, tilt) => {
+            setShowState((s) => ({
+              ...s,
+              motors: {
+                ...s.motors,
+                mode: 'manual',
+                podTargets: {
+                  ...s.motors.podTargets,
+                  [podId]: { height, tilt },
+                },
+              },
+            }));
+          }}
+          onTriggerCue={(cue) => {
+            triggerCue(cue);
+            showToast(`Cue Triggered: ${cue.name}`);
+          }}
+          onSaveCue={handleSaveCue}
+          onSetBump={(key, active) => setBump((b) => ({ ...b, [key]: active }))}
+        />
+      )}
+    </main>
+  );
+};
+export default App;
