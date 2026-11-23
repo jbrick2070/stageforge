@@ -1,9 +1,6 @@
 import * as THREE from 'three';
 
-export const MOVING_HEAD_OPTICS = {
-  beam: { length: 30, nearRadius: 0.12, farRadius: 1.75 },
-  wash: { length: 21, nearRadius: 0.18, farRadius: 3.8 },
-} as const;
+import type { fixtureOptics } from '../data/fixtureOptics';
 
 const poolVertex = /* glsl */ `
   attribute vec4 bounds;    // min XZ, max XZ on this receiver
@@ -179,14 +176,14 @@ export class BeamPools {
     for (const receiver of this.receivers) receiver.count = 0;
   }
 
-  add(beam: THREE.Object3D, type: 'wash' | 'beam', isFloor: boolean, color: THREE.Color, intensity: number) {
+  add(beam: THREE.Object3D, type: 'wash' | 'beam', isFloor: boolean, color: THREE.Color, intensity: number,
+      optics: ReturnType<typeof fixtureOptics>) {
     if (intensity <= 0.001) return;
     const sign = isFloor ? 1 : -1;
     beam.updateWorldMatrix(true, false);
     this.lens.set(0, sign * 0.17, 0).applyMatrix4(beam.matrixWorld);
     this.direction.set(0, sign, 0).transformDirection(beam.matrixWorld);
     const wash = type === 'wash';
-    const optics = MOVING_HEAD_OPTICS[type];
     const throwLength = optics.length;
     const zoom = beam.scale.x;
     const nearRadius = optics.nearRadius * zoom;

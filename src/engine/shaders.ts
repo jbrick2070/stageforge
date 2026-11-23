@@ -265,6 +265,9 @@ export const LED_WALL_FRAG = /* glsl */ `
   uniform sampler2D uTextTex;
   uniform float uHasCustom;
   uniform float uAspect;
+  uniform vec2 uCanvasPixels;
+  uniform vec2 uCabinetGrid;
+  uniform bool uPixelSnap;
 
   varying vec2 vUv;
 
@@ -294,6 +297,13 @@ export const LED_WALL_FRAG = /* glsl */ `
     }
 
     vec2 uv = vUv;
+    vec2 diode = vUv * uCanvasPixels;
+    vec2 footprint = fwidth(diode);
+    float resolve = 1.0 - smoothstep(0.20, 0.65, max(footprint.x, footprint.y));
+    if (uPixelSnap) {
+      vec2 center = (clamp(floor(diode), vec2(0.0), uCanvasPixels - 1.0) + 0.5) / uCanvasPixels;
+      uv = mix(uv, center, resolve);
+    }
     vec2 p = (uv - 0.5) * vec2(uAspect, 1.0);
     float t = uTime * (0.4 + uSpeed * 2.2);
     vec3 col = vec3(0.0);
@@ -410,12 +420,9 @@ export const LED_WALL_FRAG = /* glsl */ `
     }
 
     // Resolve diodes only when the camera is close enough to see them.
-    vec2 diode = uv * vec2(uAspect, 1.0) * 160.0;
-    vec2 footprint = fwidth(diode);
-    float resolve = 1.0 - smoothstep(0.20, 0.65, max(footprint.x, footprint.y));
     vec2 dotUv = fract(diode) - 0.5;
     float diodeMask = mix(0.96, 1.03 - 0.22 * smoothstep(0.12, 0.31, dot(dotUv, dotUv)), resolve);
-    vec2 cabinet = uv * vec2(max(1.0, floor(6.0 * uAspect + 0.5)), 6.0);
+    vec2 cabinet = vUv * uCabinetGrid;
     vec2 seam = abs(fract(cabinet + 0.5) - 0.5);
     vec2 seamWidth = max(fwidth(cabinet), vec2(0.001));
     vec2 gap = (1.0 - smoothstep(vec2(0.003), vec2(0.003) + seamWidth, seam)) * min(vec2(1.0), 0.014 / seamWidth);

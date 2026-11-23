@@ -16,6 +16,25 @@ const example = JSON.parse(await readFile(new URL('../public/examples/amber-walk
 const parse = value => parseShowFile(JSON.stringify(value));
 const write = show => makeShowFile(show.rig, show.cues, show.look, show.activeCueId, show.controls, show.timeline, show.media);
 
+test('v1 remains writable and a v2 cue or take preserves independently focused and colored groups', () => {
+  const authored = parse(example);
+  assert.equal(write(authored).version, 1);
+  const split = { wash: { focusMarkId: 'platform:main-deck', primaryColor: '#ffb869', movementMode: 'manual' } };
+  authored.timeline.events[1].look = { movingGroups: split };
+  const fromTake = write(authored);
+  assert.equal(fromTake.version, 2);
+  assert.deepEqual(parse(fromTake).timeline.events[1].look.movingGroups, split);
+  authored.cues[1].state.movingGroups = split;
+  delete authored.timeline;
+  const fromCue = write(authored);
+  assert.equal(fromCue.version, 2);
+  fromCue.cues[1].state.movingGroups.wash.focusMarkId = 'platform:removed';
+  assert.throws(() => parse(fromCue), /movingGroups.wash.focusMarkId/);
+  assert.equal(write(fromCue).cues[1].state.movingGroups.wash.focusMarkId, null);
+  fromCue.version = 1;
+  assert.throws(() => parse(fromCue));
+});
+
 test('reopened v1 cues compare their authored values and ignore inherited fields, URL resolution and JSON key order', () => {
   const previous = structuredClone(INITIAL_SHOW_STATE);
   const screen = { kind: 'none', target: 'main-led', playing: false, name: '' };
@@ -104,7 +123,7 @@ test('export discards session URLs, private fields and media paths throughout th
 });
 
 const badEdits = [
-  ['unsupported file version', s => { s.version = 2; }],
+  ['unsupported file version', s => { s.version = 3; }],
   ['wrong schema', s => { s.$schema = 'https://other.invalid'; }],
   ['missing complete look field', s => { delete s.look.bpm; }],
   ['bad look color', s => { s.look.primaryColor = 'url(...)'; }],

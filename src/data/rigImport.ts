@@ -1,6 +1,8 @@
 import { VENUE_TYPES, type RigConfig } from '../types/show';
+import { MAX_ANGLE, MAX_LUMENS, MIN_ANGLE } from './fixtureOptics';
 import { FIXTURE_CATALOG, FLOOR_FX_CATALOG } from './presets';
 import { SPEAKER_PROFILES } from './speakerProfiles';
+import { requestedWallSize } from './stageEquipment';
 import { isStageProp } from './stageProps';
 import { MAX_PLATFORMS, MAX_PATH_POINTS, MIN_TRUSS_SPAN, normalizeDesign } from './stageDesign';
 
@@ -53,6 +55,23 @@ const equipment = {
   dmxStartChannel: integer(1, 512),
 };
 
+function checkOptics(item: Fields, path: string) {
+  if (item.optics === undefined) return;
+  if (item.type !== 'beam' && item.type !== 'wash' && item.type !== 'floor_beam')
+    throw new Error(`Unsupported fixture optics at ${path}.`);
+  const limits = {
+    lumens: optional(v => number(v) && v >= 0 && v <= MAX_LUMENS),
+    beamAngle: optional(v => number(v) && v >= MIN_ANGLE && v <= MAX_ANGLE),
+  };
+  checkFields(item.optics, path + '.optics', limits);
+  if (item.optics.profile !== undefined) {
+    const name: Check = v => typeof v === 'string' && !!v.trim() && [...v].length <= 512;
+    checkFields(item.optics.profile, path + '.optics.profile', {
+      ...limits, manufacturer: name, fixture: name, geometry: name, source: optional(v => v === 'datasheet'),
+    });
+  }
+}
+
 function checkRig(value: unknown): asserts value is RigConfig {
   let fixtureCount = 0;
   checkFields(value, 'rig', {
@@ -84,6 +103,13 @@ function checkRig(value: unknown): asserts value is RigConfig {
     curved: bool,
     sideWings: bool,
   });
+  if (value.ledWall.cabinets !== undefined) {
+    checkFields(value.ledWall.cabinets, 'ledWall.cabinets', {
+      columns: integer(1, 256), rows: integer(1, 256),
+      widthMm: integer(50, 2000), heightMm: integer(50, 2000),
+      pixelsWide: integer(1, 4096), pixelsHigh: integer(1, 4096),
+    });
+  }
   checkFields(value.audioRig, 'audioRig', {
     lineArrays: bool,
     subWall: bool,
@@ -125,6 +151,7 @@ function checkRig(value: unknown): asserts value is RigConfig {
     }
     checkList(pod.fixtures, `${path}.fixtures`, (fixture, fixturePath) => {
       checkFields(fixture, fixturePath, { ...equipment, type: catalogKey(FIXTURE_CATALOG) });
+      checkOptics(fixture, fixturePath);
       fixtureCount += Number(fixture.count);
     });
   });
@@ -136,6 +163,7 @@ function checkRig(value: unknown): asserts value is RigConfig {
       z: number,
       spread: (v) => number(v) && v >= 0,
     });
+    checkOptics(unit, path);
     fixtureCount += Number(unit.count);
   });
   if (fixtureCount > 1024)
@@ -155,6 +183,7 @@ export function parseRigJson(source: string): RigConfig {
     throw new Error('Choose a valid JSON file.');
   }
   checkRig(rig);
+  if (rig.ledWall.cabinets) Object.assign(rig.ledWall, requestedWallSize(rig.ledWall.cabinets));
   return rig.platforms !== undefined || rig.trussPods.some((pod) => pod.shape === 'path')
     ? normalizeDesign(rig)
     : rig;

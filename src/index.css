@@ -338,3 +338,15 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
 @media (min-width: 360px) and (max-width: 429px) {
   .transport-tools .tool-name-detail { display: none; }
 }
+
+.head-targets {
+  display: flex; gap: .35rem; align-items: center; flex-wrap: wrap;
+  font: 600 .7rem var(--font-mono-tech, monospace); color: #c7c9d3;
+}
+.head-targets span { margin-right: .25rem; }
+.head-targets button, .head-color-mode select {
+  padding: .24rem .52rem; border: 1px solid #454351; border-radius: .35rem;
+  color: #e5e4ec; background: #1d1c25; cursor: pointer;
+}
+.head-targets button[aria-pressed="true"] { border-color: #a995df; background: #3c304e; color: #fff; }
+.head-color-mode { display: flex; align-items: center; gap: .35rem; font-size: .7rem; color: #d5d2df; }

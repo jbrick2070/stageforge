@@ -64,6 +64,7 @@ export function applyDemoLighting(state: ShowState, pos: DemoPosition): ShowStat
   const laserLevel = look.laser && !rest ? (peak ? 0.48 + level * 0.35 : Math.max(0, progress - 0.35) * 0.55) : 0;
   return {
     ...state,
+    ...(state.movingGroups && Object.keys(state.movingGroups).length ? { movingGroups: {} } : {}),
     primaryColor: look.colors[0], accentColor,
     colorSplitMode: peak ? 'alternate' : 'gradient',
     beamIntensity: level, washIntensity: intro ? wash * washFade : wash,
@@ -71,7 +72,7 @@ export function applyDemoLighting(state: ShowState, pos: DemoPosition): ShowStat
     movementMode: look.movement, movementSpeed: 0.07 + level * (peak ? 0.69 : 0.53),
     movementSpread: 0.19 + level * 0.76, goboPrism: id === 'finale' && pos.barInSection >= 4,
     strobeRate: 0, blinderLevel: accent ? 0.63 : 0,
-    laser: { ...state.laser, enabled: laserLevel > 0, intensity: laserLevel,
+    laser: { enabled: laserLevel > 0, intensity: laserLevel,
       pattern: look.laser ?? 'fan', colorMode: 'dual', beamCount: peak ? 18 : 8,
       spreadX: peak ? 0.87 : 0.52, spreadY: 0.35 + level * 0.26, speed: 0.1 + level * 0.38,
       tilt: 0.16, rotation: 0.24, strobe: 0, audienceScan: false },

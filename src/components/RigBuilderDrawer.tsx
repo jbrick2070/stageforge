@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ScenicBuilder } from './ScenicBuilder';
+import { LedCabinetEditor } from './LedCabinetEditor';
+import { FixtureOpticsEditor } from './FixtureOpticsEditor';
 import { addPatchedUnits, allocateDmx } from '../data/dmxPatch';
 import { downloadRig, parseRigJson } from '../data/rigImport';
 import { GRID_HEIGHT, ledPlacement } from '../data/stageEquipment';
@@ -139,6 +141,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     const existing = pod.fixtures.find(f => groupId ? f.id === groupId : f.type === type);
     const count = groupId ? 1 : existing || type === 'laser' ? 2 : 4;
     const group = { id: crypto.randomUUID(), type, modelName: existing?.modelName ?? FIXTURE_CATALOG[type].modelName,
+      optics: existing?.optics,
       count, dmxUniverse: type === 'laser' ? 2 as const : 1 as const, dmxStartChannel: 1 };
     const fixtures = addPatchedUnits(rig, pod.fixtures, group, existing);
     if (!fixtures) { setPatchError(`No free DMX block for ${count} × ${group.modelName}.`); return; }
@@ -315,7 +318,9 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
             />
           </div>
 
-          {rig.ledWall.enabled && wall.scale < 1 && (
+          {rig.ledWall.enabled && <LedCabinetEditor rig={rig} layout={wall}
+            onChange={ledWall => onChangeRig({ ...rig, ledWall })}/>}
+          {rig.ledWall.enabled && !rig.ledWall.cabinets && wall.scale < 1 && (
             <p className="text-xs text-amber-200">
               {wall.height > 0
                 ? `LED wall fits at ${wall.width.toFixed(1)} × ${wall.height.toFixed(1)} m under the ${gridHeight} m grid.`
@@ -470,8 +475,8 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                 {/* Mounted Fixtures List */}
                 <div className="space-y-1">
                   {pod.fixtures.map((fg) => (
+                    <React.Fragment key={fg.id}>
                     <div
-                      key={fg.id}
                       className="flex items-center justify-between bg-white/5 rounded px-2 py-1 text-[10px]"
                     >
                       <div>
@@ -496,6 +501,9 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                         </button>
                       </div>
                     </div>
+                    {(fg.type === 'beam' || fg.type === 'wash') && <FixtureOpticsEditor kind={fg.type} settings={fg.optics}
+                      onChange={optics => updatePod(pod.id, { fixtures: pod.fixtures.map(item => item.id === fg.id ? { ...item, optics } : item) })}/>}
+                    </React.Fragment>
                   ))}
                 </div>
 
@@ -534,8 +542,8 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
           </div>
           <div className="space-y-1">
             {rig.floorFx.map((fx) => (
+              <React.Fragment key={fx.id}>
               <div
-                key={fx.id}
                 className="flex items-center justify-between bg-white/5 rounded px-2 py-1 text-[10px]"
               >
                 <span className="text-zinc-200">{fx.modelName}</span>
@@ -562,6 +570,9 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                   </button>
                 </div>
               </div>
+              {fx.type === 'floor_beam' && <FixtureOpticsEditor kind="beam" settings={fx.optics}
+                onChange={optics => onChangeRig({ ...rig, floorFx: rig.floorFx.map(item => item.id === fx.id ? { ...item, optics } : item) })}/>}
+              </React.Fragment>
             ))}
           </div>
         </div>

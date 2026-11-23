@@ -18,7 +18,8 @@ import {
 import {
   BumpState,
   ColorSplitMode,
-  LaserColorMode,
+  HeadGroup,
+  HeadLook,
   LaserPattern,
   LedVisualMode,
   MotorMode,
@@ -27,8 +28,10 @@ import {
   ShowCue,
   ShowState,
 } from '../types/show';
+import { headLook } from '../data/movingGroups';
 import { COLOR_PALETTES } from '../data/presets';
 import { FOCUS_NUDGE_RANGE, focusMarks } from '../engine/focusAim';
+import { LaserProjectorControls } from './LaserProjectorControls';
 import { timecode } from './ShowFiles';
 
 type ConsoleTab = 'show' | 'dmx' | 'laser' | 'motors_fx';
@@ -90,15 +93,6 @@ const LASER_PATTERNS: { id: LaserPattern; label: string; desc: string }[] = [
   { id: 'dual_cones', label: 'Dual Vortex', desc: 'Counter-spin cones' },
 ];
 
-const LASER_COLORS: { id: LaserColorMode; label: string }[] = [
-  { id: 'cyan_magenta', label: 'Cyan / Mag' },
-  { id: 'emerald_gold', label: 'Emerald / Gold' },
-  { id: 'crimson_ice', label: 'Crimson / Ice' },
-  { id: 'rainbow', label: 'RGB Rainbow' },
-  { id: 'dual', label: 'Show Dual' },
-  { id: 'primary', label: 'Show Primary' },
-];
-
 const MOTOR_MODES: { id: MotorMode; label: string }[] = [
   { id: 'high', label: 'High Roof' },
   { id: 'low', label: 'Low Intimate' },
@@ -150,7 +144,20 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
 }) => {
   const [tab, setTab] = useState<ConsoleTab>('show');
   const marks = useMemo(() => focusMarks(rig), [rig]);
-  const focusMark = marks.find((m) => m.id === state.focusMarkId);
+  const [headTarget, setHeadTarget] = useState<'all' | HeadGroup>('all');
+  const head = headTarget === 'all' ? state : headLook(state, headTarget);
+  const focusMark = marks.find(m => m.id === head.focusMarkId);
+  const patchHead = (patch: Partial<HeadLook>) => {
+    if (headTarget === 'all') onPatchState(patch);
+    else onPatchState({ movingGroups: { ...state.movingGroups,
+      [headTarget]: { ...state.movingGroups?.[headTarget], ...patch } } });
+  };
+  const clearHead = () => {
+    if (headTarget === 'all') return;
+    const remaining = { ...state.movingGroups };
+    delete remaining[headTarget];
+    onPatchState({ movingGroups: remaining });
+  };
   const [collapsed, setCollapsed] = useState(() => window.matchMedia('(max-height: 500px)').matches);
   const [storeMode, setStoreMode] = useState(false);
   const mediaInputRef = useRef<HTMLInputElement>(null);
@@ -328,14 +335,24 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
 
             {tab === 'dmx' && (
               <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-4">
+                <div className="head-targets md:col-span-2" role="group" aria-label="Moving head target">
+                  <span>Target</span>
+                  {(['all', 'beam', 'wash'] as const).map((target, index) => (
+                    <button key={target} aria-pressed={headTarget === target} onClick={() => setHeadTarget(target)}>
+                      {['All heads', 'Beams', 'Washes'][index]}
+                    </button>
+                  ))}
+                  {headTarget !== 'all' && state.movingGroups?.[headTarget] &&
+                    <button onClick={clearHead}>Use shared look</button>}
+                </div>
                 {/* Vertical grandMA-style DMX Channel Fader Bank */}
                 <div className="flex items-center justify-around bg-black/40 border border-white/10 rounded-lg px-2 py-2 gap-1">
                   <VerticalDmxFader label="MAST" value={state.masterDimmer} onChange={(v) => onPatchState({ masterDimmer: v })} />
                   <VerticalDmxFader label="BEAM" value={state.beamIntensity} onChange={(v) => onPatchState({ beamIntensity: v })} />
                   <VerticalDmxFader label="WASH" value={state.washIntensity} onChange={(v) => onPatchState({ washIntensity: v })} />
                   <VerticalDmxFader label="ZOOM" value={state.beamZoom} onChange={(v) => onPatchState({ beamZoom: v })} />
-                  <VerticalDmxFader label="SPEED" value={state.movementSpeed} onChange={(v) => onPatchState({ movementSpeed: v })} />
-                  <VerticalDmxFader label="SPREAD" value={state.movementSpread} onChange={(v) => onPatchState({ movementSpread: v })} />
+                  <VerticalDmxFader label="SPEED" value={head.movementSpeed} onChange={(v) => patchHead({ movementSpeed: v })} />
+                  <VerticalDmxFader label="SPREAD" value={head.movementSpread} onChange={(v) => patchHead({ movementSpread: v })} />
                   <VerticalDmxFader label="STROBE" value={state.strobeRate} onChange={(v) => onPatchState({ strobeRate: v })} />
                   <VerticalDmxFader label="BLIND" value={state.blinderLevel} onChange={(v) => onPatchState({ blinderLevel: v })} />
                 </div>
@@ -362,9 +379,9 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                       {MOVEMENT_MODES.map((m) => (
                         <button
                           key={m.id}
-                          onClick={() => onPatchState({ movementMode: m.id })}
+                          onClick={() => patchHead({ movementMode: m.id })}
                           className={`py-1 px-1.5 rounded text-[10px] font-mono-tech border cursor-pointer transition ${
-                            state.movementMode === m.id
+                            head.movementMode === m.id
                               ? 'bg-purple-500/30 border-purple-400 text-purple-100'
                               : 'bg-black/40 border-white/10 text-zinc-400 hover:text-white'
                           }`}
@@ -376,7 +393,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                   </div>
 
                   {/* Manual Pan/Tilt OR Custom Dual Color Pickers */}
-                  {state.movementMode === 'manual' ? (
+                  {head.movementMode === 'manual' && (
                     <div className="flex flex-col gap-1.5 bg-black/40 p-2 rounded-lg border border-white/10">
                       <div role="group" aria-label="Focus point" className="flex items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none]">
                         <span className="shrink-0 font-mono-tech text-[9px] tracking-widest text-zinc-500 mr-0.5">FOCUS</span>
@@ -386,8 +403,8 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                             <button
                               key={m.id ?? 'free'}
                               aria-pressed={active}
-                              title={m.id ? `Converge every moving head on ${m.name}` : 'Raw pan/tilt for the whole rig'}
-                              onClick={() => onPatchState({ focusMarkId: m.id, manualPan: 0, manualTilt: m.id ? 0 : 0.2 })}
+                              title={m.id ? `Focus selected heads on ${m.name}` : 'Use raw pan/tilt for the selected heads'}
+                              onClick={() => patchHead({ focusMarkId: m.id, manualPan: 0, manualTilt: m.id ? 0 : 0.2 })}
                               className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-mono-tech border cursor-pointer truncate max-w-[7.5rem] ${
                                 active
                                   ? 'bg-purple-500/30 border-purple-400 text-purple-100'
@@ -402,32 +419,32 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                       <div className="grid grid-cols-2 gap-2">
                         <InlineSlider
                           label={focusMark ? 'OFFSET X' : 'PAN'}
-                          value={(state.manualPan + 1) / 2}
+                          value={(head.manualPan + 1) / 2}
                           display={focusMark
-                            ? `${(state.manualPan * FOCUS_NUDGE_RANGE).toFixed(1)} m`
-                            : `${Math.round(state.manualPan * FREE_PAN_DEG)}°`}
-                          onChange={(v) => onPatchState({ manualPan: v * 2 - 1 })}
+                            ? `${(head.manualPan * FOCUS_NUDGE_RANGE).toFixed(1)} m`
+                            : `${Math.round(head.manualPan * FREE_PAN_DEG)}°`}
+                          onChange={(v) => patchHead({ manualPan: v * 2 - 1 })}
                           color="#a855f7"
                         />
                         <InlineSlider
                           label={focusMark ? 'OFFSET Z' : 'TILT'}
-                          value={(state.manualTilt + 1) / 2}
+                          value={(head.manualTilt + 1) / 2}
                           display={focusMark
-                            ? `${(state.manualTilt * FOCUS_NUDGE_RANGE).toFixed(1)} m`
-                            : `${Math.round(state.manualTilt * FREE_TILT_DEG)}°`}
-                          onChange={(v) => onPatchState({ manualTilt: v * 2 - 1 })}
+                            ? `${(head.manualTilt * FOCUS_NUDGE_RANGE).toFixed(1)} m`
+                            : `${Math.round(head.manualTilt * FREE_TILT_DEG)}°`}
+                          onChange={(v) => patchHead({ manualTilt: v * 2 - 1 })}
                           color="#a855f7"
                         />
                       </div>
                     </div>
-                  ) : (
-                    <div className="flex items-center justify-between bg-black/40 px-2.5 py-1.5 rounded-lg border border-white/10">
+                  )}
+                    <div className="flex flex-wrap items-center justify-between gap-2 bg-black/40 px-2.5 py-1.5 rounded-lg border border-white/10">
                       <label className="flex items-center gap-2 text-[11px] font-mono-tech text-zinc-300 cursor-pointer">
                         PRIMARY
                         <input
                           type="color"
-                          value={state.primaryColor}
-                          onChange={(e) => onPatchState({ primaryColor: e.target.value })}
+                          value={head.primaryColor}
+                          onChange={(e) => patchHead({ primaryColor: e.target.value })}
                           className="w-7 h-5 bg-transparent border-0 cursor-pointer"
                         />
                       </label>
@@ -435,13 +452,19 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                         ACCENT
                         <input
                           type="color"
-                          value={state.accentColor}
-                          onChange={(e) => onPatchState({ accentColor: e.target.value })}
+                          value={head.accentColor}
+                          onChange={(e) => patchHead({ accentColor: e.target.value })}
                           className="w-7 h-5 bg-transparent border-0 cursor-pointer"
                         />
                       </label>
+                      <label className="head-color-mode">Color mix
+                        <select aria-label="Head color mix" value={head.colorSplitMode}
+                          onChange={e => patchHead({ colorSplitMode: e.target.value as ColorSplitMode })}>
+                          <option value="solid">Solid</option><option value="alternate">Alternate</option>
+                          <option value="gradient">Gradient</option><option value="rainbow">Rainbow</option>
+                        </select>
+                      </label>
                     </div>
-                  )}
                 </div>
               </div>
             )}
@@ -501,13 +524,6 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                 <div className="flex flex-col justify-between gap-2 md:border-l border-white/10 md:pl-3">
                   <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
                     <InlineSlider label="POWER" value={state.laser.intensity} onChange={(v) => onPatchLaser({ intensity: v })} color="#10b981" />
-                    <InlineSlider
-                      label="RAYS"
-                      value={(state.laser.beamCount - 4) / 28}
-                      display={`${state.laser.beamCount}`}
-                      onChange={(v) => onPatchLaser({ beamCount: Math.round(4 + v * 28) })}
-                      color="#10b981"
-                    />
                     <InlineSlider label="X-SPREAD" value={state.laser.spreadX} onChange={(v) => onPatchLaser({ spreadX: v })} color="#00f0ff" />
                     <InlineSlider label="Y-WAVE" value={state.laser.spreadY} onChange={(v) => onPatchLaser({ spreadY: v })} color="#00f0ff" />
                     <InlineSlider label="SCAN SPD" value={state.laser.speed} onChange={(v) => onPatchLaser({ speed: v })} color="#a855f7" />
@@ -521,21 +537,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                     />
                     <InlineSlider label="BLANKING" value={state.laser.strobe} onChange={(v) => onPatchLaser({ strobe: v })} color="#f43f5e" />
                   </div>
-                  <div className="flex flex-wrap gap-1">
-                    {LASER_COLORS.map((cm) => (
-                      <button
-                        key={cm.id}
-                        onClick={() => onPatchLaser({ colorMode: cm.id })}
-                        className={`px-1.5 py-0.5 rounded text-[9px] font-mono-tech border cursor-pointer ${
-                          state.laser.colorMode === cm.id
-                            ? 'bg-emerald-500/30 border-emerald-400 text-emerald-100'
-                            : 'bg-white/5 border-white/10 text-zinc-400 hover:text-white'
-                        }`}
-                      >
-                        {cm.label}
-                      </button>
-                    ))}
-                  </div>
+                  <LaserProjectorControls rig={rig} laser={state.laser} onPatch={onPatchLaser}/>
                 </div>
               </div>
             )}

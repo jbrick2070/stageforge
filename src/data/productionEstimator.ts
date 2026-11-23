@@ -1,6 +1,7 @@
 import type { RigConfig, StagePropKind } from '../types/show';
 import { PROP_CATALOG } from './stageProps';
 import { pathLength } from './stageDesign';
+import { ledPlacement } from './stageEquipment';
 
 export interface CostLineItem {
   category: 'Rigging & Motors' | 'Lighting' | 'Lasers' | 'LED Video' | 'Audio / Speakers' | 'Smoke & FX' | 'Stage & FOH' | 'Scenery (simulation allowance)';
@@ -206,14 +207,14 @@ export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate 
   }
 
   // 4. Giant LED Video Wall + IMAG Side Wings
-  if (rig.ledWall.enabled) {
-    const mainArea = rig.ledWall.width * rig.ledWall.height;
-    const wingArea = rig.ledWall.sideWings ? 2 * (5.4 * rig.ledWall.height * 0.82) : 0;
-    const totalLedArea = mainArea + wingArea;
+  const wall = rig.ledWall.enabled ? ledPlacement(rig) : undefined;
+  if (wall && wall.height > 0) {
+    const totalLedArea = wall.width * wall.height + 2 * wall.wing.width * wall.wing.height;
+    const cabinetCount = wall.columns * wall.rows + 2 * wall.wing.columns * wall.wing.rows;
     equipmentItems.push({
       category: 'LED Video',
-      label: `ROE Visual LED Wall${rig.ledWall.curved ? ' (Curved)' : ''}${rig.ledWall.sideWings ? ' + IMAG Wings' : ''}`,
-      qty: `${Math.round(totalLedArea)} m²`,
+      label: `LED wall${rig.ledWall.curved ? ' (curved)' : ''}${wall.wing.width > 0 ? ' + IMAG wings' : ''}`,
+      qty: rig.ledWall.cabinets ? `${cabinetCount} cabinets · ${Number(totalLedArea.toFixed(2))} m²` : `${Number(totalLedArea.toFixed(2))} m²`,
       buyCost: Math.round(totalLedArea * 3800),
       rentalCost: Math.round(totalLedArea * 185),
       weightLbs: Math.round(totalLedArea * 62),
@@ -325,7 +326,7 @@ export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate 
   const riggerCount = Math.max(2, Math.ceil((totalMotors + (rig.audioRig.lineArrays ? 4 : 0)) / 3));
   const lightingCrew = Math.max(2, Math.ceil(totalFixtures / 10));
   const audioCrew = (rig.audioRig.lineArrays ? 4 : 1) + (rig.audioRig.subWall ? 2 : 0);
-  const videoCrew = rig.ledWall.enabled ? (rig.ledWall.sideWings ? 4 : 2) : 0;
+  const videoCrew = wall && wall.height > 0 ? (wall.wing.width > 0 ? 4 : 2) : 0;
   const stageHands = Math.max(4, Math.ceil(totalWeightLbs / 4500));
 
   const laborItems: LaborLineItem[] = [

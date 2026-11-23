@@ -1,4 +1,4 @@
-import { GRID_HEIGHT } from '../data/stageEquipment';
+import { GRID_HEIGHT, stageBayWidth } from '../data/stageEquipment';
 import { trussMounts } from '../data/trussMounts';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -976,7 +976,7 @@ function buildTheatreHouse(
   const openH = 7.6;
   const houseCeiling = 10.5;
   const houseW = Math.max(18, openW + 8);
-  const stageHouseW = Math.max(openW + 9, stageWidth + 3); // wing space either side
+  const stageHouseW = stageBayWidth('theatre', stageWidth);
   const backZ = -stageDepth / 2 - 1.2;
 
   const plaster = new THREE.MeshStandardMaterial({ color: 0x2b2627, roughness: 0.92 });
@@ -1103,7 +1103,7 @@ function buildClubRoom(
   roofY: number,
 ): { room: VenueRoom; floor: { minX: number; maxX: number; minZ: number; maxZ: number } } {
   const front = stageDepth / 2;
-  const halfW = Math.max(7.5, stageWidth / 2 + 4.5);
+  const halfW = stageBayWidth('club', stageWidth) / 2;
   const backZ = -stageDepth / 2 - 0.9;
   const rearZ = front + 19;
   const wallH = roofY + 0.4;
@@ -1228,7 +1228,7 @@ export function buildVenueArchitecture(
     ({ room, floor: standingFloor } = buildClubRoom(group, mats, practicals as THREE.MeshBasicMaterial[],
       stageWidth, stageDepth, roofY));
   } else if (venue === 'arena' || venue === 'warehouse') {
-    const hallW = venue === 'warehouse' ? 28 : 54;
+    const hallW = stageBayWidth(venue, stageWidth);
     const hallD = venue === 'warehouse' ? 46 : 78;
 
     // Overhead structural roof rigging grid (where the chain hoist motors hang from!)
@@ -1316,7 +1316,7 @@ export function buildVenueArchitecture(
     group.add(drape);
   } else {
     // Outdoor Festival Mega-Structure: giant truss goalposts + open night sky!
-    const towerX = stageWidth / 2 + 3.2;
+    const towerX = stageBayWidth('festival', stageWidth) / 2;
     const rearZ = -stageDepth / 2;
     const frontZ = stageDepth / 2 - 0.4;
     const centerZ = (frontZ + rearZ) / 2;

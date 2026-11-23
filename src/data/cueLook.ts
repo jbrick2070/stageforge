@@ -1,15 +1,18 @@
 import type { ScreenRef, ShowCue, ShowState } from '../types/show';
+import { applyDeskPatch } from './movingGroups';
 
 export function cueLook(previous: ShowState, cue: ShowCue, automatic = false): ShowState {
   const state = cue.state;
   const captured = state.masterDimmer !== undefined;
   return {
-    ...previous, ...state,
+    ...applyDeskPatch(previous, state),
+    ...(state.movementMode !== undefined && state.masterDimmer !== undefined && state.motors && !state.movingGroups
+      && previous.movingGroups ? { movingGroups: {} } : {}),
     autoDirector: automatic && previous.autoDirector,
     bpm: state.bpm ?? previous.bpm,
     masterDimmer: state.masterDimmer ?? previous.masterDimmer,
     blackout: state.blackout ?? false,
-    laser: state.laser ? { ...previous.laser, ...state.laser } : previous.laser,
+    laser: state.laser ?? previous.laser,
     motors: state.motors ? {
       ...previous.motors, ...state.motors,
       podTargets: captured || Object.keys(state.motors.podTargets).length ? state.motors.podTargets : previous.motors.podTargets,

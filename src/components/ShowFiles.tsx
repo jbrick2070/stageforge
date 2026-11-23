@@ -40,7 +40,7 @@ export function DeskDialog({ title, onClose, children }: {title: string; onClose
 export function ShowFiles({ name, media, timeline, missing, cueNames, onOpen, onExample, onSave, onRelink, onClose }: {
   name: string; media: ShowMedia; timeline?: ShowTimeline; missing: string[]; cueNames: Map<string, string>;
   onOpen: (json: string) => void; onSave: (action: FileAction) => Promise<void>;
-  onExample: () => Promise<void>;
+  onExample: (name: 'amber-walk-on' | 'split-rig') => Promise<void>;
   onRelink: (files: File[]) => string; onClose: () => void;
 }) {
   const [note, setNote] = useState('');
@@ -63,7 +63,8 @@ export function ShowFiles({ name, media, timeline, missing, cueNames, onOpen, on
     </div>
     <p>The show file includes the rig, cue order, lighting looks and recorded performance.</p>
     <div className="file-actions">
-      <button disabled={busy} onClick={() => void job(async () => { await onExample(); onClose(); })}>Open Amber Walk-on example</button>
+      <button disabled={busy} onClick={() => void job(async () => { await onExample('amber-walk-on'); onClose(); })}>Open Amber Walk-on example</button>
+      <button disabled={busy} onClick={() => void job(async () => { await onExample('split-rig'); onClose(); })}>Open Split Rig rehearsal</button>
       <a href="https://github.com/jbrick2070/stageforge/blob/main/docs/show-format.md" target="_blank" rel="noreferrer">Format &amp; source</a>
     </div>
     <h3>Media</h3>

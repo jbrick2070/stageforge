@@ -22,6 +22,7 @@ import { DmxMonitorDrawer } from './components/DmxMonitorDrawer';
 import { CostEstimatorModal } from './components/CostEstimatorModal';
 import { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } from './data/presets';
 import { calculateProductionEstimate, formatUSD } from './data/productionEstimator';
+import { applyDeskPatch } from './data/movingGroups';
 import {
   AudioMetrics,
   BumpState,
@@ -190,7 +191,9 @@ export const App: React.FC = () => {
         setScreen(event.screen);
       }
       if (event.look || event.screen) {
-        const next = wallLook({ ...replayLook.current, ...event.look }, replayScreen.current);
+        const prior = event.atMs === 0 && event.look?.motors && event.look.masterDimmer !== undefined
+          ? event.look as ShowState : replayLook.current;
+        const next = wallLook({ ...prior, ...event.look }, replayScreen.current);
         replayLook.current = next; autoDirRef.current = next.autoDirector;
         setShowState(next); engine?.setShowState(next); ae?.setBpm(next.bpm);
       }
@@ -685,9 +688,9 @@ export const App: React.FC = () => {
       downloadStageFile(rig.name, 'patch.csv', new Blob([patchCsv(rig)], { type: 'text/csv;charset=utf-8' }));
     }
   };
-  const openExample = async () => {
+  const openExample = async (name: 'amber-walk-on' | 'split-rig') => {
     const folder = import.meta.env.BASE_URL + 'examples/';
-    const [show, video] = await Promise.all([fetch(folder + 'amber-walk-on.stageforge.show.json'), fetch(folder + 'amber-clouds.mp4')]);
+    const [show, video] = await Promise.all([fetch(folder + name + '.stageforge.show.json'), fetch(folder + 'amber-clouds.mp4')]);
     if (!show.ok || !video.ok) throw new Error('The example files could not be opened.');
     const json = await show.text();
     registerAsset('video', new File([await video.blob()], 'amber-clouds.mp4', { type: 'video/mp4' }));
@@ -923,7 +926,7 @@ export const App: React.FC = () => {
           onPatchState={(patch) => {
             if (Object.keys(patch).some(key => key !== 'masterDimmer' && key !== 'blackout' && key !== 'bloomStrength')) takeDesk();
             else { previewRig(); setCueModified(true); }
-            setShowState((s) => ({ ...s, ...patch }));
+            setShowState((s) => applyDeskPatch(s, patch));
           }}
           onPatchLaser={(patch) => {
             takeDesk();

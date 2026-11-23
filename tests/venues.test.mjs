@@ -14,6 +14,8 @@ const THREE = await compiler.ssrLoadModule('three');
 const { buildVenueArchitecture } = await compiler.ssrLoadModule('/src/engine/geometryBuilders.ts');
 const { RIG_TEMPLATES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { buildDmxPatch } = await compiler.ssrLoadModule('/src/data/dmxPatch.ts');
+const { calculateProductionEstimate } = await compiler.ssrLoadModule('/src/data/productionEstimator.ts');
+const { parseRigJson } = await compiler.ssrLoadModule('/src/data/rigImport.ts');
 const { monitorPositions, ledPlacement } = await compiler.ssrLoadModule('/src/data/stageEquipment.ts');
 
 // The venue shell only needs plain materials; the canvas-textured ones are for the deck and PA.
@@ -42,7 +44,42 @@ test('floor-only venues and decks above the grid keep finite equipment positions
   const wall = ledPlacement(rig);
   assert.equal(wall.x, 12);
   assert.equal(wall.height, 0);
-  assert.ok(Object.values(wall).every(Number.isFinite));
+  const { wing, ...main } = wall;
+  assert.ok([...Object.values(main), ...Object.values(wing)].every(Number.isFinite));
+});
+
+test('cabinet counts, pixel canvases and inventory follow the installed main wall and wings', () => {
+  const club = Object.values(RIG_TEMPLATES).find(r => r.venue === 'club');
+  const cabinets = { widthMm: 500, heightMm: 500, pixelsWide: 128, pixelsHigh: 96, columns: 24, rows: 15 };
+  const rig = { ...club, stageWidth: 12, stageHeight: 1,
+    ledWall: { enabled: true, width: 12, height: 7.5, curved: false, sideWings: true, cabinets } };
+  const wall = ledPlacement(rig);
+  assert.deepEqual([wall.columns, wall.rows, wall.width, wall.height], [24, 7, 12, 3.5]);
+  assert.deepEqual([wall.pixelsWide, wall.pixelsHigh], [3072, 672]);
+  assert.deepEqual([wall.wing.columns, wall.wing.rows, wall.wing.pixelsWide, wall.wing.pixelsHigh], [3, 6, 384, 576]);
+  const inventory = calculateProductionEstimate(rig).equipmentItems.find(i => i.category === 'LED Video');
+  assert.equal(inventory.qty, '204 cabinets · 51 m²');
+  assert.equal(inventory.watts, 51 * 580);
+  const opened = parseRigJson(JSON.stringify(rig));
+  const handEdited = structuredClone(rig);
+  handEdited.ledWall.cabinets.columns = 10;
+  assert.equal(parseRigJson(JSON.stringify(handEdited)).ledWall.width, 5);
+  const full = ledPlacement({ ...opened, venue: 'arena' });
+  assert.deepEqual([full.columns, full.rows], [24, 15]);
+  cabinets.rows = 1.5;
+  assert.throws(() => parseRigJson(JSON.stringify(rig)), /ledWall.cabinets.rows/);
+  cabinets.rows = 15;
+  const aboveGrid = { ...rig, stageHeight: 6 };
+  assert.equal(ledPlacement(aboveGrid).wing.columns, 0);
+  assert.ok(!calculateProductionEstimate(aboveGrid).equipmentItems.some(i => i.category === 'LED Video'));
+
+  const legacy = structuredClone(rig);
+  delete legacy.ledWall.cabinets;
+  const fitted = ledPlacement(legacy);
+  assert.ok(Math.abs(fitted.width / fitted.height - 12 / 7.5) < 1e-9);
+  const fittedArea = fitted.width * fitted.height + 2 * fitted.wing.width * fitted.wing.height;
+  assert.equal(calculateProductionEstimate(legacy).equipmentItems.find(i => i.category === 'LED Video').watts,
+    Math.round(fittedArea * 580));
 });
 
 test('a wide theatre plan keeps its dimensions and a bounded seating sample', () => {

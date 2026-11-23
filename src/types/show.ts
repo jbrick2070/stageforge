@@ -37,6 +37,11 @@ export type MovementMode =
 
 export type ColorSplitMode = 'solid' | 'alternate' | 'gradient' | 'rainbow';
 
+export type HeadGroup = 'beam' | 'wash';
+export type HeadLook = Pick<ShowState, 'movementMode' | 'movementSpeed' | 'movementSpread' |
+  'manualPan' | 'manualTilt' | 'focusMarkId' | 'primaryColor' | 'accentColor' | 'colorSplitMode'>;
+export type MovingGroups = Partial<Record<HeadGroup, Partial<HeadLook>>>;
+
 export type LaserPattern =
   | 'liquid_sky'
   | 'tunnel'
@@ -53,7 +58,19 @@ export type LaserColorMode =
   | 'rainbow'
   | 'cyan_magenta'
   | 'emerald_gold'
-  | 'crimson_ice';
+  | 'crimson_ice'
+  | 'custom'
+  | 'custom_dual';
+
+export type LaserResolution = 8 | 16 | 48 | 96;
+
+export interface LaserAppearance {
+  beamCount: number;
+  colorMode: LaserColorMode;
+  patternSegments?: LaserResolution;
+  colorA?: string;
+  colorB?: string;
+}
 
 export type MotorMode = 'manual' | 'high' | 'low' | 'v_tilt' | 'wave' | 'drop' | 'breathe';
 
@@ -76,10 +93,26 @@ export type CameraPreset =
   | 'orbit'
   | 'pa_closeup';
 
+export interface BeamProfile {
+  source?: 'datasheet';
+  manufacturer: string;
+  fixture: string;
+  geometry: string;
+  lumens?: number;
+  beamAngle?: number;
+}
+
+export interface FixtureOptics {
+  lumens?: number;
+  beamAngle?: number;
+  profile?: BeamProfile;
+}
+
 export interface MountedFixtureGroup {
   id: string;
   type: FixtureType;
   modelName: string;
+  optics?: FixtureOptics;
   count: number;
   dmxUniverse: 1 | 2;
   dmxStartChannel: number;
@@ -105,6 +138,7 @@ export interface FloorFxUnit {
   id: string;
   type: FloorFxType;
   modelName: string;
+  optics?: FixtureOptics;
   count: number;
   x: number;
   z: number;
@@ -125,6 +159,15 @@ export interface StageProp {
   color: string;
 }
 
+export interface LedCabinets {
+  columns: number;
+  rows: number;
+  widthMm: number;
+  heightMm: number;
+  pixelsWide: number;
+  pixelsHigh: number;
+}
+
 export interface RigConfig {
   schemaVersion?: 1;
   name: string;
@@ -139,6 +182,7 @@ export interface RigConfig {
     height: number;
     curved: boolean;
     sideWings: boolean;
+    cabinets?: LedCabinets;
   };
   audioRig: {
     lineArrays: boolean;
@@ -168,6 +212,7 @@ export interface ShowState {
   bpm: number;
 
   // Lighting DMX
+  movingGroups?: MovingGroups;
   beamIntensity: number;
   washIntensity: number;
   beamZoom: number; // 0 = razor narrow, 1 = wide
@@ -185,17 +230,16 @@ export interface ShowState {
   blinderLevel: number; // 0..1
 
   // Laser Visuals Deck
-  laser: {
+  laser: LaserAppearance & {
     enabled: boolean;
     intensity: number;
     pattern: LaserPattern;
-    beamCount: number; // 4..32
+    projectors?: Record<string, Partial<LaserAppearance>>;
     spreadX: number; // 0.1..1
     spreadY: number; // 0.1..1
     speed: number; // 0..1
     tilt: number; // -1..1
     rotation: number; // 0..1
-    colorMode: LaserColorMode;
     strobe: number; // 0..1
     audienceScan: boolean;
   };

@@ -10,9 +10,11 @@ import {
   BumpState,
   CameraPreset,
   LaserColorMode,
+  LaserResolution,
   LaserPattern,
   LedVisualMode,
   RigConfig,
+  FixtureOptics,
   ShowState,
   TrussPodConfig,
 } from '../types/show';
@@ -40,11 +42,15 @@ import {
   type VenueRoom,
 } from './geometryBuilders';
 import { FocusMark, HEAD_OFFSET, YOKE_OFFSET, PAN_LIMIT, TILT_LIMIT, aimAngles, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
+import { headLook } from '../data/movingGroups';
 import { buildDmxPatch } from '../data/dmxPatch';
 import { stageSurfaceHeight } from '../data/stageDesign';
-import { ledPlacement, monitorPositions } from '../data/stageEquipment';
+import { ledPlacement, monitorPositions, type LedSurface } from '../data/stageEquipment';
 import { AtmosphericParticles } from './ParticleSystem';
-import { BeamPools, MOVING_HEAD_OPTICS } from './beamPools';
+import { laserGeometry } from './laserGeometry';
+import { DEFAULT_LASER_COLORS, DEFAULT_LASER_RESOLUTION, laserProjectorKey } from '../data/laserProjectors';
+import { BeamPools } from './beamPools';
+import { aerialGain, fixtureOptics } from '../data/fixtureOptics';
 import { fitAuthoredFoh } from './fohFraming';
 import { buildScenicPiece, ScenicPiece } from './scenicProps';
 import { SPEAKER_PROFILES } from '../data/speakerProfiles';
@@ -54,6 +60,7 @@ import { applyDemoLighting, DEMO_BLACKOUT_STEPS, demoFade } from '../data/demoLi
 
 interface MovingFixtureInstance {
   type: 'beam' | 'wash';
+  optics: ReturnType<typeof fixtureOptics>;
   isFloor: boolean;
   index: number;
   fanPosition: number;
@@ -73,6 +80,7 @@ interface MovingFixtureInstance {
 }
 
 interface LaserUnitInstance {
+  key: string;
   index: number;
   isFloor: boolean;
   root: THREE.Group;
@@ -111,8 +119,6 @@ interface TrussPodRuntime {
 }
 
 const CAMERA_FOV = 42;
-const LED_WING_WIDTH = 5.4;
-const LED_WING_GAP = 2.2;
 
 const PATTERN_INDEX: Record<LaserPattern, number> = {
   liquid_sky: 0,
@@ -155,6 +161,7 @@ export class StageEngine {
   private environmentTarget: THREE.WebGLRenderTarget;
   private currentRig?: RigConfig;
   private beamPools?: BeamPools;
+  private spillFluxGain = 1;
   private scenicPieces = new Map<string, ScenicPiece & { kind: string; phase: number }>();
   private deckTrim: THREE.MeshBasicMaterial | null = null;
   private scenicKey: THREE.SpotLight;
@@ -163,7 +170,6 @@ export class StageEngine {
 
   // Dynamic rig root so rebuilding templates is clean & leak-free
   private rigGroup = new THREE.Group();
-  private focusWorld = new THREE.Vector3();
   private focusLocal = new THREE.Vector3();
   private focusMarkCache?: { rig: RigConfig; marks: FocusMark[] };
   private particles: AtmosphericParticles;
@@ -173,6 +179,8 @@ export class StageEngine {
   private trussPods: TrussPodRuntime[] = [];
   private movingFixtures: MovingFixtureInstance[] = [];
   private laserUnits: LaserUnitInstance[] = [];
+  private laserShapes = new Map<LaserResolution, ReturnType<typeof laserGeometry>>();
+  private laserShapeGeometries = new Set<THREE.BufferGeometry>();
   private strobes: StrobeInstance[] = [];
   private blinders: BlinderInstance[] = [];
   private atmosphereDmx: (DmxOutput & { type: 'hazer' | 'smoke' | 'co2' })[] = [];
@@ -458,7 +466,11 @@ export class StageEngine {
       fx.head.getWorldPosition(origin);
       tip.set(0, fx.isFloor ? 1 : -1, 0).applyMatrix4(fx.head.matrixWorld);
       const dir = tip.sub(origin).normalize();
-      return { origin: origin.toArray(), dir: dir.toArray(), isFloor: fx.isFloor };
+      const buffer = fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
+      return { origin: origin.toArray(), dir: dir.toArray(), isFloor: fx.isFloor, group: fx.type,
+        rgb: fx.beamMat.uniforms.uColor.value.getHexString(),
+        optics: { lumens: fx.optics.lumens, farRadius: fx.optics.farRadius,
+          emitted: fx.beamMat.uniforms.uIntensity.value, dimmer: fx.dmxStart ? buffer[fx.dmxStart + 1] : 0 } };
     });
   }
 
@@ -514,8 +526,8 @@ export class StageEngine {
             this.camera.far = 220;
             this.camera.updateProjectionMatrix();
           }
-          const wall = rig?.ledWall;
-          const screenWidth = wall?.enabled ? wall.width + (wall.sideWings ? 2 * (LED_WING_WIDTH + LED_WING_GAP) : 0) : 0;
+          const wall = rig?.ledWall.enabled ? ledPlacement(rig) : null;
+          const screenWidth = wall ? wall.width + (wall.wing.width > 0 ? 2 * (wall.wing.width + wall.wingGap) : 0) : 0;
           const width = Math.max((this.currentRig?.stageWidth ?? 22) + 8, screenWidth + 1);
           const halfAngle = Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV / 2));
           const stageFront = (this.currentRig?.stageDepth ?? 11) / 2;
@@ -795,7 +807,7 @@ export class StageEngine {
     group.traverse(obj => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.geometry) return;
-      geometries.add(mesh.geometry);
+      if (!this.laserShapeGeometries.has(mesh.geometry)) geometries.add(mesh.geometry);
       for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
         if (!shared.has(material)) materials.add(material);
       }
@@ -974,8 +986,10 @@ export class StageEngine {
     const wall = ledPlacement(rig);
     if (rig.ledWall.enabled && wall.height > 0) {
       const { y: wallY, z: wallZ } = wall;
-      const aspect = wall.width / wall.height;
-      const ledMat = this.createLedMaterial(aspect);
+      const ledMat = this.createLedMaterial(wall, !!rig.ledWall.cabinets);
+      const cabinetMetadata = (face: LedSurface) => rig.ledWall.cabinets ? {
+        cabinetGrid: [face.columns, face.rows], canvasPixels: [face.pixelsWide, face.pixelsHigh],
+      } : {};
       this.ledWallMats.push(ledMat);
 
       let wallGeo: THREE.BufferGeometry;
@@ -1002,6 +1016,7 @@ export class StageEngine {
         const wallMesh = new THREE.Mesh(wallGeo, ledMat);
         wallMesh.material.side = THREE.BackSide;
         wallMesh.name = 'Curved LED wall';
+        wallMesh.userData = cabinetMetadata(wall);
         wallMesh.position.set(wall.x, wallY, wallZ + radius);
         this.rigGroup.add(wallMesh);
 
@@ -1025,6 +1040,7 @@ export class StageEngine {
         const wallMesh = new THREE.Mesh(wallGeo, ledMat);
         wallMesh.position.set(wall.x, wallY, wallZ);
         wallMesh.name = 'LED wall';
+        wallMesh.userData = cabinetMetadata(wall);
         this.rigGroup.add(wallMesh);
 
         // Dark rear structural frame behind flat LED wall
@@ -1038,15 +1054,15 @@ export class StageEngine {
       }
 
       // Optional Side IMAG Wings flanking the main stage
-      if (rig.ledWall.sideWings) {
-        const wingW = LED_WING_WIDTH * wall.scale;
-        const wingH = wall.height * 0.82;
-        const wingMat = this.createLedMaterial(wingW / wingH);
+      if (wall.wing.width > 0) {
+        const { width: wingW, height: wingH } = wall.wing;
+        const wingMat = this.createLedMaterial(wall.wing, !!rig.ledWall.cabinets);
         this.ledWallMats.push(wingMat);
 
         for (const side of [-1, 1]) {
           const wingGroup = new THREE.Group();
           wingGroup.name = `LED wing — audience ${side < 0 ? 'left' : 'right'}`;
+          wingGroup.userData = cabinetMetadata(wall.wing);
           const screen = new THREE.Mesh(new THREE.PlaneGeometry(wingW, wingH), wingMat);
           const backing = new THREE.Mesh(
             new THREE.BoxGeometry(wingW + 0.3, wingH + 0.3, 0.26),
@@ -1055,7 +1071,7 @@ export class StageEngine {
           backing.position.z = -0.16;
           wingGroup.add(screen, backing);
           wingGroup.position.set(
-            wall.x + side * (wall.width / 2 + wingW / 2 + LED_WING_GAP * wall.scale),
+            wall.x + side * (wall.width / 2 + wingW / 2 + wall.wingGap),
             wallY,
             wallZ + 2.2
           );
@@ -1112,7 +1128,8 @@ export class StageEngine {
             globalMovingIndex++,
             lateral / Math.max(2, pod.width / 2),
             fg.dmxUniverse,
-            start
+            start,
+            fg.optics
           );
           inst.root.position.copy(slot.pos);
           inst.root.rotation.y = slot.rotY;
@@ -1121,7 +1138,7 @@ export class StageEngine {
           this.movingFixtures.push(inst);
         } else if (fg.type === 'laser') {
           const laser = this.createLaserProjector(
-            globalLaserIndex++,
+            laserProjectorKey(pod.id, fg.id, i + 1), globalLaserIndex++,
             false,
             fg.dmxUniverse,
             start
@@ -1190,7 +1207,7 @@ export class StageEngine {
           this.rigGroup.add(nameFixtureUnit(hz, fx, i, start));
         } else if (fx.type === 'floor_laser') {
           const fl = this.createLaserProjector(
-            globalLaserIndex++,
+            laserProjectorKey(null, fx.id, i + 1), globalLaserIndex++,
             true,
             fx.dmxUniverse,
             start
@@ -1205,7 +1222,8 @@ export class StageEngine {
             globalMovingIndex++,
             px / Math.max(2, rig.stageWidth / 2),
             fx.dmxUniverse,
-            start
+            start,
+            fx.optics
           );
           fb.root.position.set(px, py + 0.08, pz);
           this.rigGroup.add(nameFixtureUnit(fb.root, fx, i, start));
@@ -1217,6 +1235,8 @@ export class StageEngine {
     this.assignOpeningGroups(rig.stageWidth);
     this.particles.setEmitters(smokeEmitters, co2Emitters);
     this.beamPools = new BeamPools(this.movingFixtures.length, rig.stageWidth, rig.stageDepth, rig.stageHeight, rig.platforms);
+    this.spillFluxGain = this.movingFixtures.reduce((total, fx) => total + fx.optics.fluxRatio, 0)
+      / Math.max(1, this.movingFixtures.length);
     this.scene.add(this.beamPools.group);
     if ((old && old.venue !== rig.venue) || (this.activeView === 'foh' && this.fitFohOnResize) || this.activeView === 'pa_closeup') {
       this.setCameraPreset(this.activeView);
@@ -1251,7 +1271,7 @@ export class StageEngine {
     }
   }
 
-  private createLedMaterial(aspect: number): THREE.ShaderMaterial {
+  private createLedMaterial(surface: LedSurface, useCabinets: boolean): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
       name: 'LED display',
       vertexShader: LED_WALL_VERT,
@@ -1270,7 +1290,10 @@ export class StageEngine {
         uCustomTex: { value: this.customTex ?? this.missingScreenTex ?? this.textTex },
         uTextTex: { value: this.textTex },
         uHasCustom: { value: (this.customTex || this.missingScreenTex) ? 1 : 0 },
-        uAspect: { value: aspect },
+        uAspect: { value: surface.width / surface.height },
+        uCanvasPixels: { value: new THREE.Vector2(surface.pixelsWide, surface.pixelsHigh) },
+        uCabinetGrid: { value: new THREE.Vector2(surface.columns, surface.rows) },
+        uPixelSnap: { value: useCabinets },
       },
     });
   }
@@ -1281,7 +1304,8 @@ export class StageEngine {
     index: number,
     fanPosition: number,
     dmxUniverse: 1 | 2,
-    dmxStart: number
+    dmxStart: number,
+    profile?: FixtureOptics
   ): MovingFixtureInstance {
     const root = new THREE.Group();
     const dir = isFloor ? 1 : -1;
@@ -1326,7 +1350,8 @@ export class StageEngine {
     head.add(lens);
 
     // Volumetric Light Cone (origin right at lens, extending along `dir * Y`)
-    const { length: beamLen, nearRadius: topR, farRadius: botR } = MOVING_HEAD_OPTICS[type];
+    const optics = fixtureOptics(type, profile);
+    const { length: beamLen, nearRadius: topR, farRadius: botR } = optics;
     const beamGeo = new THREE.CylinderGeometry(
       isFloor ? botR : topR,
       isFloor ? topR : botR,
@@ -1369,6 +1394,7 @@ export class StageEngine {
 
     return {
       type,
+      optics,
       isFloor,
       index,
       fanPosition,
@@ -1388,7 +1414,19 @@ export class StageEngine {
     };
   }
 
+  private laserShape(segments: LaserResolution) {
+    let shapes = this.laserShapes.get(segments);
+    if (!shapes) {
+      shapes = laserGeometry(segments);
+      this.laserShapes.set(segments, shapes);
+      this.laserShapeGeometries.add(shapes.sheet);
+      this.laserShapeGeometries.add(shapes.cone);
+    }
+    return shapes;
+  }
+
   private createLaserProjector(
+    key: string,
     index: number,
     isFloor: boolean,
     dmxUniverse: 1 | 2,
@@ -1408,25 +1446,7 @@ export class StageEngine {
     aperture.position.set(0, 0, 0.305);
     root.add(body, frontBezel, warnStripe, aperture);
 
-    // 1. Volumetric Laser Sheet Geometry (pivoted cleanly at aperture, shooting +Z out over the arena!)
-    const sheetLength = 38;
-    const sheetGeo = new THREE.PlaneGeometry(16, sheetLength, 44, 24);
-    // Remap vertices so uv.y = 0 is a tiny aperture width (0.14m) and uv.y = 1 fans out to 16m wide!
-    const pos = sheetGeo.attributes.position;
-    const uv = sheetGeo.attributes.uv;
-    for (let i = 0; i < pos.count; i++) {
-      const u = uv.getX(i); // 0..1
-      const v = uv.getY(i); // 0..1 (we'll map v=0 at projector, v=1 at far arena)
-      const reach = 1 - v;
-      uv.setY(i, reach);
-      const fanWidth = THREE.MathUtils.lerp(0.14, 22.0, reach);
-      const x = (u - 0.5) * fanWidth;
-      const y = 0;
-      const z = 0.31 + reach * sheetLength;
-      pos.setXYZ(i, x, y, z);
-    }
-    sheetGeo.computeVertexNormals();
-
+    const { sheet: sheetGeo, cone: coneGeo } = this.laserShape(DEFAULT_LASER_RESOLUTION);
     const sheetMat = new THREE.ShaderMaterial({
       vertexShader: LASER_SHEET_VERT,
       fragmentShader: LASER_SHEET_FRAG,
@@ -1454,13 +1474,6 @@ export class StageEngine {
     const sheetMesh = new THREE.Mesh(sheetGeo, sheetMat);
     sheetMesh.frustumCulled = false;
     root.add(sheetMesh);
-
-    // 2. Volumetric Laser Tunnel Cone (hollow expanding vortex aimed +Z out into the arena!)
-    const coneLen = 38;
-    const coneGeo = new THREE.CylinderGeometry(0.08, 7.8, coneLen, 48, 20, true);
-    coneGeo.translate(0, -coneLen / 2, 0);
-    coneGeo.rotateX(-Math.PI / 2); // now apex is at (0,0,0) and opens toward +Z!
-    coneGeo.translate(0, 0, 0.31);
 
     const makeConeMat = (seedOffset: number) =>
       new THREE.ShaderMaterial({
@@ -1502,6 +1515,7 @@ export class StageEngine {
     root.add(innerConeMesh);
 
     return {
+      key,
       index,
       isFloor,
       root,
@@ -1574,24 +1588,21 @@ export class StageEngine {
     return g;
   }
 
-  private resolveLaserColors(mode: LaserColorMode, primary: THREE.Color, accent: THREE.Color): {
-    cA: THREE.Color;
-    cB: THREE.Color;
-    modeNum: number;
-  } {
+  private laserColors(mode: LaserColorMode, primary: THREE.Color, accent: THREE.Color,
+    colorA: string | undefined, colorB: string | undefined, a: THREE.Color, b: THREE.Color) {
     switch (mode) {
-      case 'primary':
-        return { cA: primary, cB: primary, modeNum: 0 };
-      case 'dual':
-        return { cA: primary, cB: accent, modeNum: 1 };
-      case 'rainbow':
-        return { cA: primary, cB: accent, modeNum: 2 };
-      case 'cyan_magenta':
-        return { cA: new THREE.Color(0x00f0ff), cB: new THREE.Color(0xff00aa), modeNum: 1 };
-      case 'emerald_gold':
-        return { cA: new THREE.Color(0x00ff66), cB: new THREE.Color(0xffcc00), modeNum: 1 };
-      case 'crimson_ice':
-        return { cA: new THREE.Color(0xff0044), cB: new THREE.Color(0x55d8ff), modeNum: 1 };
+      case 'custom':
+      case 'custom_dual':
+        a.set(colorA ?? DEFAULT_LASER_COLORS[0]);
+        if (mode === 'custom') b.copy(a);
+        else b.set(colorB ?? DEFAULT_LASER_COLORS[1]);
+        return mode === 'custom' ? 0 : 1;
+      case 'primary': a.copy(primary); b.copy(primary); return 0;
+      case 'dual': a.copy(primary); b.copy(accent); return 1;
+      case 'rainbow': a.copy(primary); b.copy(accent); return 2;
+      case 'cyan_magenta': a.setHex(0x00f0ff); b.setHex(0xff00aa); return 1;
+      case 'emerald_gold': a.setHex(0x00ff66); b.setHex(0xffcc00); return 1;
+      case 'crimson_ice': a.setHex(0xff0044); b.setHex(0x55d8ff); return 1;
     }
   }
 
@@ -1727,17 +1738,20 @@ export class StageEngine {
     });
 
     // 2. Update Moving Head Beams & Washes (Articulated Pan/Tilt + Volumetric Shaders)
-    const moveSpd = 0.35 + s.movementSpeed * 3.1;
-    const spread = 0.25 + s.movementSpread * 1.15;
-
-    // Aim mode: every head solves its own pan/tilt onto a named place on the stage plan.
-    const focus = s.movementMode === 'manual'
-      ? focusPoint(this.getFocusMarks(), s.focusMarkId, s.manualPan, s.manualTilt)
-      : null;
-    if (focus) this.focusWorld.set(focus.x, focus.y, focus.z);
-
+    const opticsLook = (kind: 'beam' | 'wash') => {
+      const look = headLook(s, kind);
+      const focus = look.movementMode === 'manual'
+        ? focusPoint(this.getFocusMarks(), look.focusMarkId, look.manualPan, look.manualTilt) : null;
+      return {
+        look, focus, moveSpd: 0.35 + look.movementSpeed * 3.1, spread: 0.25 + look.movementSpread * 1.15,
+        primary: look.primaryColor === s.primaryColor ? primaryColor : new THREE.Color(look.primaryColor),
+        accent: look.accentColor === s.accentColor ? accentColor : new THREE.Color(look.accentColor),
+      };
+    };
+    const groups = { beam: opticsLook('beam'), wash: opticsLook('wash') };
     this.beamPools?.begin();
     for (const fx of this.movingFixtures) {
+      const { look, focus, moveSpd, spread, primary, accent } = groups[fx.type];
       const i = fx.index;
       const count = Math.max(1, this.movingFixtures.length);
       const norm = i / count;
@@ -1747,13 +1761,13 @@ export class StageEngine {
 
       if (focus) {
         fx.root.updateWorldMatrix(true, false);
-        const local = fx.root.worldToLocal(this.focusLocal.copy(this.focusWorld));
+        const local = fx.root.worldToLocal(this.focusLocal.set(focus.x, focus.y, focus.z));
         ({ pan: targetPan, tilt: targetTilt } = aimAngles(local, fx.isFloor, fx.currentPan, fx.currentTilt));
       } else {
-      switch (s.movementMode) {
+      switch (look.movementMode) {
         case 'manual':
-          targetPan = s.manualPan * 1.45;
-          targetTilt = s.manualTilt * 1.15;
+          targetPan = look.manualPan * 1.45;
+          targetTilt = look.manualTilt * 1.15;
           break;
         case 'fan':
           // Fan each bar symmetrically using its physical mounting position.
@@ -1793,11 +1807,11 @@ export class StageEngine {
       // Pan is relative to the audience (+Z), even on a radial or rotated mount.
       // A ceiling head emits along local −Y, while its floor counterpart emits along +Y.
       targetPan -= fx.mountYaw;
-      if (s.movementMode === 'fan') {
+      if (look.movementMode === 'fan') {
         if (fx.isFloor) targetTilt = -targetTilt;
       } else {
         if (!fx.isFloor) targetTilt = -targetTilt;
-        else if (s.movementMode !== 'manual') targetTilt = Math.abs(targetTilt) * 0.65 + 0.15;
+        else if (look.movementMode !== 'manual') targetTilt = Math.abs(targetTilt) * 0.65 + 0.15;
       }
       }
 
@@ -1808,12 +1822,12 @@ export class StageEngine {
       fx.head.rotation.x = fx.currentTilt;
 
       // Fixture color resolution
-      if (s.colorSplitMode === 'solid') {
-        tempCol.copy(primaryColor);
-      } else if (s.colorSplitMode === 'alternate') {
-        tempCol.copy(i % 2 === 0 ? primaryColor : accentColor);
-      } else if (s.colorSplitMode === 'gradient') {
-        tempCol.copy(primaryColor).lerp(accentColor, norm);
+      if (look.colorSplitMode === 'solid') {
+        tempCol.copy(primary);
+      } else if (look.colorSplitMode === 'alternate') {
+        tempCol.copy(i % 2 === 0 ? primary : accent);
+      } else if (look.colorSplitMode === 'gradient') {
+        tempCol.copy(primary).lerp(accent, norm);
       } else {
         tempCol.setHSL((norm + t * 0.12) % 1, 0.96, 0.55);
       }
@@ -1830,19 +1844,21 @@ export class StageEngine {
       const finalInt = Math.min(1.6, dimmer * master * strobeGate * (1.0 + audioBoost * 0.48));
 
       fx.beamMat.uniforms.uColor.value.copy(tempCol);
-      fx.beamMat.uniforms.uIntensity.value = finalInt;
+      const zoomScale = fx.type === 'wash' ? 0.75 + s.beamZoom * 0.85 : 0.42 + s.beamZoom * 1.35;
+      const emitted = finalInt * aerialGain(fx.optics, zoomScale);
+      fx.beamMat.uniforms.uIntensity.value = emitted;
       fx.beamMat.uniforms.uHaze.value = s.atmo.hazeLevel;
       fx.beamMat.uniforms.uTime.value = t;
       fx.beamMat.uniforms.uPrism.value = s.goboPrism && fx.type === 'beam' ? 1.0 : 0.0;
 
       // Live Beam Zoom (narrow razor beam vs wide flood)
-      const zoomScale = fx.type === 'wash' ? 0.75 + s.beamZoom * 0.85 : 0.42 + s.beamZoom * 1.35;
       fx.beamMesh.scale.set(zoomScale, 1, zoomScale);
-      fx.beamMesh.visible = finalInt > 0.001;
-      this.beamPools?.add(fx.beamMesh, fx.type, fx.isFloor, tempCol, finalInt);
+      fx.beamMesh.visible = emitted > 0.001;
+      // The pool shader already spreads incident power across the footprint.
+      this.beamPools?.add(fx.beamMesh, fx.type, fx.isFloor, tempCol, finalInt * fx.optics.fluxRatio, fx.optics);
 
       // Glowing optical fixture lens
-      fx.lensMat.color.copy(tempCol).multiplyScalar(finalInt * 2.6);
+      fx.lensMat.color.copy(tempCol).multiplyScalar(finalInt * fx.optics.fluxRatio * 2.6);
 
       // Invalid or conflicting fixture footprints have start 0 and make no writes.
       const uBuf = fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
@@ -1868,12 +1884,17 @@ export class StageEngine {
       : 0;
     const patIdx = PATTERN_INDEX[s.laser.pattern];
     const isConePattern = s.laser.pattern === 'tunnel' || s.laser.pattern === 'dual_cones';
-    const laserColors = this.resolveLaserColors(s.laser.colorMode, primaryColor, accentColor);
 
     for (const l of this.laserUnits) {
+      const override = s.laser.projectors?.[l.key];
+      const count = override?.beamCount ?? s.laser.beamCount;
+      const shapes = this.laserShape(override?.patternSegments ?? s.laser.patternSegments ?? DEFAULT_LASER_RESOLUTION);
+      l.sheetMesh.geometry = shapes.sheet;
+      l.coneMesh.geometry = shapes.cone;
+      l.innerConeMesh.geometry = shapes.cone;
       l.sheetMesh.visible = laserEnabled && !isConePattern;
       l.coneMesh.visible = laserEnabled && isConePattern;
-      l.innerConeMesh.visible = laserEnabled && s.laser.pattern === 'dual_cones';
+      l.innerConeMesh.visible = laserEnabled && s.laser.pattern === 'dual_cones' && count > 1;
 
       // Laser pitch/tilt: audienceScan allows dipping into crowd, otherwise safely skims above crowd heads!
       const basePitch = l.isFloor ? -0.18 : s.laser.audienceScan ? 0.14 : -0.02;
@@ -1894,14 +1915,13 @@ export class StageEngine {
 
       // Update sheet uniforms
       const su = l.sheetMat.uniforms;
-      su.uColorA.value.copy(laserColors.cA);
-      su.uColorB.value.copy(laserColors.cB);
-      su.uColorMode.value = laserColors.modeNum;
+      su.uColorMode.value = this.laserColors(override?.colorMode ?? s.laser.colorMode, primaryColor, accentColor,
+        override?.colorA ?? s.laser.colorA, override?.colorB ?? s.laser.colorB, su.uColorA.value, su.uColorB.value);
       su.uIntensity.value = laserInt;
       su.uHaze.value = s.atmo.hazeLevel;
       su.uTime.value = t;
       su.uPattern.value = patIdx;
-      su.uBeamCount.value = s.laser.beamCount;
+      su.uBeamCount.value = count;
       su.uSpeed.value = s.laser.speed;
       su.uSpreadX.value = s.laser.spreadX;
       su.uSpreadY.value = s.laser.spreadY;
@@ -1914,13 +1934,14 @@ export class StageEngine {
         [l.innerConeMat, -1.45],
       ] as const) {
         const cu = cm.uniforms;
-        cu.uColorA.value.copy(dirMult < 0 ? laserColors.cB : laserColors.cA);
-        cu.uColorB.value.copy(dirMult < 0 ? laserColors.cA : laserColors.cB);
-        cu.uColorMode.value = laserColors.modeNum;
+        cu.uColorA.value.copy(dirMult < 0 ? su.uColorB.value : su.uColorA.value);
+        cu.uColorB.value.copy(dirMult < 0 ? su.uColorA.value : su.uColorB.value);
+        cu.uColorMode.value = su.uColorMode.value;
         cu.uIntensity.value = laserInt;
         cu.uHaze.value = s.atmo.hazeLevel;
         cu.uTime.value = t;
-        cu.uBeamCount.value = s.laser.beamCount;
+        cu.uBeamCount.value = s.laser.pattern === 'dual_cones'
+          ? (dirMult < 0 ? Math.floor(count / 2) : Math.ceil(count / 2)) : count;
         cu.uSpeed.value = s.laser.speed;
         cu.uSpreadX.value = s.laser.spreadX;
         cu.uSpreadY.value = s.laser.spreadY;
@@ -1929,7 +1950,7 @@ export class StageEngine {
         cu.uAudioPulse.value = beatPulse;
       }
 
-      l.apertureMat.color.copy(laserColors.cA).multiplyScalar(laserInt * 2.6);
+      l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(laserInt * 2.6);
 
       // Write Laser DMX Universe channels
       const uBuf = l.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
@@ -1941,7 +1962,7 @@ export class StageEngine {
         uBuf[ch + 3] = Math.round(s.laser.spreadY * 255);
         uBuf[ch + 4] = Math.round(s.laser.speed * 255);
         uBuf[ch + 5] = Math.round(s.laser.rotation * 255);
-        uBuf[ch + 6] = Math.round((s.laser.beamCount / 32) * 255);
+        uBuf[ch + 6] = Math.round((count / 32) * 255);
         uBuf[ch + 7] = Math.round(s.laser.strobe * 255);
       }
     }
@@ -1990,7 +2011,7 @@ export class StageEngine {
 
     // 6. Stage Dynamic Spill Lights & DJ Booth Strip
     const rigHasLight = this.movingFixtures.length > 0;
-    const activeLightPower = ((rigHasLight ? s.beamIntensity * 0.55 + s.washIntensity * 0.72 : 0) +
+    const activeLightPower = ((rigHasLight ? (s.beamIntensity * 0.55 + s.washIntensity * 0.72) * this.spillFluxGain : 0) +
       (this.laserUnits.length ? laserInt * 0.09 : 0)) * master * strobeGate * roomGain;
     this.stagePrimaryLight.color.copy(primaryColor);
     this.stagePrimaryLight.intensity = activeLightPower * (24 + beatPulse * 14);
@@ -2077,6 +2098,9 @@ export class StageEngine {
     this.controls.dispose();
     this.beamPools?.dispose();
     this.releaseGroup(this.rigGroup);
+    this.laserShapeGeometries.forEach(geometry => geometry.dispose());
+    this.laserShapeGeometries.clear();
+    this.laserShapes.clear();
     for (const piece of this.scenicPieces.values()) this.releaseGroup(piece.root);
     this.scenicPieces.clear();
     const textures = new Set<THREE.Texture>();
