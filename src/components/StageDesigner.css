@@ -522,3 +522,133 @@
 }
 
 .sd-clearance-warning { color: #ffc36c; }
+
+/* Native stage overlay: screens, speaker hangs, layout trusses and props. */
+.sd-wall polygon,
+.sd-wall line,
+.sd-hang polygon,
+.sd-hang line,
+.sd-hang .sd-coverage,
+.sd-span line,
+.sd-prop circle,
+.sd-prop rect,
+.sd-handle .sd-aim-line {
+  vector-effect: non-scaling-stroke;
+}
+.sd-wall polygon {
+  fill: #123b4d;
+  stroke: #7fd8ff;
+  stroke-width: 2;
+}
+.sd-wall.sd-main polygon {
+  fill: #18324f;
+}
+.sd-wall.sd-stock polygon {
+  stroke-dasharray: 4 3;
+}
+.sd-wall.sd-selected polygon {
+  stroke: #d6f4ff;
+  stroke-width: 3;
+}
+.sd-facing line {
+  stroke: currentColor;
+  stroke-width: 1.6;
+  pointer-events: none;
+}
+.sd-facing polygon {
+  fill: currentColor;
+  stroke: none;
+  pointer-events: none;
+}
+.sd-wall {
+  color: #7fd8ff;
+}
+.sd-hang {
+  color: #f5c47b;
+}
+.sd-wall text,
+.sd-hang text,
+.sd-span text,
+.sd-prop text {
+  fill: currentColor;
+  pointer-events: none;
+  font-family: Inter, system-ui, sans-serif;
+}
+.sd-wall .sd-hit,
+.sd-span .sd-hit {
+  fill: transparent;
+  stroke: transparent;
+  stroke-width: 16;
+  pointer-events: all;
+}
+.sd-hang .sd-coverage {
+  fill: #f5c47b1f;
+  stroke: #f5c47b66;
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
+.sd-hang polygon {
+  fill: #f5c47b;
+  stroke: #2b2112;
+  stroke-width: 1.2;
+}
+.sd-hang.sd-stock polygon {
+  fill: #f5c47b80;
+  stroke-dasharray: 3 2;
+}
+.sd-hang.sd-selected polygon {
+  stroke: #fff2d4;
+  stroke-width: 2.4;
+}
+.sd-span {
+  color: #98c4d7;
+}
+.sd-span line:not(.sd-hit) {
+  stroke: #98c4d7;
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+.sd-span.sd-selected line:not(.sd-hit) {
+  stroke: #d8f1fb;
+  stroke-width: 5;
+}
+.sd-prop {
+  color: #c29aeb;
+}
+.sd-prop circle,
+.sd-prop rect {
+  fill: #c29aeb59;
+  stroke: #c29aeb;
+  stroke-width: 1.6;
+}
+.sd-prop.sd-selected circle,
+.sd-prop.sd-selected rect {
+  stroke: #efdcff;
+  stroke-width: 2.6;
+}
+.sd-replaced {
+  opacity: 0.35;
+}
+.sd-handle .sd-aim-line {
+  stroke: #ffd47c;
+  stroke-width: 1.2;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+.sd-aim-handle circle:not(.sd-handle-hit) {
+  fill: #ffd47c;
+}
+.sd-span-draft polyline {
+  stroke: #98c4d7;
+}
+.sd-note {
+  font-size: 12px;
+  color: #a9b8bb;
+}
+.sd-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}

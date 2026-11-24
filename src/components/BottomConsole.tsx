@@ -33,9 +33,19 @@ import { COLOR_PALETTES } from '../data/presets';
 import { FOCUS_NUDGE_RANGE, focusMarks } from '../engine/focusAim';
 import { LaserProjectorControls } from './LaserProjectorControls';
 import { SecondaryScreenCues } from './SecondaryScreenCues';
-import { timecode } from './ShowFiles';
-import type { NativeStage } from '../data/showFile';
+import type { NativeStage, ScreenRef } from '../data/showFile';
 import type { SecondaryScreenEvent } from '../data/studioGeometry';
+import {
+  cueMarkers,
+  layoutTicks,
+  screenGlances,
+  scrubPosition,
+  timecode,
+  wallMarkers,
+  type ScreenGlance,
+  type ScreenGlanceState,
+  type TakeTick,
+} from '../data/transportGlance';
 
 type ConsoleTab = 'show' | 'dmx' | 'laser' | 'motors_fx';
 
@@ -66,6 +76,10 @@ interface BottomConsoleProps {
   onHold: () => void;
   follow: number | 'held' | null;
   stage?: NativeStage;
+  /** The main LED as App resolves it (replayed or live screen plus engine transport). */
+  mainScreen?: Pick<ScreenRef, 'kind' | 'name' | 'playing'>;
+  /** Names of referenced media files that are not linked. */
+  missingMedia?: readonly string[];
   onApplyWallCue: (event: SecondaryScreenEvent, file?: File) => void;
   onRemoveWallCue: (target: string, atMs: number) => void;
   take: {
@@ -75,6 +89,8 @@ interface BottomConsoleProps {
     hasTake: boolean;
     canResume: boolean;
     cues: Array<{ atMs: number; cueId: string; name: string }>;
+    /** Exact take position in ms (timeMs only refreshes every few frames while playing). */
+    playhead?: () => number;
     record: () => void;
     play: () => void;
     resume: () => void;
@@ -133,6 +149,99 @@ const LED_MODES: { id: LedVisualMode; label: string }[] = [
   { id: 'custom', label: 'Custom Media' },
 ];
 
+// The scrubber markers reach every cue; the chip row stays one line.
+const CUE_CHIP_LIMIT = 48;
+
+const GLANCE_LABEL: Record<ScreenGlanceState, string> = { play: 'Play', hold: 'Hold', missing: 'Missing', none: 'Empty' };
+const GLANCE_STYLE: Record<ScreenGlanceState, string> = {
+  play: 'bg-emerald-500/25 border-emerald-400/50 text-emerald-200',
+  hold: 'bg-amber-500/20 border-amber-400/40 text-amber-200',
+  missing: 'bg-rose-500/25 border-rose-400/60 text-rose-200',
+  none: 'bg-white/5 border-white/10 text-zinc-400',
+};
+
+/** Clip and state in effect on every screen at the playhead. */
+function ScreenBadges({ glances }: { glances: ScreenGlance[] }) {
+  return (
+    <ul aria-label="Screen status" className="mb-1.5 grid grid-cols-[repeat(auto-fit,minmax(9.5rem,1fr))] gap-1">
+      {glances.map(g => {
+        const text = `${g.label}: ${g.name || 'no clip'}, ${GLANCE_LABEL[g.state]}`;
+        return (
+          <li
+            key={g.id}
+            data-screen={g.id}
+            data-state={g.state}
+            aria-label={text}
+            title={text}
+            className="flex items-center gap-1 min-w-0 rounded border border-white/10 bg-black/40 px-1.5 py-0.5 font-mono-tech text-[9px] leading-tight"
+          >
+            <span className="shrink-0 max-w-[45%] truncate text-zinc-400">{g.label}</span>
+            <span className={`min-w-0 flex-1 truncate ${g.state === 'none' ? 'text-zinc-500' : 'text-zinc-100'}`}>{g.name || '—'}</span>
+            <span className={`shrink-0 rounded border px-1 uppercase tracking-wider ${GLANCE_STYLE[g.state]}`}>{GLANCE_LABEL[g.state]}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
+ * Cue (cyan bar, top lane) and secondary-wall (fuchsia diamond, bottom lane) markers
+ * under the take scrubber. The rail sits below the range input so it never blocks a
+ * drag; each marker seeks on click and the rail is one tab stop with arrow-key roving.
+ */
+function TakeMarkers({ ticks, onSeek }: { ticks: TakeTick[]; onSeek: (ms: number) => void }) {
+  const rail = useRef<HTMLDivElement>(null);
+  const [focusIndex, setFocusIndex] = useState(0);
+  const active = Math.min(focusIndex, Math.max(0, ticks.length - 1));
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const last = ticks.length - 1;
+    const steps: Record<string, number> = {
+      ArrowRight: active + 1, ArrowDown: active + 1, ArrowLeft: active - 1, ArrowUp: active - 1, Home: 0, End: last,
+    };
+    if (!Object.hasOwn(steps, event.key) || last < 0) return;
+    event.preventDefault();
+    const index = Math.max(0, Math.min(last, steps[event.key]));
+    setFocusIndex(index);
+    rail.current?.querySelectorAll<HTMLButtonElement>('button')[index]?.focus();
+  };
+  return (
+    <div
+      ref={rail}
+      role={ticks.length ? 'toolbar' : undefined}
+      aria-label={ticks.length ? 'Take markers' : undefined}
+      aria-orientation={ticks.length ? 'horizontal' : undefined}
+      onKeyDown={onKeyDown}
+      className="relative h-3.5 mt-1"
+    >
+      <span aria-hidden="true" className="absolute left-[5px] right-[5px] top-1/2 h-px bg-white/10" />
+      {ticks.map((tick, i) => {
+        const merged = tick.count > 1;
+        const mark = tick.kind === 'cue'
+          ? `h-full rounded-full ${merged ? 'w-[3px] bg-cyan-100 shadow-[0_0_4px_rgba(103,232,249,0.9)]' : 'w-0.5 bg-cyan-300'}`
+          : `${merged ? 'w-[6px] h-[6px] bg-fuchsia-200 shadow-[0_0_4px_rgba(232,121,249,0.9)]' : 'w-[5px] h-[5px] bg-fuchsia-400'} rotate-45 rounded-[1px]`;
+        return (
+          <button
+            key={tick.key}
+            type="button"
+            tabIndex={i === active ? 0 : -1}
+            aria-label={tick.label}
+            title={tick.label}
+            data-kind={tick.kind}
+            data-at-ms={tick.atMs}
+            onFocus={() => setFocusIndex(i)}
+            onClick={() => onSeek(tick.atMs)}
+            className={`group absolute ${tick.kind === 'cue' ? 'top-0 items-start' : 'bottom-0 items-center'} h-[7px] w-2.5 -translate-x-1/2 flex justify-center cursor-pointer before:absolute before:content-[''] before:inset-y-0 before:-inset-x-[5px]`}
+            style={{ left: `calc(5px + (100% - 10px) * ${tick.position})` }}
+          >
+            <span aria-hidden="true" className={`block ${mark} group-hover:bg-white group-focus-visible:bg-white`} />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function FollowCountdown({ deadline }: { deadline: number }) {
   const [now, setNow] = useState(() => performance.now());
   useEffect(() => {
@@ -159,7 +268,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   onSaveCue,
   captureVideoPosition, onCaptureVideoPosition,
   onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onResetCue, onHold, follow,
-  stage, onApplyWallCue, onRemoveWallCue, take,
+  stage, mainScreen, missingMedia, onApplyWallCue, onRemoveWallCue, take,
   onSetBump,
 }) => {
   const [tab, setTab] = useState<ConsoleTab>('show');
@@ -177,8 +286,21 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
     });
   };
   useEffect(() => () => cancelAnimationFrame(seekFrame.current), []);
-  // Round the range up to the step so the final position stays reachable; App clamps.
-  const scrubMax = Math.ceil(take.durationMs / 50) * 50;
+  // Range rounded up to the step (App clamps), value kept on the step grid; see scrubPosition.
+  const { max: scrubMax, value: scrubValue } = scrubPosition(take.timeMs, take.durationMs);
+  const seekNow = (ms: number) => {
+    cancelAnimationFrame(seekFrame.current);
+    seekFrame.current = 0;
+    take.seek(ms);
+  };
+  const ticks = useMemo(
+    () => layoutTicks([...cueMarkers(take.cues), ...wallMarkers(stage)], take.durationMs, { rangeMs: scrubMax }),
+    [take.cues, stage, take.durationMs, scrubMax],
+  );
+  // Resolve the screens on the same clock as the walls: clamped to the take unless recording.
+  const glanceMs = take.mode === 'recording' ? take.timeMs : Math.min(take.timeMs, take.durationMs);
+  const wallsRunning = take.mode === 'recording' || (take.mode === 'playing' && take.timeMs < take.durationMs);
+  const glances = screenGlances(stage, glanceMs, wallsRunning, mainScreen, missingMedia ?? []);
   const marks = useMemo(() => focusMarks(rig), [rig]);
   const [headTarget, setHeadTarget] = useState<'all' | HeadGroup>('all');
   const head = headTarget === 'all' ? state : headLook(state, headTarget);
@@ -285,33 +407,45 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                   </div>
                   {take.hasTake && take.mode !== 'recording' && take.durationMs > 0 && (
                     <div className="mb-1.5 space-y-1">
-                      <input
-                        type="range"
-                        aria-label="Take position"
-                        min={0}
-                        max={scrubMax}
-                        step={50}
-                        value={Math.min(take.timeMs, take.durationMs)}
-                        aria-valuetext={`${timecode(Math.min(take.timeMs, take.durationMs))} of ${timecode(take.durationMs)}`}
-                        onChange={e => scrub(e.currentTarget.valueAsNumber)}
-                        className="console-slider w-full"
-                      />
+                      <div>
+                        <input
+                          type="range"
+                          aria-label="Take position"
+                          min={0}
+                          max={scrubMax}
+                          step={50}
+                          value={scrubValue}
+                          aria-valuetext={`${timecode(Math.min(take.timeMs, take.durationMs))} of ${timecode(take.durationMs)}`}
+                          onChange={e => scrub(e.currentTarget.valueAsNumber)}
+                          className="console-slider w-full"
+                        />
+                        <TakeMarkers ticks={ticks} onSeek={seekNow} />
+                      </div>
                       {take.cues.length > 0 && (
-                        <div className="flex flex-wrap gap-1">
-                          {take.cues.map((entry, i) => (
+                        <div className="flex gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:thin]">
+                          {take.cues.slice(0, CUE_CHIP_LIMIT).map((entry, i) => (
                             <button
                               key={`${entry.atMs}-${entry.cueId}-${i}`}
                               type="button"
-                              onClick={() => { cancelAnimationFrame(seekFrame.current); seekFrame.current = 0; take.seek(entry.atMs); }}
-                              className="px-1.5 py-0.5 rounded bg-white/5 hover:bg-cyan-500/20 border border-white/10 text-[9px] font-mono-tech text-zinc-200 cursor-pointer"
+                              onClick={() => seekNow(entry.atMs)}
+                              className="shrink-0 px-1.5 py-0.5 rounded bg-white/5 hover:bg-cyan-500/20 border border-white/10 text-[9px] font-mono-tech text-zinc-200 cursor-pointer"
                             >
                               {timecode(entry.atMs)} {entry.name}
                             </button>
                           ))}
+                          {take.cues.length > CUE_CHIP_LIMIT && (
+                            <span
+                              className="shrink-0 self-center px-1 text-[9px] font-mono-tech text-zinc-500"
+                              title="Later cues are on the scrubber markers"
+                            >
+                              +{take.cues.length - CUE_CHIP_LIMIT}
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
                   )}
+                  {(take.mode !== 'idle' || take.hasTake) && <ScreenBadges glances={glances} />}
                   <div className="cue-bank">
                     {cues.map((cue, idx) => {
                       const isActive = activeCueId === cue.id;
@@ -772,6 +906,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                     <SecondaryScreenCues
                       stage={stage}
                       playheadMs={take.timeMs}
+                      readPlayhead={take.playhead}
                       onApplyEvent={onApplyWallCue}
                       onRemoveEvent={onRemoveWallCue}
                     />

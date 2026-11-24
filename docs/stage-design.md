@@ -28,6 +28,17 @@ New trusses use the selected venue's grid height to set their starting elevation
 
 The plan editor owns a draft while it is open. Applying the draft updates the rig as one change. Closing without applying leaves the running stage available. Rig builder handles fixture inventory, patching, PA, video and scenery. The show director operates the fixtures actually installed in the design. A bare venue can therefore be equipped progressively.
 
+### Screens, speaker hangs and the native layout
+
+The plan editor also edits the show's stage overlay (`stage` in show format v3). Its draft holds the rig and the overlay together, so Undo, Redo and Cancel cover both, and Apply keeps existing wall cues.
+
+- **Screen** places a secondary LED wall. Drag a screen to move it, drag its arrow to aim it and drag the edge handle to change its width; `[` and `]` rotate the selection by 5° (15° with Shift). The main LED wall appears too. Editing it pins its resolved position and size, and **Reset to rig LED wall** returns it to the rig placement. Deleting a screen also deletes its wall cues; Undo restores both.
+- **Speaker hang** places an aimed line array. The plan draws a nominal 90° horizontal coverage fan. While the rig's stock flown arrays are in effect they appear dashed; editing one, or adding a hang, turns them into authored hangs. **Use rig speaker arrays** removes the override. Removing every hang stores an explicit empty list, which removes the arrays.
+- **Layout truss** and **Layout prop** author `layout.trusses` and `layout.props` (inflatable or scenic). **Convert to rig truss** turns a layout truss into a rig truss pod with the same geometry, so fixtures can hang on it.
+- **Replace rig layout** sets `layout.replace`: the rig's decks, trusses, floor effects and stock arrays are dimmed on the plan and hidden in 3D and in the CAD plan.
+
+Yaw is a rotation about +Y, as in three.js. A front faces (sin yaw, cos yaw) on the plan, toward the audience at 0°, and a wall's width runs along (cos yaw, −sin yaw). Apply checks the overlay against the v3 schema; an overlay with nothing authored is dropped so plain rigs stay v1 or v2.
+
 The renderer constructs deck surfaces and truss spans from the document. Floor fixtures and scenery use the deck height at their position. Beam pools use the same rectangles and elevations for light and shadow. The DMX allocator indexes fixture groups separately from geometry, so reshaping a run does not consume new addresses.
 
 ## Saved rigs

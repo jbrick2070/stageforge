@@ -1,15 +1,19 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { KeyboardEvent, PointerEvent } from 'react';
+import type { KeyboardEvent, PointerEvent, ReactNode } from 'react';
 import { parseRigJson } from '../data/rigImport';
 import {
   Check,
   DraftingCompass,
   Hand,
   Maximize,
+  Monitor,
   MousePointer2,
   Plus,
   Redo2,
   Route,
+  Shapes,
+  Slash,
+  Speaker,
   Square,
   Undo2,
   X,
@@ -28,24 +32,84 @@ import {
   withPlatforms,
 } from '../data/stageDesign';
 import type { PlanPoint, RigConfig, StagePlatform, TrussPodConfig } from '../types/show';
+import type { NativeStage } from '../data/showFile';
 import { GRID_HEIGHT } from '../data/stageEquipment';
+import {
+  createSecondaryWall,
+  MAX_STAGE_WALLS,
+  MAX_WALL_HEIGHT,
+  MAX_WALL_WIDTH,
+  upsertStageWall,
+  type LayoutProp,
+  type SpeakerHang,
+  type StageWall,
+} from '../data/studioGeometry';
+import {
+  canAuthorWall,
+  canAddHang,
+  canAddWall,
+  convertLayoutTruss,
+  effectiveHangs,
+  facing,
+  finalizeStage,
+  hangAimHandle,
+  HANG_COVERAGE_DEG,
+  MAX_LAYOUT_ITEMS,
+  MIN_LAYOUT_SPAN,
+  moveStageItem,
+  newHang,
+  patchWall,
+  planWalls,
+  removeStageItem,
+  setHangs,
+  setLayoutProps,
+  setLayoutReplace,
+  setLayoutTrusses,
+  spanLength,
+  stagePlanPoints,
+  wallHandles,
+  widthAxis,
+  wrapDegrees,
+  type LayoutTruss,
+  type PlanItem,
+  type PlanItemKind,
+  type PlanWall,
+} from '../data/stagePlan';
 import './StageDesigner.css';
 
-type Tool = 'select' | 'platform' | 'path' | 'pan';
-type Selection = { kind: 'platform' | 'truss'; id: string; node?: number };
+type Tool = 'select' | 'platform' | 'path' | 'wall' | 'hang' | 'span' | 'prop' | 'pan';
+type Kind = 'platform' | 'truss' | PlanItemKind;
+type Selection = { kind: Kind; id: string; node?: number };
 type View = { x: number; z: number; width: number };
 type Drag = { origin: PlanPoint; at: PlanPoint; pointer: number; selection?: Selection; pan?: View };
-type EditorProps = { rig: RigConfig; onChange: (rig: RigConfig, replacing: boolean) => void; onClose: () => void };
+/** One undoable state: the rig plus the native stage overlay (walls, hangs, layout, wall cues). */
+type Draft = { rig: RigConfig; stage?: NativeStage };
+type EditorProps = {
+  rig: RigConfig;
+  stage?: NativeStage;
+  /** Return false to keep the designer open (for example when the user declines a discard prompt). */
+  onChange: (rig: RigConfig, stage: NativeStage | undefined, replacing: boolean) => boolean | void;
+  onClose: () => void;
+};
 const guides = [
   { id: 'select', name: 'Select', Icon: MousePointer2 },
   { id: 'platform', name: 'Platform', Icon: Square },
   { id: 'path', name: 'Truss path', Icon: Route },
+  { id: 'wall', name: 'Screen', Icon: Monitor },
+  { id: 'hang', name: 'Speaker hang', Icon: Speaker },
+  { id: 'span', name: 'Layout truss', Icon: Slash },
+  { id: 'prop', name: 'Layout prop', Icon: Shapes },
   { id: 'pan', name: 'Pan', Icon: Hand },
 ] as const;
+const PREFIX: Record<Kind, string> = { platform: 'p', truss: 't', wall: 'w', hang: 'h', span: 's', prop: 'o' };
+const KIND_BY_PREFIX = Object.fromEntries(Object.entries(PREFIX).map(([kind, prefix]) => [prefix, kind])) as Record<string, Kind>;
 const rounded = (n: number) => Number(n.toFixed(3));
 const distance = (a: PlanPoint, b: PlanPoint) => Math.hypot(a.x - b.x, a.z - b.z);
 const limit = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 const pointString = (points: PlanPoint[]) => points.map((p) => `${p.x},${p.z}`).join(' ');
+const isStageKind = (kind: Kind): kind is PlanItemKind => kind === 'wall' || kind === 'hang' || kind === 'span' || kind === 'prop';
+/** Handles that aim an object: they follow the pointer freely and snap the angle instead of the grid. */
+const isAimHandle = (s?: Selection) => !!s && ((s.kind === 'wall' && s.node === 1) || (s.kind === 'hang' && s.node === 0));
 
 function corners(p: StagePlatform): PlanPoint[] {
   return [
@@ -76,7 +140,7 @@ function knots(p: TrussPodConfig): PlanPoint[] {
     { x: r, z: 0 },
   ];
 }
-function frameDesign(rig: RigConfig, aspect: number): View {
+function frameDesign(rig: RigConfig, aspect: number, stage?: NativeStage): View {
   const points = [
     ...getPlatforms(rig).flatMap(corners),
     ...rig.trussPods.flatMap((p) =>
@@ -87,6 +151,7 @@ function frameDesign(rig: RigConfig, aspect: number): View {
           ]
         : knots(p).map((n) => podWorldPoint(p, n)),
     ),
+    ...stagePlanPoints(rig, stage),
   ];
   const xs = points.map((p) => p.x),
     zs = points.map((p) => p.z);
@@ -128,7 +193,7 @@ function moveKnot(p: TrussPodConfig, node: number, at: PlanPoint): TrussPodConfi
   if (path.some((q, i) => i > 0 && distance(q, path[i - 1]) < MIN_TRUSS_SPAN)) return p;
   return { ...p, shape: 'path', path, width: pathLength(path) };
 }
-function moveItem(rig: RigConfig, selection: Selection, from: PlanPoint, at: PlanPoint): RigConfig {
+function moveRigItem(rig: RigConfig, selection: Selection, from: PlanPoint, at: PlanPoint): RigConfig {
   const dx = at.x - from.x,
     dz = at.z - from.z,
     node = selection.node;
@@ -154,17 +219,27 @@ function moveItem(rig: RigConfig, selection: Selection, from: PlanPoint, at: Pla
     ),
   };
 }
+function moveItem(draft: Draft, selection: Selection, from: PlanPoint, at: PlanPoint, angleStep: number): Draft {
+  if (isStageKind(selection.kind)) {
+    return { rig: draft.rig, stage: moveStageItem(draft.rig, draft.stage, selection as PlanItem, from, at, angleStep) };
+  }
+  return { rig: moveRigItem(draft.rig, selection, from, at), stage: draft.stage };
+}
 function Field({
   label,
   value,
   onChange,
   min,
+  max,
+  integer = false,
   unit = 'm',
 }: {
   label: string;
   value: number;
   onChange: (v: number) => void;
   min?: number;
+  max?: number;
+  integer?: boolean;
   unit?: string;
 }) {
   const [text, setText] = useState(String(rounded(value)));
@@ -175,12 +250,14 @@ function Field({
   }, [value]);
   const finish = () => {
     const next = Number(text);
-    if (text.trim() !== '' && Number.isFinite(next) && (min === undefined || next >= min)) {
+    if (text.trim() !== '' && Number.isFinite(next) && (min === undefined || next >= min) &&
+        (max === undefined || next <= max) && (!integer || Number.isInteger(next))) {
       if (next !== value) onChange(next);
       setText(String(rounded(next)));
       setInvalid(false);
     } else setInvalid(true);
   };
+  const range = min !== undefined && max !== undefined ? `${min}–${max} ${unit}` : min !== undefined ? `minimum ${min} ${unit}` : max !== undefined ? `maximum ${max} ${unit}` : '';
   return (
     <label className="sd-field">
       <span>{label}</span>
@@ -188,8 +265,9 @@ function Field({
         <input
           type="number"
           required
-          step="any"
+          step={integer ? 1 : 'any'}
           min={min}
+          max={max}
           value={text}
           aria-label={label}
           aria-invalid={invalid}
@@ -206,7 +284,7 @@ function Field({
       </span>
       {invalid && (
         <span className="sd-error">
-          {min === undefined ? 'Enter a finite number.' : `Minimum ${min} ${unit}.`}
+          {integer ? 'Enter a whole number' : 'Enter a finite number'}{range ? `, ${range}` : ''}.
         </span>
       )}
     </label>
@@ -216,10 +294,12 @@ function NameField({
   label,
   value,
   onChange,
+  optional = false,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
+  optional?: boolean;
 }) {
   const [text, setText] = useState(value);
   useEffect(() => setText(value), [value]);
@@ -227,11 +307,12 @@ function NameField({
     <input
       aria-label={label}
       value={text}
+      maxLength={optional ? 512 : undefined}
       onChange={(e) => setText(e.target.value)}
       onBlur={() => {
         const next = text.trim();
-        if (next && next !== value) onChange(next);
-        setText(next || value);
+        if ((next || optional) && next !== value) onChange(next);
+        setText(next || (optional ? '' : value));
       }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') e.currentTarget.blur();
@@ -239,14 +320,26 @@ function NameField({
     />
   );
 }
+function Arrow({ from, to, size }: { from: PlanPoint; to: PlanPoint; size: number }) {
+  const angle = Math.atan2(to.z - from.z, to.x - from.x);
+  const head = (a: number) => `${to.x - size * Math.cos(angle + a)},${to.z - size * Math.sin(angle + a)}`;
+  return (
+    <>
+      <line x1={from.x} y1={from.z} x2={to.x} y2={to.z} />
+      <polygon points={`${to.x},${to.z} ${head(0.45)} ${head(-0.45)}`} />
+    </>
+  );
+}
 
-export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
+export function StageDesigner({ rig, stage, onChange, onClose }: EditorProps) {
   const [history, setHistory] = useState(() => ({
-    past: [] as RigConfig[],
-    now: structuredClone(rig),
-    future: [] as RigConfig[],
+    past: [] as Draft[],
+    // The designer edits private copies; Cancel discards them without touching the live rig or stage.
+    now: { rig: structuredClone(rig), stage: stage && structuredClone(stage) } as Draft,
+    future: [] as Draft[],
   }));
-  const draft = history.now;
+  const draft = history.now.rig;
+  const stageDraft = history.now.stage;
   const [tool, setTool] = useState<Tool>('select');
   const [selected, setSelected] = useState<Selection>();
   const [points, setPoints] = useState<PlanPoint[]>([]);
@@ -254,14 +347,15 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
   const [nextPoint, setNextPoint] = useState<PlanPoint>({ x: 0, z: 0 });
   const [hover, setHover] = useState<PlanPoint>();
   const [snap, setSnap] = useState(0.5);
+  const [propType, setPropType] = useState<LayoutProp['type']>('inflatable');
   const gridHeight = GRID_HEIGHT[draft.venue];
   const [elevation, setElevation] = useState(() => Math.min(7, gridHeight - 0.8));
   const [message, setMessage] = useState('');
   const [aspect, setAspect] = useState(1.5);
-  const [view, setView] = useState<View>(() => frameDesign(rig, 1.5));
+  const [view, setView] = useState<View>(() => frameDesign(rig, 1.5, stage));
   const dialog = useRef<HTMLDialogElement>(null),
     svg = useRef<SVGSVGElement>(null);
-  const originalRig = useRef(rig);
+  const original = useRef({ rig, stage });
   useLayoutEffect(() => {
     const element = dialog.current,
       canvas = svg.current;
@@ -275,7 +369,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
       if (!box.width || !box.height) return;
       const ratio = box.width / box.height;
       setAspect(ratio);
-      if (!previous) setView(frameDesign(originalRig.current, ratio));
+      if (!previous) setView(frameDesign(original.current.rig, ratio, original.current.stage));
       previous = ratio;
     });
     observer.observe(canvas);
@@ -285,24 +379,49 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
       if (opener?.isConnected) opener.focus({ preventScroll: true });
     };
   }, []);
+  const angleStep = snap ? 5 : 0;
   const originalPlatforms = getPlatforms(draft);
-  const showing = drag?.selection ? moveItem(draft, drag.selection, drag.origin, drag.at) : draft;
-  const platforms = getPlatforms(showing);
+  // The drag preview never needs wall cues; leaving them out keeps each pointer move from cloning them.
+  const previewBase = drag?.selection && isStageKind(drag.selection.kind) && history.now.stage?.screenEvents.length
+    ? { ...history.now, stage: { ...history.now.stage, screenEvents: [] } }
+    : history.now;
+  const showing = drag?.selection ? moveItem(previewBase, drag.selection, drag.origin, drag.at, angleStep) : history.now;
+  const shownRig = showing.rig,
+    shownStage = showing.stage;
+  const platforms = getPlatforms(shownRig);
+  const walls = planWalls(shownRig, shownStage);
+  const hangInfo = effectiveHangs(shownRig, shownStage);
+  const spans = shownStage?.layout?.trusses ?? [];
+  const layoutProps = shownStage?.layout?.props ?? [];
+  const replaced = shownStage?.layout?.replace === true;
+  const index = selected && !['platform', 'truss', 'wall'].includes(selected.kind) ? Number(selected.id) : -1;
   const platform = selected?.kind === 'platform' ? platforms.find((p) => p.id === selected.id) : undefined;
-  const truss = selected?.kind === 'truss' ? showing.trussPods.find((p) => p.id === selected.id) : undefined;
-  const inspectedElevation = tool === 'path' ? elevation : truss?.baseY;
+  const truss = selected?.kind === 'truss' ? shownRig.trussPods.find((p) => p.id === selected.id) : undefined;
+  const wall = selected?.kind === 'wall' ? walls.find((w) => w.wall.id === selected.id) : undefined;
+  const hang = selected?.kind === 'hang' ? hangInfo.hangs[index] : undefined;
+  const span = selected?.kind === 'span' ? spans[index] : undefined;
+  const prop = selected?.kind === 'prop' ? layoutProps[index] : undefined;
+  const inspectedElevation = tool === 'path' || tool === 'span' ? elevation : truss?.baseY ?? span?.height;
   const vertices = platform
     ? corners(platform)
     : truss
       ? knots(truss).map((p) => podWorldPoint(truss, p))
-      : [];
-  const vertex = selected?.node !== undefined ? vertices[selected.node] : undefined;
+      : wall
+        ? wallHandles(wall.frame)
+        : hang
+          ? [hangAimHandle(hang)]
+          : span
+            ? [{ x: span.x, z: span.z }, { x: span.endX, z: span.endZ }]
+            : [];
+  const vertex = selected?.node !== undefined && (platform || truss) ? vertices[selected.node] : undefined;
   const newDesignDrafts = useRef(new WeakSet<RigConfig>());
-  const commit = (next: RigConfig, replacing = false) => {
-    if (replacing || newDesignDrafts.current.has(draft)) newDesignDrafts.current.add(next);
+  const commitDraft = (next: Draft, replacing = false) => {
+    if (replacing || newDesignDrafts.current.has(draft)) newDesignDrafts.current.add(next.rig);
     setHistory((h) => ({ past: [...h.past.slice(-79), h.now], now: next, future: [] }));
     setMessage('');
   };
+  const commit = (next: RigConfig, replacing = false) => commitDraft({ rig: next, stage: stageDraft }, replacing);
+  const commitStage = (next: NativeStage | undefined) => commitDraft({ rig: draft, stage: next });
   const resetGesture = () => {
     setDrag(undefined);
     setPoints([]);
@@ -313,8 +432,12 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
     resetGesture();
     setTool(next);
   };
+  // Hangs, layout trusses and props are selected by list index, which can point at another item
+  // after the list changes; drop such a selection whenever history moves.
+  const dropIndexSelection = () => setSelected((s) => (s && ['hang', 'span', 'prop'].includes(s.kind) ? undefined : s));
   const undo = () => {
     resetGesture();
+    dropIndexSelection();
     setHistory((h) =>
       h.past.length
         ? { past: h.past.slice(0, -1), now: h.past[h.past.length - 1], future: [h.now, ...h.future] }
@@ -323,6 +446,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
   };
   const redo = () => {
     resetGesture();
+    dropIndexSelection();
     setHistory((h) =>
       h.future.length ? { past: [...h.past, h.now], now: h.future[0], future: h.future.slice(1) } : h,
     );
@@ -338,6 +462,30 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
   const editTruss = (patch: Partial<TrussPodConfig>) =>
     truss &&
     commit({ ...draft, trussPods: draft.trussPods.map((p) => (p.id === truss.id ? { ...p, ...patch } : p)) });
+  const mainWallFull = 'This stage already has 8 screen entries. Remove a secondary screen to customise the main LED wall.';
+  const editWall = (entry: PlanWall, patch: Partial<StageWall>) => {
+    if (!canAuthorWall(entry, stageDraft)) return setMessage(mainWallFull);
+    commitStage(upsertStageWall(draft, stageDraft, patchWall(entry, patch)));
+  };
+  const editHang = (patch: Partial<SpeakerHang>) => {
+    const { hangs } = effectiveHangs(draft, stageDraft);
+    if (hangs[index]) commitStage(setHangs(draft, stageDraft, hangs.map((h, i) => (i === index ? { ...h, ...patch } : h))));
+  };
+  const editSpan = (patch: Partial<LayoutTruss>) => {
+    const list = stageDraft?.layout?.trusses ?? [];
+    const target = list[index];
+    if (!target) return;
+    const next = { ...target, ...patch };
+    if (spanLength(next) < MIN_LAYOUT_SPAN) {
+      setMessage(`Keep the truss ends at least ${MIN_LAYOUT_SPAN} m apart.`);
+      return;
+    }
+    commitStage(setLayoutTrusses(draft, stageDraft, list.map((t, i) => (i === index ? next : t))));
+  };
+  const editProp = (patch: Partial<LayoutProp>) => {
+    const list = stageDraft?.layout?.props ?? [];
+    if (list[index]) commitStage(setLayoutProps(draft, stageDraft, list.map((p, i) => (i === index ? { ...p, ...patch } : p))));
+  };
   const remove = () => {
     if (platform)
       commit(
@@ -347,6 +495,19 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
         ),
       );
     else if (truss) commit({ ...draft, trussPods: draft.trussPods.filter((p) => p.id !== truss.id) });
+    else if (wall?.primary && wall.stock) {
+      // The rig's own LED wall can't be deleted here; turn it off in the Rig builder instead.
+      setMessage('The main LED wall comes from the rig. Turn it off in the Rig builder to remove it.');
+      return;
+    } else if (selected && isStageKind(selected.kind) && (wall || hang || span || prop)) {
+      const cues = selected.kind === 'wall' ? stageDraft?.screenEvents.filter((e) => e.target === selected.id).length ?? 0 : 0;
+      commitStage(removeStageItem(draft, stageDraft, selected as PlanItem));
+      if (selected.kind === 'wall' && selected.id === 'main-led') {
+        setMessage('Main screen returned to the rig LED wall.');
+        return;
+      }
+      if (cues) setMessage(`Removed the screen and its ${cues} wall cue${cues === 1 ? '' : 's'}. Undo restores them.`);
+    }
     setSelected(undefined);
   };
   const addPlatform = (a: PlanPoint, b: PlanPoint) => {
@@ -371,6 +532,53 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
     choose('select');
     setSelected({ kind: 'platform', id: p.id });
   };
+  const addWall = (at?: PlanPoint) => {
+    if (!canAddWall(draft, stageDraft)) {
+      setMessage(`A stage can carry up to ${MAX_STAGE_WALLS} screens, including the main LED wall.`);
+      return;
+    }
+    const base = createSecondaryWall(draft, stageDraft);
+    const placed = at ? { ...base, x: rounded(at.x), z: rounded(at.z) } : base;
+    commitStage(upsertStageWall(draft, stageDraft, placed));
+    choose('select');
+    setSelected({ kind: 'wall', id: placed.id });
+  };
+  const addHang = (at: PlanPoint) => {
+    if (!canAddHang(draft, stageDraft)) {
+      setMessage(`A stage can carry up to ${MAX_LAYOUT_ITEMS} speaker hangs.`);
+      return;
+    }
+    const { hangs } = effectiveHangs(draft, stageDraft);
+    commitStage(setHangs(draft, stageDraft, [...hangs, newHang(draft, at)]));
+    choose('select');
+    setSelected({ kind: 'hang', id: String(hangs.length) });
+  };
+  const addSpan = (a: PlanPoint, b: PlanPoint) => {
+    const list = stageDraft?.layout?.trusses ?? [];
+    if (list.length >= MAX_LAYOUT_ITEMS) {
+      setMessage(`A layout can carry up to ${MAX_LAYOUT_ITEMS} trusses.`);
+      return false;
+    }
+    if (distance(a, b) < MIN_LAYOUT_SPAN) {
+      setMessage(`Place the other end at least ${MIN_LAYOUT_SPAN} m away.`);
+      return false;
+    }
+    const height = rounded(Math.max(0.5, Math.min(elevation, gridHeight - 0.3)));
+    commitStage(setLayoutTrusses(draft, stageDraft, [...list, { x: a.x, z: a.z, endX: b.x, endZ: b.z, height }]));
+    choose('select');
+    setSelected({ kind: 'span', id: String(list.length) });
+    return true;
+  };
+  const addProp = (at: PlanPoint) => {
+    const list = stageDraft?.layout?.props ?? [];
+    if (list.length >= MAX_LAYOUT_ITEMS) {
+      setMessage(`A layout can carry up to ${MAX_LAYOUT_ITEMS} props.`);
+      return;
+    }
+    commitStage(setLayoutProps(draft, stageDraft, [...list, { x: at.x, z: at.z, type: propType, height: 2 }]));
+    choose('select');
+    setSelected({ kind: 'prop', id: String(list.length) });
+  };
   const addPoint = (point: PlanPoint) => {
     if (points.length >= MAX_PATH_POINTS) {
       setMessage(`A path can contain up to ${MAX_PATH_POINTS} points.`);
@@ -393,6 +601,14 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
     choose('select');
     setSelected({ kind: 'truss', id: p.id });
   };
+  const convertSpan = () => {
+    const converted = convertLayoutTruss(draft, stageDraft, index);
+    if (!converted) return;
+    commitDraft(converted);
+    const pod = converted.rig.trussPods[converted.rig.trussPods.length - 1];
+    setSelected({ kind: 'truss', id: pod.id });
+    setMessage(`${pod.name} is now a rig truss. Hang fixtures on it in the Rig builder.`);
+  };
   const world = (e: PointerEvent<SVGSVGElement>, grid = true): PlanPoint => {
     const transform = svg.current!.getScreenCTM()!;
     const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(transform.inverse());
@@ -413,6 +629,16 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
       addPoint(at);
       return;
     }
+    if (tool === 'span') {
+      if (!points.length) {
+        setPoints([at]);
+        setMessage('Click the other end of the truss.');
+      } else if (addSpan(points[0], at)) setPoints([]);
+      return;
+    }
+    if (tool === 'wall') return addWall(at);
+    if (tool === 'hang') return addHang(at);
+    if (tool === 'prop') return addProp(at);
     if (tool === 'platform') {
       e.currentTarget.setPointerCapture(e.pointerId);
       setDrag({ origin: at, at, pointer: e.pointerId });
@@ -424,33 +650,45 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
       return;
     }
     const selection: Selection = {
-      kind: hit.dataset.item as Selection['kind'],
+      kind: hit.dataset.item as Kind,
       id: hit.dataset.id!,
       node: hit.dataset.node === undefined ? undefined : Number(hit.dataset.node),
     };
     setSelected(selection);
+    const entry = selection.kind === 'wall' ? walls.find((w) => w.wall.id === selection.id) : undefined;
+    if (entry && !canAuthorWall(entry, stageDraft)) {
+      setMessage(mainWallFull);
+      return;
+    }
+    const origin = isAimHandle(selection) ? world(e, false) : at;
     e.currentTarget.setPointerCapture(e.pointerId);
-    setDrag({ origin: at, at, pointer: e.pointerId, selection });
+    setDrag({ origin, at: origin, pointer: e.pointerId, selection });
   };
   const pointerMove = (e: PointerEvent<SVGSVGElement>) => {
     if (drag && drag.pointer !== e.pointerId) return;
-    const at = world(e, !drag?.pan);
+    const at = world(e, !drag?.pan && !isAimHandle(drag?.selection));
     if (drag?.pan) {
       setView((v) => ({ ...v, x: v.x + drag.origin.x - at.x, z: v.z + drag.origin.z - at.z }));
       return;
     }
     if (drag) setDrag({ ...drag, at });
-    else if (tool === 'path') setHover(at);
+    else if (tool === 'path' || (tool === 'span' && points.length)) setHover(at);
   };
   const pointerUp = (e: PointerEvent<SVGSVGElement>) => {
     if (!drag || drag.pointer !== e.pointerId) return;
-    const at = world(e);
+    const at = world(e, !isAimHandle(drag.selection));
     setDrag(undefined);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
     if (drag.pan) return;
     if (drag.selection) {
-      if (distance(at, drag.origin) > 0.001) commit(moveItem(draft, drag.selection, drag.origin, at));
+      if (distance(at, drag.origin) > 0.001) commitDraft(moveItem(history.now, drag.selection, drag.origin, at, angleStep));
     } else if (tool === 'platform') addPlatform(drag.origin, at);
+  };
+  const anchor = (): PlanPoint | undefined =>
+    vertex ?? platform ?? truss ?? wall?.frame ?? hang ?? (span ? { x: span.x, z: span.z } : prop);
+  const rotateSelection = (degrees: number) => {
+    if (wall) editWall(wall, { yaw: wrapDegrees(wall.frame.yaw + degrees) });
+    else if (hang) editHang({ yaw: wrapDegrees(hang.yaw + degrees) });
   };
   const handleKey = (e: KeyboardEvent<HTMLDialogElement>) => {
     e.stopPropagation();
@@ -476,7 +714,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
     }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();
-      if (tool === 'path') setPoints(points.slice(0, -1));
+      if (tool === 'path' || tool === 'span') setPoints(points.slice(0, -1));
       else remove();
       return;
     }
@@ -486,6 +724,11 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
       return;
     }
     if (e.target !== svg.current || !selected || tool !== 'select') return;
+    if ((e.key === '[' || e.key === ']') && (wall || hang)) {
+      e.preventDefault();
+      rotateSelection((e.key === ']' ? 1 : -1) * (e.shiftKey ? 15 : 5));
+      return;
+    }
     const step = (snap || 0.1) * (e.shiftKey ? 10 : 1);
     const deltas: Record<string, PlanPoint> = {
       ArrowLeft: { x: -step, z: 0 },
@@ -496,8 +739,11 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
     const delta = deltas[e.key];
     if (!delta) return;
     e.preventDefault();
-    const from = vertex ?? platform ?? truss;
-    if (from) commit(moveItem(draft, selected, from, { x: from.x + delta.x, z: from.z + delta.z }));
+    if (wall && !canAuthorWall(wall, stageDraft)) return setMessage(mainWallFull);
+    const from = anchor();
+    // Arrow keys move the whole object; for platform and rig-truss handles they move the selected vertex.
+    const target = isStageKind(selected.kind) ? { ...selected, node: undefined } : selected;
+    if (from) commitDraft(moveItem(history.now, target, from, { x: from.x + delta.x, z: from.z + delta.z }, angleStep));
   };
   const height = view.width / aspect,
     left = view.x - view.width / 2,
@@ -521,26 +767,140 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
       return;
     }
     let next: RigConfig;
+    let nextStage: NativeStage | undefined;
     try {
       next = parseRigJson(JSON.stringify(draft));
+      nextStage = finalizeStage(next, stageDraft);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Check the geometry before applying this design.');
       return;
     }
-    onChange(next, newDesignDrafts.current.has(draft));
+    if (onChange(next, nextStage, newDesignDrafts.current.has(draft)) === false) return;
     onClose();
   };
-  const selectedKey = platform ? `p:${platform.id}` : truss ? `t:${truss.id}` : '';
-  const context =
-    tool === 'platform'
-      ? 'Drag from one corner to the opposite corner.'
-      : tool === 'path'
-        ? 'Click to place points. Finish the path when it has two or more.'
-        : tool === 'pan'
-          ? 'Drag the plan to pan.'
-          : selectedKey
-            ? 'Drag the object or its handles. Arrow keys nudge the selection.'
-            : 'Select a platform or truss to edit it.';
+  const selectedKey = selected && (platform || truss || wall || hang || span || prop) ? `${PREFIX[selected.kind]}:${selected.id}` : '';
+  const toolHints: Partial<Record<Tool, string>> = {
+    platform: 'Drag from one corner to the opposite corner.',
+    path: 'Click to place points. Finish the path when it has two or more.',
+    wall: 'Click to place a secondary LED screen. Drag its arrow to aim it.',
+    hang: 'Click the hang point of a line array. Drag its arrow to aim it.',
+    span: points.length ? 'Click the other end of the truss.' : 'Click the two ends of a layout truss.',
+    prop: 'Click to place a layout prop.',
+    pan: 'Drag the plan to pan.',
+  };
+  const context = toolHints[tool] ?? (selectedKey
+    ? wall || hang
+      ? 'Drag to move, drag the arrow to aim. [ and ] rotate by 5°, arrow keys nudge.'
+      : 'Drag the object or its handles. Arrow keys nudge the selection.'
+    : 'Select an object to edit it.');
+  const counts = [
+    `${platforms.length} platforms`,
+    `${draft.trussPods.length} trusses`,
+    `${walls.length} screens`,
+    `${hangInfo.hangs.length} speaker hangs${hangInfo.hangs.length && !hangInfo.authored ? ' (rig)' : ''}`,
+    `${spans.length} layout trusses`,
+    `${layoutProps.length} layout props`,
+  ].join(' · ');
+  const objectClass = (kind: Kind, active: boolean, extra = '') =>
+    `sd-object sd-${kind} ${active ? 'sd-selected' : ''} ${extra}`.trim();
+  const stageInspector = (): ReactNode => {
+    if (wall) {
+      const f = wall.frame;
+      const cueCount = stageDraft?.screenEvents.filter((e) => e.target === wall.wall.id).length ?? 0;
+      return (
+        <>
+          <p className="sd-note">
+            {wall.primary ? (wall.stock ? 'Main LED wall from the rig. Editing pins its position and size.' : 'Custom main LED wall.')
+              : `Secondary screen · ID ${wall.wall.id}${cueCount ? ` · ${cueCount} wall cue${cueCount === 1 ? '' : 's'}` : ''}`}
+          </p>
+          <label className="sd-field">
+            <span>Screen label</span>
+            <NameField label="Screen label" optional value={wall.wall.label ?? ''} onChange={(label) => editWall(wall, { label: label || undefined })} />
+          </label>
+          <div className="sd-fields">
+            <Field label="Center X" min={-10000} max={10000} value={f.x} onChange={(x) => editWall(wall, { x })} />
+            <Field label="Center Z" min={-10000} max={10000} value={f.z} onChange={(z) => editWall(wall, { z })} />
+            <Field label="Center height" min={-10000} max={10000} value={f.y} onChange={(y) => editWall(wall, { y })} />
+            <Field label="Yaw" unit="°" min={-360} max={360} value={f.yaw} onChange={(yaw) => editWall(wall, { yaw })} />
+            <Field label="Screen width" min={0.2} max={MAX_WALL_WIDTH} value={f.width} onChange={(width) => editWall(wall, { width })} />
+            <Field label="Screen height" min={0.2} max={MAX_WALL_HEIGHT} value={f.height} onChange={(h) => editWall(wall, { height: h })} />
+          </div>
+          <button className="sd-delete" onClick={remove} disabled={wall.primary && wall.stock}>
+            {wall.primary ? 'Reset to rig LED wall' : 'Delete screen'}
+          </button>
+        </>
+      );
+    }
+    if (hang) {
+      return (
+        <>
+          <p className="sd-note">
+            {hangInfo.authored ? `Speaker hang ${index + 1} of ${hangInfo.hangs.length}` : 'Rig flown array. Editing turns the rig arrays into authored hangs.'}
+          </p>
+          <div className="sd-fields">
+            <Field label="Hang X" min={-10000} max={10000} value={hang.x} onChange={(x) => editHang({ x })} />
+            <Field label="Hang Z" min={-10000} max={10000} value={hang.z} onChange={(z) => editHang({ z })} />
+            <Field label="Trim height" min={-10000} max={10000} value={hang.y} onChange={(y) => editHang({ y })} />
+            <Field label="Aim" unit="°" min={-360} max={360} value={hang.yaw} onChange={(yaw) => editHang({ yaw })} />
+            <Field label="Tilt" unit="°" min={-360} max={360} value={hang.tilt} onChange={(tilt) => editHang({ tilt })} />
+            <Field label="Splay" unit="°" min={-360} max={360} value={hang.splay} onChange={(splay) => editHang({ splay })} />
+            <Field label="Boxes" unit="" integer min={1} max={16} value={hang.count} onChange={(count) => editHang({ count })} />
+          </div>
+          <button className="sd-delete" onClick={remove}>Remove hang</button>
+          {hangInfo.authored && (
+            <button onClick={() => { commitStage(setHangs(draft, stageDraft, undefined)); setSelected(undefined); }}>
+              Use rig speaker arrays
+            </button>
+          )}
+        </>
+      );
+    }
+    if (span) {
+      return (
+        <>
+          <p className="sd-note">Layout truss · {rounded(spanLength(span))} m span</p>
+          <div className="sd-fields">
+            <Field label="Start X" min={-10000} max={10000} value={span.x} onChange={(x) => editSpan({ x })} />
+            <Field label="Start Z" min={-10000} max={10000} value={span.z} onChange={(z) => editSpan({ z })} />
+            <Field label="End X" min={-10000} max={10000} value={span.endX} onChange={(endX) => editSpan({ endX })} />
+            <Field label="End Z" min={-10000} max={10000} value={span.endZ} onChange={(endZ) => editSpan({ endZ })} />
+            <Field label="Truss height" min={0.01} max={1000} value={span.height} onChange={(h) => editSpan({ height: h })} />
+          </div>
+          <button onClick={convertSpan} disabled={replaced} title={replaced ? 'Turn off “Replace rig layout” to add rig trusses' : undefined}>
+            Convert to rig truss
+          </button>
+          <button className="sd-delete" onClick={remove}>Delete layout truss</button>
+        </>
+      );
+    }
+    if (prop) {
+      return (
+        <>
+          <p className="sd-note">Layout prop {index + 1}</p>
+          <div className="sd-fields">
+            <Field label="Prop X" min={-10000} max={10000} value={prop.x} onChange={(x) => editProp({ x })} />
+            <Field label="Prop Z" min={-10000} max={10000} value={prop.z} onChange={(z) => editProp({ z })} />
+            <Field label="Prop height" min={0.01} max={1000} value={prop.height} onChange={(h) => editProp({ height: h })} />
+          </div>
+          <label className="sd-field">
+            <span>Prop type</span>
+            <select aria-label="Prop type" value={prop.type} onChange={(e) => editProp({ type: e.target.value as LayoutProp['type'] })}>
+              <option value="inflatable">Inflatable</option>
+              <option value="scenic">Scenic</option>
+            </select>
+          </label>
+          <button className="sd-delete" onClick={remove}>Delete prop</button>
+        </>
+      );
+    }
+    return null;
+  };
+  const coverage = (h: SpeakerHang, radius: number) => {
+    const half = HANG_COVERAGE_DEG / 2;
+    const a = facing(h.yaw - half), b = facing(h.yaw + half);
+    // Increasing yaw turns counter-clockwise on screen (+Z is down), so sweep-flag 0.
+    return `M${h.x} ${h.z}L${h.x + a.x * radius} ${h.z + a.z * radius}A${radius} ${radius} 0 0 0 ${h.x + b.x * radius} ${h.z + b.z * radius}Z`;
+  };
   return (
     <dialog
       className="stage-designer"
@@ -658,7 +1018,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                   data-item="platform"
                   data-id={p.id}
                   aria-label={p.name}
-                  className={`sd-object sd-platform ${p.id === platform?.id ? 'sd-selected' : ''}`}
+                  className={objectClass('platform', p.id === platform?.id, replaced ? 'sd-replaced' : '')}
                 >
                   <rect x={p.x - p.width / 2} y={p.z - p.depth / 2} width={p.width} height={p.depth} />
                   <text x={p.x} y={p.z} fontSize={12 * units} textAnchor="middle" dominantBaseline="central">
@@ -666,7 +1026,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                   </text>
                 </g>
               ))}
-              {showing.trussPods.map((p) => {
+              {shownRig.trussPods.map((p) => {
                 const path = knots(p).map((q) => podWorldPoint(p, q)),
                   ring = p.shape === 'circle';
                 return (
@@ -675,7 +1035,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                     data-item="truss"
                     data-id={p.id}
                     aria-label={p.name}
-                    className={`sd-object sd-truss ${p.id === truss?.id ? 'sd-selected' : ''}`}
+                    className={objectClass('truss', p.id === truss?.id, replaced ? 'sd-replaced' : '')}
                   >
                     {ring ? (
                       <>
@@ -691,24 +1051,98 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                   </g>
                 );
               })}
-              {tool === 'select' &&
-                vertices.map((p, i) => (
-                  <g
-                    key={i}
-                    data-item={selected!.kind}
-                    data-id={selected!.id}
-                    data-node={i}
-                    className="sd-handle"
-                  >
-                    <circle className="sd-handle-hit" cx={p.x} cy={p.z} r={11 * units} />
-                    <circle
-                      className={selected?.node === i ? 'sd-current-node' : ''}
-                      cx={p.x}
-                      cy={p.z}
-                      r={4.3 * units}
-                    />
+              {spans.map((t, i) => (
+                <g key={'s' + i} data-item="span" data-id={i} aria-label={`Layout truss ${i + 1}`}
+                  className={objectClass('span', selected?.kind === 'span' && index === i)}>
+                  <line className="sd-hit" x1={t.x} y1={t.z} x2={t.endX} y2={t.endZ} />
+                  <line x1={t.x} y1={t.z} x2={t.endX} y2={t.endZ} />
+                  {selected?.kind === 'span' && index === i && (
+                    <text x={(t.x + t.endX) / 2} y={(t.z + t.endZ) / 2 - 8 * units} fontSize={10 * units} textAnchor="middle">
+                      {rounded(spanLength(t))} m
+                    </text>
+                  )}
+                </g>
+              ))}
+              {layoutProps.map((p, i) => (
+                <g key={'o' + i} data-item="prop" data-id={i} aria-label={`${p.type === 'inflatable' ? 'Inflatable' : 'Scenic'} prop ${i + 1}`}
+                  className={objectClass('prop', selected?.kind === 'prop' && index === i)}>
+                  {p.type === 'inflatable'
+                    ? <circle cx={p.x} cy={p.z} r={0.55} />
+                    : <rect x={p.x - 0.5} y={p.z - 0.5} width={1} height={1} />}
+                  <text x={p.x} y={p.z + 0.95} fontSize={10 * units} textAnchor="middle">
+                    {p.type === 'inflatable' ? 'Inflatable' : 'Scenery'}
+                  </text>
+                </g>
+              ))}
+              {walls.map(({ wall: w, frame: f, primary, stock }) => {
+                const axis = widthAxis(f.yaw), front = facing(f.yaw), depth = 0.16;
+                const outline = [-1, 1].flatMap((s) => [-1, 1].map((d) => ({
+                  x: f.x + s * axis.x * f.width / 2 + d * front.x * depth,
+                  z: f.z + s * axis.z * f.width / 2 + d * front.z * depth,
+                })));
+                const quad = [outline[0], outline[1], outline[3], outline[2]];
+                const reach = Math.max(0.9, f.width * 0.25);
+                const name = w.label ?? (primary ? 'Main LED wall' : w.id);
+                return (
+                  <g key={w.id} data-item="wall" data-id={w.id}
+                    aria-label={`${name} screen, facing ${Math.round(f.yaw)}°`}
+                    className={objectClass('wall', wall?.wall.id === w.id, `${primary ? 'sd-main' : ''} ${stock ? 'sd-stock' : ''}`)}>
+                    <polygon className="sd-hit" points={pointString(quad)} />
+                    <polygon points={pointString(quad)} />
+                    <g className="sd-facing">
+                      <Arrow from={f} to={{ x: f.x + front.x * reach, z: f.z + front.z * reach }} size={0.28} />
+                    </g>
+                    <text x={f.x - front.x * 0.55} y={f.z - front.z * 0.55} fontSize={10 * units} textAnchor="middle" dominantBaseline="central">
+                      {name}
+                    </text>
                   </g>
-                ))}
+                );
+              })}
+              {hangInfo.hangs.map((h, i) => {
+                const front = facing(h.yaw), side = widthAxis(h.yaw);
+                const body = [[-0.3, -0.2], [0.3, -0.2], [0.3, 0.2], [-0.3, 0.2]].map(([s, d]) => ({
+                  x: h.x + side.x * s + front.x * d, z: h.z + side.z * s + front.z * d,
+                }));
+                return (
+                  <g key={'h' + i} data-item="hang" data-id={i}
+                    aria-label={`Speaker hang ${i + 1}, ${h.count} boxes, aim ${Math.round(h.yaw)}°`}
+                    className={objectClass('hang', selected?.kind === 'hang' && index === i, hangInfo.authored ? '' : 'sd-stock')}>
+                    <path className="sd-coverage" d={coverage(h, 4)} />
+                    <polygon points={pointString(body)} />
+                    <g className="sd-facing">
+                      <Arrow from={h} to={hangAimHandle(h)} size={0.25} />
+                    </g>
+                    <text x={h.x + side.x * 0.75} y={h.z + side.z * 0.75 - 0.45} fontSize={10 * units} textAnchor="middle">
+                      {`Array ${i + 1} · ${h.count}`}
+                    </text>
+                  </g>
+                );
+              })}
+              {tool === 'select' &&
+                selected &&
+                vertices.map((p, i) => {
+                  const aim = isAimHandle({ ...selected, node: i });
+                  const centre = wall?.frame ?? hang;
+                  return (
+                    <g
+                      key={i}
+                      data-item={selected.kind}
+                      data-id={selected.id}
+                      data-node={i}
+                      aria-label={aim ? 'Aim handle' : selected.kind === 'wall' ? 'Width handle' : `Handle ${i + 1}`}
+                      className={`sd-handle ${aim ? 'sd-aim-handle' : ''}`}
+                    >
+                      {aim && centre && <line className="sd-aim-line" x1={centre.x} y1={centre.z} x2={p.x} y2={p.z} />}
+                      <circle className="sd-handle-hit" cx={p.x} cy={p.z} r={11 * units} />
+                      <circle
+                        className={selected.node === i ? 'sd-current-node' : ''}
+                        cx={p.x}
+                        cy={p.z}
+                        r={(aim ? 5.2 : 4.3) * units}
+                      />
+                    </g>
+                  );
+                })}
               {tool === 'platform' && drag && !drag.pan && (
                 <rect
                   className="sd-draft"
@@ -718,8 +1152,8 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                   height={Math.abs(drag.at.z - drag.origin.z)}
                 />
               )}
-              {tool === 'path' && points.length > 0 && (
-                <g className="sd-path-draft">
+              {(tool === 'path' || tool === 'span') && points.length > 0 && (
+                <g className={tool === 'span' ? 'sd-path-draft sd-span-draft' : 'sd-path-draft'}>
                   <polyline points={pointString(hover ? [...points, hover] : points)} />
                   {points.map((p, i) => (
                     <circle key={i} cx={p.x} cy={p.z} r={4 * units} />
@@ -739,7 +1173,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
               <button
                 aria-label="Fit plan"
                 title="Fit plan"
-                onClick={() => setView(frameDesign(draft, aspect))}
+                onClick={() => setView(frameDesign(draft, aspect, stageDraft))}
               >
                 <Maximize />
               </button>
@@ -747,7 +1181,8 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
           </section>
           <aside className="sd-inspector">
             <h3>
-              {tool === 'path' ? 'Draw truss path' : tool === 'platform' ? 'Draw platform' : 'Selection'}
+              {tool === 'path' ? 'Draw truss path' : tool === 'platform' ? 'Draw platform' : tool === 'span' ? 'Draw layout truss'
+                : tool === 'wall' ? 'Place screen' : tool === 'hang' ? 'Place speaker hang' : tool === 'prop' ? 'Place layout prop' : 'Selection'}
             </h3>
             {inspectedElevation !== undefined && <p>
               {draft.venue === 'club' ? 'Ceiling' : 'Rigging grid'} {gridHeight} m
@@ -795,6 +1230,31 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                 </button>
                 <button onClick={() => choose('select')}>Cancel drawing</button>
               </>
+            ) : tool === 'span' ? (
+              <>
+                <p>Layout trusses build in 3D and in the CAD plan. Convert one to a rig truss to hang fixtures on it.</p>
+                <Field label="Truss elevation" value={elevation} min={0} onChange={setElevation} />
+                <button onClick={() => choose('select')}>Cancel drawing</button>
+              </>
+            ) : tool === 'prop' ? (
+              <>
+                <label className="sd-field">
+                  <span>New prop type</span>
+                  <select aria-label="New prop type" value={propType} onChange={(e) => setPropType(e.target.value as LayoutProp['type'])}>
+                    <option value="inflatable">Inflatable</option>
+                    <option value="scenic">Scenic</option>
+                  </select>
+                </label>
+                <button onClick={() => choose('select')}>Cancel placing</button>
+              </>
+            ) : tool === 'wall' || tool === 'hang' ? (
+              <>
+                <p>{tool === 'wall'
+                  ? `Screens: ${walls.length} of ${MAX_STAGE_WALLS}. Each secondary screen can carry its own timed media cues.`
+                  : `${hangInfo.hangs.length} hangs.${hangInfo.authored ? '' : ' Adding one turns the rig arrays into authored hangs.'}`}</p>
+                {tool === 'wall' && <button onClick={() => addWall()}>Place at default position</button>}
+                <button onClick={() => choose('select')}>Cancel placing</button>
+              </>
             ) : (
               <>
                 <label className="sd-field">
@@ -804,11 +1264,8 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                     value={selectedKey}
                     onChange={(e) => {
                       const value = e.target.value;
-                      setSelected(
-                        value
-                          ? { kind: value.startsWith('p:') ? 'platform' : 'truss', id: value.slice(2) }
-                          : undefined,
-                      );
+                      const kind = KIND_BY_PREFIX[value.split(':')[0]];
+                      setSelected(value && kind ? { kind, id: value.slice(2) } : undefined);
                       setTool('select');
                     }}
                   >
@@ -827,10 +1284,39 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                         </option>
                       ))}
                     </optgroup>
+                    <optgroup label="Screens">
+                      {walls.map(({ wall: w, primary }) => (
+                        <option key={w.id} value={`w:${w.id}`}>
+                          {w.label ?? (primary ? 'Main LED wall' : w.id)}
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Speaker hangs">
+                      {hangInfo.hangs.map((h, i) => (
+                        <option key={i} value={`h:${i}`}>
+                          Array {i + 1} · {h.count} boxes
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Layout trusses">
+                      {spans.map((t, i) => (
+                        <option key={i} value={`s:${i}`}>
+                          Layout truss {i + 1} · {rounded(spanLength(t))} m
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Layout props">
+                      {layoutProps.map((p, i) => (
+                        <option key={i} value={`o:${i}`}>
+                          {p.type === 'inflatable' ? 'Inflatable' : 'Scenery'} {i + 1}
+                        </option>
+                      ))}
+                    </optgroup>
                   </select>
                 </label>
                 {platform || truss ? (
                   <>
+                    {replaced && <p className="sd-note">Hidden in 3D while “Replace rig layout” is on.</p>}
                     <label className="sd-field">
                       <span>Object name</span>
                       <NameField
@@ -933,12 +1419,12 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                         <Field
                           label="Vertex X"
                           value={vertex.x}
-                          onChange={(x) => commit(moveItem(draft, selected!, vertex, { ...vertex, x }))}
+                          onChange={(x) => commitDraft(moveItem(history.now, selected!, vertex, { ...vertex, x }, angleStep))}
                         />
                         <Field
                           label="Vertex Z"
                           value={vertex.z}
-                          onChange={(z) => commit(moveItem(draft, selected!, vertex, { ...vertex, z }))}
+                          onChange={(z) => commitDraft(moveItem(history.now, selected!, vertex, { ...vertex, z }, angleStep))}
                         />
                       </div>
                     )}
@@ -946,10 +1432,27 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
                       Delete {platform ? 'platform' : 'truss'}
                     </button>
                   </>
+                ) : wall || hang || span || prop ? (
+                  stageInspector()
                 ) : (
-                  <p>
-                    {platforms.length} platforms · {draft.trussPods.length} trusses
-                  </p>
+                  <>
+                    <p>{counts}</p>
+                    <label className="sd-check">
+                      <input
+                        type="checkbox"
+                        aria-label="Replace rig layout"
+                        checked={replaced}
+                        onChange={(e) => commitStage(setLayoutReplace(draft, stageDraft, e.target.checked))}
+                      />
+                      <span>Replace rig layout</span>
+                    </label>
+                    <p className="sd-note">
+                      {replaced
+                        ? 'The rig’s decks, trusses, floor effects and stock arrays are hidden; only the layout below builds in 3D and in the CAD plan.'
+                        : 'Layout trusses, hangs and props add to the rig.'}
+                    </p>
+                    <button onClick={() => addWall()}>Add screen</button>
+                  </>
                 )}
               </>
             )}
@@ -957,7 +1460,7 @@ export function StageDesigner({ rig, onChange, onClose }: EditorProps) {
               className="sd-new"
               onClick={() => {
                 const blank = createBlankDesign(draft);
-                commit(blank, true);
+                commitDraft({ rig: blank, stage: undefined }, true);
                 choose('select');
                 setSelected(undefined);
                 setView(frameDesign(blank, aspect));

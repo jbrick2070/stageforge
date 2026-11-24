@@ -1,19 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
-import { Monitor, Trash2, Upload } from 'lucide-react';
+import { Crosshair, Monitor, Trash2, Upload } from 'lucide-react';
 import type { NativeStage } from '../data/showFile';
 import type { SecondaryScreenEvent } from '../data/studioGeometry';
-import { timecode } from './ShowFiles';
+import { timecode } from '../data/transportGlance';
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp|avif)$/i;
 
 export function SecondaryScreenCues({
   stage,
   playheadMs,
+  readPlayhead,
   onApplyEvent,
   onRemoveEvent,
 }: {
   stage?: NativeStage;
   playheadMs: number;
+  /** Exact take position (ms) at click time; `playheadMs` only refreshes every few frames while playing. */
+  readPlayhead?: () => number;
   onApplyEvent: (event: SecondaryScreenEvent, file?: File) => void;
   onRemoveEvent: (target: string, atMs: number) => void;
 }) {
@@ -47,6 +50,12 @@ export function SecondaryScreenCues({
   }, [activeTarget]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!walls.length) return null;
+
+  const fillFromPlayhead = () => {
+    const ms = Math.max(0, Math.round(readPlayhead?.() ?? playheadMs));
+    setTimeSec(String(Number((ms / 1000).toFixed(3))));
+    setError('');
+  };
 
   const commit = () => {
     const at = Number(timeSec);
@@ -145,18 +154,29 @@ export function SecondaryScreenCues({
       )}
 
       <div className="grid grid-cols-3 gap-1 text-[10px]">
-        <label className="grid gap-0.5 text-zinc-300">
+        <div className="grid gap-0.5 text-zinc-300">
           <span>Cue time (s)</span>
-          <input
-            type="number"
-            aria-label="Wall cue time (s)"
-            min={0}
-            step={0.1}
-            value={timeSec}
-            onChange={e => setTimeSec(e.currentTarget.value)}
-            className="w-full rounded bg-zinc-900 border border-white/15 px-1 py-0.5 font-mono-tech text-zinc-100"
-          />
-        </label>
+          <div className="flex gap-0.5 min-w-0">
+            <input
+              type="number"
+              aria-label="Wall cue time (s)"
+              min={0}
+              step={0.1}
+              value={timeSec}
+              onChange={e => setTimeSec(e.currentTarget.value)}
+              className="w-full min-w-0 rounded bg-zinc-900 border border-white/15 px-1 py-0.5 font-mono-tech text-zinc-100"
+            />
+            <button
+              type="button"
+              aria-label="Use playhead"
+              title={`Use playhead (${timecode(playheadMs)})`}
+              onClick={fillFromPlayhead}
+              className="shrink-0 px-1 rounded bg-fuchsia-500/15 hover:bg-fuchsia-500/30 border border-fuchsia-400/40 text-fuchsia-200 cursor-pointer"
+            >
+              <Crosshair className="w-3 h-3" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
         <label className="grid gap-0.5 text-zinc-300">
           <span>Action</span>
           <select

@@ -872,6 +872,11 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (cinemaMode || designerRig || costModalOpen) setBump(EMPTY_BUMP);
   }, [cinemaMode, designerRig, costModalOpen]);
+  // Every cue the take fires; the console draws them all as scrubber markers.
+  const takeCues = useMemo(() => (timeline.timeline?.events ?? [])
+    .filter((e): e is TimelineEvent & { cueId: string } => typeof e.cueId === 'string')
+    .map(e => ({ atMs: e.atMs, cueId: e.cueId, name: cues.find(c => c.id === e.cueId)?.name ?? e.cueId })),
+  [timeline.timeline, cues]);
   return (
     <main data-cinema={cinemaMode} data-demo-blackout={demoOpeningBlack} className="stage-workstation relative w-screen h-screen bg-black overflow-hidden">
       {/* Full-Viewport HQ 3D WebGL2 Canvas */}
@@ -1002,10 +1007,16 @@ export const App: React.FC = () => {
       )}
 
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
-      {designerRig && <StageDesigner rig={designerRig} onClose={() => setDesignerRig(null)} onChange={(design, replacing) => {
+      {designerRig && <StageDesigner rig={designerRig} stage={studioStage} onClose={() => setDesignerRig(null)} onChange={(design, stage, replacing) => {
         const next = normalizeDesign(design);
-        if (replacing && !confirmDiscardStage()) return;
-        if (replacing) installStage();
+        // A new blank design replaces the authored overlay and its wall cues, even if the user then
+        // drew new screens or hangs; ask first, and keep the designer open if they decline.
+        if (replacing && !confirmDiscardStage()) return false;
+        // The designer edits walls, hangs and layout alongside the rig; its stage keeps existing wall cues.
+        const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
+        installStage(stage);
+        const nextEvents = stage?.screenEvents ?? [];
+        if (hadEvents || nextEvents.length) timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
         applyRig(next, true);
         previewRig();
         setDesignerRig(null);
@@ -1088,6 +1099,8 @@ export const App: React.FC = () => {
           onHold={() => setFollow('held')}
           follow={follow}
           stage={studioStage}
+          mainScreen={media.screen}
+          missingMedia={missing}
           onApplyWallCue={(event: SecondaryScreenEvent, file?: File) => {
             if (file && event.kind !== 'none') registerAsset(event.kind, file);
             const nextStage = upsertSecondaryScreenEvent(rig, nativeStage.current, event);
@@ -1116,10 +1129,8 @@ export const App: React.FC = () => {
             durationMs: Math.max(timeline.timeline?.durationMs ?? 0, studioStage?.screenEvents.at(-1)?.atMs ?? 0),
             hasTake: !!timeline.timeline && (timeline.timeline.events.length > 0 || timeline.timeline.durationMs > 0),
             canResume: timeline.canResume,
-            cues: (timeline.timeline?.events ?? [])
-              .filter((e): e is TimelineEvent & { cueId: string } => typeof e.cueId === 'string')
-              .slice(0, 24)
-              .map(e => ({ atMs: e.atMs, cueId: e.cueId, name: cues.find(c => c.id === e.cueId)?.name ?? e.cueId })),
+            cues: takeCues,
+            playhead: () => timeline.playhead(),
             record: () => {
               if (!timeline.timeline?.events.length || window.confirm('Replace the recorded take in this session?')) {
                 timeline.record();

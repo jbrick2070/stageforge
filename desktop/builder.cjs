@@ -9,7 +9,10 @@ module.exports = {
   },
   asar: true,
   files: ['**/*'],
-  npmRebuild: false,
+  // Vite already bundles the renderer and the app has no runtime node_modules. Without this,
+  // electron-builder falls back to the repo root (desktop/build/app declares no dependencies) and
+  // packs every root production dependency into app.asar. Resolving false also skips npm rebuild.
+  beforeBuild: async () => false,
   win: {
     target: 'portable',
     icon: 'desktop/resources/icon.png',

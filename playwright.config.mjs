@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
-const PORT = 4179;
+// PW_PORT lets parallel runs (or a busy 4179) use another dev-server port.
+const PORT = Number(process.env.PW_PORT) || 4179;
 
 export default defineConfig({
   testDir: 'tests/e2e',

@@ -1,12 +1,10 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { NativeStage, ShowMedia, ShowTimeline, TimelineEvent } from '../data/showFile';
+import { timecode } from '../data/transportGlance';
 
 export type FileAction = 'show' | 'bundle' | 'rig' | 'dxf' | 'glb' | 'csv';
-export const timecode = (ms: number) => {
-  const seconds = Math.floor(ms / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}.${String(Math.floor(ms % 1000 / 100))}`;
-};
+export { timecode };
 
 function describe(event: TimelineEvent, cueNames: Map<string, string>) {
   const parts: string[] = [];
