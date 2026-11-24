@@ -27,7 +27,7 @@ The user is asleep. `scripts/overnight.ps1` runs you directly on `main`, with ev
 
 ## Self-directed rounds
 
-After Sprint 3, each round works like this:
+After Sprint 3, each round works like this. **Work the Realism backlog below first, one item per round, before anything else.** The user wants people to feel like they are running a real show.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -233,6 +233,32 @@ Only if the user asks:
 - DXF import into the plan editor, with a small owned reader for LINE, LWPOLYLINE and INSERT;
 - block-aware DXF export;
 - MVR-xchange (mDNS + TCP).
+
+## Realism backlog (priority for self-directed rounds)
+
+Goal: people should feel like they are running a real rig, with real equipment, real limits and real paperwork. Ask Opus 5.5 to design each item before you build it.
+
+**How to source it, for every item below:**
+- Use real manufacturers' published datasheets for numbers: weight, power draw, beam angle, lumens, DMX modes and channel counts, throw, IP rating.
+- Open Fixture Library data is MIT; keep its copyright notice.
+- Do not copy datasheet text, photos or logos.
+- Use model names only to identify the product.
+- Don't bundle manufacturer GDTF files unless their licence allows it.
+- Cite each source in `docs/equipment.md` and mark any value you could not verify as `unverified`.
+
+1. **Real equipment catalogue.** Replace generic fixtures with a catalogue of real, well-known models across categories: spot, beam, wash and profile moving heads, LED PARs and battens, strobes, blinders, followspots, LED screens and panels, hazers and foggers, CO2 jets. Each entry carries manufacturer, model, weight, power, optics and its real DMX modes. Keep the existing generic fixtures working so v1–v3 shows still load, and map old types to catalogue defaults.
+2. **Real laser modules.** Add real laser products across power classes, with:
+   - colour (single, RGB), power in watts, scan speed in kpps, and beam and graphic modes;
+   - the common DMX laser modes;
+   - ILDA basics: a safe, size-capped reader for `.ild` frame files so people can load real laser shows;
+   - IEC 60825 and audience-scanning safety: a clear indicator when a laser aims at the audience, a minimum height over heads, and a beam-scan-off warning, shown as design guidance.
+3. **Equipment inventory and rental list.** An inventory panel for the show: counts by model, total weight, total power draw, universes and channels used, and a printable and CSV equipment list. Optionally limit the rig to what a "shop" has in stock, so people hit real quantity limits.
+4. **Rigging and power realism.** Real truss sections and sizes, chain-motor ratings, and per-point load with a clear over-limit warning (a simplified static check, labelled as guidance and not engineering sign-off). Dimmer and circuit groups, three-phase load balance, and a total power report.
+5. **Show paperwork.** Patch sheet, instrument schedule, channel hookup, power and load reports, and a cue sheet, as printable pages and CSV. Keep exports consistent with MVR and DXF.
+6. **Console feel.** A small, familiar cue-list and playback view with cue numbers, fade times and go and back controls, in the style of real consoles.
+7. **Fixture behaviour polish.** Pan and tilt speed limits, zoom and focus feel, colour mixing and dimmer curves, and gobo and prism looks, tuned to each catalogue entry's real specs where known.
+
+Keep each item shippable on its own, with tests, docs and a short note in the Overnight log.
 
 ## Kickoff
 
