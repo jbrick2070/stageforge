@@ -578,3 +578,60 @@ agy -i "Read HANDOFF.md and run Sprint 0, following its loop. Stop after the loc
   - Zero new runtime dependencies added.
 - **Leftovers / next up:**
   - Next up: **Realism backlog item 1b** (3D procedural models and PBR textures for every catalogue item, with phone/WebP/KTX2 asset size budget, instancing, lazy loading, and `docs/assets.md`).
+
+
+### 2026-11-24 05:01 PST — Self-directed Round 2 (Realism backlog 1b): 3D hardware models, PBR trim-sheet textures, render tiers & shared equipment symbols (`c7f35a5`)
+
+- **Consults & QA runs:**
+  - Opus 5.5 (`claude-opus-5-5`) available and consulted (`round-2-design.md` → `round-2-design-reply.md`) to rank the top five next improvements across phone usability, correctness, performance, accessibility, stage-design realism, open-standards roadmap (Sprint 4), and test gaps, and to design Realism 1b.
+    - *Opus 5.5 top-5 ranking:* (1) Realism 1b procedural 3D hardware models, deterministic PBR trim-sheet atlas, `releaseGroup` cache fix, hung/floor 2D plan symbols, and picker/manifest thumbnails; (2) Phone render tier (`'high' | 'low'`) with DPR/texture/LOD budgets and `renderer.info` probe assertions (folded into 1b); (3) Photosensitivity guard (WCAG 2.3.1 ≤ 3 Hz preview flash cap under `prefers-reduced-motion` / toggle without touching live DMX); (4) Geometry, pivot, determinism, and GLB visual invariant tests (folded into 1b); (5) Additive MVR fixture manufacturer/model identity mapping ahead of Sprint 4 DXF import.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) QA pass 1 on all Round 2 changes (0 Critical, 2 High, 6 Medium, 7 Low), followed by verification, targeted fixes, and regression tests.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) follow-up QA pass 2 on the Step-4 fixes (0 Critical, 0 High, 0 Medium, 4 Low); fixed/documented Low items in `docs/assets.md`.
+- **What shipped:**
+  - **Deterministic procedural PBR trim-sheet atlas & Node-safe materials (`src/engine/prng.ts`, `src/engine/hardwareMaterials.ts`, `src/engine/geometryBuilders.ts`):**
+    - Added Mulberry32 deterministic PRNG (`mulberry32`) and pure typed-array pixel generators (`generateHardwareAtlasPixels`, `generateDeckPixels`) so both browser WebGL and Node unit tests execute identical byte-deterministic textures.
+    - Built an 8-band trim-sheet PBR atlas (512² high / 256² low albedo + packed G=roughness/B=metalness + 256²/128² tangent-space normal map) covering black powder-coat, brushed dark anodised aluminium, cast alloy, matte rubber, extruded heat-sink fins, rear powerCON/5-pin XLR connector plate, symmetric OLED status strip, and IEC hazard stripe / multi-cell optic baffle — sharing **one** `hardwareBody` and **one** glossy `hardwareGlass` `MeshStandardMaterial` across all fixtures (keeping per-fixture emissive lens materials private).
+    - Replaced `Math.random()` stage deck scuffs with seeded `STAGE_DECK_SEED`, added `typeof document === 'undefined'` Node fallback and `disposeSharedMaterials()`, and added `resolveRenderTier()` / `detectRenderTier()` (auto-low on phones & constrained coarse-pointer devices while keeping standard desktop laptops like 1366×768 on `'high'`), plus resize `renderer` + `composer` pixel-ratio updates (Engine L9).
+  - **Procedural 3D models & GPU geometry cache for all 30 catalogue entries (`src/engine/fixtureModels.ts`, `src/engine/focusAim.ts`, `src/engine/beamPools.ts`, `src/engine/shaders.ts`, `src/engine/StageEngine.ts`):**
+    - Added data-driven `MODEL_SPECS` and family builders for all 30 catalogue models across all 14 `CatalogBodyFamily` types (moving beams/spots/profiles/washes/followspots with distinct barrels/snouts/IP65 fins/multi-cell faces/handles, LED PARs, 16/20-cell linear battens, GLP JDC1 vs Atomic 3000 strobes, Molefay vs STRIKE 4 2×2 blinders, ROE BP2/CB5 rear LED cabinet tiles, MDG/Look hazers, Martin/Look foggers, MagicFX CO2Jet II, and KVANT laser heads), with separate hung clamps vs floor rubber feet and strict high/low triangle budgets.
+    - Added `FixtureModelCache` with `sharedResources` protection in `StageEngine.releaseGroup()` (eliminating premature cached-geometry disposal) and `beginRebuild()` / `endRebuild()` pruning of stale custom-sized LED cabinet-back tiles.
+    - Added instanced rear LED cabinet tile grids (`InstancedMesh`, 1 draw call per wall) behind flat main LED walls, IMAG side wings, and authored cabinet screens.
+    - Extended `focusAim.ts` (`aimAngles(..., pivot = HEAD_PIVOT)` and `aimTiltOnly`) so catalogue models aim from their true tilt pivot, motorized battens tilt cleanly without panning, fixed PARs honour explicit focus points and manual aim while staying stationary during automated chases, and legacy fixtures (no `catalogId`) remain bit-identical (`HEAD_PIVOT`, pan-tilt).
+    - Wired per-model `lensOffsetY` through `VOLUMETRIC_BEAM_VERT` (`uLensOffset`) and `BeamPools` (`beam.userData.lensOffsetY`) so aerial cones and floor pools originate accurately on every model's emission face.
+    - Added `?probe` `renderStats()` and `rebuildRig()` diagnostics in `StageEngine.ts` / `App.tsx`.
+  - **GLB export optimisation & safety cap (`src/engine/stageGlb.ts`):**
+    - Preserved optional `catalogId` in `nameFixtureUnit()` `userData`, stripped `normalMap` on cloned export materials, passed `maxTextureSize: 512`, and capped expanded LED cabinet-back instances at `MAX_GLB_CABINET_BACK_INSTANCES = 2000` (recording `scene.userData.cabinetBacksOmitted = true` above cap).
+  - **Unified SVG/DXF symbols & UI thumbnails (`src/data/equipmentSymbols.ts`, `src/components/EquipmentThumbnail.tsx`, `src/components/StageDesigner.tsx`, `src/components/StageDesigner.css`, `src/data/stageDxf.ts`, `src/components/EquipmentPicker.tsx`, `src/data/productionEstimator.ts`, `src/components/CostEstimatorModal.tsx`):**
+    - Created pure `equipmentSymbols.ts` mapping all 14 body families (+ LED panel aspect ratios) to top-down plan and front-elevation vector silhouettes.
+    - Added memoized non-interactive fixture plan symbols (`data-testid="plan-fixture-symbols"`, `pointer-events: none`, `aria-hidden="true"`) with a toolbar `Fixtures` visibility toggle in `StageDesigner.tsx`, positioned via `placeFixtures()`.
+    - Upgraded `stageDxf.ts` to draw family plan symbols while keeping `SF_<TYPE>` block names and legacy 3-string XDATA untouched for legacy fixtures, adding distinct family block names + `catalogId` XDATA when catalogue models differ in body family.
+    - Added `<EquipmentThumbnail>` silhouettes to `EquipmentPicker` (trigger, cards) and `CostEstimatorModal` (equipment manifest rows via optional `CostLineItem.body`/`catalogId`).
+  - **Docs & tests (+8 unit tests, 144 → 152; expanded browser e2e assertions):**
+    - Added `docs/assets.md` (full MIT provenance table, PRNG seeds, 8-band trim-sheet layout, high/low triangle/draw-call/VRAM/GLB budgets) and linked it from `docs/equipment.md`.
+    - Added `tests/fixture-models.test.mjs` (all 30 models × 2 tiers × hung/floor triangle/pivot/clamp/feet contracts, Node SSR & byte-determinism, focus-aim & tilt-only convergence, cache reuse & cabinet-back pruning, GLB normalMap/cap, DXF family blocks, and all Pass 1 QA regressions) and extended `tests/e2e/equipment-catalog.spec.mjs` (picker/manifest thumbnails, 2D plan fixture symbols toggle, live GPU draw-call/triangle budgets, and 10-rebuild geometry/texture leak check).
+- **Gate results (final code):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**152/152**)
+  - `npm run build`: PASS (`index-*.js` 398.45 kB gzipped; zero new asset fetches)
+  - `npm run desktop:win`: PASS (portable exe built; zero new dependencies; SPDX gate green)
+  - `npm run test:desktop`: PASS (**8/8**, 10.0 s)
+  - `npx playwright test --workers=1`: PASS (**42/42**, 6.4 m)
+  - `git status --short`: clean
+- **QA findings verified and fixed:**
+  - *Pass 1 H1 & L2:* Fixed `mapGeometryUvToBand` wrapping exact `1.0` UVs to `0.0` (which collapsed `BoxGeometry` faces to a single texel), preserving `[0, 1]` endpoints and increasing mip-safe band padding to 12% (+regression test).
+  - *Pass 1 H2:* Guarded `MODEL_SPECS` and `FAMILY_SYMBOLS` lookups with `Object.hasOwn` so hostile prototype keys like `catalogId: "constructor"` fall back safely instead of throwing (+regression test).
+  - *Pass 1 M1:* Passed `uLensOffset` uniform into `VOLUMETRIC_BEAM_VERT` and `beam.userData.lensOffsetY` into `BeamPools.add()` so non-legacy beam pools originate at each model's real lens face (+regression test).
+  - *Pass 1 M2:* Replaced `min(innerWidth, innerHeight) <= 768` with `resolveRenderTier()` so standard 1366×768 fine-pointer laptops stay `'high'` while phones and constrained coarse-pointer devices get `'low'` (+regression test).
+  - *Pass 1 M3:* Allowed `motion: 'fixed'` PARs to aim onto explicit focus marks and manual angles while holding static orientation during automated chases.
+  - *Pass 1 M4 & L3:* Added `beginRebuild()` / `endRebuild()` cabinet-back tile pruning on `FixtureModelCache` (preventing unbounded growth during wall-size drags) and removed unused unsafe `setTier()` (+30-resize pruning regression test).
+  - *Pass 1 M5:* Moved textured `HazardAndCells` optic strips/faces (`stub-cells` and low-tier `bar-cells`) into textured `headParts` (`hardwareBody`) rather than untextured `hardwareGlass` (+regression test).
+  - *Pass 1 M6:* Added `yOffset` to `addClampParts()` so hung static fixture clamps seat cleanly on top of the yoke crossbar (`mountOffsetY`), and derived `StageEngine` hung offsets from `mountOffsetY` (+regression test).
+  - *Pass 1 L1, L4, L5 & Pass 2 L1–L3:* Synced `composer.setPixelRatio(dpr)` on init/resize, memoized `placeFixtures(shownRig)` in `StageDesigner.tsx`, and updated `docs/assets.md` draw-call counts (`≤ 7` moving / `≤ 6` static), GLB cap metadata note, and construction-time render tier note.
+- **QA findings rejected or deferred (with reasons):**
+  - *Pass 2 L4 (unknown `catalogId` strings in DXF XDATA):* Verified already sanitized — `rigImport.ts` restricts `catalogId` to `CATALOG_ID_PATTERN` (`/^[a-z0-9][a-z0-9-]{1,63}$/`) and `stageDxf.ts` `addProperty()` runs every string through `labelText()` (control-char stripping, `\U+XXXX` escaping, 255-byte chunking).
+  - *Pass 2 L2 (UI toast for >2,000-tile GLB `cabinetBacksOmitted`):* Deferred to keep `exportStageGlb()` signature (`Promise<Blob>`) unchanged; documented in `docs/assets.md`.
+- **Design decisions:**
+  - Chose 100% procedural Three.js models + 1 shared deterministic PBR trim-sheet atlas (`hardwareBody` + `hardwareGlass`) over external glTF/image files so transfer size stays tiny for phones on GitHub Pages, Electron CSP & offline mode need zero exceptions, licences stay pure repo MIT, and every geometry/texture invariant is unit-testable in Node (per Opus 5.5 consult).
+  - Kept legacy fixtures without `catalogId` locked to `HEAD_PIVOT` (`0.46 m`) and `pan-tilt` motion while giving them realistic procedural hardware meshes so v1–v5 shows and focus-point tests remain bit-identical.
+- **Leftovers / next up:**
+  - Next up: **Realism backlog item 2** (Real laser modules: real power classes, colour/watts/kpps/DMX modes, safe size-capped `.ild` ILDA frame reader, and IEC 60825 audience-scanning safety guidance; plus optional WCAG 2.3.1 photosensitivity preview flash guard).
