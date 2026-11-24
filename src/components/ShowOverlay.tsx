@@ -1,14 +1,17 @@
 import { useEffect, useRef } from 'react';
 import { Gamepad2 } from 'lucide-react';
-import { DEMO_TOTAL_BARS, DEMO_TOTAL_STEPS, type DemoPosition } from '../data/demoShow';
+import { DEMO_TOTAL_BARS, DEMO_TOTAL_STEPS } from '../data/demoShow';
+import { useLive, type LiveStore } from '../state/liveTelemetry';
+import type { AudioMetrics } from '../types/show';
 
 interface Props {
-  demo?: DemoPosition;
+  audioStore: LiveStore<AudioMetrics>;
   controller: 'connected' | 'waiting' | 'unsupported';
   cinema: boolean;
 }
 
-export function ShowOverlay({ demo, controller, cinema }: Props) {
+export function ShowOverlay({ audioStore, controller, cinema }: Props) {
+  const demo = useLive(audioStore).demo;
   const menu = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const outside = (e: PointerEvent) => {

@@ -6,6 +6,14 @@ let pending;
 const isBytes = value => ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Uint8Array]';
 const isBuffer = value => Object.prototype.toString.call(value) === '[object ArrayBuffer]';
 
+function deliver(listener, args) {
+  try {
+    listener(...args);
+  } catch {
+    // Isolate throwing listeners so remaining subscribers still receive the command.
+  }
+}
+
 ipcRenderer.on('stageforge:rig-command', (_event, command, rawSource) => {
   // Hand the renderer a Uint8Array: contextBridge copies typed arrays reliably.
   const binary = command === 'openBundle' || command === 'openMvr';
@@ -14,7 +22,7 @@ ipcRenderer.on('stageforge:rig-command', (_event, command, rawSource) => {
   if (!opening && !['export', 'show', 'bundle', 'dxf', 'glb', 'csv', 'mvr'].includes(command)) return;
   const args = opening ? [command, source] : [command];
   if (!listeners.size) pending = args;
-  else for (const listener of listeners) listener(...args);
+  else for (const listener of [...listeners]) deliver(listener, args);
 });
 
 contextBridge.exposeInMainWorld('stageforgeDesktop', {
@@ -24,7 +32,7 @@ contextBridge.exposeInMainWorld('stageforgeDesktop', {
     if (pending) {
       const args = pending;
       pending = undefined;
-      listener(...args);
+      deliver(listener, args);
     }
     return () => listeners.delete(listener);
   },

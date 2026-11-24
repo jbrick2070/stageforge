@@ -4,14 +4,15 @@ import {
   Play, Radio, RotateCcw, SlidersHorizontal, Sparkles, Upload, Wrench, FolderOpen,
 } from 'lucide-react';
 import { AudioMetrics, CameraPreset, MusicRef } from '../types/show';
+import { useLive, type LiveStore } from '../state/liveTelemetry';
 
 interface TopBarProps {
-  fps: number;
+  fpsStore: LiveStore<number>;
   fixtureCount: number;
   laserCount: number;
-  audio: AudioMetrics;
-  linkedMusic: MusicRef;
-  trackDuration: number;
+  audioStore: LiveStore<AudioMetrics>;
+  getLinkedMusic: () => MusicRef;
+  getTrackDuration: () => number;
   onSeekTrack: (seconds: number) => void;
   volume: number;
   bpm: number;
@@ -57,12 +58,17 @@ function clockTime(seconds: number) {
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
-  fps, fixtureCount, laserCount, audio, linkedMusic, trackDuration, onSeekTrack, volume, bpm, openingBar, blackout, autoDirector, audioReactive,
+  fpsStore, fixtureCount, laserCount, audioStore, getLinkedMusic, getTrackDuration, onSeekTrack, volume, bpm, openingBar, blackout, autoDirector, audioReactive,
   activeCamera, rigDrawerOpen, dmxDrawerOpen, costModalOpen, oneNightCostLabel,
   cinemaMode, onTogglePlay, onStartDemo, onDesignStage, onShowFiles, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
   onToggleAutoDirector, onToggleAudioReactive, onSelectCamera, onToggleRigDrawer,
   onToggleDmxDrawer, onToggleCostModal, onToggleCinemaMode,
 }) => {
+  const fps = useLive(fpsStore);
+  const audio = useLive(audioStore);
+  const linkedMusic = getLinkedMusic();
+  const trackDuration = getTrackDuration();
+  const safeTrackDuration = Number.isFinite(trackDuration) && trackDuration > 0 ? trackDuration : 0;
   const fileRef = useRef<HTMLInputElement>(null);
   const audioPanelRef = useRef<HTMLDivElement>(null);
   const audioButtonRef = useRef<HTMLButtonElement>(null);
@@ -145,10 +151,10 @@ export const TopBar: React.FC<TopBarProps> = ({
                 <button className="transport-btn" onClick={onToggleMic} aria-pressed={audio.source === 'mic'}><Mic /> Mic input</button>
               </div>
               {linkedMusic.kind === 'file' && <>
-                {trackDuration > 0 && <label className="audio-level"><span>Position</span>
-                  <input aria-label="Track position" type="range" min={0} max={trackDuration} step={0.1}
-                    value={linkedMusic.offsetSeconds ?? 0} onChange={e => onSeekTrack(Number(e.target.value))} />
-                  <output>{clockTime(linkedMusic.offsetSeconds ?? 0)} / {clockTime(trackDuration)}</output>
+                {safeTrackDuration > 0 && <label className="audio-level"><span>Position</span>
+                  <input aria-label="Track position" type="range" min={0} max={safeTrackDuration} step={0.1}
+                    value={Math.min(safeTrackDuration, Math.max(0, linkedMusic.offsetSeconds ?? 0))} onChange={e => onSeekTrack(Number(e.target.value))} />
+                  <output>{clockTime(linkedMusic.offsetSeconds ?? 0)} / {clockTime(safeTrackDuration)}</output>
                 </label>}
                 <button className="transport-btn" onClick={() => onSeekTrack(0)}><RotateCcw /> Restart 0:00</button>
               </>}

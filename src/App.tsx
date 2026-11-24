@@ -9,10 +9,10 @@ import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
-import { makeShowFile, parseShowFile, referencedFiles, type NativeStage } from './data/showFile';
+import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, referencedFiles, type NativeStage } from './data/showFile';
 import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
 import type { BundleAsset } from './data/showBundle';
-import { isCustomMainWall, pruneNativeStage, removeSecondaryScreenEvent, upsertSecondaryScreenEvent, type SecondaryScreenEvent } from './data/studioGeometry';
+import { isCustomMainWall, MAX_WALL_CUE_MS, pruneNativeStage, removeSecondaryScreenEvent, upsertSecondaryScreenEvent, type SecondaryScreenEvent } from './data/studioGeometry';
 import { ShowFiles, type FileAction } from './components/ShowFiles';
 import { CueListEditor } from './components/CueListEditor';
 import { useShowTimeline } from './input/useShowTimeline';
@@ -21,8 +21,10 @@ import { patchCsv } from './data/patchCsv';
 import { StageDesigner } from './components/StageDesigner';
 import { BottomConsole } from './components/BottomConsole';
 import { RigBuilderDrawer } from './components/RigBuilderDrawer';
-import { DmxMonitorDrawer } from './components/DmxMonitorDrawer';
+import { DmxMonitorDrawer, type DmxSnapshot } from './components/DmxMonitorDrawer';
 import { CostEstimatorModal } from './components/CostEstimatorModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { createLiveStore } from './state/liveTelemetry';
 import { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } from './data/presets';
 import { calculateProductionEstimate, formatUSD } from './data/productionEstimator';
 import { applyDeskPatch } from './data/movingGroups';
@@ -64,6 +66,15 @@ const NO_SCREEN: ScreenRef = { target: 'main-led', kind: 'none', name: '', playi
 
 const PRESET_JSON = new Set(Object.values(RIG_TEMPLATES).map((t) => JSON.stringify(t)));
 const isPristinePreset = (rig: RigConfig) => PRESET_JSON.has(JSON.stringify(rig));
+
+const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv|mkv)$/i;
+const EMPTY_DMX: DmxSnapshot = { u1: new Uint8Array(512), u2: new Uint8Array(512) };
+const INITIAL_DISCRETE_AUDIO = {
+  source: EMPTY_AUDIO.source as AudioMetrics['source'],
+  playing: false,
+  openingBlack: false,
+  openingBar: undefined as number | undefined,
+};
 
 function readSavedDesign(): RigConfig | null {
   try {
@@ -111,14 +122,21 @@ export const App: React.FC = () => {
   const [activeCueId, setActiveCueId] = useState<string | null>(null);
   const [cueModified, setCueModified] = useState(false);
 
-  const [audioMetrics, setAudioMetrics] = useState<AudioMetrics>(EMPTY_AUDIO);
+  const live = useMemo(() => ({
+    fps: createLiveStore(60),
+    audio: createLiveStore<AudioMetrics>(EMPTY_AUDIO),
+    dmx: createLiveStore<DmxSnapshot>(EMPTY_DMX),
+  }), []);
+  const [audioDiscrete, setAudioDiscrete] = useState(INITIAL_DISCRETE_AUDIO);
   const [volume, setVolume] = useState(0.72);
-  const [fps, setFps] = useState(60);
   const [activeCamera, setActiveCamera] = useState<CameraPreset>('foh');
   const [rigDrawerOpen, setRigDrawerOpen] = useState(false);
   const [dmxDrawerOpen, setDmxDrawerOpen] = useState(false);
   const [costModalOpen, setCostModalOpen] = useState(false);
   const [designerRig, setDesignerRig] = useState<RigConfig | null>(null);
+  const designerOpenRef = useRef(false);
+  designerOpenRef.current = !!designerRig;
+  const openRequestRef = useRef(0);
   const [filesOpen, setFilesOpen] = useState(false);
   const [cueEditor, setCueEditor] = useState(false);
   const [follow, setFollow] = useState<number | 'held' | null>(null);
@@ -141,10 +159,6 @@ export const App: React.FC = () => {
     window.matchMedia('(pointer: coarse) and (max-width: 700px), (pointer: coarse) and (max-height: 500px)').matches
   );
   const [toast, setToast] = useState<string | null>(null);
-  const [dmxSnapshot, setDmxSnapshot] = useState<{ u1: Uint8Array; u2: Uint8Array }>({
-    u1: new Uint8Array(512),
-    u2: new Uint8Array(512),
-  });
 
   const dmxOpenRef = useRef(false);
   dmxOpenRef.current = dmxDrawerOpen;
@@ -329,8 +343,10 @@ export const App: React.FC = () => {
   const nextCue = followingCue ?? cues[0];
   const previousCue = cues[currentIndex > 0 ? currentIndex - 1 : cues.length - 1];
   useEffect(() => {
-    if (typeof follow !== 'number' || !followingCue) return;
-    const id = window.setTimeout(() => triggerCue(followingCue), Math.max(0, follow - performance.now()));
+    if (typeof follow !== 'number' || !followingCue || replaying.current) return;
+    const id = window.setTimeout(() => {
+      if (!replaying.current) triggerCue(followingCue);
+    }, Math.max(0, follow - performance.now()));
     return () => window.clearTimeout(id);
   }, [follow, followingCue, triggerCue]);
 
@@ -343,45 +359,60 @@ export const App: React.FC = () => {
     audioEngineRef.current = audio;
     let idleMetrics: AudioMetrics | undefined;
 
-    const engine = new StageEngine(
-      container,
-      rig,
-      showState,
-      (dt) => audio.getMetrics(dt),
-      (metrics, curFps) => {
-        setFps(curFps);
-        if (metrics.playing || !idleMetrics || idleMetrics.source !== metrics.source ||
-          idleMetrics.trackName !== metrics.trackName || idleMetrics.demo?.step !== metrics.demo?.step) {
-          setAudioMetrics({ ...metrics, spectrum: new Float32Array(metrics.spectrum) });
-        }
-        idleMetrics = metrics.playing ? undefined : metrics;
-        if (dmxOpenRef.current) {
-          setDmxSnapshot({
-            u1: new Uint8Array(engine.dmxUniverse1),
-            u2: new Uint8Array(engine.dmxUniverse2),
-          });
-        }
-        if (replaying.current || !directorArmed.current) return;
-        if (metrics.demo) {
-          const position = metrics.demo;
-          const tick = Math.floor(position.step / 2);
-          if (autoDirRef.current && (metrics.playing || position.finished) && tick !== lastDemoTick.current) {
-            lastDemoTick.current = tick;
-            setActiveCueId(null);
-            setShowState(s => s.autoDirector ? applyDemoLighting(s, position) : s);
+    let engine: StageEngine;
+    try {
+      engine = new StageEngine(
+        container,
+        rig,
+        showState,
+        (dt) => audio.getMetrics(dt),
+        (metrics, curFps) => {
+          live.fps.set(curFps);
+          if (metrics.playing || !idleMetrics || idleMetrics.source !== metrics.source ||
+            idleMetrics.trackName !== metrics.trackName || idleMetrics.demo?.step !== metrics.demo?.step) {
+            live.audio.set({ ...metrics, spectrum: new Float32Array(metrics.spectrum) });
           }
-        } else if (autoDirRef.current && cuesRef.current.length > 0) {
-          const now = performance.now();
-          const intervalMs = metrics.playing ? 7500 : 6500;
-          if (now - lastAutoSwitchRef.current > intervalMs && (!metrics.playing || metrics.beat || now - lastAutoSwitchRef.current > intervalMs + 2000)) {
-            lastAutoSwitchRef.current = now;
-            autoCueIndexRef.current = (autoCueIndexRef.current + 1) % cuesRef.current.length;
-            triggerCue(cuesRef.current[autoCueIndexRef.current], true);
+          idleMetrics = metrics.playing ? undefined : metrics;
+          const openingBlack = !!metrics.demo && metrics.demo.step < DEMO_BLACKOUT_STEPS;
+          const openingBar = openingBlack ? metrics.demo!.bar + 1 : undefined;
+          setAudioDiscrete(prev =>
+            prev.source === metrics.source && prev.playing === metrics.playing &&
+            prev.openingBlack === openingBlack && prev.openingBar === openingBar
+              ? prev
+              : { source: metrics.source, playing: metrics.playing, openingBlack, openingBar }
+          );
+          if (dmxOpenRef.current) {
+            live.dmx.set({
+              u1: new Uint8Array(engine.dmxUniverse1),
+              u2: new Uint8Array(engine.dmxUniverse2),
+            });
           }
-        }
-      },
-      showToast
-    );
+          if (replaying.current || !directorArmed.current) return;
+          if (metrics.demo) {
+            const position = metrics.demo;
+            const tick = Math.floor(position.step / 2);
+            if (autoDirRef.current && (metrics.playing || position.finished) && tick !== lastDemoTick.current) {
+              lastDemoTick.current = tick;
+              setActiveCueId(null);
+              setShowState(s => s.autoDirector ? applyDemoLighting(s, position) : s);
+            }
+          } else if (autoDirRef.current && cuesRef.current.length > 0) {
+            const now = performance.now();
+            const intervalMs = metrics.playing ? 7500 : 6500;
+            if (now - lastAutoSwitchRef.current > intervalMs && (!metrics.playing || metrics.beat || now - lastAutoSwitchRef.current > intervalMs + 2000)) {
+              lastAutoSwitchRef.current = now;
+              autoCueIndexRef.current = (autoCueIndexRef.current + 1) % cuesRef.current.length;
+              triggerCue(cuesRef.current[autoCueIndexRef.current], true);
+            }
+          }
+        },
+        showToast
+      );
+    } catch (error) {
+      audio.dispose();
+      audioEngineRef.current = null;
+      throw error;
+    }
     engineRef.current = engine;
     // Read-only probe for browser tests: `?probe` exposes each head's beam axis.
     const probe = new URLSearchParams(window.location.search).has('probe');
@@ -446,7 +477,8 @@ export const App: React.FC = () => {
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (isTyping(e.target) || document.querySelector('dialog[open],[aria-modal=true]')) return;
-      if (e.code === 'Space' && e.target instanceof Element && e.target.closest('button,select,summary,input[type=color],input[type=checkbox]')) return;
+      if (e.target instanceof Element && e.target.closest('select,[role=listbox],[role=combobox]')) return;
+      if (e.code === 'Space' && e.target instanceof Element && e.target.closest('button,summary,input[type=color],input[type=checkbox]')) return;
       if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
 
       switch (e.code) {
@@ -555,7 +587,8 @@ export const App: React.FC = () => {
     lastDemoTick.current = -1;
     setActiveCueId(null);
     setShowState(opening);
-    setAudioMetrics({ ...EMPTY_AUDIO, playing: true, source: 'synth', trackName: ae.getStatus().trackName, demo });
+    live.audio.set({ ...EMPTY_AUDIO, playing: true, source: 'synth', trackName: ae.getStatus().trackName, demo });
+    setAudioDiscrete({ source: 'synth', playing: true, openingBlack: demo.step < DEMO_BLACKOUT_STEPS, openingBar: demo.bar + 1 });
     setToast(null);
   };
 
@@ -607,7 +640,7 @@ export const App: React.FC = () => {
   const handleToggleMic = async () => {
     const ae = audioEngineRef.current;
     if (!ae) return;
-    if (audioMetrics.source === 'mic') {
+    if (live.audio.get().source === 'mic') {
       ae.stopAll();
       expectedMusic.current = NO_MUSIC;
       showToast('Live Mic Stopped');
@@ -673,7 +706,7 @@ export const App: React.FC = () => {
     autoDirRef.current = next;
     lastDemoTick.current = -1;
     lastAutoSwitchRef.current = performance.now();
-    const position = audioMetrics.demo;
+    const position = live.audio.get().demo;
     if (next && position) setActiveCueId(null);
     setShowState(s => next && position ? applyDemoLighting({ ...s, autoDirector: true }, position) : { ...s, autoDirector: next });
     showToast(next ? 'Auto-LD on' : 'Manual lighting control');
@@ -697,33 +730,44 @@ export const App: React.FC = () => {
     if (saveNow) flushDesign();
     else saveTimer.current = window.setTimeout(flushDesign, 250);
   }, [savedDesign, flushDesign]);
-  const openDocument = (json: string, bundledMedia: BundleAsset[] = []) => {
+  const openDocument = (rawJson: string, bundledMedia: BundleAsset[] = []) => {
+    const json = rawJson.charCodeAt(0) === 0xfeff ? rawJson.slice(1) : rawJson;
+    if (json.length > MAX_SHOW_JSON_BYTES || new TextEncoder().encode(json).length > MAX_SHOW_JSON_BYTES) {
+      throw new Error('This JSON file exceeds the 32 MiB limit.');
+    }
     let object: unknown;
     try { object = JSON.parse(json); } catch { throw new Error('Choose a valid StageForge JSON file.'); }
     if (!object || typeof object !== 'object' || !('format' in object)) {
       const next = normalizeDesign(parseRigJson(json));
       installStage();
-      wallClock.set(0,false);
+      wallClock.set(0, false);
       timeline.stop();
+      timeline.syncWallDuration(0, false, true);
       applyRig(next, true); previewRig(); showToast(`Opened ${next.name}.`); return;
     }
+    // Parse and normalize everything fallible before mutating any live desk state or assets.
     const file = parseShowFile(json);
-    pruneAssets(referencedFiles(file.media, file.cues, file.timeline, file.stage));
+    const nextRig = normalizeDesign(file.rig);
+    const referenced = referencedFiles(file.media, file.cues, file.timeline, file.stage);
+    const wall = file.media?.screen ?? NO_SCREEN;
+
+    pruneAssets(referenced);
     for (const { kind, file: medium } of bundledMedia) registerAsset(kind, medium);
+    const look = wallLook(file.look, wall);
     timeline.replace(file.timeline, {
       look: file.look, cueId: file.activeCueId, camera: file.controls?.camera ?? 'foh',
       volume: file.controls?.volume ?? 0.72, bump: EMPTY_BUMP,
-      screen: file.media?.screen ?? NO_SCREEN, music: file.media?.music ?? NO_MUSIC,
+      screen: wall, music: file.media?.music ?? NO_MUSIC,
     });
     installStage(file.stage);
-    wallClock.set(0,false);
+    wallClock.set(0, false);
     setFollow(null); directorArmed.current = false;
-    audioEngineRef.current?.stopAll(); setAudioMetrics(EMPTY_AUDIO);
+    audioEngineRef.current?.stopAll();
+    live.audio.set(EMPTY_AUDIO);
+    setAudioDiscrete(INITIAL_DISCRETE_AUDIO);
     setControllerBump(EMPTY_BUMP); setBump(EMPTY_BUMP);
     expectedMusic.current = file.media?.music ?? NO_MUSIC;
-    const wall = file.media?.screen ?? NO_SCREEN;
-    const look = wallLook(file.look, wall);
-    applyRig(normalizeDesign(file.rig), true);
+    applyRig(nextRig, true);
     setCues(file.cues); setActiveCueId(file.activeCueId);
     setCueModified(differsFromCue(look, file.cues.find(c => c.id === file.activeCueId), wall));
     setShowState(look); autoDirRef.current = look.autoDirector;
@@ -732,26 +776,33 @@ export const App: React.FC = () => {
     engineRef.current?.releaseDirector(false); engineRef.current?.setShowState(look); previewRig();
     if (wall.kind === 'video') engineRef.current?.restoreScreenTransport(wall.playing, wall.offsetSeconds);
     engineRef.current?.setCameraPreset(file.controls?.camera ?? 'foh');
-    const missingCount = [...referencedFiles(file.media, file.cues, file.timeline, file.stage)].filter(key => !assets.current.has(key)).length;
+    const missingCount = [...referenced].filter(key => !assets.current.has(key)).length;
     const warning = missingCount ? ` · ${missingCount} missing media ${missingCount === 1 ? 'file' : 'files'}` : '';
     showToast(`Opened ${file.rig.name} · ${file.cues.length} cues${warning}.`);
   };
-  const openBundleBytes = async (bytes: Uint8Array) => {
+  const openBundleBytes = async (bytes: Uint8Array, request?: number) => {
     const { MAX_BUNDLE_BYTES, openShowBundle } = await import('./data/showBundle');
     if (bytes.byteLength > MAX_BUNDLE_BYTES) throw new Error('This show exceeds the 512 MiB in-memory bundle limit.');
     // Fully verified (hashes, paths, schema) before any desk state changes.
     const bundle = await openShowBundle(bytes);
+    if (request !== undefined && request !== openRequestRef.current) return;
+    if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     openDocument(JSON.stringify(bundle.show), bundle.files);
   };
   // MVR (DIN SPEC 15801) rigs from StageForge or other tools. A StageForge export restores
   // exactly; other files become trusses, fixtures, screens and props, with notes on what changed.
-  const openMvrBytes = async (bytes: Uint8Array) => {
+  const openMvrBytes = async (bytes: Uint8Array, request?: number) => {
     const { importMvr } = await import('./interchange/mvr/importMvr');
     const { rig: next, stage, report } = importMvr(bytes);
+    const normalized = normalizeDesign(next);
+    if (request !== undefined && request !== openRequestRef.current) return;
+    if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     installStage(stage);
     wallClock.set(0, false);
     timeline.stop();
-    applyRig(normalizeDesign(next), true); previewRig();
+    const lastWallMs = stage?.screenEvents.at(-1)?.atMs ?? 0;
+    timeline.syncWallDuration(lastWallMs, (stage?.screenEvents.length ?? 0) > 0, true);
+    applyRig(normalized, true); previewRig();
     const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
     // Keep the toast readable: a hostile or huge file can produce long names and many notes.
     const notes = report.notes.join(' ');
@@ -759,16 +810,29 @@ export const App: React.FC = () => {
     showToast(`Opened ${next.name} from MVR · ${count(report.fixtures, 'fixture', 'fixtures')} · ${count(report.trusses, 'truss', 'trusses')}${brief ? ' · ' + brief : ''}`);
   };
   const openFile = async (file: File) => {
+    const request = ++openRequestRef.current;
     const lower = file.name.toLowerCase();
     if (lower.endsWith('.mvr')) {
       const { MAX_ARCHIVE_BYTES } = await import('./interchange/mvr/archive');
       if (file.size > MAX_ARCHIVE_BYTES) throw new Error('This MVR file exceeds the 512 MiB limit.');
-      return openMvrBytes(new Uint8Array(await file.arrayBuffer()));
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (request !== openRequestRef.current) return;
+      if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
+      return openMvrBytes(bytes, request);
     }
-    if (!lower.endsWith('.zip')) return openDocument(await file.text());
+    if (!lower.endsWith('.zip')) {
+      if (file.size > MAX_SHOW_JSON_BYTES) throw new Error('This JSON file exceeds the 32 MiB limit.');
+      const text = await file.text();
+      if (request !== openRequestRef.current) return;
+      if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
+      return openDocument(text);
+    }
     const { MAX_BUNDLE_BYTES } = await import('./data/showBundle');
     if (file.size > MAX_BUNDLE_BYTES) throw new Error('This show exceeds the 512 MiB in-memory bundle limit.');
-    await openBundleBytes(new Uint8Array(await file.arrayBuffer()));
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (request !== openRequestRef.current) return;
+    if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
+    await openBundleBytes(bytes, request);
   };
   const saveDocument = async (action: FileAction) => {
     if (action === 'rig') return downloadRig(rig);
@@ -797,12 +861,14 @@ export const App: React.FC = () => {
     }
   };
   const openExample = async (name: 'amber-walk-on' | 'split-rig') => {
+    const request = ++openRequestRef.current;
     const folder = import.meta.env.BASE_URL + 'examples/';
     const [show, video] = await Promise.all([fetch(folder + name + '.stageforge.show.json'), fetch(folder + 'amber-clouds.mp4')]);
     if (!show.ok || !video.ok) throw new Error('The example files could not be opened.');
-    const json = await show.text();
-    registerAsset('video', new File([await video.blob()], 'amber-clouds.mp4', { type: 'video/mp4' }));
-    openDocument(json);
+    const [json, videoBlob] = await Promise.all([show.text(), video.blob()]);
+    if (request !== openRequestRef.current) return;
+    if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
+    openDocument(json, [{ kind: 'video', file: new File([videoBlob], 'amber-clouds.mp4', { type: 'video/mp4' }) }]);
   };
   const media = { music: readMusic(), screen: readScreen() };
   const referencedMedia = useMemo(() => referencedFiles(media, cues, timeline.timeline, studioStage),
@@ -837,7 +903,7 @@ export const App: React.FC = () => {
     return count ? `Relinked ${count} media reference${count === 1 ? '' : 's'}.` : 'Choose media with the filenames listed in this show.';
   };
   const fileCommand = React.useEffectEvent(async (command: 'open' | 'openBundle' | 'openMvr' | 'export' | FileAction, source?: string | Uint8Array) => {
-    if (designerRig) {
+    if (designerOpenRef.current) {
       window.alert('Apply or cancel the open stage plan before opening or exporting a rig.');
       return;
     }
@@ -846,12 +912,15 @@ export const App: React.FC = () => {
       return;
     }
     if (source === undefined) return;
+    const request = ++openRequestRef.current;
     try {
-      if (command === 'openMvr' && typeof source !== 'string') await openMvrBytes(source);
-      else if (command === 'openBundle' && typeof source !== 'string') await openBundleBytes(source);
+      if (command === 'openMvr' && typeof source !== 'string') await openMvrBytes(source, request);
+      else if (command === 'openBundle' && typeof source !== 'string') await openBundleBytes(source, request);
       else if (typeof source === 'string') openDocument(source);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Could not open this StageForge rig.');
+      if (request === openRequestRef.current) {
+        window.alert(error instanceof Error ? error.message : 'Could not open this StageForge rig.');
+      }
     }
   });
   useEffect(() => window.stageforgeDesktop?.onRigCommand(fileCommand), []);
@@ -861,7 +930,7 @@ export const App: React.FC = () => {
     command: action => {
       switch (action) {
         case 'play':
-          if (!audioMetrics.playing && navigator.userActivation && !navigator.userActivation.hasBeenActive) {
+          if (!live.audio.get().playing && navigator.userActivation && !navigator.userActivation.hasBeenActive) {
             showToast('Click Play once to enable browser audio.');
           } else handleTogglePlay();
           break;
@@ -894,7 +963,7 @@ export const App: React.FC = () => {
     orbit: (x, y) => engineRef.current?.orbitBy(x, y),
   });
 
-  const demoOpeningBlack = showState.autoDirector && !!audioMetrics.demo && audioMetrics.demo.step < DEMO_BLACKOUT_STEPS;
+  const demoOpeningBlack = showState.autoDirector && audioDiscrete.openingBlack;
   useEffect(() => {
     if (cinemaMode || designerRig || costModalOpen) setBump(EMPTY_BUMP);
   }, [cinemaMode, designerRig, costModalOpen]);
@@ -907,25 +976,26 @@ export const App: React.FC = () => {
     <main data-cinema={cinemaMode} data-demo-blackout={demoOpeningBlack} className="stage-workstation relative w-screen h-screen bg-black overflow-hidden">
       {/* Full-Viewport HQ 3D WebGL2 Canvas */}
       <div ref={viewportRef} className="stage-viewport w-full h-full cursor-grab active:cursor-grabbing" />
-      <ShowOverlay demo={audioMetrics.demo} controller={controller} cinema={cinemaMode} />
+      <ShowOverlay audioStore={live.audio} controller={controller} cinema={cinemaMode} />
 
       {/* Top Transport, Audio, Cameras & Tools Bar */}
       <TopBar
-        fps={fps}
+        fpsStore={live.fps}
         fixtureCount={counts.fixtures}
         laserCount={counts.lasers}
-        audio={audioMetrics}
-        linkedMusic={media.music}
-        trackDuration={audioEngineRef.current?.trackDuration() ?? 0}
+        audioStore={live.audio}
+        getLinkedMusic={readMusic}
+        getTrackDuration={() => audioEngineRef.current?.trackDuration() ?? 0}
         onSeekTrack={seconds => {
-          if (media.music.kind !== 'file') return;
-          expectedMusic.current = { ...media.music, offsetSeconds: seconds };
+          const currentMusic = readMusic();
+          if (currentMusic.kind !== 'file') return;
+          expectedMusic.current = { ...currentMusic, offsetSeconds: seconds };
           audioEngineRef.current?.seekTrack(seconds);
-          setAudioMetrics(metrics => ({ ...metrics }));
+          live.audio.set({ ...live.audio.get() });
         }}
         volume={volume}
         bpm={showState.bpm}
-        openingBar={demoOpeningBlack ? audioMetrics.demo!.bar + 1 : undefined}
+        openingBar={demoOpeningBlack ? audioDiscrete.openingBar : undefined}
         blackout={showState.blackout}
         autoDirector={showState.autoDirector}
         audioReactive={showState.audioReactive}
@@ -975,7 +1045,7 @@ export const App: React.FC = () => {
         {missing.length} missing media {missing.length === 1 ? 'file' : 'files'} · Relink
       </button>}
       {filesOpen && <ShowFiles name={rig.name} media={media} stage={studioStage} timeline={timeline.timeline} missing={missing} cueNames={new Map(cues.map(c => [c.id, c.name]))}
-        onOpen={openFile} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onClose={() => setFilesOpen(false)}/>}
+        onOpen={openFile} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onError={showToast} onClose={() => setFilesOpen(false)}/>}
       {cueEditor && <CueListEditor cues={cues} capture={() => ({ id: crypto.randomUUID(), name: 'New look',
         tag: 'USER', accent: showState.primaryColor, state: structuredClone(showState), screen: cueScreen() })}
         onApply={next => {
@@ -986,67 +1056,74 @@ export const App: React.FC = () => {
         }}
         onClose={() => setCueEditor(false)}/>}
       {toast && !demoOpeningBlack && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
+        <div role="status" aria-live="polite" className="fixed top-16 left-1/2 -translate-x-1/2 z-50 glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
           {toast}
         </div>
       )}
 
       {showState.blackout && !demoOpeningBlack && (
-        <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none px-5 py-2 rounded-xl bg-rose-950/80 border border-rose-500/70 font-mono-tech text-sm tracking-widest text-rose-200 shadow-[0_0_30px_rgba(244,63,94,0.45)]">
+        <div role="alert" className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none px-5 py-2 rounded-xl bg-rose-950/80 border border-rose-500/70 font-mono-tech text-sm tracking-widest text-rose-200 shadow-[0_0_30px_rgba(244,63,94,0.45)]">
           STAGE BLACKOUT — PRESS [SPACE] TO RESTORE
         </div>
       )}
 
       {/* Slide-Over Rig Builder */}
       {!cinemaMode && (
-        <RigBuilderDrawer
-          open={rigDrawerOpen}
-          rig={rig}
-          stage={studioStage}
-          onClose={() => setRigDrawerOpen(false)}
-          onDesignStage={() => setDesignerRig(rig)}
-          onOpenSavedDesign={savedDesign ? () => setDesignerRig(savedDesign) : undefined}
-          onChangeRig={(next, replacing) => {
-            if (replacing && !confirmDiscardStage()) return;
-            if (replacing) installStage();
-            applyRig(next);
-          }}
-          onChangeStage={(next) => {
-            const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
-            installStage(next);
-            const nextEvents = next?.screenEvents ?? [];
-            if (hadEvents || nextEvents.length) timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
-            previewRig();
-          }}
-        />
+        <ErrorBoundary label="Rig Builder" onReset={() => setRigDrawerOpen(false)} onExportRig={() => downloadRig(rig)}>
+          <RigBuilderDrawer
+            open={rigDrawerOpen}
+            rig={rig}
+            stage={studioStage}
+            onClose={() => setRigDrawerOpen(false)}
+            onDesignStage={() => setDesignerRig(rig)}
+            onOpenSavedDesign={savedDesign ? () => setDesignerRig(savedDesign) : undefined}
+            onChangeRig={(next, replacing) => {
+              if (replacing && !confirmDiscardStage()) return;
+              if (replacing) installStage();
+              applyRig(next);
+            }}
+            onChangeStage={(next) => {
+              const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
+              installStage(next);
+              const nextEvents = next?.screenEvents ?? [];
+              if (hadEvents || nextEvents.length) timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
+              previewRig();
+            }}
+          />
+        </ErrorBoundary>
       )}
 
       {/* Slide-Over DMX512 Live Monitor */}
       {!cinemaMode && (
-        <DmxMonitorDrawer
-          open={dmxDrawerOpen}
-          rig={rig}
-          universe1={dmxSnapshot.u1}
-          universe2={dmxSnapshot.u2}
-          onClose={() => setDmxDrawerOpen(false)}
-        />
+        <ErrorBoundary label="DMX Monitor" onReset={() => setDmxDrawerOpen(false)} onExportRig={() => downloadRig(rig)}>
+          <DmxMonitorDrawer
+            open={dmxDrawerOpen}
+            rig={rig}
+            dmxStore={live.dmx}
+            onClose={() => setDmxDrawerOpen(false)}
+          />
+        </ErrorBoundary>
       )}
 
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
-      {designerRig && <StageDesigner rig={designerRig} stage={studioStage} onClose={() => setDesignerRig(null)} onChange={(design, stage, replacing) => {
-        const next = normalizeDesign(design);
-        // A new blank design replaces the authored overlay and its wall cues, even if the user then
-        // drew new screens or hangs; ask first, and keep the designer open if they decline.
-        if (replacing && !confirmDiscardStage()) return false;
-        // The designer edits walls, hangs and layout alongside the rig; its stage keeps existing wall cues.
-        const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
-        installStage(stage);
-        const nextEvents = stage?.screenEvents ?? [];
-        if (hadEvents || nextEvents.length) timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
-        applyRig(next, true);
-        previewRig();
-        setDesignerRig(null);
-      }} />}
+      {designerRig && (
+        <ErrorBoundary label="Stage Designer" onReset={() => setDesignerRig(null)} onExportRig={() => downloadRig(rig)}>
+          <StageDesigner rig={designerRig} stage={studioStage} onClose={() => setDesignerRig(null)} onChange={(design, stage, replacing) => {
+            const next = normalizeDesign(design);
+            // A new blank design replaces the authored overlay and its wall cues, even if the user then
+            // drew new screens or hangs; ask first, and keep the designer open if they decline.
+            if (replacing && !confirmDiscardStage()) return false;
+            // The designer edits walls, hangs and layout alongside the rig; its stage keeps existing wall cues.
+            const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
+            installStage(stage);
+            const nextEvents = stage?.screenEvents ?? [];
+            if (hadEvents || nextEvents.length) timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
+            applyRig(next, true);
+            previewRig();
+            setDesignerRig(null);
+          }} />
+        </ErrorBoundary>
+      )}
       {costModalOpen && <CostEstimatorModal
         rig={rig}
         stage={studioStage}
@@ -1104,7 +1181,7 @@ export const App: React.FC = () => {
           }}
           onSaveCue={handleSaveCue}
           onUploadScreen={file => {
-            const kind = file.type.startsWith('video/') ? 'video' : 'image';
+            const kind = file.type.startsWith('video/') || (!file.type && VIDEO_EXT.test(file.name)) ? 'video' : 'image';
             const asset = registerAsset(kind, file);
             takeDesk(); setCaptureVideoPosition(false); setScreen({ target: 'main-led', kind, name: file.name, playing: kind === 'video', offsetSeconds: 0 });
             setShowState(s => ({ ...s, led: { ...s.led, brightness: s.led.brightness <= 0.05 ? 1 : s.led.brightness,
@@ -1128,10 +1205,11 @@ export const App: React.FC = () => {
           mainScreen={media.screen}
           missingMedia={missing}
           onApplyWallCue={(event: SecondaryScreenEvent, file?: File) => {
-            if (file && event.kind !== 'none') registerAsset(event.kind, file);
+            const clampedAtMs = Math.max(0, Math.min(MAX_WALL_CUE_MS, Math.round(event.atMs)));
             const nextStage = upsertSecondaryScreenEvent(rig, nativeStage.current, event);
             // upsert rejects unknown walls and unnamed media; leave the desk untouched then.
-            if (!nextStage.screenEvents.some(e => e.target === event.target && e.atMs === Math.max(0, Math.round(event.atMs)))) return;
+            if (!nextStage.screenEvents.some(e => e.target === event.target && e.atMs === clampedAtMs)) return;
+            if (file && event.kind !== 'none') registerAsset(event.kind, file);
             installStage(nextStage);
             const lastWallMs = nextStage.screenEvents.at(-1)?.atMs ?? 0;
             timeline.syncWallDuration(lastWallMs, nextStage.screenEvents.length > 0);
@@ -1139,7 +1217,7 @@ export const App: React.FC = () => {
             const endMs = Math.max(timeline.timeline?.durationMs ?? 0, lastWallMs);
             // While a take records or replays, keep the walls on the shared clock;
             // when idle, preview the edited cue at its own time.
-            if (timeline.mode === 'idle') wallClock.set(event.atMs, false, endMs);
+            if (timeline.mode === 'idle') wallClock.set(clampedAtMs, false, endMs);
             else wallClock.set(wallClock.position(), true, timeline.mode === 'recording' ? Infinity : endMs);
           }}
           onRemoveWallCue={(target, atMs) => {

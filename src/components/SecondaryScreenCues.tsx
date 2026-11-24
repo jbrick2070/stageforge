@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Crosshair, Monitor, Trash2, Upload } from 'lucide-react';
 import type { NativeStage } from '../data/showFile';
-import type { SecondaryScreenEvent } from '../data/studioGeometry';
+import { MAX_WALL_CUE_MS, type SecondaryScreenEvent } from '../data/studioGeometry';
 import { timecode } from '../data/transportGlance';
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp|avif)$/i;
@@ -59,8 +59,8 @@ export function SecondaryScreenCues({
 
   const commit = () => {
     const at = Number(timeSec);
-    if (!Number.isFinite(at) || at < 0) {
-      setError('Enter a non-negative time in seconds.');
+    if (!Number.isFinite(at) || at < 0 || at > MAX_WALL_CUE_MS / 1000) {
+      setError(`Enter a time between 0 and ${MAX_WALL_CUE_MS / 1000} seconds.`);
       return;
     }
     const atMs = Math.round(at * 1000);
@@ -80,8 +80,8 @@ export function SecondaryScreenCues({
       return;
     }
     const offset = Number(offsetSec);
-    if (!Number.isFinite(offset) || offset < 0) {
-      setError('Offset must be zero or greater.');
+    if (!Number.isFinite(offset) || offset < 0 || offset > MAX_WALL_CUE_MS / 1000) {
+      setError(`Offset must be between 0 and ${MAX_WALL_CUE_MS / 1000} seconds.`);
       return;
     }
     const file = pickedFile?.name === cleanName ? pickedFile : undefined;

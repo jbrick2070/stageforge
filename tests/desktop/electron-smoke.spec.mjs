@@ -179,12 +179,28 @@ test.afterEach(async () => {
 });
 
 test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload bridge and WebGL', async () => {
+  expect(existsSync(path.join(appDir, 'protocol.cjs'))).toBe(true);
+  for (const v of [1, 2, 3]) {
+    expect(existsSync(path.join(appDir, 'renderer', 'schemas', `show-v${v}.schema.json`))).toBe(true);
+  }
   expect(await app.evaluate(({ app }) => app.getPath('userData'))).toBe(path.join(tmp, 'profile'));
   await expect(page).toHaveURL('stageforge://app/');
   await expect(page.getByRole('button', { name: 'Show files', exact: true })).toBeVisible();
-  const csp = await page.evaluate(async () => (await fetch(location.href)).headers.get('content-security-policy'));
-  expect(csp).toContain("script-src 'self'");
-  expect(csp).toContain("object-src 'none'");
+  const headers = await page.evaluate(async () => {
+    const rootRes = await fetch(location.href);
+    const upperRes = await fetch('stageforge://app/INDEX.HTML');
+    return {
+      csp: rootRes.headers.get('content-security-policy'),
+      nosniff: rootRes.headers.get('x-content-type-options'),
+      upperCsp: upperRes.headers.get('content-security-policy'),
+      upperNosniff: upperRes.headers.get('x-content-type-options'),
+    };
+  });
+  expect(headers.csp).toContain("script-src 'self'");
+  expect(headers.csp).toContain("object-src 'none'");
+  expect(headers.nosniff).toBe('nosniff');
+  expect(headers.upperCsp).toContain("script-src 'self'");
+  expect(headers.upperNosniff).toBe('nosniff');
   const world = await page.evaluate(async probe => {
     // The served CSP must block an injected inline script.
     const violation = new Promise(resolve => document.addEventListener('securitypolicyviolation', e => resolve(e.effectiveDirective), { once: true }));

@@ -242,18 +242,25 @@ function Field({
   integer?: boolean;
   unit?: string;
 }) {
-  const [text, setText] = useState(String(rounded(value)));
+  const formatted = String(rounded(value));
+  const [text, setText] = useState(formatted);
   const [invalid, setInvalid] = useState(false);
+  const displayedRef = useRef(formatted);
   useEffect(() => {
-    setText(String(rounded(value)));
+    displayedRef.current = formatted;
+    setText(formatted);
     setInvalid(false);
-  }, [value]);
+  }, [formatted]);
   const finish = () => {
     const next = Number(text);
     if (text.trim() !== '' && Number.isFinite(next) && (min === undefined || next >= min) &&
         (max === undefined || next <= max) && (!integer || Number.isInteger(next))) {
-      if (next !== value) onChange(next);
-      setText(String(rounded(next)));
+      // Compare against the last displayed value so tabbing through float-rounded values
+      // (e.g. 29.999999999999996 shown as "30") does not spuriously commit an edit.
+      if (next !== Number(displayedRef.current)) {
+        onChange(next);
+      }
+      setText(displayedRef.current);
       setInvalid(false);
     } else setInvalid(true);
   };

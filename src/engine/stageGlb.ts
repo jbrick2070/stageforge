@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { buildPlatformDeck, type SharedMaterials } from './geometryBuilders';
+import { LED_DISPLAY_MATERIAL_NAME } from './fohFraming';
 import type { FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show';
 
 export function nameFixtureUnit(
@@ -42,7 +43,7 @@ export function stageSnapshot(rig: RigConfig, roots: THREE.Object3D[], mats: Sha
   }
 
   function materialFor(source: THREE.Material) {
-    if (source instanceof THREE.ShaderMaterial) return source.name === 'LED display' ? screen : null;
+    if (source instanceof THREE.ShaderMaterial) return source.name === LED_DISPLAY_MATERIAL_NAME ? screen : null;
     let material = materials.get(source);
     if (!material) {
       const copy = source.clone();

@@ -42,6 +42,8 @@ const KINDS: Kind[] = ['Fixture', 'Truss', 'VideoScreen', 'SceneObject', 'FocusP
 const RAD = Math.PI / 180;
 const MAX_FIXTURES = 1024;
 export const MAX_IMPORTED_TRUSSES = 256;
+const MAX_GDTF_FILES = 64;
+const MAX_NESTED_INFLATED_BYTES = 128 * 1024 * 1024;
 /** Furthest position (metres from the origin) taken from an MVR file; beyond 10 km a matrix is broken. */
 const MAX_COORDINATE = 10000;
 const FLOOR_TYPES = new Set<Hardware>(['hazer', 'smoke', 'co2', 'floor_laser', 'floor_beam']);
@@ -123,10 +125,18 @@ function geometryBounds(node: XmlNode, files: Map<string, ArchiveEntry>, cache: 
     if (!file.endsWith('.glb')) continue;
     if (!cache.has(file)) {
       const entry = files.get(file);
-      cache.set(file, entry ? glbBounds(entry.data) : undefined);
+      let parsed: Bounds;
+      try {
+        parsed = entry ? glbBounds(entry.data) : undefined;
+      } catch {
+        parsed = undefined;
+      }
+      cache.set(file, parsed);
     }
     const bounds = cache.get(file);
-    if (!bounds || ![...bounds.min, ...bounds.max].every(Number.isFinite)) continue;
+    if (!bounds || !Array.isArray(bounds.min) || !Array.isArray(bounds.max) ||
+        bounds.min.length !== 3 || bounds.max.length !== 3 ||
+        ![...bounds.min, ...bounds.max].every(Number.isFinite)) continue;
     const m = parseMatrix(text(geo, 'Matrix'));
     for (const gx of [bounds.min[0], bounds.max[0]]) for (const gy of [bounds.min[1], bounds.max[1]]) for (const gz of [bounds.min[2], bounds.max[2]]) {
       const lx = gx, ly = -gz, lz = gy;
@@ -231,12 +241,17 @@ export function importMvr(bytes: Uint8Array): MvrImport {
   const doc = parseXml(utf8.decode(scene.data));
   const root = child(doc, 'GeneralSceneDescription');
   if (!root) throw new Error('This MVR file has no GeneralSceneDescription.');
-  if (Number(attr(root, 'verMajor')) !== 1) throw new Error(`MVR version ${attr(root, 'verMajor')}.${attr(root, 'verMinor')} is not supported.`);
+  const verMajor = attr(root, 'verMajor');
+  const verMinor = attr(root, 'verMinor');
+  if (!verMajor || Number(verMajor) !== 1) {
+    throw new Error(verMajor ? `MVR version ${verMajor}.${verMinor ?? '0'} is not supported.` : 'MVR version is missing or unsupported.');
+  }
   const provider = name(attr(root, 'provider') ?? 'unknown', 64) || 'unknown';
   const items = sceneItems(root);
 
   const marked = list(child(root, 'UserData'), 'Data').some((d) => attr(d, 'provider') === PAYLOAD_PROVIDER);
   const payloadFile = files.get(PAYLOAD_FILE.toLowerCase());
+  let payloadFallbackNote: string | undefined;
   if (marked && payloadFile) {
     let payload: MvrPayload | undefined;
     try {
@@ -245,10 +260,11 @@ export function importMvr(bytes: Uint8Array): MvrImport {
       payload = undefined;
     }
     if (payload?.format === 'stageforge-mvr' && payload.version === 1 && payload.rig) return restore(payload, items, provider);
+    payloadFallbackNote = 'The embedded StageForge payload was unreadable; the scene was imported as a generic MVR.';
   }
 
   // A file from another tool: rebuild a rig from its trusses, fixtures, screens and objects.
-  const notes: string[] = unreadableNote(items, 'skipped');
+  const notes: string[] = [...(payloadFallbackNote ? [payloadFallbackNote] : []), ...unreadableNote(items, 'skipped')];
   const readable = items.filter((i) => !i.invalid);
   const outOfRange = readable.filter((i) => !inRange(readPose(i.matrix).position)).length;
   if (outOfRange) notes.push(`${plural(outOfRange, 'object')} more than ${MAX_COORDINATE} m from the origin ${outOfRange === 1 ? 'was' : 'were'} skipped.`);
@@ -275,6 +291,9 @@ export function importMvr(bytes: Uint8Array): MvrImport {
   }
 
   const gdtfCache = new Map<string, GdtfSummary | null>();
+  const gdtfBudget = { remaining: MAX_NESTED_INFLATED_BYTES };
+  let gdtfReads = 0;
+  let gdtfCapped = false;
   const units: Unit[] = [];
   let fixtureItems = usable.filter((i) => i.kind === 'Fixture');
   if (fixtureItems.length > MAX_FIXTURES) {
@@ -286,10 +305,18 @@ export function importMvr(bytes: Uint8Array): MvrImport {
     const key = spec.toLowerCase();
     if (spec && !gdtfCache.has(key)) {
       const file = files.get(key) ?? files.get(key + '.gdtf');
-      try {
-        gdtfCache.set(key, file ? readGdtf(file.data) : null);
-      } catch {
+      if (!file) {
         gdtfCache.set(key, null);
+      } else if (gdtfReads >= MAX_GDTF_FILES || gdtfBudget.remaining <= 0) {
+        gdtfCapped = true;
+        gdtfCache.set(key, null);
+      } else {
+        gdtfReads++;
+        try {
+          gdtfCache.set(key, readGdtf(file.data, gdtfBudget));
+        } catch {
+          gdtfCache.set(key, null);
+        }
       }
     }
     const summary = spec ? gdtfCache.get(key) : null;
@@ -301,7 +328,8 @@ export function importMvr(bytes: Uint8Array): MvrImport {
       address: readAddress(item.node), parentTruss: item.parentTruss });
   }
   const missingProfiles = [...gdtfCache.values()].filter((v) => v === null).length;
-  if (missingProfiles) notes.push(`${plural(missingProfiles, 'GDTF profile')} ${missingProfiles === 1 ? 'was' : 'were'} missing or unreadable; fixture types were guessed from names.`);
+  if (gdtfCapped) notes.push(`Only the first ${MAX_GDTF_FILES} distinct GDTF profiles (within 128 MiB) were read; remaining fixtures were guessed from names.`);
+  else if (missingProfiles) notes.push(`${plural(missingProfiles, 'GDTF profile')} ${missingProfiles === 1 ? 'was' : 'were'} missing or unreadable; fixture types were guessed from names.`);
 
   // Hung units go to their parent truss, the nearest truss, or a new position bar per height and depth.
   const clusters = new Map<string, TrussPodConfig>();

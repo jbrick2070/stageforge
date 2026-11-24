@@ -32,6 +32,20 @@ export function mountSlotIndex(n: number, units: number, slots: number): number 
   return Math.min(slots - 1, Math.floor((n + 0.5) / units * slots));
 }
 
+/** Interleaved hung units across a truss pod, shared by StageEngine, CAD export and MVR export. */
+export function hungUnits(fixtures: readonly MountedFixtureGroup[]): Array<{ group: MountedFixtureGroup; index: number; fraction: number }> {
+  return fixtures
+    .flatMap((group) => Array.from({ length: Math.max(0, group.count) }, (_, index) => ({
+      group, index, fraction: (index + 0.5) / group.count,
+    })))
+    .sort((a, b) => a.fraction - b.fraction);
+}
+
+/** World X position of the i-th emitter in a floor FX row, shared by StageEngine and exports. */
+export function floorUnitX(group: Pick<FloorFxUnit, 'x' | 'spread' | 'count'>, index: number): number {
+  return group.x + (group.count <= 1 ? 0 : group.spread * (index / (group.count - 1) - 0.5));
+}
+
 /**
  * Where every fixture unit of a rig sits, using the same mount distribution StageEngine and the
  * CAD export use: hung units interleave across a pod's mount slots in DMX order; floor units
@@ -51,27 +65,25 @@ export function placeFixtures(rig: RigConfig): FixturePlacement[] {
     };
   };
   for (const pod of rig.trussPods) {
-    const hung = pod.fixtures
-      .flatMap((group) => Array.from({ length: group.count }, (_, i) => ({ group, i, fraction: (i + 0.5) / group.count })))
-      .sort((a, b) => a.fraction - b.fraction);
+    const hung = hungUnits(pod.fixtures);
     const slots = trussMounts(pod.shape, pod.width, pod.path, hung.length);
-    hung.forEach(({ group, i }, n) => {
+    hung.forEach(({ group, index }, n) => {
       const mount = slots[mountSlotIndex(n, hung.length, slots.length)];
       if (!mount) return;
       const at = podWorldPoint(pod, mount);
       // Projectors on rings and paths face downstage regardless of truss bearing.
       const frontFacing = group.type === 'laser' && (pod.shape === 'circle' || pod.shape === 'path');
       out.push({
-        group, index: i, podId: pod.id, floor: false,
+        group, index, podId: pod.id, floor: false,
         position: { x: at.x, y: pod.baseY + mount.y, z: at.z },
         yaw: frontFacing ? 0 : pod.rotationY + mount.rotY,
-        ...unit(group, i),
+        ...unit(group, index),
       });
     });
   }
   for (const group of rig.floorFx) {
     for (let i = 0; i < group.count; i++) {
-      const x = group.x + (group.count === 1 ? 0 : group.spread * (i / (group.count - 1) - 0.5));
+      const x = floorUnitX(group, i);
       out.push({
         group, index: i, floor: true,
         position: { x, y: stageSurfaceHeight(rig, x, group.z), z: group.z },

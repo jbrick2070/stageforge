@@ -3,10 +3,12 @@ import { XMLBuilder, XMLParser } from 'fast-xml-parser';
 /**
  * Guarded XML for MVR/GDTF. Uses fast-xml-parser (MIT, no DOM) so the same code runs in the
  * browser, the sandboxed Electron renderer and Node tests. Untrusted archives are common, so
- * DTDs are rejected, entities are not expanded and every document has a size cap.
+ * DTDs are rejected, entities are not expanded and every document has size, depth and element caps.
  */
 
 export const MAX_XML_BYTES = 32 * 1024 * 1024;
+export const MAX_XML_DEPTH = 64;
+export const MAX_XML_ELEMENTS = 500_000;
 
 export type XmlNode = Record<string, unknown>;
 
@@ -18,13 +20,89 @@ const LISTS = new Set([
   'ActivationGroup', 'Geometry', 'Axis', 'Beam', 'Model', 'Revision', 'GeometryReference', 'Break', 'Wheel',
 ]);
 
+/** Strip XML 1.0 illegal control characters (C0 except TAB/LF/CR, plus U+FFFE/U+FFFF). */
+const ILLEGAL_XML_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/g;
+
+/** Strip leading UTF-8 BOM and trailing NUL bytes in O(N) without regex backtracking. */
+export function stripXmlBomAndTrailingNuls(source: string): string {
+  let start = source.charCodeAt(0) === 0xfeff ? 1 : 0;
+  let end = source.length;
+  while (end > start && source.charCodeAt(end - 1) === 0) end--;
+  return (start === 0 && end === source.length ? source : source.slice(start, end)).trimEnd();
+}
+
+/**
+ * Fast linear pre-scan to cap XML nesting depth and total element count before the recursive
+ * parser builds JS objects. Ignores comments, CDATA, processing instructions and attribute quotes.
+ */
+function checkXmlComplexity(text: string): void {
+  let depth = 0;
+  let elements = 0;
+  const len = text.length;
+  for (let i = 0; i < len; i++) {
+    if (text.charCodeAt(i) !== 60 /* '<' */) continue;
+    const next = text.charCodeAt(i + 1);
+    if (next === 33 /* '!' */) {
+      if (text.startsWith('<!--', i)) {
+        const end = text.indexOf('-->', i + 4);
+        if (end < 0) throw new Error('Invalid XML document.');
+        i = end + 2;
+      } else if (text.startsWith('<![CDATA[', i)) {
+        const end = text.indexOf(']]>', i + 9);
+        if (end < 0) throw new Error('Invalid XML document.');
+        i = end + 2;
+      }
+      continue;
+    }
+    if (next === 63 /* '?' */) {
+      const end = text.indexOf('?>', i + 2);
+      if (end < 0) throw new Error('Invalid XML document.');
+      i = end + 1;
+      continue;
+    }
+    const closing = next === 47 /* '/' */;
+    // Advance to the matching '>' while skipping quoted attribute values.
+    let j = i + (closing ? 2 : 1);
+    let quote = 0;
+    while (j < len) {
+      const ch = text.charCodeAt(j);
+      if (quote) {
+        if (ch === quote) quote = 0;
+      } else if (ch === 34 /* '"' */ || ch === 39 /* "'" */) {
+        quote = ch;
+      } else if (ch === 62 /* '>' */) {
+        break;
+      }
+      j++;
+    }
+    if (j >= len) throw new Error('Invalid XML document.');
+    if (closing) {
+      depth = Math.max(0, depth - 1);
+    } else {
+      if (++elements > MAX_XML_ELEMENTS) throw new Error('This XML document has too many elements.');
+      const selfClosing = text.charCodeAt(j - 1) === 47 /* '/' */;
+      if (!selfClosing && ++depth > MAX_XML_DEPTH) {
+        throw new Error(`This XML document is nested more than ${MAX_XML_DEPTH} levels deep.`);
+      }
+    }
+    i = j;
+  }
+}
+
 export function parseXml(source: string): XmlNode {
+  // Fast-fail before scanning or encoding if the raw string cannot possibly fit under the byte cap
+  // (UTF-16 code units <= UTF-8 bytes for ASCII, and 1 UTF-16 unit >= 1 UTF-8 byte except surrogates
+  // where 2 units = 4 bytes, so source.length > MAX_XML_BYTES * 2 is always over the cap).
+  if (source.length > MAX_XML_BYTES * 2) throw new Error('This XML document is too large.');
   // Real-world MA library files can end with NUL bytes after the closing tag.
-  const text = source.replace(/^﻿/, '').replace(/\u0000+$/g, '').trimEnd();
-  if (new TextEncoder().encode(text).length > MAX_XML_BYTES) throw new Error('This XML document is too large.');
+  const text = stripXmlBomAndTrailingNuls(source);
+  if (text.length > MAX_XML_BYTES || new TextEncoder().encode(text).length > MAX_XML_BYTES) {
+    throw new Error('This XML document is too large.');
+  }
   // Reject a DTD anywhere, even inside a comment or CDATA: stripping those first can be fooled by
   // overlapping sections, and real MVR and GDTF files never mention a DTD.
   if (/<!(DOCTYPE|ENTITY)/i.test(text)) throw new Error('XML documents with a DTD are unsupported.');
+  checkXmlComplexity(text);
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: '@_',
@@ -39,9 +117,14 @@ export function parseXml(source: string): XmlNode {
     ignorePiTags: true,
     isArray: (name) => LISTS.has(name),
   });
-  const doc = parser.parse(text, true) as XmlNode;
+  let doc: unknown;
+  try {
+    doc = parser.parse(text, true);
+  } catch {
+    throw new Error('Invalid XML document.');
+  }
   if (!doc || typeof doc !== 'object') throw new Error('Invalid XML document.');
-  return doc;
+  return doc as XmlNode;
 }
 
 export function buildXml(root: XmlNode): string {
@@ -53,7 +136,8 @@ export function buildXml(root: XmlNode): string {
     suppressEmptyNode: true,
     processEntities: true,
   });
-  return '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n' + builder.build(root);
+  const xml = '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n' + builder.build(root);
+  return xml.replace(ILLEGAL_XML_CHARS, '');
 }
 
 /** Read a child list regardless of whether the parser produced one item or many. */

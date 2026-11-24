@@ -1,15 +1,17 @@
 const { app, BrowserWindow, dialog, Menu, net, protocol, session, shell, systemPreferences } = require('electron');
-const { readFile, stat } = require('node:fs/promises');
+const { open: openFileHandle } = require('node:fs/promises');
 const path = require('node:path');
-const { pathToFileURL } = require('node:url');
+const { isAppPage, createRendererHandler } = require('./protocol.cjs');
 
 const startUrl = 'stageforge://app/';
 const rendererRoot = path.join(__dirname, 'renderer');
 const isMac = process.platform === 'darwin';
+const MAX_TEXT_BYTES = 32 * 1024 * 1024;
+const MAX_BINARY_BYTES = 512 * 1024 * 1024;
 const rigFilters = [{ name: 'StageForge rig', extensions: ['json'] }];
 const showFilters = [{ name: 'StageForge show JSON', extensions: ['json'] }];
 const bundleFilters = [{ name: 'StageForge show bundle', extensions: ['zip'] }];
-const openFilters = [{ name: 'StageForge shows, bundles, rigs and MVR scenes', extensions: ['json','zip','mvr'] }];
+const openFilters = [{ name: 'StageForge shows, bundles, rigs and MVR scenes', extensions: ['json', 'zip', 'mvr'] }];
 const exportsBySuffix = [
   ['.stageforge.zip', 'Save show bundle', bundleFilters],
   ['.mvr', 'Export MVR scene', [{ name: 'MVR scene (DIN SPEC 15801)', extensions: ['mvr'] }]],
@@ -19,45 +21,23 @@ const exportsBySuffix = [
   ['.glb', 'Export 3D scene', [{ name: 'glTF binary', extensions: ['glb'] }]],
   ['.patch.csv', 'Export channel patch', [{ name: 'CSV table', extensions: ['csv'] }]],
 ];
-const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'";
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'stageforge',
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
 }]);
 
-function isAppPage(rawUrl) {
-  if (!URL.canParse(rawUrl)) return false;
-  const url = new URL(rawUrl);
-  return url.protocol === 'stageforge:' && url.host === 'app' && !url.username && !url.password;
-}
-
-async function serveRenderer(request) {
-  if (request.method !== 'GET' || !isAppPage(request.url)) return new Response(null, { status: 404 });
-  try {
-    const pathname = decodeURIComponent(new URL(request.url).pathname);
-    if (/[\\:\x00]/.test(pathname)) return new Response(null, { status: 400 });
-    const file = path.resolve(rendererRoot, pathname === '/' ? 'index.html' : '.' + pathname);
-    const relative = path.relative(rendererRoot, file);
-    if (relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative)) {
-      return new Response(null, { status: 404 });
-    }
-    const result = await net.fetch(pathToFileURL(file).href);
-    if (relative !== 'index.html') return result;
-    const headers = new Headers(result.headers);
-    headers.set('Content-Security-Policy', csp);
-    return new Response(result.body, { status: result.status, headers });
-  } catch {
-    return new Response(null, { status: 404 });
-  }
-}
+const serveRenderer = createRendererHandler({
+  fetchFile: (fileUrl) => net.fetch(fileUrl),
+  rendererRoot,
+});
 
 function createWindow() {
   const win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 540, minHeight: 420,
     title: 'StageForge', backgroundColor: '#000000', icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
-      sandbox: true, contextIsolation: true, nodeIntegration: false,
+      sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false,
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });
@@ -68,12 +48,40 @@ function createWindow() {
     // The rig drawer links to the speaker manufacturer's product specifications.
     if (URL.canParse(url) && (new URL(url).origin === 'https://www.l-acoustics.com' ||
         url === 'https://github.com/jbrick2070/stageforge/blob/main/docs/show-format.md')) {
-      void shell.openExternal(url);
+      void shell.openExternal(url).catch(() => {});
     }
     return { action: 'deny' };
   });
   void win.loadURL(startUrl);
   return win;
+}
+
+async function readBoundedFile(filename, binary) {
+  const fh = await openFileHandle(filename, 'r');
+  try {
+    const info = await fh.stat();
+    if (!info.isFile()) throw new Error('Choose a regular file.');
+    const limit = binary ? MAX_BINARY_BYTES : MAX_TEXT_BYTES;
+    if (info.size > limit) {
+      throw new Error(binary
+        ? 'This show exceeds the 512 MiB in-memory bundle limit.'
+        : 'This JSON file exceeds the 32 MiB limit.');
+    }
+    const buf = await fh.readFile();
+    if (buf.byteLength > limit) {
+      throw new Error(binary
+        ? 'This show exceeds the 512 MiB in-memory bundle limit.'
+        : 'This JSON file exceeds the 32 MiB limit.');
+    }
+    if (binary) {
+      // View the Buffer's own bytes without making an extra copy before IPC structured clone.
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    }
+    const text = buf.toString('utf8');
+    return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  } finally {
+    await fh.close();
+  }
 }
 
 async function runRigCommand(command) {
@@ -88,13 +96,13 @@ async function runRigCommand(command) {
       const filename = filePaths[0];
       const lower = filename.toLowerCase();
       if (lower.endsWith('.zip') || lower.endsWith('.mvr')) {
-        if ((await stat(filename)).size > 512 * 1024 * 1024) throw new Error('This show exceeds the 512 MiB in-memory bundle limit.');
-        // Structured clone delivers a Uint8Array to the preload; no extra ArrayBuffer copy.
-        source = new Uint8Array(await readFile(filename));
+        source = await readBoundedFile(filename, true);
         command = lower.endsWith('.mvr') ? 'openMvr' : 'openBundle';
-      } else source = await readFile(filename, 'utf8');
+      } else {
+        source = await readBoundedFile(filename, false);
+      }
     } catch (error) {
-      dialog.showErrorBox('Could not open file', error.message);
+      dialog.showErrorBox('Could not open file', error instanceof Error ? error.message : 'Could not read this file.');
       return;
     }
   }
@@ -109,53 +117,77 @@ async function runRigCommand(command) {
   else send();
 }
 
-app.whenReady().then(() => {
-  protocol.handle('stageforge', serveRenderer);
-  const ses = session.defaultSession;
-  ses.on('will-download', (_event, item, contents) => {
-    const choice = exportsBySuffix.find(([suffix]) => item.getFilename().endsWith(suffix));
-    if (contents && isAppPage(contents.getURL()) && choice) {
+const hasLock = app.requestSingleInstanceLock();
+if (!hasLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+
+  app.whenReady().then(() => {
+    protocol.handle('stageforge', serveRenderer);
+    const ses = session.defaultSession;
+    ses.on('will-download', (_event, item, contents) => {
+      const choice = exportsBySuffix.find(([suffix]) => item.getFilename().endsWith(suffix));
+      if (!contents || !isAppPage(contents.getURL()) || !choice) {
+        item.cancel();
+        return;
+      }
       item.setSaveDialogOptions({
         title: choice[1], filters: choice[2],
         defaultPath: path.join(app.getPath('downloads'), path.basename(item.getFilename())),
       });
-    }
-  });
-  ses.setPermissionCheckHandler((contents, permission, requestingOrigin) =>
-    isAppPage(requestingOrigin) && (!contents || isAppPage(contents.getURL())) && permission === 'media');
-  ses.setPermissionRequestHandler((contents, permission, callback, details) => {
-    if (!isAppPage(contents.getURL()) || permission !== 'media' || !details.mediaTypes?.length ||
-        !details.mediaTypes.every(type => type === 'audio')) return callback(false);
-    if (isMac) {
-      void systemPreferences.askForMediaAccess('microphone').then(callback, () => callback(false));
-    } else callback(true);
-  });
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(isMac ? [{ role: 'appMenu' }] : []),
-    { label: 'File', submenu: [
-      { label: 'Open show or rig…', accelerator: 'CmdOrCtrl+O', click: () => runRigCommand('open') },
-      { label: 'Save show as…', accelerator: 'CmdOrCtrl+S', click: () => runRigCommand('show') },
-      { label: 'Save show bundle…', click: () => runRigCommand('bundle') },
-      { label: 'Export rig…', accelerator: 'CmdOrCtrl+Shift+S', click: () => runRigCommand('export') },
-      { label: 'Export', submenu: [
-        { label: 'MVR scene for consoles and visualizers…', click: () => runRigCommand('mvr') },
-        { label: 'CAD plan (DXF)…', click: () => runRigCommand('dxf') },
-        { label: '3D scene (GLB)…', click: () => runRigCommand('glb') },
-        { label: 'DMX channel patch (CSV)…', click: () => runRigCommand('csv') },
+      item.once('done', (_e, state) => {
+        if (state === 'interrupted') {
+          dialog.showErrorBox('Could not save file', `Saving ${path.basename(item.getFilename())} was interrupted.`);
+        }
+      });
+    });
+    ses.setPermissionCheckHandler((contents, permission, requestingOrigin, details) =>
+      isAppPage(requestingOrigin) &&
+      (!contents || isAppPage(contents.getURL())) &&
+      permission === 'media' &&
+      (!details?.mediaType || details.mediaType === 'audio'));
+    ses.setPermissionRequestHandler((contents, permission, callback, details) => {
+      if (!isAppPage(contents.getURL()) || permission !== 'media' || !details.mediaTypes?.length ||
+          !details.mediaTypes.every(type => type === 'audio')) return callback(false);
+      if (isMac) {
+        void systemPreferences.askForMediaAccess('microphone').then(callback, () => callback(false));
+      } else callback(true);
+    });
+    const run = (cmd) => { void runRigCommand(cmd).catch(() => {}); };
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      ...(isMac ? [{ role: 'appMenu' }] : []),
+      { label: 'File', submenu: [
+        { label: 'Open show or rig…', accelerator: 'CmdOrCtrl+O', click: () => run('open') },
+        { label: 'Save show as…', accelerator: 'CmdOrCtrl+S', click: () => run('show') },
+        { label: 'Save show bundle…', click: () => run('bundle') },
+        { label: 'Export rig…', accelerator: 'CmdOrCtrl+Shift+S', click: () => run('export') },
+        { label: 'Export', submenu: [
+          { label: 'MVR scene for consoles and visualizers…', click: () => run('mvr') },
+          { label: 'CAD plan (DXF)…', click: () => run('dxf') },
+          { label: '3D scene (GLB)…', click: () => run('glb') },
+          { label: 'DMX channel patch (CSV)…', click: () => run('csv') },
+        ] },
+        { type: 'separator' }, { role: isMac ? 'close' : 'quit' },
       ] },
-      { type: 'separator' }, { role: isMac ? 'close' : 'quit' },
-    ] },
-    { role: 'editMenu' },
-    { label: 'View', submenu: [{ role: 'togglefullscreen' }, { type: 'separator' },
-      { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
-    { role: 'windowMenu' },
-  ]));
-  createWindow();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      { role: 'editMenu' },
+      { label: 'View', submenu: [{ role: 'togglefullscreen' }, { type: 'separator' },
+        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
+      { role: 'windowMenu' },
+    ]));
+    createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
   });
-});
 
-app.on('window-all-closed', () => {
-  if (!isMac) app.quit();
-});
+  app.on('window-all-closed', () => {
+    if (!isMac) app.quit();
+  });
+}

@@ -1,0 +1,741 @@
+{
+  "$schema": "https://jbrick2070.github.io/stageforge/schemas/show-v2.schema.json",
+  "format": "stageforge-show",
+  "version": 2,
+  "rig": {
+    "name": "Split Rig rehearsal",
+    "props": [],
+    "venue": "club",
+    "stageWidth": 8,
+    "stageDepth": 6,
+    "stageHeight": 1.3,
+    "ledWall": {
+      "enabled": true,
+      "width": 5,
+      "height": 2.5,
+      "curved": false,
+      "sideWings": false,
+      "cabinets": {
+        "widthMm": 500,
+        "heightMm": 500,
+        "pixelsWide": 128,
+        "pixelsHigh": 128,
+        "columns": 10,
+        "rows": 5
+      }
+    },
+    "audioRig": {
+      "lineArrays": true,
+      "speakerProfile": "k2",
+      "monitorCount": 2,
+      "subWall": true,
+      "subCount": 2,
+      "djBooth": false,
+      "crowdDensity": 0.25,
+      "boxesPerSide": 4
+    },
+    "trussPods": [
+      {
+        "id": "cl-front",
+        "name": "Front Truss",
+        "shape": "box",
+        "width": 7,
+        "x": 0,
+        "baseY": 4.1,
+        "z": 1.4,
+        "rotationY": 0,
+        "motorized": false,
+        "motorMinY": 3,
+        "motorMaxY": 4.6,
+        "fixtures": [
+          {
+            "id": "beams",
+            "type": "beam",
+            "modelName": "Rogue R1 BeamWash",
+            "count": 2,
+            "dmxUniverse": 1,
+            "dmxStartChannel": 1,
+            "optics": {
+              "profile": {
+                "source": "datasheet",
+                "manufacturer": "CHAUVET Professional",
+                "fixture": "Rogue R1 BeamWash",
+                "geometry": "Narrow",
+                "lumens": 1483,
+                "beamAngle": 4
+              }
+            }
+          },
+          {
+            "id": "washes",
+            "type": "wash",
+            "modelName": "MAC Aura XIP",
+            "count": 2,
+            "dmxUniverse": 1,
+            "dmxStartChannel": 33,
+            "optics": {
+              "profile": {
+                "source": "datasheet",
+                "manufacturer": "Martin",
+                "fixture": "MAC Aura XIP",
+                "geometry": "Wide",
+                "lumens": 6000,
+                "beamAngle": 35.3
+              }
+            }
+          },
+          {
+            "id": "lasers",
+            "type": "laser",
+            "modelName": "RGB scan projector",
+            "count": 2,
+            "dmxUniverse": 1,
+            "dmxStartChannel": 65
+          }
+        ]
+      }
+    ],
+    "floorFx": [],
+    "schemaVersion": 1,
+    "platforms": [
+      {
+        "id": "main-deck",
+        "name": "Main deck",
+        "x": 0,
+        "z": 0,
+        "width": 8,
+        "depth": 6,
+        "height": 0.65
+      },
+      {
+        "id": "drums",
+        "name": "Drum riser",
+        "x": 0.5,
+        "z": -1.1,
+        "width": 2.6,
+        "depth": 1.6,
+        "height": 1.3
+      }
+    ]
+  },
+  "cues": [
+    {
+      "id": "dark",
+      "name": "Walk in black",
+      "tag": "OPEN",
+      "accent": "#8891a1",
+      "state": {
+        "masterDimmer": 0,
+        "blackout": true,
+        "beamIntensity": 0,
+        "washIntensity": 0,
+        "movingGroups": {},
+        "led": {
+          "enabled": false,
+          "brightness": 0,
+          "visualMode": "custom",
+          "speed": 0.5,
+          "tourText": "SPLIT RIG",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "laser": {
+          "enabled": false,
+          "intensity": 0.48,
+          "pattern": "liquid_sky",
+          "beamCount": 10,
+          "spreadX": 0.76,
+          "spreadY": 0.3,
+          "speed": 0.32,
+          "tilt": 0.12,
+          "rotation": 0.25,
+          "colorMode": "primary",
+          "strobe": 0,
+          "audienceScan": false
+        }
+      },
+      "screen": {
+        "target": "main-led",
+        "name": "",
+        "kind": "none",
+        "playing": false
+      }
+    },
+    {
+      "id": "drummer",
+      "name": "Drummer in amber",
+      "tag": "WASH",
+      "accent": "#ffb869",
+      "state": {
+        "masterDimmer": 0.8,
+        "blackout": false,
+        "beamIntensity": 0,
+        "washIntensity": 0.85,
+        "movingGroups": {
+          "wash": {
+            "movementMode": "manual",
+            "focusMarkId": "platform:drums",
+            "manualPan": 0,
+            "manualTilt": 0,
+            "primaryColor": "#ffb869",
+            "colorSplitMode": "solid"
+          },
+          "beam": {
+            "movementMode": "sweep",
+            "movementSpeed": 0.32,
+            "movementSpread": 0.72,
+            "primaryColor": "#6fbbff",
+            "colorSplitMode": "solid"
+          }
+        },
+        "led": {
+          "enabled": false,
+          "brightness": 0,
+          "visualMode": "custom",
+          "speed": 0.5,
+          "tourText": "SPLIT RIG",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "laser": {
+          "enabled": false,
+          "intensity": 0.48,
+          "pattern": "liquid_sky",
+          "beamCount": 10,
+          "spreadX": 0.76,
+          "spreadY": 0.3,
+          "speed": 0.32,
+          "tilt": 0.12,
+          "rotation": 0.25,
+          "colorMode": "primary",
+          "strobe": 0,
+          "audienceScan": false
+        }
+      },
+      "screen": {
+        "target": "main-led",
+        "name": "",
+        "kind": "none",
+        "playing": false
+      }
+    },
+    {
+      "id": "sweep",
+      "name": "Blue sweep",
+      "tag": "SPLIT",
+      "accent": "#6fbbff",
+      "state": {
+        "masterDimmer": 0.8,
+        "blackout": false,
+        "beamIntensity": 0.9,
+        "washIntensity": 0.85,
+        "movingGroups": {
+          "wash": {
+            "movementMode": "manual",
+            "focusMarkId": "platform:drums",
+            "manualPan": 0,
+            "manualTilt": 0,
+            "primaryColor": "#ffb869",
+            "colorSplitMode": "solid"
+          },
+          "beam": {
+            "movementMode": "sweep",
+            "movementSpeed": 0.32,
+            "movementSpread": 0.72,
+            "primaryColor": "#6fbbff",
+            "colorSplitMode": "solid"
+          }
+        },
+        "led": {
+          "enabled": true,
+          "brightness": 0.42,
+          "visualMode": "custom",
+          "speed": 0.5,
+          "tourText": "SPLIT RIG",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "laser": {
+          "enabled": false,
+          "intensity": 0.48,
+          "pattern": "liquid_sky",
+          "beamCount": 10,
+          "spreadX": 0.76,
+          "spreadY": 0.3,
+          "speed": 0.32,
+          "tilt": 0.12,
+          "rotation": 0.25,
+          "colorMode": "primary",
+          "strobe": 0,
+          "audienceScan": false
+        }
+      },
+      "screen": {
+        "target": "main-led",
+        "kind": "video",
+        "name": "amber-clouds.mp4",
+        "playing": true,
+        "offsetSeconds": 0
+      }
+    },
+    {
+      "id": "scans",
+      "name": "Two laser projectors",
+      "tag": "SCAN",
+      "accent": "#ed56ff",
+      "state": {
+        "masterDimmer": 0.8,
+        "blackout": false,
+        "beamIntensity": 0.9,
+        "washIntensity": 0.85,
+        "movingGroups": {
+          "wash": {
+            "movementMode": "manual",
+            "focusMarkId": "platform:drums",
+            "manualPan": 0,
+            "manualTilt": 0,
+            "primaryColor": "#ffb869",
+            "colorSplitMode": "solid"
+          },
+          "beam": {
+            "movementMode": "sweep",
+            "movementSpeed": 0.32,
+            "movementSpread": 0.72,
+            "primaryColor": "#6fbbff",
+            "colorSplitMode": "solid"
+          }
+        },
+        "led": {
+          "enabled": true,
+          "brightness": 0.42,
+          "visualMode": "custom",
+          "speed": 0.5,
+          "tourText": "SPLIT RIG",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "laser": {
+          "enabled": true,
+          "intensity": 0.6,
+          "pattern": "tunnel",
+          "beamCount": 5,
+          "spreadX": 0.76,
+          "spreadY": 0.3,
+          "speed": 0.32,
+          "tilt": 0.12,
+          "rotation": 0.25,
+          "colorMode": "custom",
+          "strobe": 0,
+          "audienceScan": false,
+          "patternSegments": 8,
+          "colorA": "#44ffcf",
+          "projectors": {
+            "[\"cl-front\",\"lasers\",2]": {
+              "beamCount": 17,
+              "patternSegments": 96,
+              "colorMode": "custom",
+              "colorA": "#ed56ff"
+            }
+          }
+        }
+      },
+      "screen": {
+        "target": "main-led",
+        "kind": "video",
+        "name": "amber-clouds.mp4",
+        "playing": true,
+        "offsetSeconds": 0
+      }
+    }
+  ],
+  "look": {
+    "masterDimmer": 0,
+    "blackout": true,
+    "autoDirector": false,
+    "audioReactive": false,
+    "bpm": 128,
+    "beamIntensity": 0,
+    "washIntensity": 0,
+    "beamZoom": 0.22,
+    "goboPrism": false,
+    "primaryColor": "#eaa64e",
+    "accentColor": "#7b70be",
+    "colorSplitMode": "alternate",
+    "movementMode": "manual",
+    "movementSpeed": 0.26,
+    "movementSpread": 0.72,
+    "manualPan": 0,
+    "manualTilt": 0,
+    "focusMarkId": "platform:main-deck",
+    "strobeRate": 0,
+    "blinderLevel": 0,
+    "laser": {
+      "enabled": false,
+      "intensity": 0.48,
+      "pattern": "liquid_sky",
+      "beamCount": 10,
+      "spreadX": 0.76,
+      "spreadY": 0.3,
+      "speed": 0.32,
+      "tilt": 0.12,
+      "rotation": 0.25,
+      "colorMode": "primary",
+      "strobe": 0,
+      "audienceScan": false
+    },
+    "motors": {
+      "mode": "manual",
+      "speed": 0.35,
+      "podTargets": {}
+    },
+    "atmo": {
+      "hazeLevel": 0.58,
+      "smokeOutput": 0,
+      "co2Active": false,
+      "co2AutoOnDrop": false
+    },
+    "led": {
+      "enabled": false,
+      "brightness": 0,
+      "visualMode": "custom",
+      "speed": 0.5,
+      "tourText": "SPLIT RIG",
+      "customMediaUrl": null,
+      "customMediaType": null
+    },
+    "bloomStrength": 0.38
+  },
+  "activeCueId": "dark",
+  "controls": {
+    "camera": "foh",
+    "volume": 0.45
+  },
+  "timeline": {
+    "durationMs": 16000,
+    "events": [
+      {
+        "atMs": 0,
+        "cueId": "dark",
+        "look": {
+          "masterDimmer": 0,
+          "blackout": true,
+          "autoDirector": false,
+          "audioReactive": false,
+          "bpm": 128,
+          "beamIntensity": 0,
+          "washIntensity": 0,
+          "beamZoom": 0.22,
+          "goboPrism": false,
+          "primaryColor": "#eaa64e",
+          "accentColor": "#7b70be",
+          "colorSplitMode": "alternate",
+          "movementMode": "manual",
+          "movementSpeed": 0.26,
+          "movementSpread": 0.72,
+          "manualPan": 0,
+          "manualTilt": 0,
+          "focusMarkId": "platform:main-deck",
+          "strobeRate": 0,
+          "blinderLevel": 0,
+          "laser": {
+            "enabled": false,
+            "intensity": 0.48,
+            "pattern": "liquid_sky",
+            "beamCount": 10,
+            "spreadX": 0.76,
+            "spreadY": 0.3,
+            "speed": 0.32,
+            "tilt": 0.12,
+            "rotation": 0.25,
+            "colorMode": "primary",
+            "strobe": 0,
+            "audienceScan": false
+          },
+          "motors": {
+            "mode": "manual",
+            "speed": 0.35,
+            "podTargets": {}
+          },
+          "atmo": {
+            "hazeLevel": 0.58,
+            "smokeOutput": 0,
+            "co2Active": false,
+            "co2AutoOnDrop": false
+          },
+          "led": {
+            "enabled": false,
+            "brightness": 0,
+            "visualMode": "custom",
+            "speed": 0.5,
+            "tourText": "SPLIT RIG",
+            "customMediaUrl": null,
+            "customMediaType": null
+          },
+          "bloomStrength": 0.38
+        },
+        "bump": {
+          "blinder": false,
+          "strobe": false,
+          "co2": false,
+          "smoke": false,
+          "laser": false,
+          "motorDrop": false
+        },
+        "camera": "foh",
+        "volume": 0.45,
+        "music": {
+          "kind": "demo",
+          "name": "Arena Anthem",
+          "playing": true,
+          "demoStep": 0
+        },
+        "screen": {
+          "target": "main-led",
+          "name": "",
+          "kind": "none",
+          "playing": false
+        }
+      },
+      {
+        "atMs": 2500,
+        "look": {
+          "masterDimmer": 0.8,
+          "blackout": false,
+          "beamIntensity": 0,
+          "washIntensity": 0.85,
+          "movingGroups": {
+            "wash": {
+              "movementMode": "manual",
+              "focusMarkId": "platform:drums",
+              "manualPan": 0,
+              "manualTilt": 0,
+              "primaryColor": "#ffb869",
+              "colorSplitMode": "solid"
+            },
+            "beam": {
+              "movementMode": "sweep",
+              "movementSpeed": 0.32,
+              "movementSpread": 0.72,
+              "primaryColor": "#6fbbff",
+              "colorSplitMode": "solid"
+            }
+          },
+          "led": {
+            "enabled": false,
+            "brightness": 0,
+            "visualMode": "custom",
+            "speed": 0.5,
+            "tourText": "SPLIT RIG",
+            "customMediaUrl": null,
+            "customMediaType": null
+          },
+          "laser": {
+            "enabled": false,
+            "intensity": 0.48,
+            "pattern": "liquid_sky",
+            "beamCount": 10,
+            "spreadX": 0.76,
+            "spreadY": 0.3,
+            "speed": 0.32,
+            "tilt": 0.12,
+            "rotation": 0.25,
+            "colorMode": "primary",
+            "strobe": 0,
+            "audienceScan": false
+          }
+        },
+        "cueId": "drummer",
+        "screen": {
+          "target": "main-led",
+          "name": "",
+          "kind": "none",
+          "playing": false
+        }
+      },
+      {
+        "atMs": 6500,
+        "look": {
+          "masterDimmer": 0.8,
+          "blackout": false,
+          "beamIntensity": 0.9,
+          "washIntensity": 0.85,
+          "movingGroups": {
+            "wash": {
+              "movementMode": "manual",
+              "focusMarkId": "platform:drums",
+              "manualPan": 0,
+              "manualTilt": 0,
+              "primaryColor": "#ffb869",
+              "colorSplitMode": "solid"
+            },
+            "beam": {
+              "movementMode": "sweep",
+              "movementSpeed": 0.32,
+              "movementSpread": 0.72,
+              "primaryColor": "#6fbbff",
+              "colorSplitMode": "solid"
+            }
+          },
+          "led": {
+            "enabled": true,
+            "brightness": 0.42,
+            "visualMode": "custom",
+            "speed": 0.5,
+            "tourText": "SPLIT RIG",
+            "customMediaUrl": null,
+            "customMediaType": null
+          },
+          "laser": {
+            "enabled": false,
+            "intensity": 0.48,
+            "pattern": "liquid_sky",
+            "beamCount": 10,
+            "spreadX": 0.76,
+            "spreadY": 0.3,
+            "speed": 0.32,
+            "tilt": 0.12,
+            "rotation": 0.25,
+            "colorMode": "primary",
+            "strobe": 0,
+            "audienceScan": false
+          }
+        },
+        "cueId": "sweep",
+        "screen": {
+          "target": "main-led",
+          "kind": "video",
+          "name": "amber-clouds.mp4",
+          "playing": true,
+          "offsetSeconds": 0
+        }
+      },
+      {
+        "atMs": 11000,
+        "look": {
+          "masterDimmer": 0.8,
+          "blackout": false,
+          "beamIntensity": 0.9,
+          "washIntensity": 0.85,
+          "movingGroups": {
+            "wash": {
+              "movementMode": "manual",
+              "focusMarkId": "platform:drums",
+              "manualPan": 0,
+              "manualTilt": 0,
+              "primaryColor": "#ffb869",
+              "colorSplitMode": "solid"
+            },
+            "beam": {
+              "movementMode": "sweep",
+              "movementSpeed": 0.32,
+              "movementSpread": 0.72,
+              "primaryColor": "#6fbbff",
+              "colorSplitMode": "solid"
+            }
+          },
+          "led": {
+            "enabled": true,
+            "brightness": 0.42,
+            "visualMode": "custom",
+            "speed": 0.5,
+            "tourText": "SPLIT RIG",
+            "customMediaUrl": null,
+            "customMediaType": null
+          },
+          "laser": {
+            "enabled": true,
+            "intensity": 0.6,
+            "pattern": "tunnel",
+            "beamCount": 5,
+            "spreadX": 0.76,
+            "spreadY": 0.3,
+            "speed": 0.32,
+            "tilt": 0.12,
+            "rotation": 0.25,
+            "colorMode": "custom",
+            "strobe": 0,
+            "audienceScan": false,
+            "patternSegments": 8,
+            "colorA": "#44ffcf",
+            "projectors": {
+              "[\"cl-front\",\"lasers\",2]": {
+                "beamCount": 17,
+                "patternSegments": 96,
+                "colorMode": "custom",
+                "colorA": "#ed56ff"
+              }
+            }
+          }
+        },
+        "cueId": "scans",
+        "screen": {
+          "target": "main-led",
+          "kind": "video",
+          "name": "amber-clouds.mp4",
+          "playing": true,
+          "offsetSeconds": 0
+        }
+      },
+      {
+        "atMs": 16000,
+        "look": {
+          "masterDimmer": 0,
+          "blackout": true,
+          "beamIntensity": 0,
+          "washIntensity": 0,
+          "movingGroups": {},
+          "led": {
+            "enabled": false,
+            "brightness": 0,
+            "visualMode": "custom",
+            "speed": 0.5,
+            "tourText": "SPLIT RIG",
+            "customMediaUrl": null,
+            "customMediaType": null
+          },
+          "laser": {
+            "enabled": false,
+            "intensity": 0.48,
+            "pattern": "liquid_sky",
+            "beamCount": 10,
+            "spreadX": 0.76,
+            "spreadY": 0.3,
+            "speed": 0.32,
+            "tilt": 0.12,
+            "rotation": 0.25,
+            "colorMode": "primary",
+            "strobe": 0,
+            "audienceScan": false
+          }
+        },
+        "screen": {
+          "target": "main-led",
+          "name": "",
+          "kind": "none",
+          "playing": false
+        },
+        "cueId": "dark",
+        "music": {
+          "kind": "demo",
+          "name": "Arena Anthem",
+          "playing": false,
+          "demoStep": 136.5333
+        }
+      }
+    ]
+  },
+  "media": {
+    "music": {
+      "kind": "demo",
+      "name": "Arena Anthem",
+      "playing": false,
+      "demoStep": 0
+    },
+    "screen": {
+      "target": "main-led",
+      "name": "",
+      "kind": "none",
+      "playing": false
+    }
+  }
+}

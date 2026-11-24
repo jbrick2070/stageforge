@@ -10,12 +10,14 @@ export type SecondaryScreenEvent = NativeStage['screenEvents'][number];
 
 export const MAX_STAGE_WALLS = 8;
 export const MAX_STAGE_HANGS = 128;
+/** Maximum authored wall-cue timestamp (24 hours in ms). */
+export const MAX_WALL_CUE_MS = 24 * 60 * 60 * 1000;
 /** Rendered walls clamp to these sizes (inherited from the retired native-v0.1.0 prototype, so its v3 files look the same). */
 export const MAX_WALL_WIDTH = 40;
 export const MAX_WALL_HEIGHT = 25;
 
 const round3 = (n: number) => Number(n.toFixed(3));
-const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+const clamp = (n: number, min: number, max: number) => Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : min;
 
 /** True when an authored main-led entry moves or resizes the rig's stock wall. */
 export function isCustomMainWall(wall?: StageWall): boolean {
@@ -170,9 +172,10 @@ export function removeStageWall(rig: RigConfig, stage: NativeStage | undefined, 
 export function upsertSecondaryScreenEvent(rig: RigConfig, stage: NativeStage | undefined, event: SecondaryScreenEvent): NativeStage {
   const next = ensureNativeStage(rig, stage);
   if (event.target === 'main-led' || !next.walls.some(w => w.id === event.target) || !Number.isFinite(event.atMs)) return next;
-  const atMs = Math.max(0, Math.round(event.atMs));
+  const atMs = Math.max(0, Math.min(MAX_WALL_CUE_MS, Math.round(event.atMs)));
   const name = event.name.split(/[\\/]/).pop()!.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 512);
   if (event.kind !== 'none' && !name) return next;
+  const safeOffset = Number.isFinite(event.offsetSeconds) ? Math.max(0, Math.min(MAX_WALL_CUE_MS / 1000, event.offsetSeconds!)) : 0;
   const clean: SecondaryScreenEvent = event.kind === 'none'
     ? { atMs, target: event.target, kind: 'none', name: '', playing: false }
     : {
@@ -181,7 +184,7 @@ export function upsertSecondaryScreenEvent(rig: RigConfig, stage: NativeStage | 
       kind: event.kind,
       name,
       playing: event.kind === 'video' ? !!event.playing : false,
-      ...(event.kind === 'video' ? { offsetSeconds: round3(Math.max(0, event.offsetSeconds ?? 0)) } : {}),
+      ...(event.kind === 'video' ? { offsetSeconds: round3(safeOffset) } : {}),
     };
   next.screenEvents = [
     ...next.screenEvents.filter(e => !(e.target === clean.target && e.atMs === clean.atMs)),

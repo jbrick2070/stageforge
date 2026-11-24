@@ -45,7 +45,7 @@ import {
 import { FocusMark, HEAD_OFFSET, YOKE_OFFSET, PAN_LIMIT, TILT_LIMIT, aimAngles, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
 import { headLook } from '../data/movingGroups';
 import { buildDmxPatch } from '../data/dmxPatch';
-import { mountSlotIndex } from '../data/fixturePlacement';
+import { floorUnitX, hungUnits, mountSlotIndex } from '../data/fixturePlacement';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import type { NativeStage } from '../data/showFile';
 import { authoredWallSurface, isCustomMainWall, resolveStudioGeometry, resolveWallFrame } from '../data/studioGeometry';
@@ -56,7 +56,7 @@ import { laserGeometry } from './laserGeometry';
 import { DEFAULT_LASER_COLORS, DEFAULT_LASER_RESOLUTION, laserProjectorKey } from '../data/laserProjectors';
 import { BeamPools } from './beamPools';
 import { aerialGain, fixtureOptics } from '../data/fixtureOptics';
-import { fitAuthoredFoh } from './fohFraming';
+import { fitAuthoredFoh, LED_DISPLAY_MATERIAL_NAME } from './fohFraming';
 import { buildScenicPiece, ScenicPiece } from './scenicProps';
 import { SPEAKER_PROFILES } from '../data/speakerProfiles';
 import { PROP_CATALOG } from '../data/stageProps';
@@ -274,6 +274,7 @@ export class StageEngine {
     const width = Math.max(1, container.clientWidth);
     const height = Math.max(1, container.clientHeight);
 
+    try {
     // Renderer configured for HDR concert lighting + crisp specular reflections
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -412,6 +413,10 @@ export class StageEngine {
     this.resizeObserver.observe(container);
 
     this.startLoop();
+    } catch (error) {
+      try { this.dispose(); } catch { /* preserve original constructor failure */ }
+      throw error;
+    }
   }
 
   private handleResize() {
@@ -796,7 +801,7 @@ export class StageEngine {
   private releaseGroup(group: THREE.Object3D) {
     const geometries = new Set<THREE.BufferGeometry>();
     const materials = new Set<THREE.Material>();
-    const shared = new Set<THREE.Material>(Object.values(this.mats));
+    const shared = new Set<THREE.Material>(Object.values(this.mats ?? {}));
     group.traverse(obj => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.geometry) return;
@@ -1191,11 +1196,9 @@ export class StageEngine {
       }
 
       // Interleave fixture families across the same bar and preserve their DMX order.
-      const hung = pod.fixtures.flatMap(fg => Array.from({ length: fg.count }, (_, i) => ({
-        fg, i, fraction: (i + 0.5) / fg.count,
-      }))).sort((a, b) => a.fraction - b.fraction);
-      hung.forEach(({ fg, i }, position) => {
-        // Shared with fixturePlacement (CAD and MVR exports) so every output picks the same slot.
+      // Uses the same hungUnits + mountSlotIndex helpers as fixturePlacement (CAD and MVR exports).
+      const hung = hungUnits(pod.fixtures);
+      hung.forEach(({ group: fg, index: i }, position) => {
         const slotIdx = mountSlotIndex(position, hung.length, built.mountSlots.length);
         const slot = built.mountSlots[slotIdx];
         if (!slot) return;
@@ -1262,10 +1265,8 @@ export class StageEngine {
     const co2Emitters: THREE.Vector3[] = [];
 
     for (const fx of rig.floorFx) {
-      const count = Math.max(1, fx.count);
-      for (let i = 0; i < count; i++) {
-        const t = count === 1 ? 0.5 : i / (count - 1);
-        const px = fx.x + (count === 1 ? 0 : THREE.MathUtils.lerp(-fx.spread / 2, fx.spread / 2, t));
+      for (let i = 0; i < fx.count; i++) {
+        const px = floorUnitX(fx, i);
         const pz = fx.z;
         const py = stageSurfaceHeight(rig, px, pz);
 
@@ -1355,7 +1356,7 @@ export class StageEngine {
 
   private createLedMaterial(surface: LedSurface, useCabinets: boolean): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
-      name: 'LED display',
+      name: LED_DISPLAY_MATERIAL_NAME,
       vertexShader: LED_WALL_VERT,
       fragmentShader: LED_WALL_FRAG,
       uniforms: {
@@ -1798,9 +1799,12 @@ export class StageEngine {
       }
 
       const lerpRate = Math.min(1, dt * (b.motorDrop ? 7.5 : 3.2));
-      pod.currentY = THREE.MathUtils.lerp(pod.currentY, targetY, lerpRate);
-      pod.currentTiltZ = THREE.MathUtils.lerp(pod.currentTiltZ, targetTiltZ, lerpRate);
-      pod.currentTiltX = THREE.MathUtils.lerp(pod.currentTiltX, targetTiltX, lerpRate);
+      if (!Number.isFinite(pod.currentY)) pod.currentY = cfg.baseY;
+      if (!Number.isFinite(pod.currentTiltZ)) pod.currentTiltZ = 0;
+      if (!Number.isFinite(pod.currentTiltX)) pod.currentTiltX = 0;
+      if (Number.isFinite(targetY)) pod.currentY = THREE.MathUtils.lerp(pod.currentY, targetY, lerpRate);
+      if (Number.isFinite(targetTiltZ)) pod.currentTiltZ = THREE.MathUtils.lerp(pod.currentTiltZ, targetTiltZ, lerpRate);
+      if (Number.isFinite(targetTiltX)) pod.currentTiltX = THREE.MathUtils.lerp(pod.currentTiltX, targetTiltX, lerpRate);
 
       pod.group.position.y = pod.currentY;
       pod.group.rotation.z = pod.currentTiltZ;
@@ -1898,8 +1902,10 @@ export class StageEngine {
       }
 
       const moveFraction = Math.min(1, dt * 8);
-      fx.currentPan = THREE.MathUtils.lerp(fx.currentPan, reachablePan(targetPan, fx.currentPan), moveFraction);
-      fx.currentTilt = THREE.MathUtils.lerp(fx.currentTilt, targetTilt, moveFraction);
+      if (!Number.isFinite(fx.currentPan)) fx.currentPan = 0;
+      if (!Number.isFinite(fx.currentTilt)) fx.currentTilt = 0;
+      if (Number.isFinite(targetPan)) fx.currentPan = THREE.MathUtils.lerp(fx.currentPan, reachablePan(targetPan, fx.currentPan), moveFraction);
+      if (Number.isFinite(targetTilt)) fx.currentTilt = THREE.MathUtils.lerp(fx.currentTilt, targetTilt, moveFraction);
       fx.yoke.rotation.y = fx.currentPan;
       fx.head.rotation.x = fx.currentTilt;
 
@@ -2178,9 +2184,12 @@ export class StageEngine {
     for (const player of this.secondaryPlayers.values()) player.dispose();
     this.secondaryPlayers.clear();
     this.mediaGeneration++;
-    if (this.rafId !== null) cancelAnimationFrame(this.rafId);
-    this.resizeObserver.disconnect();
-    this.controls.dispose();
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+    this.resizeObserver?.disconnect();
+    this.controls?.dispose();
     this.beamPools?.dispose();
     this.releaseGroup(this.rigGroup);
     this.laserShapeGeometries.forEach(geometry => geometry.dispose());
@@ -2188,17 +2197,21 @@ export class StageEngine {
     this.laserShapes.clear();
     for (const piece of this.scenicPieces.values()) this.releaseGroup(piece.root);
     this.scenicPieces.clear();
-    const textures = new Set<THREE.Texture>();
-    for (const material of Object.values(this.mats) as THREE.MeshStandardMaterial[]) {
-      for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
-      material.dispose();
+    if (this.mats) {
+      const textures = new Set<THREE.Texture>();
+      for (const material of Object.values(this.mats) as THREE.MeshStandardMaterial[]) {
+        for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
+        material.dispose();
+      }
+      textures.forEach(texture => texture.dispose());
     }
-    textures.forEach(texture => texture.dispose());
-    this.environmentTarget.dispose();
-    this.composer.passes.forEach(pass => pass.dispose());
-    this.composer.dispose();
-    this.particles.dispose();
-    this.textTex.dispose();
+    this.environmentTarget?.dispose();
+    if (this.composer) {
+      this.composer.passes.forEach(pass => pass.dispose());
+      this.composer.dispose();
+    }
+    this.particles?.dispose();
+    this.textTex?.dispose();
     this.missingScreenTex?.dispose();
     if (this.customTex) this.customTex.dispose();
     if (this.customVideoEl) {
@@ -2206,9 +2219,12 @@ export class StageEngine {
       this.customVideoEl.removeAttribute('src');
       this.customVideoEl.load();
     }
-    this.renderer.dispose();
-    if (this.renderer.domElement.parentNode === this.container) {
-      this.container.removeChild(this.renderer.domElement);
+    if (this.renderer) {
+      this.renderer.forceContextLoss();
+      this.renderer.dispose();
+      if (this.renderer.domElement.parentNode === this.container) {
+        this.container.removeChild(this.renderer.domElement);
+      }
     }
   }
 }

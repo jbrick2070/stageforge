@@ -73,3 +73,35 @@ test('media names that cannot be packaged fail with the offending name', async (
   assets.set('video:Act 1: open.mp4', { file: new File(['x'], 'Act 1: open.mp4', { type: 'video/mp4' }) });
   await assert.rejects(createShowBundle(named, assets), /"Act 1: open\.mp4" cannot be stored in a bundle/);
 });
+
+test('hostile and truncated bundles fail with readable Errors (size caps, STORE mismatch, bad manifest)', async () => {
+  const isReadable = (e) => e instanceof Error && !(e instanceof TypeError) && !(e instanceof RangeError);
+  const valid = await bytes(await createShowBundle(show, media));
+  // Truncated archive must throw a readable Error, never RangeError.
+  await assert.rejects(openShowBundle(valid.subarray(0, Math.floor(valid.length / 2))), isReadable);
+
+  // Patch central directory uncompressed size of first entry to > 512 MiB (zip bomb cap).
+  const inflatedBomb = new Uint8Array(valid);
+  const cdSig = [0x50, 0x4b, 0x01, 0x02];
+  let cdOff = -1;
+  for (let i = 0; i <= inflatedBomb.length - 46; i++) {
+    if (cdSig.every((b, k) => inflatedBomb[i + k] === b)) { cdOff = i; break; }
+  }
+  assert.ok(cdOff > 0);
+  const dv = new DataView(inflatedBomb.buffer);
+  dv.setUint32(cdOff + 24, 600 * 1024 * 1024, true); // originalSize > 512 MiB (mismatched STORE size too)
+  await assert.rejects(openShowBundle(inflatedBomb), isReadable);
+
+  // Malformed manifest shapes (null media, numeric name, negative duration, unknown kind).
+  const contents = unzipSync(valid);
+  for (const mutate of [
+    (m) => { m.media = null; },
+    (m) => { m.media[0].name = 123; },
+    (m) => { m.media[0].durationSec = -1; },
+    (m) => { m.media[0].kind = 'audio'; },
+  ]) {
+    const manifest = JSON.parse(strFromU8(contents['manifest.json']));
+    mutate(manifest);
+    await assert.rejects(openShowBundle(zipSync({ ...contents, 'manifest.json': strToU8(JSON.stringify(manifest)) })), isReadable);
+  }
+});

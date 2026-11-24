@@ -19,6 +19,13 @@ export interface ArchiveEntry {
   data: Uint8Array;
 }
 
+export interface ReadArchiveOptions {
+  /** Only inflate entries whose lowercased basename satisfies this predicate. */
+  only?: (baseNameLower: string) => boolean;
+  /** Cap total inflated bytes for this archive (defaults to MAX_INFLATED_BYTES). */
+  maxInflated?: number;
+}
+
 /** Entry names must be plain root file names (no folders, drive letters or control characters). */
 export function isRootName(name: string): boolean {
   return !!name && name.length <= 255 && !/[\\/:\x00-\x1f\x7f]/.test(name) && name !== '.' && name !== '..';
@@ -38,30 +45,44 @@ export function writeArchive(entries: readonly ArchiveEntry[]): Uint8Array {
   return zipSync(files, { mtime: new Date('2026-01-01T00:00:00Z') });
 }
 
+class ArchiveLimitError extends Error {}
+
 /**
  * Read an archive into a case-insensitive map. Entries in folders are accepted by their base
  * name (some exporters nest files), but a base-name collision is rejected.
  */
-export function readArchive(bytes: Uint8Array, kind = 'MVR'): Map<string, ArchiveEntry> {
+export function readArchive(bytes: Uint8Array, kind = 'MVR', options: ReadArchiveOptions = {}): Map<string, ArchiveEntry> {
   if (bytes.length > MAX_ARCHIVE_BYTES) throw new Error(`This ${kind} file exceeds the 512 MiB limit.`);
+  const maxInflated = Math.min(MAX_INFLATED_BYTES, options.maxInflated ?? MAX_INFLATED_BYTES);
   let raw: Record<string, Uint8Array>;
-  let entries = 0, inflated = 0;
+  let entries = 0, inflated = 0, compressed = 0;
   try {
     raw = unzipSync(bytes, {
       filter(entry) {
         if (entry.name.endsWith('/')) return false;
-        if (++entries > MAX_ENTRIES) throw new Error(`more than ${MAX_ENTRIES} files.`);
+        if (++entries > MAX_ENTRIES) throw new ArchiveLimitError(`more than ${MAX_ENTRIES} files.`);
+        const baseName = entry.name.split(/[\\/]/).pop()!;
+        if (options.only && !options.only(baseName.toLowerCase())) return false;
+        // Guard against overlapping STORE entries whose declared originalSize is 0 while size is huge.
+        if (entry.compression === 0 && entry.size !== entry.originalSize) {
+          throw new ArchiveLimitError(`"${entry.name}" has mismatched stored sizes.`);
+        }
+        compressed += entry.size;
+        if (compressed > bytes.length) {
+          throw new ArchiveLimitError('overlapping archive entries exceed the file size.');
+        }
         const text = /\.(xml|json|txt)$/i.test(entry.name);
-        if (entry.originalSize > (text ? MAX_TEXT_ENTRY_BYTES : MAX_ENTRY_BYTES))
-          throw new Error(`"${entry.name}" exceeds ${text ? 64 : 256} MiB.`);
+        if (entry.originalSize > (text ? MAX_TEXT_ENTRY_BYTES : MAX_ENTRY_BYTES)) {
+          throw new ArchiveLimitError(`"${entry.name}" exceeds ${text ? 64 : 256} MiB.`);
+        }
         // fflate stops inflating at the declared size, so declared sizes bound the real total.
         inflated += entry.originalSize;
-        if (inflated > MAX_INFLATED_BYTES) throw new Error('its contents exceed 1 GiB.');
+        if (inflated > maxInflated) throw new ArchiveLimitError('its contents exceed 1 GiB.');
         return true;
       },
     });
   } catch (error) {
-    const reason = error instanceof Error && /MiB|GiB|files\./.test(error.message) ? ': ' + error.message : '.';
+    const reason = error instanceof ArchiveLimitError ? ': ' + error.message : '.';
     throw new Error(`Cannot read this ${kind} archive${reason}`);
   }
   const out = new Map<string, ArchiveEntry>();

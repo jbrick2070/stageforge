@@ -88,3 +88,32 @@ test('deck corners, curved and transformed trusses, ground supports and patch ta
   assert.deepEqual([41,42,43,50].map(code => number(arch,code)),[1.5,1.5,1.5,30]);
   assert.ok(select(all,'TEXT','LABELS').some(e => values(e,1)[0].includes('Caf\\U+00E9 0 EOF')));
 });
+
+test('DXF encodes fixture INSERT rotation, invalid-patch tags and 600-character XDATA chunking', async () => {
+  const { placeFixtures } = await compiler.ssrLoadModule('/src/data/fixturePlacement.ts');
+  const rig = createBlankDesign();
+  rig.name = '\x00\x1f%%cControl';
+  const longModel = 'M'.repeat(600);
+  rig.trussPods = [{
+    id: 'rot', name: 'Rotated', shape: 'box', width: 6, x: 0, baseY: 5, z: 0, rotationY: Math.PI / 2,
+    motorized: false, motorMinY: 5, motorMaxY: 5,
+    fixtures: [
+      { id: 'g-ok', type: 'beam', modelName: longModel, count: 1, dmxUniverse: 1, dmxStartChannel: 1 },
+      { id: 'g-bad', type: 'beam', modelName: 'Overflow', count: 1, dmxUniverse: 1, dmxStartChannel: 510 },
+    ],
+  }];
+  const dxf = exportStageDxf(rig);
+  assert.doesNotMatch(dxf, /[^\x00-\x7F]/, 'output stays pure ASCII');
+  const all = entities(dxf);
+  const placements = placeFixtures(rig);
+  const fixtures = select(all, 'INSERT', 'FIXTURES');
+  const firstInsert = fixtures.find((e) => values(e, 1000).includes('g-ok'));
+  assert.ok(firstInsert);
+  assert.ok(Math.abs(number(firstInsert, 50) - placements[0].yaw * 180 / Math.PI) < 1e-4, 'group code 50 matches unit.yaw');
+  // 600-char modelName chunked across 255-byte XDATA 1000 strings reconstructs cleanly (without dropping tail chars).
+  const xdataStrings = values(firstInsert, 1000);
+  const groupIdx = xdataStrings.indexOf('g-ok');
+  assert.equal(xdataStrings.slice(0, groupIdx).join(''), longModel);
+  const tags = select(all, 'TEXT', 'PATCH_TAGS').map((e) => values(e, 1)[0]);
+  assert.ok(tags.some((t) => t.includes('U1.510 (invalid patch)')), 'overflowing unit carries (invalid patch) tag');
+});

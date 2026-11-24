@@ -72,11 +72,14 @@ export function allocateDmx(
   preferred: Universe,
   extend?: Group,
 ) {
+  if (!Number.isSafeInteger(count) || count <= 0) return;
   const { claimed } = buildDmxPatch(rig);
   const width = equipment[type].dmxFootprint;
   const needed = count * width;
-  const next = extend && extend.dmxStartChannel + extend.count * width;
-  if (next && next + needed <= 513 && !claimed[preferred].subarray(next, next + needed).some(Boolean)) {
+  if (needed > 512) return;
+  const canExtend = extend && extend.type === type && extend.dmxUniverse === preferred;
+  const next = canExtend ? extend.dmxStartChannel + extend.count * equipment[extend.type].dmxFootprint : undefined;
+  if (next && next >= 1 && next + needed <= 513 && !claimed[preferred].subarray(next, next + needed).some(Boolean)) {
     return { dmxUniverse: preferred, dmxStartChannel: next, extendsGroup: true };
   }
   const order: Universe[] = [preferred, preferred === 1 ? 2 : 1];
@@ -96,17 +99,18 @@ export function addPatchedUnits<G extends Group>(
   addition: G,
   extend?: G,
 ): G[] | undefined {
+  const compatibleExtend = extend && extend.type === addition.type ? extend : undefined;
   const patch = allocateDmx(
     rig,
     addition.type,
     addition.count,
-    extend?.dmxUniverse ?? addition.dmxUniverse,
-    extend,
+    compatibleExtend?.dmxUniverse ?? addition.dmxUniverse,
+    compatibleExtend,
   );
   if (!patch) return;
-  if (patch.extendsGroup && extend) {
+  if (patch.extendsGroup && compatibleExtend) {
     return groups.map((g) => {
-      if (g !== extend) return g;
+      if (g !== compatibleExtend) return g;
       const count = g.count + addition.count;
       if ('spread' in g && g.count === 1 && g.spread === 0) {
         // Leave the first emitter where the split placed it and grow to its right.
@@ -117,14 +121,14 @@ export function addPatchedUnits<G extends Group>(
     });
   }
   const next = { ...addition, dmxUniverse: patch.dmxUniverse, dmxStartChannel: patch.dmxStartChannel };
-  if (extend && 'spread' in extend && 'spread' in next) {
+  if (compatibleExtend && 'spread' in compatibleExtend && 'spread' in next) {
     // A split address block still occupies the same evenly spaced row on the deck.
-    const spacing = extend.spread / (extend.count + next.count - 1) || Math.min(rig.stageWidth / 6, 2);
-    const left = extend.x - extend.spread / 2;
-    const span = spacing * (extend.count - 1);
+    const spacing = compatibleExtend.spread / (compatibleExtend.count + next.count - 1) || Math.min(rig.stageWidth / 6, 2);
+    const left = compatibleExtend.x - compatibleExtend.spread / 2;
+    const span = spacing * (compatibleExtend.count - 1);
     next.spread = spacing * (next.count - 1);
-    next.x = left + spacing * extend.count + next.spread / 2;
-    return [...groups.map((g) => (g === extend ? { ...g, x: left + span / 2, spread: span } : g)), next];
+    next.x = left + spacing * compatibleExtend.count + next.spread / 2;
+    return [...groups.map((g) => (g === compatibleExtend ? { ...g, x: left + span / 2, spread: span } : g)), next];
   }
   return [...groups, next];
 }

@@ -22,7 +22,8 @@ function advanceMusic(music: MusicRef, seconds: number, bpm: number): MusicRef {
 // Reconstruct from the saved starting frame. Repeated cue IDs and simultaneous
 // events retain their recorded order, regardless of the previous playhead position.
 export function resolveTakeFrame(take: ShowTimeline, requestedMs: number, base: TransportFrame, running: boolean): TimelineEvent {
-  const atMs = Math.round(Math.max(0, Math.min(requestedMs, take.durationMs)));
+  const safeRequested = Number.isFinite(requestedMs) ? requestedMs : requestedMs === Infinity ? take.durationMs : 0;
+  const atMs = Math.round(Math.max(0, Math.min(safeRequested, take.durationMs)));
   const frame = { ...base, look: { ...base.look } };
   let musicAt = 0;
   let screenAt = 0;

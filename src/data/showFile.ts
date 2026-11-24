@@ -1,12 +1,13 @@
-import schemaV1 from '../../public/schemas/show-v1.schema.json';
-import schemaV2 from '../../public/schemas/show-v2.schema.json';
-import schemaV3 from '../../public/schemas/show-v3.schema.json';
+import schemaV1 from '../schemas/show-v1.schema.json';
+import schemaV2 from '../schemas/show-v2.schema.json';
+import schemaV3 from '../schemas/show-v3.schema.json';
 import type { BumpState, CameraPreset, MusicRef, RigConfig, ScreenRef, ShowCue, ShowState } from '../types/show';
 import { parseRigJson } from './rigImport';
 import { focusMarks } from '../engine/focusAim';
 import { laserProjectors } from './laserProjectors';
 
 export type { MusicRef, ScreenRef } from '../types/show';
+export const MAX_SHOW_JSON_BYTES = 32 * 1024 * 1024;
 export const SHOW_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v1.schema.json';
 
 const V2_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v2.schema.json';
@@ -311,9 +312,13 @@ export function makeShowFile(
 }
 
 export function parseShowFile(source: string): StageForgeShowFile {
+  const clean = source.charCodeAt(0) === 0xfeff ? source.slice(1) : source;
+  if (clean.length > MAX_SHOW_JSON_BYTES || new TextEncoder().encode(clean).length > MAX_SHOW_JSON_BYTES) {
+    throw new Error('This show JSON file exceeds the 32 MiB limit.');
+  }
   let value: unknown;
   try {
-    value = JSON.parse(source);
+    value = JSON.parse(clean);
   } catch {
     throw new Error('Choose a valid StageForge show JSON file.');
   }

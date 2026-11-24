@@ -69,7 +69,13 @@ export async function createShowBundle(show: StageForgeShowFile, assets: Readonl
   }
   files['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2) + '\n');
   // A fixed timestamp keeps bundles of identical shows byte-identical.
-  const zip = zipSync(files, { level: 0, mtime: '2000-01-01T00:00:00Z' });
+  let zip: Uint8Array;
+  try {
+    zip = zipSync(files, { level: 0, mtime: '2000-01-01T00:00:00Z' });
+  } catch (error) {
+    if (error instanceof RangeError) throw sizeError();
+    throw new Error('Could not package this StageForge bundle.');
+  }
   if (zip.length > MAX_BUNDLE_BYTES) throw sizeError();
   return new Blob([zip as Uint8Array<ArrayBuffer>], { type: 'application/zip' });
 }
@@ -77,25 +83,39 @@ export async function createShowBundle(show: StageForgeShowFile, assets: Readonl
 // Only types the desk can decode for each kind survive; anything else becomes untyped bytes.
 const MIME_FOR: Record<AssetKind, RegExp> = { file: /^audio\/[\w.+-]+$/i, image: /^image\/[\w.+-]+$/i, video: /^video\/[\w.+-]+$/i };
 const DIRECTORIES = new Set(['media/', 'media/file/', 'media/image/', 'media/video/']);
+class BundleFormatError extends Error {}
 
 export async function openShowBundle(archive: Uint8Array) {
   if (archive.length > MAX_BUNDLE_BYTES) throw sizeError();
   let total = 0;
+  let compressed = 0;
   const seen = new Set<string>();
-  const files = unzipSync(archive, { filter(entry) {
-    if (seen.has(entry.name)) throw new Error('Duplicate bundle entry: ' + entry.name);
-    // Archivers that re-zip an extracted bundle add folder entries; they carry no data.
-    if (DIRECTORIES.has(entry.name) && entry.originalSize === 0) return false;
-    seen.add(entry.name);
-    const elements = entry.name.split('/');
-    const meta = entry.name === 'manifest.json' || entry.name === 'show.json';
-    if (!meta && !(elements.length === 3 && elements[0] === 'media' && ['video','image','file'].includes(elements[1]) && portableName(elements[2])))
-      throw new Error('Unexpected path in bundle: ' + entry.name);
-    if (meta && entry.originalSize > MAX_META) throw new Error('Bundle metadata is too large.');
-    total += entry.originalSize;
-    if (seen.size > MAX_ENTRIES || total > MAX_BUNDLE_BYTES) throw sizeError();
-    return true;
-  }});
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unzipSync(archive, { filter(entry) {
+      if (seen.has(entry.name)) throw new BundleFormatError('Duplicate bundle entry: ' + entry.name);
+      // Archivers that re-zip an extracted bundle add folder entries; they carry no data.
+      if (DIRECTORIES.has(entry.name) && entry.originalSize === 0 && (entry.compression !== 0 || entry.size === 0)) return false;
+      seen.add(entry.name);
+      if (entry.compression === 0 && entry.size !== entry.originalSize) {
+        throw new BundleFormatError('Corrupt bundle entry size: ' + entry.name);
+      }
+      compressed += entry.size;
+      if (compressed > archive.length) throw new BundleFormatError('Overlapping entries exceed the bundle archive size.');
+      const elements = entry.name.split('/');
+      const meta = entry.name === 'manifest.json' || entry.name === 'show.json';
+      if (!meta && !(elements.length === 3 && elements[0] === 'media' && ['video','image','file'].includes(elements[1]) && portableName(elements[2])))
+        throw new BundleFormatError('Unexpected path in bundle: ' + entry.name);
+      if (meta && entry.originalSize > MAX_META) throw new BundleFormatError('Bundle metadata is too large.');
+      total += entry.originalSize;
+      if (seen.size > MAX_ENTRIES || total > MAX_BUNDLE_BYTES) throw new BundleFormatError(sizeError().message);
+      return true;
+    }});
+  } catch (error) {
+    if (error instanceof BundleFormatError) throw new Error(error.message);
+    if (error instanceof RangeError) throw sizeError();
+    throw new Error('Cannot read this StageForge bundle archive.');
+  }
   if (!files['manifest.json'] || !files['show.json']) throw new Error('Choose a StageForge bundle containing manifest.json and show.json.');
   let manifest: Manifest;
   try { manifest = JSON.parse(strFromU8(files['manifest.json'])); } catch { throw new Error('The StageForge bundle manifest is not valid JSON.'); }

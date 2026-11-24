@@ -1,34 +1,39 @@
 import React, { useMemo, useState } from 'react';
 import { X, Radio } from 'lucide-react';
 import { buildDmxPatch, DMX_CHANNELS } from '../data/dmxPatch';
+import { useLive, type LiveStore } from '../state/liveTelemetry';
 import { RigConfig } from '../types/show';
+
+export interface DmxSnapshot {
+  u1: Uint8Array;
+  u2: Uint8Array;
+}
 
 interface DmxMonitorDrawerProps {
   open: boolean;
   rig: RigConfig;
-  universe1: Uint8Array;
-  universe2: Uint8Array;
+  dmxStore: LiveStore<DmxSnapshot>;
   onClose: () => void;
 }
 
 export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   open,
   rig,
-  universe1,
-  universe2,
+  dmxStore,
   onClose,
 }) => {
   const [universe, setUniverse] = useState<1 | 2>(1);
   const [view, setView] = useState<'grid' | 'patch'>('grid');
-
   const [bank, setBank] = useState(0);
+  const dmx = useLive(dmxStore);
 
-  const patch = useMemo(() => buildDmxPatch(rig), [rig.trussPods, rig.floorFx]);
-  const rows = useMemo(() => patch.rows.filter(row => row.group.dmxUniverse === universe), [patch, universe]);
+  const patch = useMemo(() => (open ? buildDmxPatch(rig) : null), [open, rig.trussPods, rig.floorFx]);
+  const rows = useMemo(() => (patch ? patch.rows.filter(row => row.group.dmxUniverse === universe) : []), [patch, universe]);
   const channelNames = useMemo(() => {
+    if (!patch) return [];
     const names = Array.from({ length: 512 }, () => [] as string[]);
     for (const row of rows) {
-      for (let address = row.start; address <= Math.min(row.end, 512); address++) {
+      for (let address = Math.max(1, row.start); address <= Math.min(row.end, 512); address++) {
         const index = Math.floor((address - row.start) / row.width);
         const channel = DMX_CHANNELS[row.group.type][(address - row.start) % row.width] ?? 'Reserved';
         const disabled = patch.unitStart(row.group, index) ? '' : ' · output disabled';
@@ -40,7 +45,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   if (!open) return null;
   const invalid = rows.some(row => row.conflicts.length > 0 || row.end > 512);
 
-  const data = universe === 1 ? universe1 : universe2;
+  const data = universe === 1 ? dmx.u1 : dmx.u2;
 
   return (
     <aside aria-label="DMX monitor" className="dmx-monitor-panel fixed top-16 bottom-[270px] left-2.5 w-[370px] z-35 glass-panel rounded-xl shadow-2xl flex flex-col overflow-hidden">

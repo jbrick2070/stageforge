@@ -56,7 +56,7 @@ If a file is missing, click the missing-media button to relink it. A cue that ca
 
 Choose **Files → Open Split Rig rehearsal → Show cues → Replay take** for a 16-second example. In **Lighting**, select **Beams** or **Washes** to change their movement, focus and colors independently. In **Lasers**, select a projector to change its ray count, pattern resolution and colors. **Rig builder** holds the optical profiles and LED cabinet dimensions.
 
-The project specification, schemas, examples and implementation are public under the repository's MIT license. [Show format](docs/show-format.md) · [Version 2 schema](public/schemas/show-v2.schema.json) · [Split Rig example](public/examples/split-rig.stageforge.show.json) · [License](LICENSE)
+The project specification, schemas, examples and implementation are public under the repository's MIT license. [Show format](docs/show-format.md) · [Version 2 schema](src/schemas/show-v2.schema.json) · [Split Rig example](public/examples/split-rig.stageforge.show.json) · [License](LICENSE)
 
 ## Draw the stage plan
 

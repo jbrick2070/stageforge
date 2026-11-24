@@ -43,21 +43,30 @@ export function DeskDialog({ title, onClose, children }: {title: string; onClose
   </dialog>;
 }
 
-export function ShowFiles({ name, media, stage, timeline, missing, cueNames, onOpen, onExample, onSave, onRelink, onClose }: {
+export function ShowFiles({ name, media, stage, timeline, missing, cueNames, onOpen, onExample, onSave, onRelink, onError, onClose }: {
   name: string; media: ShowMedia; stage?: NativeStage; timeline?: ShowTimeline; missing: string[]; cueNames: Map<string, string>;
   onOpen: (file: File) => Promise<void>; onSave: (action: FileAction) => Promise<void>;
   onExample: (name: 'amber-walk-on' | 'split-rig') => Promise<void>;
-  onRelink: (files: File[]) => string; onClose: () => void;
+  onRelink: (files: File[]) => string; onError?: (message: string) => void; onClose: () => void;
 }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [page, setPage] = useState(0);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const picker = useRef<HTMLInputElement>(null);
   const relink = useRef<HTMLInputElement>(null);
   const job = async (fn: () => Promise<void>) => {
     setBusy(true); setNote('');
-    try { await fn(); } catch (e) { setNote(e instanceof Error ? e.message : 'Could not complete the file operation.'); }
-    finally { setBusy(false); }
+    try { await fn(); } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Could not complete the file operation.';
+      if (mounted.current) setNote(msg);
+      else onError?.(msg);
+    }
+    finally { if (mounted.current) setBusy(false); }
   };
   const wallNames = new Map((stage?.walls ?? []).map(w => [w.id, w.label || w.id]));
   const actions: Array<{ atMs: number; text: string }> = [
@@ -90,7 +99,11 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, onO
     {missing.length > 0 && <p>Files to relink: {missing.join(', ')}</p>}
     <button disabled={!missing.length} onClick={() => relink.current?.click()}>Relink media files…</button>
     <input type="file" hidden multiple ref={relink} aria-label="Relink media files" accept="audio/*,video/*,image/*"
-      onChange={e => { setNote(onRelink(Array.from(e.target.files ?? []))); e.target.value = ''; }}/>
+      onChange={e => {
+        try { setNote(onRelink(Array.from(e.target.files ?? []))); }
+        catch (err) { setNote(err instanceof Error ? err.message : 'Could not relink media files.'); }
+        e.target.value = '';
+      }}/>
     {(timeline || actions.length > 0) && <details className="take-list"><summary>Recorded actions · {timecode(takeDuration)} · {actions.length} events</summary>
       <ol>{actions.slice(page * 30, (page + 1) * 30).map((e, i) =>
         <li key={i}><time>{timecode(e.atMs)}</time><span>{e.text}</span></li>)}</ol>

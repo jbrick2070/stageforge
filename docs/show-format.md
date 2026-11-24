@@ -1,10 +1,10 @@
 # StageForge show files
 
-A `.stageforge.show.json` file stores a rig, its ordered cue list and the lighting desk as plain UTF-8 JSON. Version 1 can also carry a recorded sequence, camera and volume settings, and the names and positions of sound and screen media. The schema uses JSON Schema Draft 2020-12. [Version 1 schema](../public/schemas/show-v1.schema.json) · [Amber Walk-on example](../public/examples/amber-walk-on.stageforge.show.json)
+A `.stageforge.show.json` file stores a rig, its ordered cue list and the lighting desk as plain UTF-8 JSON. Version 1 can also carry a recorded sequence, camera and volume settings, and the names and positions of sound and screen media. The schema uses JSON Schema Draft 2020-12. [Version 1 schema](../src/schemas/show-v1.schema.json) · [Amber Walk-on example](../public/examples/amber-walk-on.stageforge.show.json)
 
-Version 2 adds per-group optics, independent moving-head looks, per-projector laser settings and LED cabinet grids. The writer selects v1 whenever the rig, cues and entire take fit that schema. [Version 2 schema](../public/schemas/show-v2.schema.json)
+Version 2 adds per-group optics, independent moving-head looks, per-projector laser settings and LED cabinet grids. The writer selects v1 whenever the rig, cues and entire take fit that schema. [Version 2 schema](../src/schemas/show-v2.schema.json)
 
-Version 3 adds a required `stage` object for editable trusses, speaker hangs, scenery, wall placements and independent secondary-screen events. The primary wall still follows the standard show timeline. The web desk previews its supported fields and preserves the native stage when saving the same show. Starting a separate rig clears that stage. All three schemas ship with the web reader for offline validation. [Version 3 schema](../public/schemas/show-v3.schema.json)
+Version 3 adds a required `stage` object for editable trusses, speaker hangs, scenery, wall placements and independent secondary-screen events. The primary wall still follows the standard show timeline. The web desk previews its supported fields and preserves the native stage when saving the same show. Starting a separate rig clears that stage. All three schemas ship with the web reader for offline validation. [Version 3 schema](../src/schemas/show-v3.schema.json)
 
 ## Opening the examples
 

@@ -5,7 +5,7 @@
  * MVR 1.6: right-handed, Z up, millimetres; a Matrix is written `{u}{v}{w}{o}` where u, v, w
  * are the object's local X, Y, Z axes in the parent frame and o is the origin in millimetres.
  *
- * The change of basis C maps StageForge (x, y, z) to MVR (x, −z, y): a −90° rotation about X.
+ * The change of basis C maps StageForge (x, y, z) to MVR (x, −z, y): a +90° rotation about X.
  * The audience therefore sits toward MVR −Y and upstage toward +Y. Because C is a proper
  * rotation, a yaw about StageForge +Y becomes the same-signed yaw about MVR +Z.
  */
@@ -76,10 +76,17 @@ export interface Pose {
 
 /** Read position and yaw back from an MVR matrix (the inverse of poseMatrix for its outputs). */
 export function readPose(m: MvrMatrix): Pose {
-  const standing = m.w.z < 0;
+  const wLen = Math.hypot(m.w.x, m.w.y, m.w.z) || 1;
+  // Ignore tiny negative floating-point noise (-1e-16) on horizontal boom mounts while keeping
+  // deliberately tilted floor-standing fixtures classified as standing.
+  const standing = m.w.z / wLen < -1e-6;
   // For a hung object u = (cos, sin, 0); for a standing one u is unchanged by the X flip.
-  const yaw = Math.atan2(m.u.y, m.u.x) / DEG;
-  const tilt = Math.acos(Math.max(-1, Math.min(1, Math.abs(m.w.z) / (Math.hypot(m.w.x, m.w.y, m.w.z) || 1)))) / DEG;
+  // When u is nearly vertical, fall back to projecting v onto the horizontal plane.
+  const uHoriz = Math.hypot(m.u.x, m.u.y);
+  const yaw = (uHoriz > 1e-6
+    ? Math.atan2(m.u.y, m.u.x)
+    : Math.atan2(standing ? m.v.x : -m.v.x, standing ? -m.v.y : m.v.y)) / DEG;
+  const tilt = Math.acos(Math.max(-1, Math.min(1, Math.abs(m.w.z) / wLen))) / DEG;
   const wrapped = ((((yaw + 180) % 360) + 360) % 360) - 180;
   return { position: fromMvrPoint(m.o), yawDeg: wrapped === -180 ? 180 : wrapped, standing, tiltDeg: tilt };
 }

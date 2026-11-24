@@ -12,15 +12,15 @@ const compiler = await createServer({
 after(() => compiler.close());
 
 const { exportMvr, fixtureKey } = await compiler.ssrLoadModule('/src/interchange/mvr/exportMvr.ts');
-const { importMvr } = await compiler.ssrLoadModule('/src/interchange/mvr/importMvr.ts');
+const { importMvr, readAddress } = await compiler.ssrLoadModule('/src/interchange/mvr/importMvr.ts');
 const { readArchive, writeArchive, utf8 } = await compiler.ssrLoadModule('/src/interchange/mvr/archive.ts');
 const { parseXml, list, child, attr, text } = await compiler.ssrLoadModule('/src/interchange/mvr/xml.ts');
-const { readPose, parseMatrix, readMatrix, matrixText, poseMatrix } = await compiler.ssrLoadModule('/src/interchange/mvr/coords.ts');
+const { compose, readPose, parseMatrix, readMatrix, matrixText, poseMatrix } = await compiler.ssrLoadModule('/src/interchange/mvr/coords.ts');
 const { readGdtf, profileArchive, PROFILES, classifyGdtf } = await compiler.ssrLoadModule('/src/interchange/mvr/gdtf.ts');
 const { placeFixtures, mountSlotIndex } = await compiler.ssrLoadModule('/src/data/fixturePlacement.ts');
 const { parseRigJson } = await compiler.ssrLoadModule('/src/data/rigImport.ts');
 const { parseShowFile } = await compiler.ssrLoadModule('/src/data/showFile.ts');
-const { createBlankDesign, withPlatforms } = await compiler.ssrLoadModule('/src/data/stageDesign.ts');
+const { createBlankDesign, podWorldPoint, withPlatforms } = await compiler.ssrLoadModule('/src/data/stageDesign.ts');
 const { RIG_TEMPLATES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 
 const fixtureShow = parseShowFile(await readFile(new URL('./fixtures/native-authoring-v3.stageforge.show.json', import.meta.url), 'utf8'));
@@ -352,4 +352,148 @@ test('absurd matrices are unknown placements, and a damaged stage overlay is lef
   assert.deepEqual(foreign.rig.trussPods.map((p) => p.name), ['LX1']);
   assert.equal(foreign.report.fixtures, 0);
   assert.match(foreign.report.notes.join(' '), /2 objects with an unreadable or absurd matrix were skipped/);
+});
+
+test('GDTF reader skips unused entries, bounds Offset lists, caps distinct GDTFs and classifies RGB pars cleanly', () => {
+  // H3: A GDTF with a large unused texture entry must still read description.xml without inflating the texture.
+  const validXml = `<?xml version="1.0"?><GDTF DataVersion="1.2"><FixtureType Name="LED Par" Manufacturer="Acme">
+    <Geometries><Geometry Name="Base"><Beam Name="Beam" BeamType="Wash" BeamAngle="25"/></Geometry></Geometries>
+    <DMXModes><DMXMode Name="RGBS" Geometry="Base"><DMXChannels>
+      <DMXChannel Offset="1" Geometry="Beam"><LogicalChannel Attribute="Dimmer"/></DMXChannel>
+      <DMXChannel Offset="2" Geometry="Beam"><LogicalChannel Attribute="ColorAdd_R"/></DMXChannel>
+      <DMXChannel Offset="3" Geometry="Beam"><LogicalChannel Attribute="ColorAdd_G"/></DMXChannel>
+      <DMXChannel Offset="4" Geometry="Beam"><LogicalChannel Attribute="ColorAdd_B"/></DMXChannel>
+      <DMXChannel Offset="5" Geometry="Beam"><LogicalChannel Attribute="Shutter1Strobe"/></DMXChannel>
+    </DMXChannels></DMXMode></DMXModes>
+  </FixtureType></GDTF>`;
+  const gdtfWithExtra = writeArchive([
+    { name: 'description.xml', data: utf8.encode(validXml) },
+    { name: 'huge.png', data: new Uint8Array(1024) },
+  ]);
+  // Patch central directory of huge.png so its declared originalSize is 200 MiB (must be skipped by only filter!).
+  const patched = new Uint8Array(gdtfWithExtra);
+  const needle = utf8.encode('huge.png');
+  let cdOff = -1;
+  for (let i = 0; i <= patched.length - 46; i++) {
+    if (patched[i] === 0x50 && patched[i + 1] === 0x4b && patched[i + 2] === 0x01 && patched[i + 3] === 0x02) {
+      const nameLen = new DataView(patched.buffer).getUint16(i + 28, true);
+      if (nameLen === needle.length && needle.every((b, k) => patched[i + 46 + k] === b)) { cdOff = i; break; }
+    }
+  }
+  assert.ok(cdOff > 0);
+  new DataView(patched.buffer).setUint32(cdOff + 24, 200 * 1024 * 1024, true);
+  const summary = readGdtf(patched);
+  assert.equal(summary.name, 'LED Par');
+  // M6: Static RGB par with auxiliary Shutter1Strobe must NOT be misclassified as strobe.
+  assert.equal(classifyGdtf(summary, 'RGBS', false), 'blinder');
+
+  // M2: Huge Offset list and 1e20 offset must stay bounded and never overflow the call stack.
+  const hugeOffset = '1,'.repeat(200_000) + '1e20,12';
+  const offsetXml = `<?xml version="1.0"?><GDTF DataVersion="1.2"><FixtureType Name="Hostile" Manufacturer="Bad">
+    <Geometries/><DMXModes><DMXMode Name="M" Geometry="Base"><DMXChannels>
+      <DMXChannel Offset="${hugeOffset}" Geometry="Base"><LogicalChannel Attribute="Dimmer"/></DMXChannel>
+    </DMXChannels></DMXMode></DMXModes>
+  </FixtureType></GDTF>`;
+  const bounded = readGdtf(writeArchive([{ name: 'description.xml', data: utf8.encode(offsetXml) }]));
+  assert.ok(bounded.modes[0].footprint <= 512);
+
+  // H3: > 64 distinct GDTF files in one MVR are capped with a report note.
+  const extraGdtfs = {};
+  const fixtures = Array.from({ length: 70 }, (_, i) => {
+    const specName = `spec-${i}.gdtf`;
+    extraGdtfs[specName] = writeArchive([{ name: 'description.xml', data: utf8.encode(validXml) }]);
+    return `<Fixture uuid="bbbbbbbb-0000-4000-8000-${String(i + 1).padStart(12, '0')}" name="Par ${i + 1}">
+      <Matrix>{1,0,0}{0,1,0}{0,0,1}{${i * 200},0,-300}</Matrix>
+      <GDTFSpec>${specName}</GDTFSpec><GDTFMode>RGBS</GDTFMode>
+      <FixtureID>${i + 1}</FixtureID><FixtureIDNumeric>${i + 1}</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+      <Addresses><Address break="0">${1 + i}</Address></Addresses></Fixture>`;
+  }).join('');
+  const capped = importMvr(foreignMvr({ fixtures, gdtf: extraGdtfs }));
+  assert.match(capped.report.notes.join(' '), /Only the first 64 distinct GDTF profiles/);
+});
+
+test('hostile GLB, missing verMajor, corrupt StageForge payload, GroupObject offsets, path spans and readAddress edge cases', async () => {
+  const { boxGlb } = await compiler.ssrLoadModule('/src/interchange/mvr/glb.ts');
+  // H4: Hostile GLB with scalar min/max must NOT throw TypeError during importMvr.
+  const badPayload = utf8.encode(JSON.stringify({ meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }], accessors: [{ min: 5, max: 5 }] }));
+  const jsonLen = (badPayload.length + 3) & ~3;
+  const badGlb = new Uint8Array(20 + jsonLen);
+  const dv = new DataView(badGlb.buffer);
+  dv.setUint32(0, 0x46546c67, true); dv.setUint32(4, 2, true); dv.setUint32(8, badGlb.length, true);
+  dv.setUint32(12, jsonLen, true); dv.setUint32(16, 0x4e4f534a, true);
+  badGlb.set(badPayload, 20); badGlb.fill(0x20, 20 + badPayload.length);
+  const hostileGlbImport = importMvr(foreignMvr({ fixtures: '', gdtf: { truss: badGlb } }));
+  assert.equal(hostileGlbImport.rig.trussPods.length, 1);
+
+  // L2: Missing verMajor gives a readable message without "undefined".
+  const noVer = writeArchive([{ name: 'GeneralSceneDescription.xml', data: utf8.encode('<GeneralSceneDescription><Scene/></GeneralSceneDescription>') }]);
+  assert.throws(() => importMvr(noVer), (e) => e instanceof Error && !/undefined/.test(e.message) && /MVR version/.test(e.message));
+
+  // L4: StageForge-marked MVR with corrupt JSON payload falls back to foreign import with a note.
+  const exported = exportMvr(referenceRig());
+  const { files } = scene(exported);
+  const corruptPayload = writeArchive([...files.values()].map((f) => (
+    f.name === 'StageForge_show.json' ? { name: f.name, data: utf8.encode('{bad json') } : f
+  )));
+  const fallback = importMvr(corruptPayload);
+  assert.equal(fallback.report.source, 'mvr');
+  assert.match(fallback.report.notes.join(' '), /embedded StageForge payload was unreadable/);
+
+  // H6: Yawed foreign truss with offset Geometry3D (1 m along local X) + GroupObject offset (+2 m X).
+  const yawDeg = 30;
+  const rad = yawDeg * Math.PI / 180;
+  const yawedTruss = `<Truss uuid="aaaaaaaa-0000-4000-8000-000000000099" name="Yawed">
+    <Matrix>${matrixText(poseMatrix({ x: 1, y: 6, z: 2 }, yawDeg))}</Matrix>
+    <Geometries><Geometry3D fileName="truss.glb"><Matrix>{1,0,0}{0,1,0}{0,0,1}{1000,0,0}</Matrix></Geometry3D></Geometries>
+    <FixtureID></FixtureID><FixtureIDNumeric>0</FixtureIDNumeric></Truss>`;
+  const grouped = `<GroupObject uuid="eeeeeeee-0000-4000-8000-000000000001" name="Grp">
+    <Matrix>{1,0,0}{0,1,0}{0,0,1}{2000,10000,0}</Matrix>
+    <ChildList><Fixture uuid="bbbbbbbb-0000-4000-8000-000000000999" name="Grouped Spot">
+      <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,5000}</Matrix><GDTFSpec></GDTFSpec><GDTFMode></GDTFMode>
+      <FixtureID>1</FixtureID><FixtureIDNumeric>1</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+      <Addresses><Address break="0">1</Address></Addresses></Fixture></ChildList></GroupObject>`;
+  const geoImport = importMvr(foreignMvr({ fixtures: '', extra: yawedTruss + grouped, gdtf: { truss: boxGlb(4, 0.3, 0.3) } }));
+  const pod = geoImport.rig.trussPods.find((p) => p.name === 'Yawed');
+  assert.ok(Math.abs(pod.x - (1 + Math.cos(rad) * 1)) < 0.005);
+  assert.ok(Math.abs(pod.z - (2 - Math.sin(rad) * 1)) < 0.005);
+  const posPod = geoImport.rig.trussPods.find((p) => p.name.startsWith('Imported position'));
+  assert.ok(Math.abs(posPod.x - 2) < 0.005, 'GroupObject +2 m X offset applied to child fixture');
+
+  // H6: Path truss exported Geometry3D span matrix composes to match podWorldPoint ends.
+  const pathRig = createBlankDesign();
+  pathRig.trussPods = [{
+    id: 'path-1', name: 'Bent', shape: 'path', width: 5, x: 2, baseY: 6, z: -1, rotationY: 0.4,
+    motorized: false, motorMinY: 6, motorMaxY: 6,
+    path: [{ x: 0, z: 0 }, { x: 0, z: 4 }],
+    fixtures: [],
+  }];
+  const pathMvr = scene(exportMvr(pathRig));
+  const exportedTruss = list(pathMvr.childList, 'Truss')[0];
+  const trussMat = parseMatrix(text(exportedTruss, 'Matrix'));
+  const spanGeo = list(child(exportedTruss, 'Geometries'), 'Geometry3D')[0];
+  const spanMat = compose(trussMat, parseMatrix(text(spanGeo, 'Matrix')));
+  const spanCenter = readPose(spanMat).position;
+  const p0 = podWorldPoint(pathRig.trussPods[0], { x: 0, z: 0 });
+  const p1 = podWorldPoint(pathRig.trussPods[0], { x: 0, z: 4 });
+  assert.ok(Math.abs(spanCenter.x - (p0.x + p1.x) / 2) < 0.01);
+  assert.ok(Math.abs(spanCenter.z - (p0.z + p1.z) / 2) < 0.01);
+
+  // H6: readAddress edge cases and break ordering.
+  const addr = (entries) => readAddress({ Addresses: { Address: entries } });
+  assert.equal(addr('0'), undefined);
+  assert.equal(addr('-5'), undefined);
+  assert.equal(addr('1e3'), undefined);
+  assert.equal(addr('1.513'), undefined);
+  assert.equal(addr('32769.1'), undefined);
+  assert.equal(addr('1.0'), undefined);
+  assert.deepEqual(addr('2.10'), { universe: 2, channel: 10 });
+  assert.deepEqual(addr([{ '@_break': '2', '#text': '100' }, { '@_break': '0', '#text': '513' }]), { universe: 2, channel: 1 });
+
+  // H6: > 1024 fixtures triggers cap note and unpatched overflow drops excess cleanly.
+  const manyFixtures = Array.from({ length: 1030 }, (_, i) => `<Fixture uuid="bbbbbbbb-0000-4000-8000-${String(i + 1).padStart(12, '0')}" name="Spot ${i + 1}">
+    <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,5000}</Matrix><GDTFSpec></GDTFSpec><GDTFMode></GDTFMode>
+    <FixtureID>${i + 1}</FixtureID><FixtureIDNumeric>${i + 1}</FixtureIDNumeric><UnitNumber>1</UnitNumber></Fixture>`).join('');
+  const overflow = importMvr(foreignMvr({ fixtures: manyFixtures }));
+  assert.match(overflow.report.notes.join(' '), /Only the first 1024 of 1030 fixtures/);
+  assert.match(overflow.report.notes.join(' '), /did not fit in two universes/);
 });

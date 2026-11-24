@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { createServer } from 'vite';
+
+const isReadableError = (e) => e instanceof Error && !(e instanceof TypeError) && !(e instanceof RangeError) && e.message.length > 0;
 
 const compiler = await createServer({
   configFile: false, server: { middlewareMode: true, hmr: false, ws: false },
@@ -190,12 +193,39 @@ const badEdits = [
   ['invalid demo step', s => { s.timeline.events[3].music.demoStep = 1025; }],
 ];
 
-test('malformed nested rig, cue, media and timeline data produce an error', () => {
+test('malformed nested rig, cue, media and timeline data produce a readable Error (never TypeError/RangeError)', () => {
   for (const [name, edit] of badEdits) {
     const draft = structuredClone(example);
     edit(draft);
-    assert.throws(() => parse(draft), undefined, name);
+    assert.throws(() => parse(draft), isReadableError, name);
   }
-  assert.throws(() => parseShowFile('not JSON'));
-  assert.throws(() => parseShowFile(JSON.stringify(example).replace('"bpm":128', '"bpm":1e400')));
+  for (const raw of ['not JSON', 'null', '[]', '"x"', '{}', '{"version":"3"}', JSON.stringify(example).replace('"bpm":128', '"bpm":1e400')]) {
+    assert.throws(() => parseShowFile(raw), isReadableError, `reject ${raw.slice(0, 24)}`);
+  }
+  assert.throws(() => parseShowFile(' '.repeat(32 * 1024 * 1024 + 2) + '{}'), (e) => isReadableError(e) && /32 MiB/.test(e.message));
+  // UTF-8 BOM is accepted cleanly.
+  assert.equal(parseShowFile('\uFEFF' + JSON.stringify(example)).version, 1);
+});
+
+test('frozen v1, v2 and v3 show fixtures load cleanly and published schema hashes stay pinned', async () => {
+  const v1 = parseShowFile(await readFile(new URL('./fixtures/legacy-v1.stageforge.show.json', import.meta.url), 'utf8'));
+  const v2 = parseShowFile(await readFile(new URL('./fixtures/legacy-v2.stageforge.show.json', import.meta.url), 'utf8'));
+  const v3 = parseShowFile(await readFile(new URL('./fixtures/native-authoring-v3.stageforge.show.json', import.meta.url), 'utf8'));
+  const splitRig = parseShowFile(await readFile(new URL('../public/examples/split-rig.stageforge.show.json', import.meta.url), 'utf8'));
+  assert.equal(v1.version, 1);
+  assert.equal(v2.version, 2);
+  assert.equal(v3.version, 3);
+  assert.equal(splitRig.version, 2);
+
+  const expectedHashes = {
+    1: '608b285937d333e80ba9811c009a5470cf549c7ea714d3e4a7f62cef7702721d',
+    2: '8125404b9ecce247c05ff86fc322bd3f0ba155973782cae7a25d35054abc3d2c',
+    3: '0dee980fe57afb46a842318b092a567e600dbdb2a5b272a3e8bf47460c789c11',
+  };
+  for (const [ver, hash] of Object.entries(expectedHashes)) {
+    const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));
+    assert.equal(createHash('sha256').update(raw).digest('hex'), hash, `show-v${ver}.schema.json hash pin`);
+    const parsed = JSON.parse(raw.toString('utf8'));
+    assert.equal(parsed.$id, `https://jbrick2070.github.io/stageforge/schemas/show-v${ver}.schema.json`);
+  }
 });

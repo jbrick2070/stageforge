@@ -7,7 +7,7 @@ import { ScreenWallsEditor } from './ScreenWallsEditor';
 import type { NativeStage } from '../data/showFile';
 import { isCustomMainWall } from '../data/studioGeometry';
 import { addPatchedUnits, allocateDmx } from '../data/dmxPatch';
-import { downloadRig, parseRigJson } from '../data/rigImport';
+import { downloadRig, MAX_RIG_JSON_BYTES, parseRigJson } from '../data/rigImport';
 import { GRID_HEIGHT, ledPlacement } from '../data/stageEquipment';
 import { normalizeDesign } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
@@ -177,6 +177,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   const importJson = async (file: File) => {
     const request = ++importRequest.current;
     try {
+      if (file.size > MAX_RIG_JSON_BYTES) throw new Error('This rig JSON file exceeds the 32 MiB limit.');
       const source = await file.text();
       if (request !== importRequest.current) return;
       const next = parseRigJson(source);

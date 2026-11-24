@@ -6,13 +6,22 @@ import { requestedWallSize } from './stageEquipment';
 import { isStageProp } from './stageProps';
 import { MAX_PLATFORMS, MAX_PATH_POINTS, MIN_TRUSS_SPAN, normalizeDesign } from './stageDesign';
 
+export const MAX_RIG_JSON_BYTES = 32 * 1024 * 1024;
+const MAX_TRUSS_PODS = 256;
+const MAX_PROPS = 256;
+const MAX_COORD = 10000;
+const MAX_DIM = 1000;
+const UNSAFE_ID = /^(?:__proto__|prototype|constructor)$/;
+
 type Fields = Record<string, unknown>;
 type Check = (value: unknown) => boolean;
 
-const text: Check = (value) => typeof value === 'string' && value.trim().length > 0;
+const text: Check = (value) => typeof value === 'string' && value.length <= 1024 && value.trim().length > 0 && [...value].length <= 512;
+const safeId: Check = (value) => typeof value === 'string' && value.length <= 512 && value.trim().length > 0 && [...value].length <= 256 && !UNSAFE_ID.test(value);
 const bool: Check = (value) => typeof value === 'boolean';
 const number = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
-const positive: Check = (value) => number(value) && value > 0;
+const coord: Check = (value) => number(value) && value >= -MAX_COORD && value <= MAX_COORD;
+const dim: Check = (value) => number(value) && value > 0 && value <= MAX_DIM;
 const integer =
   (min: number, max = Number.MAX_SAFE_INTEGER): Check =>
   (value) =>
@@ -35,12 +44,15 @@ function checkFields(value: unknown, path: string, rules: Record<string, Check>)
   }
 }
 
-function checkList(value: unknown, path: string, checkItem: (entry: Fields, path: string) => void) {
+function checkList(value: unknown, path: string, checkItem: (entry: Fields, path: string) => void, maxItems?: number) {
   if (!Array.isArray(value)) throw new Error(`Expected a list at ${path}.`);
+  if (maxItems !== undefined && value.length > maxItems) {
+    throw new Error(`${path} can contain up to ${maxItems} entries.`);
+  }
   const ids = new Set<string>();
   value.forEach((entry: unknown, i) => {
     const itemPath = `${path}[${i}]`;
-    checkFields(entry, itemPath, { id: text });
+    checkFields(entry, itemPath, { id: safeId });
     const id = entry.id as string;
     if (ids.has(id)) throw new Error(`Duplicate ID at ${itemPath}.id.`);
     ids.add(id);
@@ -78,9 +90,9 @@ function checkRig(value: unknown): asserts value is RigConfig {
     schemaVersion: optional((v) => v === 1),
     name: text,
     venue: (v) => (VENUE_TYPES as readonly unknown[]).includes(v),
-    stageWidth: positive,
-    stageDepth: positive,
-    stageHeight: positive,
+    stageWidth: dim,
+    stageDepth: dim,
+    stageHeight: dim,
   });
   if (value.platforms !== undefined) {
     if (!Array.isArray(value.platforms) || value.platforms.length > MAX_PLATFORMS)
@@ -88,18 +100,18 @@ function checkRig(value: unknown): asserts value is RigConfig {
     checkList(value.platforms, 'platforms', (platform, path) => {
       checkFields(platform, path, {
         name: text,
-        x: number,
-        z: number,
-        width: positive,
-        depth: positive,
-        height: positive,
+        x: coord,
+        z: coord,
+        width: dim,
+        depth: dim,
+        height: dim,
       });
     });
   }
   checkFields(value.ledWall, 'ledWall', {
     enabled: bool,
-    width: positive,
-    height: positive,
+    width: dim,
+    height: dim,
     curved: bool,
     sideWings: bool,
   });
@@ -124,14 +136,14 @@ function checkRig(value: unknown): asserts value is RigConfig {
     checkFields(pod, path, {
       name: text,
       shape: (v) => v === 'box' || v === 'circle' || v === 'chevron' || v === 'path',
-      width: positive,
-      x: number,
-      baseY: number,
-      z: number,
+      width: dim,
+      x: coord,
+      baseY: coord,
+      z: coord,
       rotationY: number,
       motorized: bool,
-      motorMinY: number,
-      motorMaxY: number,
+      motorMinY: coord,
+      motorMaxY: coord,
     });
     if (Number(pod.motorMinY) > Number(pod.motorMaxY))
       throw new Error(`Motor height limits are reversed at ${path}.`);
@@ -141,7 +153,7 @@ function checkRig(value: unknown): asserts value is RigConfig {
       }
       let last: { x: number; z: number } | undefined;
       pod.path.forEach((point: unknown, i: number) => {
-        checkFields(point, `${path}.path[${i}]`, { x: number, z: number });
+        checkFields(point, `${path}.path[${i}]`, { x: coord, z: coord });
         const x = Number(point.x),
           z = Number(point.z);
         if (last && Math.hypot(last.x - x, last.z - z) < MIN_TRUSS_SPAN)
@@ -153,32 +165,36 @@ function checkRig(value: unknown): asserts value is RigConfig {
       checkFields(fixture, fixturePath, { ...equipment, type: catalogKey(FIXTURE_CATALOG) });
       checkOptics(fixture, fixturePath);
       fixtureCount += Number(fixture.count);
-    });
-  });
+    }, 1024);
+  }, MAX_TRUSS_PODS);
   checkList(value.floorFx, 'floorFx', (unit, path) => {
     checkFields(unit, path, {
       ...equipment,
       type: catalogKey(FLOOR_FX_CATALOG),
-      x: number,
-      z: number,
-      spread: (v) => number(v) && v >= 0,
+      x: coord,
+      z: coord,
+      spread: (v) => number(v) && v >= 0 && v <= MAX_DIM,
     });
     checkOptics(unit, path);
     fixtureCount += Number(unit.count);
-  });
+  }, 1024);
   if (fixtureCount > 1024)
     throw new Error('This rig exceeds the 1,024 fixtures supported across two universes.');
   if (value.props !== undefined) {
     checkList(value.props, 'props', (prop, path) => {
       if (!isStageProp(prop)) throw new Error(`Invalid scenery settings at ${path}.`);
-    });
+    }, MAX_PROPS);
   }
 }
 
 export function parseRigJson(source: string): RigConfig {
+  const clean = source.charCodeAt(0) === 0xfeff ? source.slice(1) : source;
+  if (clean.length > MAX_RIG_JSON_BYTES || new TextEncoder().encode(clean).length > MAX_RIG_JSON_BYTES) {
+    throw new Error('This rig JSON file exceeds the 32 MiB limit.');
+  }
   let rig: unknown;
   try {
-    rig = JSON.parse(source);
+    rig = JSON.parse(clean);
   } catch {
     throw new Error('Choose a valid JSON file.');
   }

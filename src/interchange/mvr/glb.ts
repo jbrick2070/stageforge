@@ -73,15 +73,26 @@ export function boxGlb(width: number, height: number, depth: number, options: { 
   return out;
 }
 
+const MAX_GLB_JSON_BYTES = 16 * 1024 * 1024;
+const isVec3 = (value: unknown): value is [number, number, number] =>
+  Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === 'number' && Number.isFinite(n));
+
 /** Read the bounding box of a GLB written by boxGlb (used by tests and import sizing). */
-export function glbBounds(glb: Uint8Array): { min: number[]; max: number[] } | undefined {
+export function glbBounds(glb: Uint8Array): { min: [number, number, number]; max: [number, number, number] } | undefined {
   try {
+    if (glb.byteLength < 20) return undefined;
     const view = new DataView(glb.buffer, glb.byteOffset, glb.byteLength);
     if (view.getUint32(0, true) !== 0x46546c67) return undefined;
     const jsonLength = view.getUint32(12, true);
+    const chunkType = view.getUint32(16, true);
+    if (chunkType !== 0x4e4f534a || jsonLength === 0 || jsonLength > MAX_GLB_JSON_BYTES || 20 + jsonLength > glb.byteLength) {
+      return undefined;
+    }
     const json = JSON.parse(new TextDecoder().decode(glb.subarray(20, 20 + jsonLength)));
-    const accessor = json.accessors?.[json.meshes?.[0]?.primitives?.[0]?.attributes?.POSITION];
-    return accessor?.min && accessor?.max ? { min: accessor.min, max: accessor.max } : undefined;
+    const positionIndex = json?.meshes?.[0]?.primitives?.[0]?.attributes?.POSITION;
+    if (typeof positionIndex !== 'number' || !Number.isInteger(positionIndex) || positionIndex < 0) return undefined;
+    const accessor = Array.isArray(json?.accessors) ? json.accessors[positionIndex] : undefined;
+    return isVec3(accessor?.min) && isVec3(accessor?.max) ? { min: accessor.min, max: accessor.max } : undefined;
   } catch {
     return undefined;
   }

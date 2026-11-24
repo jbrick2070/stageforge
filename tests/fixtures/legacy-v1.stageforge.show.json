@@ -1,0 +1,246 @@
+{
+  "$schema": "https://jbrick2070.github.io/stageforge/schemas/show-v1.schema.json",
+  "format": "stageforge-show",
+  "version": 1,
+  "rig": {
+    "name": "Amber Walk-on",
+    "props": [],
+    "venue": "club",
+    "stageWidth": 7.2,
+    "stageDepth": 4.8,
+    "stageHeight": 0.6,
+    "ledWall": {"enabled": true, "width": 6, "height": 2.4, "curved": false, "sideWings": false},
+    "audioRig": {
+      "lineArrays": false,
+      "speakerProfile": "touring",
+      "monitorCount": 2,
+      "subWall": true,
+      "subCount": 2,
+      "djBooth": true,
+      "crowdDensity": 0.7
+    },
+    "trussPods": [
+      {
+        "id": "cl-front",
+        "name": "Front Truss",
+        "shape": "box",
+        "width": 7,
+        "x": 0,
+        "baseY": 4.1,
+        "z": 1.4,
+        "rotationY": 0,
+        "motorized": false,
+        "motorMinY": 3,
+        "motorMaxY": 4.6,
+        "fixtures": [
+          {
+            "id": "cl-f-beam",
+            "type": "beam",
+            "modelName": "Sharpy X-Beam 350",
+            "count": 4,
+            "dmxUniverse": 1,
+            "dmxStartChannel": 1
+          }
+        ]
+      }
+    ],
+    "floorFx": []
+  },
+  "cues": [
+    {
+      "id": "walk-on",
+      "name": "Walk-on in black",
+      "tag": "OPEN",
+      "accent": "#eaa64e",
+      "followSeconds": 2.5,
+      "state": {
+        "masterDimmer": 0,
+        "led": {
+          "enabled": true,
+          "brightness": 0,
+          "visualMode": "custom",
+          "speed": 0.5,
+          "tourText": "AMBER WALK-ON",
+          "customMediaUrl": null,
+          "customMediaType": null
+        }
+      },
+      "screen": {"target": "main-led", "kind": "video", "name": "amber-clouds.mp4", "playing": false, "offsetSeconds": 0}
+    },
+    {
+      "id": "reveal",
+      "name": "Amber reveal",
+      "tag": "HOLD",
+      "accent": "#eaa64e",
+      "state": {
+        "masterDimmer": 0.72,
+        "led": {
+          "enabled": true,
+          "brightness": 0.56,
+          "visualMode": "custom",
+          "speed": 0.5,
+          "tourText": "AMBER WALK-ON",
+          "customMediaUrl": null,
+          "customMediaType": null
+        }
+      },
+      "screen": {"target": "main-led", "kind": "video", "name": "amber-clouds.mp4", "playing": true, "offsetSeconds": 0}
+    }
+  ],
+  "look": {
+    "masterDimmer": 0,
+    "blackout": false,
+    "autoDirector": false,
+    "audioReactive": true,
+    "bpm": 128,
+    "beamIntensity": 0.35,
+    "washIntensity": 0,
+    "beamZoom": 0.22,
+    "goboPrism": false,
+    "primaryColor": "#eaa64e",
+    "accentColor": "#7b70be",
+    "colorSplitMode": "alternate",
+    "movementMode": "manual",
+    "movementSpeed": 0.26,
+    "movementSpread": 0.72,
+    "manualPan": 0,
+    "manualTilt": 0,
+    "focusMarkId": "platform:main-deck",
+    "strobeRate": 0,
+    "blinderLevel": 0,
+    "laser": {
+      "enabled": false,
+      "intensity": 0.48,
+      "pattern": "liquid_sky",
+      "beamCount": 10,
+      "spreadX": 0.76,
+      "spreadY": 0.3,
+      "speed": 0.32,
+      "tilt": 0.12,
+      "rotation": 0.25,
+      "colorMode": "primary",
+      "strobe": 0,
+      "audienceScan": false
+    },
+    "motors": {"mode": "manual", "speed": 0.35, "podTargets": {}},
+    "atmo": {"hazeLevel": 0.58, "smokeOutput": 0.12, "co2Active": false, "co2AutoOnDrop": true},
+    "led": {
+      "enabled": true,
+      "brightness": 0,
+      "visualMode": "custom",
+      "speed": 0.5,
+      "tourText": "AMBER WALK-ON",
+      "customMediaUrl": null,
+      "customMediaType": null
+    },
+    "bloomStrength": 0.38
+  },
+  "activeCueId": "walk-on",
+  "controls": {"camera": "foh", "volume": 0.65},
+  "timeline": {
+    "durationMs": 6000,
+    "events": [
+      {
+        "atMs": 0,
+        "cueId": "walk-on",
+        "look": {
+          "masterDimmer": 0,
+          "blackout": false,
+          "autoDirector": false,
+          "audioReactive": true,
+          "bpm": 128,
+          "beamIntensity": 0.35,
+          "washIntensity": 0,
+          "beamZoom": 0.22,
+          "goboPrism": false,
+          "primaryColor": "#eaa64e",
+          "accentColor": "#7b70be",
+          "colorSplitMode": "alternate",
+          "movementMode": "manual",
+          "movementSpeed": 0.26,
+          "movementSpread": 0.72,
+          "manualPan": 0,
+          "manualTilt": 0,
+          "focusMarkId": "platform:main-deck",
+          "strobeRate": 0,
+          "blinderLevel": 0,
+          "laser": {
+            "enabled": false,
+            "intensity": 0.48,
+            "pattern": "liquid_sky",
+            "beamCount": 10,
+            "spreadX": 0.76,
+            "spreadY": 0.3,
+            "speed": 0.32,
+            "tilt": 0.12,
+            "rotation": 0.25,
+            "colorMode": "primary",
+            "strobe": 0,
+            "audienceScan": false
+          },
+          "motors": {"mode": "manual", "speed": 0.35, "podTargets": {}},
+          "atmo": {"hazeLevel": 0.58, "smokeOutput": 0.12, "co2Active": false, "co2AutoOnDrop": true},
+          "led": {
+            "enabled": true,
+            "brightness": 0,
+            "visualMode": "custom",
+            "speed": 0.5,
+            "tourText": "AMBER WALK-ON",
+            "customMediaUrl": null,
+            "customMediaType": null
+          },
+          "bloomStrength": 0.38
+        },
+        "bump": {"blinder": false, "strobe": false, "co2": false, "smoke": false, "laser": false, "motorDrop": false},
+        "camera": "foh",
+        "volume": 0.65,
+        "music": {"kind": "demo", "name": "StageForge demo", "playing": true, "demoStep": 0},
+        "screen": {
+          "target": "main-led",
+          "kind": "video",
+          "name": "amber-clouds.mp4",
+          "playing": false,
+          "offsetSeconds": 0
+        }
+      },
+      {
+        "atMs": 2500,
+        "cueId": "reveal",
+        "look": {
+          "masterDimmer": 0.72,
+          "led": {
+            "enabled": true,
+            "brightness": 0.56,
+            "visualMode": "custom",
+            "speed": 0.5,
+            "tourText": "AMBER WALK-ON",
+            "customMediaUrl": null,
+            "customMediaType": null
+          }
+        },
+        "screen": {
+          "target": "main-led",
+          "kind": "video",
+          "name": "amber-clouds.mp4",
+          "playing": true,
+          "offsetSeconds": 0
+        }
+      },
+      {
+        "atMs": 5000,
+        "screen": {
+          "target": "main-led",
+          "kind": "video",
+          "name": "amber-clouds.mp4",
+          "playing": false,
+          "offsetSeconds": 2.5
+        }
+      },
+      {"atMs": 6000, "music": {"kind": "demo", "name": "StageForge demo", "playing": false, "demoStep": 51.2}}
+    ]
+  },
+  "media": {
+    "music": {"kind": "demo", "name": "StageForge demo", "playing": true, "demoStep": 0},
+    "screen": {"target": "main-led", "kind": "video", "name": "amber-clouds.mp4", "playing": false, "offsetSeconds": 0}
+  }
+}

@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 
+/** Shared material name for LED display shader surfaces (used by StageEngine, FOH framing and GLB export). */
+export const LED_DISPLAY_MATERIAL_NAME = 'LED display';
+
 /** Fit authored hardware from the positive-Z audience side. Beam volumes do not set the framing. */
 export function fitAuthoredFoh(subjects: THREE.Object3D[], screens: THREE.ShaderMaterial[],
     aspect: number, roofY: number, roomFront: number, normalFov: number) {
@@ -10,7 +13,7 @@ export function fitAuthoredFoh(subjects: THREE.Object3D[], screens: THREE.Shader
     subject.traverse(node => {
       if (!(node instanceof THREE.Mesh)) return;
       const materials = Array.isArray(node.material) ? node.material : [node.material];
-      if (materials.some(m => m instanceof THREE.ShaderMaterial && !screens.includes(m))) return;
+      if (materials.some(m => m instanceof THREE.ShaderMaterial && !screens.includes(m) && m.name !== LED_DISPLAY_MATERIAL_NAME)) return;
       const source = node instanceof THREE.InstancedMesh ? node : node.geometry;
       if (!source.boundingBox) source.computeBoundingBox();
       if (source.boundingBox) {

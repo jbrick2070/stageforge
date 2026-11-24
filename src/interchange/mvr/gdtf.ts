@@ -1,6 +1,6 @@
 import type { FixtureType, FloorFxType } from '../../types/show';
 import { readArchive, utf8, writeArchive } from './archive';
-import { attr, buildXml, child, list, parseXml, type XmlNode } from './xml';
+import { attr, buildXml, child, list, MAX_XML_BYTES, MAX_XML_DEPTH, parseXml, type XmlNode } from './xml';
 import { uuidV5 } from './uuid';
 
 /**
@@ -230,10 +230,15 @@ export interface GdtfSummary {
 }
 
 /** Read the fixture type, modes (footprint from the highest Offset) and beam of a GDTF archive. */
-export function readGdtf(bytes: Uint8Array): GdtfSummary {
-  const files = readArchive(bytes, 'GDTF');
+export function readGdtf(bytes: Uint8Array, budget?: { remaining: number }): GdtfSummary {
+  const maxInflated = budget ? Math.min(MAX_XML_BYTES, Math.max(0, budget.remaining)) : MAX_XML_BYTES;
+  const files = readArchive(bytes, 'GDTF', {
+    only: (baseNameLower) => baseNameLower === 'description.xml',
+    maxInflated,
+  });
   const description = files.get('description.xml');
   if (!description) throw new Error('The GDTF archive needs a root description.xml.');
+  if (budget) budget.remaining = Math.max(0, budget.remaining - description.data.byteLength);
   const doc = parseXml(utf8.decode(description.data));
   const fixture = child(child(doc, 'GDTF'), 'FixtureType');
   if (!fixture) throw new Error('Invalid GDTF fixture description.');
@@ -242,8 +247,12 @@ export function readGdtf(bytes: Uint8Array): GdtfSummary {
     const attributes: string[] = [];
     for (const channel of list(child(mode, 'DMXChannels'), 'DMXChannel')) {
       // Slots come from Offset ("1" or "1,2" for 16-bit), never from document order.
-      const offsets = (attr(channel, 'Offset') ?? '').split(',').map(Number).filter((n) => Number.isInteger(n) && n > 0);
-      footprint = Math.max(footprint, ...offsets, 0);
+      // Loop with explicit bounds so a hostile Offset string cannot overflow the call stack.
+      const rawOffsets = (attr(channel, 'Offset') ?? '').split(',');
+      for (let i = 0; i < rawOffsets.length && i < 512; i++) {
+        const n = Number(rawOffsets[i]);
+        if (Number.isInteger(n) && n > 0 && n <= 512 && n > footprint) footprint = n;
+      }
       for (const logical of list(channel, 'LogicalChannel')) {
         const name = attr(logical, 'Attribute');
         if (name) attributes.push(name);
@@ -252,7 +261,8 @@ export function readGdtf(bytes: Uint8Array): GdtfSummary {
     return { name: attr(mode, 'Name') ?? '', footprint, attributes };
   });
   let beamType: string | undefined, beamAngle: number | undefined, hasLaser = false;
-  const visit = (node: XmlNode) => {
+  const visit = (node: XmlNode, depth = 0) => {
+    if (depth > MAX_XML_DEPTH) return;
     for (const [key, value] of Object.entries(node)) {
       if (key.startsWith('@_') || !value || typeof value !== 'object') continue;
       for (const item of Array.isArray(value) ? value : [value]) {
@@ -262,7 +272,7 @@ export function readGdtf(bytes: Uint8Array): GdtfSummary {
           const angle = Number(attr(item, 'BeamAngle'));
           if (Number.isFinite(angle)) beamAngle = angle;
         }
-        if (item && typeof item === 'object') visit(item as XmlNode);
+        if (item && typeof item === 'object') visit(item as XmlNode, depth + 1);
       }
     }
   };
@@ -279,14 +289,15 @@ export function classifyGdtf(summary: GdtfSummary, modeName: string | undefined,
   const attrs = new Set((mode?.attributes ?? []).map((a) => a.toLowerCase()));
   const text = `${summary.manufacturer} ${summary.name}`.toLowerCase();
   if (summary.hasLaser || /laser/.test(text)) return standing ? 'floor_laser' : 'laser';
-  if (/haze/.test(text)) return 'hazer';
+  if ([...attrs].some((a) => a.startsWith('haze')) || /haze/.test(text)) return 'hazer';
   if (/co2|cryo/.test(text)) return 'co2';
-  if (/smoke|fog/.test(text) || [...attrs].some((a) => a.startsWith('fog'))) return 'smoke';
+  if ([...attrs].some((a) => a.startsWith('fog')) || /smoke|fog/.test(text)) return 'smoke';
   if (attrs.has('pan') || attrs.has('tilt')) {
     if (standing) return 'floor_beam';
     const wash = summary.beamType === 'Wash' || summary.beamType === 'PC' || summary.beamType === 'Fresnel' || (summary.beamAngle ?? 0) > 15;
     return wash ? 'wash' : 'beam';
   }
-  if (/strobe/.test(text) || [...attrs].some((a) => a.includes('strobe'))) return 'strobe';
+  const hasColor = [...attrs].some((a) => a.startsWith('color'));
+  if (/strobe/.test(text) || (!hasColor && [...attrs].some((a) => a.includes('strobe')))) return 'strobe';
   return 'blinder';
 }
