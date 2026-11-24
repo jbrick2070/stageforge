@@ -872,3 +872,49 @@ The overnight runner was stopped after Round 5. Claude Code took over for one sp
   - a stable e2e budget test with a GLB export parity check.
   Not done (latent; no current code uses them): mirroring `castShadow` and raycast `instanceId` onto batches.
 - **Leftovers:** the 44 moving-head beam cones (custom `ShaderMaterial`, transparent) are still one draw call each because their uniforms differ per unit; instancing them needs per-instance shader attributes. Static gear still updates its matrices every frame (`matrixAutoUpdate`), which is a smaller CPU cost.
+
+### 2026-11-24 13:16 PST — Sprint 5: instance moving-head volumetric beam cones (`27a506c`)
+
+- **Consults & QA runs:**
+  - Opus 5.5 (`claude-opus-5-5`) available and consulted on `ShaderProxy` API design, cloned geometry & disposal ordering for `InstancedBufferAttribute`s, Three.js 0.187.0 `#version 300 es` `flat varying` support, per-frame release/culling checks, and frozen-frame pixel-parity harness design.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) QA pass 1 on all uncommitted Sprint 5 changes (0 Critical, 1 High, 4 Medium, 6 Low), followed by verification, targeted fixes, and regression tests.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) follow-up QA pass 2 on the Step-4 fixes (0 Critical, 0 High, 0 Medium, 3 Low).
+- **What shipped:**
+  - **Shader proxies in `src/engine/renderBatcher.ts`:**
+    - Added instance-scoped `registerShaderProxy(proxy)`, `setProxiesEnabled(enabled)`, and combined `setMode(enabled, proxies)` (avoiding double rebuilds) plus `proxied` active-instance count in `BatcherStats`.
+    - Proxy batches clone the canonical `BufferGeometry` after grouping (never mutating or breaking VBO ownership on originals), attach `THREE.InstancedBufferAttribute`s (`DynamicDrawUsage`), preserve `renderOrder`, `transparent`, `depthWrite`, and `blending`, sync per-instance attributes with `Math.fround` dirty tracking and zero per-frame allocations, copy `sharedUniforms` from the first shown source, update per-batch culling spheres, release restyled/reordered/mirrored/key-changed sources back to layer 0, and dispose `mesh`, cloned `ownedGeometry`, and proxy `material` in order on `clear()` (plus try/catch cleanup if batch construction throws).
+  - **Volumetric beam proxy & single-source instanced GLSL (`src/engine/beamProxy.ts`, `src/engine/shaders.ts`, `src/engine/StageEngine.ts`, `src/App.tsx`):**
+    - Updated `VOLUMETRIC_BEAM_VERT` and `VOLUMETRIC_BEAM_FRAG` in place under `#ifdef INSTANCED_BEAM` (`mat4 m = modelMatrix * instanceMatrix`, `flat varying vec3 vInstColor` + `flat varying vec4 vInstParams` packing `uIntensity`, `uPrism`, `uSoftness`, `uSeed`, and `#define` uniform mappings while keeping `uHaze` and `uTime` shared). Non-instanced compilation is untouched.
+    - Added `volumetricBeamProxy` (`VOLUMETRIC_BEAM_VARIANT = 'volumetricBeam'`), requiring exact `VOLUMETRIC_BEAM_VERT`/`FRAG` shaders and order-independent `THREE.AdditiveBlending` with `depthWrite === false`, and keying on `renderOrder`, blend/depth/write/tone/fog/dither flags, and `uLensOffset` (without `material.version`, so `needsUpdate` does not drop batching).
+    - Registered `volumetricBeamProxy` on `StageEngine.batcher`, tagged moving-head `beamMat.userData.instancedVariant`, extended `?probe` `setBatching(enabled, { proxies })`, and added `?probe` `redrawAndCapture({ hideBeams })` (zero-delta `composer.render(0)`, throwing in standby).
+  - **Tests (+3 unit tests in `tests/render-batcher.test.mjs`, 198 → 201 total; +1 E2E test in `tests/e2e/render-budget.spec.mjs`, 50 → 51 total):**
+    - Unit: fake shader proxy lifecycle (grouping, per-instance & shared uniform syncing, hiding, key-change release, `setProxiesEnabled`, disposal of cloned geometry and material copy), `volumetricBeamProxy` uniform/release checks, and QA regressions (`needsUpdate` stays batched, non-additive/`depthWrite`/swapped-shader release, `setMode` no-double-rebuild, throwing `createMaterial` recovery, `stats().proxied` excluding released sources, and zoomed non-uniform culling sphere bounds).
+    - E2E (`tests/e2e/render-budget.spec.mjs`): tightened Arena Rock budget (`<= 140` calls, `>= 40` fewer calls than with proxies disabled, `proxied === 44`, `released === 0`) and added frozen-frame pixel-parity test (`page.clock.install()` + `pauseAt` + `runFor(16)`) across both **Arena Rock** and **Laser Tunnel** (`goboPrism: true`) with beam-signal sensitivity (`hideBeams: true`) and a zero console/`THREE.WebGLProgram` error guard.
+- **Performance & visual parity (Arena Rock & Laser Tunnel):**
+  - **Arena Rock draw calls:** **173 → 132 (−41 calls, −24% vs opaque-only; 673 → 132, −80% vs unbatched)** — 44 beam cones collapse into **3** instanced batches (60 → 63 batches, 560 → 604 instances, `proxied: 44`, `released: 0`), and GPU geometries drop **160 → 119 (−41)**.
+  - **Laser Tunnel draw calls:** **183 → 142 (−41 calls; 683 → 142 vs unbatched)**.
+  - **Phone-like measurement (4× CPU throttle, 390×844 viewport, Chrome headless D3D11):** p95 frame time **54.1 → 50.1 ms** (median **41.6 ms**, **~30 fps** headless vsync-paced; unbatched 673 calls at **29.1 fps** / p95 54.1 ms, worst 58.3 ms; baseline pre-Sprint-5 opaque-only 173 calls at **33.4 fps** / median 37.4 ms / p95 49.9 ms in a separate run — headless Chrome paces rAF at ~24–30 Hz under 4× throttle while draw calls dropped strictly 173 → 132).
+  - **Frozen-frame pixel parity & visual check:** Arena Rock mean absolute RGB difference **0.0027%** (and **0.0021%** in initial capture); Laser Tunnel (`goboPrism: true`) **0.0028%** (both > 350× tighter than the 1% budget, and < 1% of the measured beam-on vs beams-hidden signal). Checked side-by-side PNG captures of Arena Rock and Laser Tunnel by eye; cones, lens glows, washes, prism shafts, and haze match identically.
+- **Gate results (final code):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**201/201**)
+  - `npm run build`: PASS (`dist/schemas/show-v1..v7.schema.json` emitted; 0 public-dir warnings)
+  - `npm run desktop:win`: PASS (portable exe built; zero new dependencies; SPDX gate green)
+  - `npm run test:desktop`: PASS (**9/9**, 11.1 s)
+  - `npx playwright test --workers=1`: PASS (**51/51**, 8.8 m)
+  - `git status --short`: clean
+- **QA findings verified and fixed:**
+  - *Pass 1 H1:* Added `hideBeams` beam-signal sensitivity check (`beamSignal > 0.02` on Arena Rock, `> 0.005` on Laser Tunnel, and `diff < beamSignal * 0.1`), `imgOn` vs `imgBeamsOff` comparison, Laser Tunnel (`goboPrism: true`) parity, and zero `console.error`/`THREE.WebGLProgram` guard in `tests/e2e/render-budget.spec.mjs`.
+  - *Pass 1 M1, M2, L4:* Removed `material.version` from `volumetricBeamProxy.key()`, required exact `VOLUMETRIC_BEAM_VERT`/`FRAG` and `AdditiveBlending` + `!depthWrite` in `match()`, and documented the additive-only ordering assumption (+regression tests).
+  - *Pass 1 M3:* Added `RenderBatcher.setMode(enabled, proxies)` and routed `setBatching`/`setEnabled`/`setProxiesEnabled` through it so toggling both flags never triggers an intermediate rebuild (+regression test).
+  - *Pass 1 M4:* Passed explicit `0` delta to `composer.render(0)` and threw a clear error when `redrawAndCapture` is called in standby.
+  - *Pass 1 L1, L2, L3:* Subtracted released instances from `stats().proxied`, replaced array+`join` in `volumetricBeamProxy.key()` with a template literal, and wrapped proxy batch creation in try/catch disposal (+regression tests + zoomed culling-sphere test).
+- **QA findings rejected or deferred (with reasons):**
+  - *Pass 1 L5 (E2E `proxied === 44` and `>= 40` call drop):* Kept intentionally — these directly enforce Sprint 5's acceptance criteria on the 44-head Arena World Tour Rig.
+  - *Pass 2 Low 1–3 (interleaved normal-blended transparent sort, 17-field template string per beam per frame, NaN attribute re-upload):* Verified no parity impact on Arena Rock/Laser Tunnel (0.0027–0.0028% diff), negligible string cost at 44 beams, and deferred without adding complexity.
+- **Design decisions:**
+  - Chose instance-scoped `batcher.registerShaderProxy(proxy)` + `src/engine/beamProxy.ts` over a module-level registry so unit tests stay isolated with zero global leakage (per Opus 5.5 consult).
+  - Cloned canonical `BufferGeometry` per proxy batch (disposed on `clear()`) rather than attaching `InstancedBufferAttribute`s directly to shared geometries, avoiding Three.js `WebGLGeometries.destroyGeometry` deleting original VBOs.
+  - Edited `VOLUMETRIC_BEAM_VERT`/`FRAG` in place behind `#ifdef INSTANCED_BEAM` with `flat varying` (verified valid under Three.js 0.187.0 `#version 300 es` prefixing) rather than regex-rewriting GLSL strings, guaranteeing non-instanced shaders stay unchanged and look cannot drift.
+- **Leftovers / next up:**
+  - Next up: **Realism backlog item 5** (Show paperwork: patch sheet, instrument schedule, channel hookup, power & load reports, and cue sheet), followed by items 6–8 and optional `matrixAutoUpdate = false` on static rig subtrees.
