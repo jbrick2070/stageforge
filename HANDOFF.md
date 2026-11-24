@@ -258,6 +258,26 @@ Goal: people should feel like they are running a real rig, with real equipment, 
 6. **Console feel.** A small, familiar cue-list and playback view with cue numbers, fade times and go and back controls, in the style of real consoles.
 7. **Fixture behaviour polish.** Pan and tilt speed limits, zoom and focus feel, colour mixing and dimmer curves, and gobo and prism looks, tuned to each catalogue entry's real specs where known.
 
+8. **Haze, smoke and laser rendering realism (GPU).** Audit finding on 2026-11-23: it all runs on the real GPU through three.js (WebGL) with an UnrealBloom pass, but it is approximated:
+   - Beams are additive analytic cone shaders (`src/engine/shaders.ts`) driven by a shared haze noise. The haze is not a lit volume, so beams do not light smoke where they cross it, and nothing occludes a beam.
+   - Smoke and CO2 are CPU-simulated billboard puffs with a baked noise sprite (`src/engine/ParticleSystem.ts`), not a fluid or a lit volume.
+   - Lasers are procedural fragment-shader sheets and cones (`laserGeometry.ts`, `LASER_*` shaders), not point-scanned ILDA frames.
+
+   Improve, in this order, measuring frame time as you go:
+   - **Lit haze:** a cheap volumetric haze (for example a low-resolution froxel or ray-marched density field) that beams visibly light with a Henyey-Greenstein phase, brighter where beams cross and along their axis.
+   - **Smoke:** buoyancy, dissipation, wind and fan response. CO2 jets are a cold white plume that falls fast.
+   - **Beam occlusion:** soft depth clipping against trusses, screens and decks.
+   - **Lasers:** a point-based scan model with kpps limits, corner brightening, blanking, beam divergence and scatter in haze, fed by `.ild` frames from item 2.
+   - **GPU tiers:** an auto-quality setting (pixel ratio, ray steps, particle counts) so it stays smooth on a phone. Keep WebGL; a WebGPU path is optional and flagged off.
+9. **Quest VR audience mode (WebXR).** Let people stand in the audience with a Meta Quest.
+   - **Approach:** use three.js's built-in WebXR support (MIT), feature-detected, so desktop and phones are unaffected. The GitHub Pages site is HTTPS, so it works in Quest Browser with no install.
+   - **Entry:** an "Enter VR" button, shown only when `immersive-vr` is supported.
+   - **Rendering:** the Quest is a mobile GPU, so the VR path skips the EffectComposer bloom (use cheap emissive and additive glow instead), enables fixed foveation, and caps haze, particle and laser quality through the item 8 tiers. Aim for a steady 72 fps.
+   - **Viewpoints:** teleport to audience seats (floor, mezzanine, balcony, FOH) with correct eye height and scale, plus smooth-turn and comfort options (vignette, snap turn). Reuse the FOH framing in `src/engine/fohFraming.ts`.
+   - **Interaction:** controller pointer to trigger cues, change haze, and open a small wrist menu. Hand tracking is optional.
+   - **Testing:** use the Immersive Web Emulator or Meta XR Simulator in Playwright where possible, since no headset is available overnight. Write the on-headset checks as a checklist in `docs/vr.md` for the user.
+   - **Safety:** show a laser-safety note, and never auto-start flashing strobes on entry (photosensitivity warning first).
+
 Keep each item shippable on its own, with tests, docs and a short note in the Overnight log.
 
 ## Kickoff
