@@ -3,12 +3,16 @@ import { buildPlatformDeck, type SharedMaterials } from './geometryBuilders';
 import { LED_DISPLAY_MATERIAL_NAME } from './fohFraming';
 import type { FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show';
 
+export const MAX_GLB_CABINET_BACK_INSTANCES = 2000;
+
 export function nameFixtureUnit(
   object: THREE.Object3D, group: FloorFxUnit | MountedFixtureGroup, index: number, start: number,
 ) {
   object.name = `${group.modelName} ${index + 1}`;
   object.userData = {
+    ...object.userData,
     kind: group.type, groupId: group.id, unit: index + 1, model: group.modelName,
+    ...(group.catalogId !== undefined ? { catalogId: group.catalogId } : {}),
     dmxUniverse: group.dmxUniverse, dmxStartChannel: start || null,
   };
   return object;
@@ -25,6 +29,7 @@ export function stageSnapshot(rig: RigConfig, roots: THREE.Object3D[], mats: Sha
   const screen = new THREE.MeshStandardMaterial({
     name: 'LED display surface', color: 0x26292e, roughness: 0.64, side: THREE.DoubleSide,
   });
+  let cabinetBackNodes = 0;
 
   function geometryFor(source: THREE.BufferGeometry) {
     let geometry = geometries.get(source);
@@ -48,6 +53,10 @@ export function stageSnapshot(rig: RigConfig, roots: THREE.Object3D[], mats: Sha
     if (!material) {
       const copy = source.clone();
       copy.name = source.name || names.get(source) || source.type;
+      if (copy instanceof THREE.MeshStandardMaterial) {
+        // Keep albedo + roughness/metalness atlas in GLB while stripping normal maps to keep files compact.
+        copy.normalMap = null;
+      }
       if (copy instanceof THREE.MeshBasicMaterial || copy instanceof THREE.MeshStandardMaterial) {
         // Light lenses in the HDR renderer can exceed glTF's base-color range.
         const { r, g, b } = copy.color;
@@ -67,8 +76,12 @@ export function stageSnapshot(rig: RigConfig, roots: THREE.Object3D[], mats: Sha
       const mapped = Array.isArray(source.material) ? source.material.map(materialFor) : null;
       const material = mapped ? mapped.every(m => m !== null) ? mapped : null : materialFor(source.material);
       if (!material) return; // Volumetric beam, laser sheet or other shader-only effect.
-      const geometry = geometryFor(source.geometry);
       if (source instanceof THREE.InstancedMesh) {
+        if (source.userData.kind === 'ledCabinetBacks' && cabinetBackNodes + source.count > MAX_GLB_CABINET_BACK_INSTANCES) {
+          scene.userData.cabinetBacksOmitted = true;
+          return;
+        }
+        const geometry = geometryFor(source.geometry);
         // Standard nodes share a single mesh and work in importers without GPU instancing support.
         node = new THREE.Group();
         const matrix = new THREE.Matrix4();
@@ -79,7 +92,11 @@ export function stageSnapshot(rig: RigConfig, roots: THREE.Object3D[], mats: Sha
           matrix.decompose(instance.position, instance.quaternion, instance.scale);
           node.add(instance);
         }
-      } else node = new THREE.Mesh(geometry, material);
+        if (source.userData.kind === 'ledCabinetBacks') cabinetBackNodes += source.count;
+      } else {
+        const geometry = geometryFor(source.geometry);
+        node = new THREE.Mesh(geometry, material);
+      }
     } else node = new THREE.Group();
     node.name = source.name || `${source instanceof THREE.Mesh ? (names.get(source.material) || 'Mesh') : 'Assembly'} ${index + 1}`;
     node.userData = { ...source.userData };
@@ -104,7 +121,7 @@ export function stageSnapshot(rig: RigConfig, roots: THREE.Object3D[], mats: Sha
 export async function exportStageGlb(rig: RigConfig, roots: THREE.Object3D[], mats: SharedMaterials): Promise<Blob> {
   const scene = stageSnapshot(rig, roots, mats);
   const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
-  const binary = await new GLTFExporter().parseAsync(scene, { binary: true });
+  const binary = await new GLTFExporter().parseAsync(scene, { binary: true, maxTextureSize: 512 });
   if (!(binary instanceof ArrayBuffer)) throw new Error('The stage could not be encoded as a binary glTF.');
   return new Blob([binary], { type: 'model/gltf-binary' });
 }

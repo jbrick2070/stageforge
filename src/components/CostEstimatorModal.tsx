@@ -13,6 +13,7 @@ import {
 import { RigConfig } from '../types/show';
 import type { NativeStage } from '../data/showFile';
 import { calculateProductionEstimate, formatUSD } from '../data/productionEstimator';
+import { EquipmentThumbnail } from './EquipmentThumbnail';
 
 interface CostEstimatorModalProps {
   rig: RigConfig;
@@ -156,10 +157,19 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
                   key={idx}
                   className="flex items-center justify-between gap-2 py-1.5 border-b border-white/5 last:border-0"
                 >
-                  <div className="min-w-0">
-                    <div className="text-zinc-100 font-medium truncate">{item.label}</div>
-                    <div className="font-mono-tech text-[9px] text-zinc-500">
-                      {item.category} • {item.qty} • {Math.round(item.weightLbs).toLocaleString()} lbs
+                  <div className="min-w-0 flex items-center gap-2">
+                    {item.body && (
+                      <EquipmentThumbnail
+                        family={item.body}
+                        catalogId={item.catalogId}
+                        className="w-6 h-6 shrink-0 rounded bg-black/45 p-0.5 border border-white/10"
+                      />
+                    )}
+                    <div className="min-w-0">
+                      <div className="text-zinc-100 font-medium truncate">{item.label}</div>
+                      <div className="font-mono-tech text-[9px] text-zinc-500">
+                        {item.category} • {item.qty} • {Math.round(item.weightLbs).toLocaleString()} lbs
+                      </div>
                     </div>
                   </div>
                   <div className="text-right font-mono-tech shrink-0">

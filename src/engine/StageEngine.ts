@@ -40,9 +40,12 @@ import {
   createMonitorWedge,
   createSubwoofer,
   createSharedMaterials,
+  disposeSharedMaterials,
   type VenueRoom,
 } from './geometryBuilders';
-import { FocusMark, HEAD_OFFSET, YOKE_OFFSET, PAN_LIMIT, TILT_LIMIT, aimAngles, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
+import { FixtureModelCache, type FixtureMotion } from './fixtureModels';
+import { detectRenderTier, maxPixelRatioForTier, type RenderTier } from './hardwareMaterials';
+import { FocusMark, PAN_LIMIT, TILT_LIMIT, aimAngles, aimTiltOnly, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
 import { headLook } from '../data/movingGroups';
 import { buildDmxPatch, groupFootprint, writeDmxChannels } from '../data/dmxPatch';
 import { floorUnitX, hungUnits, mountSlotIndex } from '../data/fixturePlacement';
@@ -72,6 +75,8 @@ interface MovingFixtureInstance {
   fanPosition: number;
   openingStep: number;
   directedDimmer: number;
+  pivotY: number;
+  motion: FixtureMotion;
   root: THREE.Group;
   yoke: THREE.Group;
   head: THREE.Group;
@@ -166,9 +171,13 @@ export class StageEngine {
   private controls: OrbitControls;
   private composer: EffectComposer;
   private bloomPass: UnrealBloomPass;
+  private renderTier: RenderTier;
+  private modelCache: FixtureModelCache;
   private mats: SharedMaterials;
   private environmentTarget: THREE.WebGLRenderTarget;
   private currentRig?: RigConfig;
+  private lastRebuildSource?: RigConfig;
+  private lastRebuildStage?: NativeStage;
   private beamPools?: BeamPools;
   private spillFluxGain = 1;
   private scenicPieces = new Map<string, ScenicPiece & { kind: string; phase: number }>();
@@ -282,6 +291,9 @@ export class StageEngine {
     const height = Math.max(1, container.clientHeight);
 
     try {
+    this.renderTier = detectRenderTier();
+    this.modelCache = new FixtureModelCache(this.renderTier);
+
     // Renderer configured for HDR concert lighting + crisp specular reflections
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -289,7 +301,8 @@ export class StageEngine {
       alpha: false,
     });
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    const dpr = Math.min(window.devicePixelRatio || 1, maxPixelRatioForTier(this.renderTier));
+    this.renderer.setPixelRatio(dpr);
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.toneMappingExposure = 0.96;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -349,6 +362,7 @@ export class StageEngine {
 
     // Post-processing: HDR Render -> UnrealBloomPass -> OutputPass
     this.composer = new EffectComposer(this.renderer);
+    this.composer.setPixelRatio(dpr);
     this.composer.renderTarget1.samples = 2;
     this.composer.renderTarget2.samples = 2;
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -393,7 +407,10 @@ export class StageEngine {
     this.ledSpillLight.position.set(0, 5.5, -2.5);
     this.scene.add(this.ledSpillLight);
 
-    this.mats = createSharedMaterials();
+    this.mats = createSharedMaterials({
+      tier: this.renderTier,
+      maxAnisotropy: this.renderer.capabilities.getMaxAnisotropy(),
+    });
 
     // Tour text offscreen texture for LED wall mode 6
     this.textCanvas = document.createElement('canvas');
@@ -433,8 +450,30 @@ export class StageEngine {
     this.camera.aspect = w / h;
     if (aspectChanged && this.activeView === 'foh' && this.fitFohOnResize) this.setCameraPreset('foh');
     this.camera.updateProjectionMatrix();
+    const dpr = Math.min(window.devicePixelRatio || 1, maxPixelRatioForTier(this.renderTier));
+    this.renderer.setPixelRatio(dpr);
+    this.composer.setPixelRatio(dpr);
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
+  }
+
+  /** Read-only GPU/memory stats exposed via `?probe` for Playwright budget & leak assertions. */
+  public renderStats() {
+    return {
+      tier: this.renderTier,
+      calls: this.renderer.info.render.calls,
+      triangles: this.renderer.info.render.triangles,
+      geometries: this.renderer.info.memory.geometries,
+      textures: this.renderer.info.memory.textures,
+    };
+  }
+
+  /** Force a full rig teardown + rebuild (used by `?probe` leak tests). */
+  public forceRebuildCurrentRig() {
+    if (!this.lastRebuildSource) return;
+    this.currentRig = undefined;
+    this.geometryKey = undefined;
+    this.rebuildRig(this.lastRebuildSource, this.lastRebuildStage);
   }
 
   public previewRig() {
@@ -809,12 +848,15 @@ export class StageEngine {
     const geometries = new Set<THREE.BufferGeometry>();
     const materials = new Set<THREE.Material>();
     const shared = new Set<THREE.Material>(Object.values(this.mats ?? {}));
+    const sharedCache = this.modelCache?.sharedResources;
     group.traverse(obj => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.geometry) return;
-      if (!this.laserShapeGeometries.has(mesh.geometry)) geometries.add(mesh.geometry);
+      if (!this.laserShapeGeometries.has(mesh.geometry) && !sharedCache?.has(mesh.geometry)) {
+        geometries.add(mesh.geometry);
+      }
       for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
-        if (!shared.has(material)) materials.add(material);
+        if (!shared.has(material) && !sharedCache?.has(material)) materials.add(material);
       }
       if (obj instanceof THREE.InstancedMesh) obj.dispose();
     });
@@ -895,6 +937,8 @@ export class StageEngine {
   }
 
   public rebuildRig(sourceRig: RigConfig, stage?: NativeStage) {
+    this.lastRebuildSource = sourceRig;
+    this.lastRebuildStage = stage;
     // Screen-event edits clone the stage; compare the physical layout by value so
     // they do not rebuild the rig, and reuse the resolved rig so identity checks hold.
     const layoutKey = JSON.stringify([stage?.layout ?? null, this.screenLayout ?? null]);
@@ -916,6 +960,8 @@ export class StageEngine {
       old.ledWall === rig.ledWall && old.trussPods === rig.trussPods && old.floorFx === rig.floorFx) return;
     this.beamPools?.dispose();
     this.releaseGroup(this.rigGroup);
+    this.modelCache.beginRebuild();
+    try {
     this.dmxUniverse1.fill(0);
     this.dmxUniverse2.fill(0);
     this.trussPods = [];
@@ -1063,6 +1109,10 @@ export class StageEngine {
       const frame = new THREE.Mesh(new THREE.BoxGeometry(width + 0.10, height + 0.10, 0.12), this.mats.darkSteel);
       frame.position.z = -0.075;
       mount.add(panel, frame);
+      if (cabinetGrid) {
+        const backs = this.createLedCabinetBacks(surface, -0.008);
+        if (backs) mount.add(backs);
+      }
       this.rigGroup.add(mount);
       if (primary) this.ledWallMats.push(material);
       else {
@@ -1137,14 +1187,30 @@ export class StageEngine {
         wallMesh.userData = cabinetMetadata(wall);
         this.rigGroup.add(wallMesh);
 
-        // Dark rear structural frame behind flat LED wall
-        const frame = new THREE.Mesh(
-          new THREE.BoxGeometry(wall.width + 0.5, wall.height + 0.5, 0.35),
-          this.mats.darkSteel
-        );
-        frame.position.set(wall.x, wallY, wallZ - 0.22);
-        frame.name = 'LED wall housing';
-        this.rigGroup.add(frame);
+        if (rig.ledWall.cabinets) {
+          const backs = this.createLedCabinetBacks(wall, -0.01);
+          if (backs) {
+            backs.position.set(wall.x, wallY, wallZ);
+            this.rigGroup.add(backs);
+          }
+          // Slim structural spine behind instanced LED cabinets
+          const spine = new THREE.Mesh(
+            new THREE.BoxGeometry(wall.width + 0.14, wall.height + 0.14, 0.06),
+            this.mats.darkSteel,
+          );
+          spine.position.set(wall.x, wallY, wallZ - 0.13);
+          spine.name = 'LED wall housing';
+          this.rigGroup.add(spine);
+        } else {
+          // Dark rear structural frame behind flat LED wall
+          const frame = new THREE.Mesh(
+            new THREE.BoxGeometry(wall.width + 0.5, wall.height + 0.5, 0.35),
+            this.mats.darkSteel
+          );
+          frame.position.set(wall.x, wallY, wallZ - 0.22);
+          frame.name = 'LED wall housing';
+          this.rigGroup.add(frame);
+        }
       }
 
       // Optional Side IMAG Wings flanking the main stage
@@ -1159,11 +1225,15 @@ export class StageEngine {
           wingGroup.userData = cabinetMetadata(wall.wing);
           const screen = new THREE.Mesh(new THREE.PlaneGeometry(wingW, wingH), wingMat);
           const backing = new THREE.Mesh(
-            new THREE.BoxGeometry(wingW + 0.3, wingH + 0.3, 0.26),
+            new THREE.BoxGeometry(wingW + (rig.ledWall.cabinets ? 0.12 : 0.3), wingH + (rig.ledWall.cabinets ? 0.12 : 0.3), rig.ledWall.cabinets ? 0.06 : 0.26),
             this.mats.darkSteel
           );
-          backing.position.z = -0.16;
+          backing.position.z = rig.ledWall.cabinets ? -0.13 : -0.16;
           wingGroup.add(screen, backing);
+          if (rig.ledWall.cabinets) {
+            const wingBacks = this.createLedCabinetBacks(wall.wing, -0.01);
+            if (wingBacks) wingGroup.add(wingBacks);
+          }
           wingGroup.position.set(
             wall.x + side * (wall.width / 2 + wingW / 2 + wall.wingGap),
             wallY,
@@ -1217,13 +1287,15 @@ export class StageEngine {
           const lateral = slot.pos.x * Math.cos(pod.rotationY) + slot.pos.z * Math.sin(pod.rotationY);
           const inst = this.createMovingFixture(
             fg.type,
+            fg.type,
             false,
             globalMovingIndex++,
             lateral / Math.max(2, pod.width / 2),
             fg.dmxUniverse,
             start,
             width,
-            resolveOptics(fg)
+            resolveOptics(fg),
+            fg.catalogId
           );
           inst.root.position.copy(slot.pos);
           inst.root.rotation.y = slot.rotY;
@@ -1236,24 +1308,28 @@ export class StageEngine {
             false,
             fg.dmxUniverse,
             start,
-            width
+            width,
+            fg.catalogId
           );
-          laser.root.position.copy(slot.pos).add(new THREE.Vector3(0, -0.1, 0.12));
+          const drop = (laser.root.userData.mountOffsetY as number | undefined) ?? 0.22;
+          laser.root.position.copy(slot.pos).add(new THREE.Vector3(0, -drop, 0.12));
           laser.root.rotation.y = pod.shape === 'circle' || pod.shape === 'path' ? -pod.rotationY : slot.rotY;
           podGroup.add(nameFixtureUnit(laser.root, fg, i, start));
           this.laserUnits.push(laser);
         } else if (fg.type === 'strobe') {
-          const st = this.createStrobeBar(globalStrobeIndex++);
+          const st = this.createStrobeBar(globalStrobeIndex++, fg.catalogId);
+          const drop = (st.mesh.userData.mountOffsetY as number | undefined) ?? 0.20;
           st.mesh.position.copy(slot.pos);
           st.mesh.rotation.y = slot.rotY;
-          st.mesh.translateY(0.04).translateZ(0.24);
+          st.mesh.translateY(-drop).translateZ(0.24);
           podGroup.add(nameFixtureUnit(st.mesh, fg, i, start));
           this.strobes.push({ lensMat: st.lensMat, index: st.index, buffer, start, width });
         } else if (fg.type === 'blinder') {
-          const bl = this.createBlinderBank();
+          const bl = this.createBlinderBank(fg.catalogId);
+          const drop = (bl.group.userData.mountOffsetY as number | undefined) ?? 0.28;
           bl.group.position.copy(slot.pos);
           bl.group.rotation.y = slot.rotY;
-          bl.group.translateY(-0.04).translateZ(0.28);
+          bl.group.translateY(-drop).translateZ(0.28);
           podGroup.add(nameFixtureUnit(bl.group, fg, i, start));
           this.blinders.push({ lensMat: bl.lensMat, buffer, start });
         }
@@ -1286,17 +1362,17 @@ export class StageEngine {
           this.atmosphereDmx.push({ type: fx.type, start, buffer: fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2 });
         }
         if (fx.type === 'co2') {
-          const jet = this.createCo2JetUnit();
+          const jet = this.createCo2JetUnit(fx.catalogId);
           jet.position.set(px, py, pz);
           this.rigGroup.add(nameFixtureUnit(jet, fx, i, start));
-          co2Emitters.push(new THREE.Vector3(px, py + 0.35, pz));
+          co2Emitters.push(new THREE.Vector3(px, py + 0.38, pz));
         } else if (fx.type === 'smoke') {
-          const sm = this.createSmokeMachineUnit();
+          const sm = this.createSmokeMachineUnit(fx.catalogId);
           sm.position.set(px, py, pz);
           this.rigGroup.add(nameFixtureUnit(sm, fx, i, start));
           smokeEmitters.push(new THREE.Vector3(px, py + 0.32, pz));
         } else if (fx.type === 'hazer') {
-          const hz = this.createHazerUnit();
+          const hz = this.createHazerUnit(fx.catalogId);
           hz.position.set(px, py, pz);
           this.rigGroup.add(nameFixtureUnit(hz, fx, i, start));
         } else if (fx.type === 'floor_laser') {
@@ -1305,23 +1381,27 @@ export class StageEngine {
             true,
             fx.dmxUniverse,
             start,
-            width
+            width,
+            fx.catalogId
           );
-          fl.root.position.set(px, py + 0.22, pz);
+          const halfH = (fl.root.userData.bodyHeight as number | undefined ?? 0.28) / 2 + 0.02;
+          fl.root.position.set(px, py + halfH, pz);
           this.rigGroup.add(nameFixtureUnit(fl.root, fx, i, start));
           this.laserUnits.push(fl);
         } else if (fx.type === 'floor_beam') {
           const fb = this.createMovingFixture(
             'beam',
+            'floor_beam',
             true,
             globalMovingIndex++,
             px / Math.max(2, rig.stageWidth / 2),
             fx.dmxUniverse,
             start,
             width,
-            resolveOptics(fx)
+            resolveOptics(fx),
+            fx.catalogId
           );
-          fb.root.position.set(px, py + 0.08, pz);
+          fb.root.position.set(px, py, pz);
           this.rigGroup.add(nameFixtureUnit(fb.root, fx, i, start));
           this.movingFixtures.push(fb);
         }
@@ -1336,6 +1416,9 @@ export class StageEngine {
     this.scene.add(this.beamPools.group);
     if ((old && old.venue !== rig.venue) || (this.activeView === 'foh' && this.fitFohOnResize) || this.activeView === 'pa_closeup') {
       this.setCameraPreset(this.activeView);
+    }
+    } finally {
+      this.modelCache.endRebuild();
     }
   }
 
@@ -1394,59 +1477,92 @@ export class StageEngine {
     });
   }
 
+  private createLedCabinetBacks(surface: LedSurface, zOffset: number): THREE.InstancedMesh | null {
+    const cols = surface.columns;
+    const rows = surface.rows;
+    const count = cols * rows;
+    if (count <= 0 || count > 4096) return null;
+    const tileW = surface.width / cols;
+    const tileH = surface.height / rows;
+    if (tileW <= 0.02 || tileH <= 0.02) return null;
+
+    const backGeo = this.modelCache.getLedCabinetBack(tileW, tileH);
+    const mesh = new THREE.InstancedMesh(backGeo, this.mats.hardwareBody, count);
+    mesh.name = 'LED cabinet backs';
+    mesh.userData = { kind: 'ledCabinetBacks', columns: cols, rows };
+    const matrix = new THREE.Matrix4();
+    let idx = 0;
+    for (let r = 0; r < rows; r++) {
+      const cy = -surface.height / 2 + (r + 0.5) * tileH;
+      for (let c = 0; c < cols; c++) {
+        const cx = -surface.width / 2 + (c + 0.5) * tileW;
+        matrix.makeTranslation(cx, cy, zOffset);
+        mesh.setMatrixAt(idx++, matrix);
+      }
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    return mesh;
+  }
+
   private createMovingFixture(
     type: 'beam' | 'wash',
+    hardwareType: 'beam' | 'wash' | 'floor_beam',
     isFloor: boolean,
     index: number,
     fanPosition: number,
     dmxUniverse: 1 | 2,
     dmxStart: number,
     dmxWidth: number,
-    profile?: FixtureOptics
+    profile?: FixtureOptics,
+    catalogId?: string
   ): MovingFixtureInstance {
     const root = new THREE.Group();
     const dir = isFloor ? 1 : -1;
+    const parts = this.modelCache.getMoving(hardwareType, catalogId, isFloor);
+    root.userData.pivotY = parts.spec.pivotY;
+    root.userData.motion = parts.spec.motion;
 
-    // Base housing + truss clamp
-    const base = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.16, 0.34), this.mats.fixtureBody);
-    base.position.y = dir * 0.08;
-    root.add(base);
+    // Base housing + separate clamp (hung) or rubber feet (floor)
+    const base = new THREE.Mesh(parts.baseGeo, this.mats.hardwareBody);
+    base.name = 'Base housing';
+    const mount = new THREE.Mesh(parts.mountGeo, this.mats.hardwareBody);
+    mount.name = isFloor ? 'Rubber feet' : 'Truss clamp';
+    root.add(base, mount);
 
     // Pan Yoke
     const yoke = new THREE.Group();
     yoke.name = 'Pan yoke';
-    yoke.position.y = dir * YOKE_OFFSET;
+    yoke.position.y = dir * parts.yokeY;
     root.add(yoke);
 
-    const armH = 0.32;
-    const armGeo = new THREE.BoxGeometry(0.06, armH, 0.12);
-    const armL = new THREE.Mesh(armGeo, this.mats.fixtureBody);
-    armL.position.set(-0.15, dir * (armH / 2), 0);
-    const armR = armL.clone();
-    armR.position.x = 0.15;
-    yoke.add(armL, armR);
+    const yokeMesh = new THREE.Mesh(parts.yokeGeo, this.mats.hardwareBody);
+    yokeMesh.name = 'Yoke arms';
+    yoke.add(yokeMesh);
 
-    // Tilt Head
+    // Tilt Head (origin sits strictly on the tilt axis at dir * parts.spec.pivotY from root)
     const head = new THREE.Group();
     head.name = 'Tilt head';
-    head.position.y = dir * HEAD_OFFSET;
+    head.position.y = dir * parts.headY;
     yoke.add(head);
 
-    const headR = type === 'wash' ? 0.16 : 0.13;
-    const headBody = new THREE.Mesh(
-      new THREE.CylinderGeometry(headR, headR * 0.88, 0.34, 14),
-      this.mats.fixtureBody
-    );
-    head.add(headBody);
+    const headBody = new THREE.Mesh(parts.headGeo, this.mats.hardwareBody);
+    headBody.name = 'Head housing';
+    const headGlass = new THREE.Mesh(parts.glassGeo, this.mats.hardwareGlass);
+    headGlass.name = 'Lens bezel';
+    head.add(headBody, headGlass);
 
-    // Glowing optical lens on emission end
+    // Per-fixture glowing optical lens on emission end (never shared across units)
     const lensMat = new THREE.MeshBasicMaterial({ color: 0x00f0ff });
-    const lens = new THREE.Mesh(new THREE.CircleGeometry(headR * 0.82, 16), lensMat);
-    lens.position.y = dir * 0.175;
+    const lensGeo = parts.lensShape.kind === 'rect'
+      ? new THREE.PlaneGeometry(parts.lensShape.width, parts.lensShape.height)
+      : new THREE.CircleGeometry(parts.lensShape.radius, 16);
+    const lens = new THREE.Mesh(lensGeo, lensMat);
+    lens.name = 'Optical lens';
+    lens.position.y = dir * (parts.lensOffsetY + 0.005);
     lens.rotation.x = isFloor ? -Math.PI / 2 : Math.PI / 2;
     head.add(lens);
 
-    // Volumetric Light Cone (origin right at lens, extending along `dir * Y`)
+    // Volumetric Light Cone (origin right at lens face, extending along `dir * Y`)
     const optics = fixtureOptics(type, profile);
     const { length: beamLen, nearRadius: topR, farRadius: botR } = optics;
     const beamGeo = new THREE.CylinderGeometry(
@@ -1457,8 +1573,8 @@ export class StageEngine {
       1,
       true
     );
-    // Shift so aperture is at y = 0 and beam shoots along `dir * Y`
-    beamGeo.translate(0, dir * (beamLen / 2 + 0.17), 0);
+    // Shift so aperture sits on the lens face and beam shoots along `dir * Y`
+    beamGeo.translate(0, dir * (beamLen / 2 + parts.lensOffsetY), 0);
     if (isFloor) {
       // Flip uv.y so uv.y = 1 is ALWAYS at lens aperture for shader consistency!
       const uv = beamGeo.attributes.uv;
@@ -1475,6 +1591,7 @@ export class StageEngine {
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
       uniforms: {
+        uLensOffset: { value: parts.lensOffsetY },
         uColor: { value: new THREE.Color(0x00f0ff) },
         uIntensity: { value: 0.8 },
         uHaze: { value: 0.78 },
@@ -1486,6 +1603,7 @@ export class StageEngine {
     });
 
     const beamMesh = new THREE.Mesh(beamGeo, beamMat);
+    beamMesh.userData.lensOffsetY = parts.lensOffsetY;
     beamMesh.frustumCulled = false;
     head.add(beamMesh);
 
@@ -1497,6 +1615,8 @@ export class StageEngine {
       fanPosition,
       openingStep: DEMO_BLACKOUT_STEPS,
       directedDimmer: 0,
+      pivotY: parts.spec.pivotY,
+      motion: parts.spec.motion,
       root,
       yoke,
       head,
@@ -1529,21 +1649,35 @@ export class StageEngine {
     isFloor: boolean,
     dmxUniverse: 1 | 2,
     dmxStart: number,
-    dmxWidth: number
+    dmxWidth: number,
+    catalogId?: string
   ): LaserUnitInstance {
     const root = new THREE.Group();
+    const parts = this.modelCache.getStatic(isFloor ? 'floor_laser' : 'laser', catalogId, isFloor);
+    root.userData.bodyHeight = parts.spec.base.h;
+    root.userData.mountOffsetY = parts.mountOffsetY;
 
-    // KVANT Clubmax-style sleek black anodized laser projector chassis
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.28, 0.56), this.mats.fixtureBody);
-    const frontBezel = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.24, 0.04), this.mats.darkSteel);
-    frontBezel.position.z = 0.28;
-    const warnStripe = new THREE.Mesh(new THREE.BoxGeometry(0.47, 0.03, 0.44), this.mats.hoistOrange);
-    warnStripe.position.y = 0.11;
+    const body = new THREE.Mesh(parts.bodyGeo, this.mats.hardwareBody);
+    body.name = 'Laser chassis';
+    root.add(body);
+    if (parts.glassGeo) {
+      const bezel = new THREE.Mesh(parts.glassGeo, this.mats.hardwareGlass);
+      bezel.name = 'Aperture bezel';
+      root.add(bezel);
+    }
 
     const apertureMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
-    const aperture = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.055), apertureMat);
-    aperture.position.set(0, 0, 0.305);
-    root.add(body, frontBezel, warnStripe, aperture);
+    const apertureSpec = parts.lenses[0];
+    const aperture = new THREE.Mesh(
+      new THREE.PlaneGeometry(
+        apertureSpec && apertureSpec.kind === 'rect' ? apertureSpec.w : 0.16,
+        apertureSpec && apertureSpec.kind === 'rect' ? apertureSpec.h : 0.055,
+      ),
+      apertureMat,
+    );
+    aperture.name = 'Laser aperture';
+    aperture.position.set(0, 0, apertureSpec ? apertureSpec.z : 0.305);
+    root.add(aperture);
 
     const { sheet: sheetGeo, cone: coneGeo } = this.laserShape(DEFAULT_LASER_RESOLUTION);
     const sheetMat = new THREE.ShaderMaterial({
@@ -1631,60 +1765,76 @@ export class StageEngine {
     };
   }
 
-  private createStrobeBar(index: number) {
+  private createStrobeBar(index: number, catalogId?: string) {
     const group = new THREE.Group();
-    const housing = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.22, 0.16), this.mats.fixtureBody);
+    const parts = this.modelCache.getStatic('strobe', catalogId, false);
+    group.userData.mountOffsetY = parts.mountOffsetY;
+    const housing = new THREE.Mesh(parts.bodyGeo, this.mats.hardwareBody);
+    housing.name = 'Strobe housing';
+    group.add(housing);
+    if (parts.glassGeo) {
+      const bezel = new THREE.Mesh(parts.glassGeo, this.mats.hardwareGlass);
+      bezel.name = 'Strobe bezel';
+      group.add(bezel);
+    }
     const lensMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
-    const tube = new THREE.Mesh(new THREE.PlaneGeometry(0.84, 0.12), lensMat);
-    tube.position.z = 0.085;
-    group.add(housing, tube);
+    for (const [i, lens] of parts.lenses.entries()) {
+      if (lens.kind !== 'rect') continue;
+      const tube = new THREE.Mesh(new THREE.PlaneGeometry(lens.w, lens.h), lensMat);
+      tube.name = i === 0 ? 'Strobe tube' : `Strobe plate ${i}`;
+      tube.position.set(lens.x, lens.y, lens.z);
+      group.add(tube);
+    }
     return { mesh: group, lensMat, index };
   }
 
-  private createBlinderBank() {
+  private createBlinderBank(catalogId?: string) {
     const group = new THREE.Group();
-    const housing = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.62, 0.22), this.mats.darkSteel);
+    const parts = this.modelCache.getStatic('blinder', catalogId, false);
+    group.userData.mountOffsetY = parts.mountOffsetY;
+    const housing = new THREE.Mesh(parts.bodyGeo, this.mats.hardwareBody);
+    housing.name = 'Blinder housing';
     group.add(housing);
+    if (parts.glassGeo) {
+      const reflectors = new THREE.Mesh(parts.glassGeo, this.mats.hardwareGlass);
+      reflectors.name = 'Blinder reflectors';
+      group.add(reflectors);
+    }
     const lensMat = new THREE.MeshBasicMaterial({ color: 0x181208 });
-    for (const bx of [-0.16, 0.16]) {
-      for (const by of [-0.14, 0.14]) {
-        const pod = new THREE.Mesh(new THREE.CircleGeometry(0.115, 14), lensMat);
-        pod.position.set(bx, by, 0.115);
-        group.add(pod);
-      }
+    for (const [i, lens] of parts.lenses.entries()) {
+      if (lens.kind !== 'circle') continue;
+      const pod = new THREE.Mesh(new THREE.CircleGeometry(lens.r, 14), lensMat);
+      pod.name = `Blinder lamp ${i + 1}`;
+      pod.position.set(lens.x, lens.y, lens.z);
+      group.add(pod);
     }
     return { group, lensMat };
   }
 
-  private createCo2JetUnit(): THREE.Group {
+  private createCo2JetUnit(catalogId?: string): THREE.Group {
     const g = new THREE.Group();
-    const base = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.14, 0.34), this.mats.darkSteel);
-    base.position.y = 0.07;
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.068, 0.36, 10), this.mats.chrome);
-    barrel.position.set(0, 0.28, 0.04);
-    barrel.rotation.x = 0.08;
-    g.add(base, barrel);
+    const parts = this.modelCache.getStatic('co2', catalogId, true);
+    const mesh = new THREE.Mesh(parts.bodyGeo, this.mats.hardwareBody);
+    mesh.name = 'CO2 jet body';
+    g.add(mesh);
     return g;
   }
 
-  private createSmokeMachineUnit(): THREE.Group {
+  private createSmokeMachineUnit(catalogId?: string): THREE.Group {
     const g = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.26, 0.56), this.mats.fixtureBody);
-    body.position.y = 0.13;
-    const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.18, 10), this.mats.aluminumTruss);
-    nozzle.position.set(0, 0.28, 0.16);
-    nozzle.rotation.x = 0.35;
-    g.add(body, nozzle);
+    const parts = this.modelCache.getStatic('smoke', catalogId, true);
+    const mesh = new THREE.Mesh(parts.bodyGeo, this.mats.hardwareBody);
+    mesh.name = 'Fogger chassis';
+    g.add(mesh);
     return g;
   }
 
-  private createHazerUnit(): THREE.Group {
+  private createHazerUnit(catalogId?: string): THREE.Group {
     const g = new THREE.Group();
-    const flightCase = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.44, 0.56), this.mats.darkSteel);
-    flightCase.position.y = 0.22;
-    const trim = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.04, 0.58), this.mats.aluminumTruss);
-    trim.position.y = 0.43;
-    g.add(flightCase, trim);
+    const parts = this.modelCache.getStatic('hazer', catalogId, true);
+    const mesh = new THREE.Mesh(parts.bodyGeo, this.mats.hardwareBody);
+    mesh.name = 'Hazer chassis';
+    g.add(mesh);
     return g;
   }
 
@@ -1912,7 +2062,22 @@ export class StageEngine {
       if (focus) {
         fx.root.updateWorldMatrix(true, false);
         const local = fx.root.worldToLocal(this.focusLocal.set(focus.x, focus.y, focus.z));
-        ({ pan: targetPan, tilt: targetTilt } = aimAngles(local, fx.isFloor, fx.currentPan, fx.currentTilt));
+        if (fx.motion === 'tilt') {
+          targetPan = 0;
+          targetTilt = aimTiltOnly(local, fx.isFloor, fx.pivotY);
+        } else {
+          // Both pan-tilt heads and manually focused PAR cans aim onto explicit focus marks.
+          ({ pan: targetPan, tilt: targetTilt } = aimAngles(local, fx.isFloor, fx.currentPan, fx.currentTilt, fx.pivotY));
+        }
+      } else if (fx.motion === 'fixed') {
+        if (look.movementMode === 'manual') {
+          targetPan = look.manualPan * 1.45 - fx.mountYaw;
+          targetTilt = (fx.isFloor ? 1 : -1) * look.manualTilt * 1.15;
+        } else {
+          // Fixed PARs hold static rigging orientation during automated moving-head chases.
+          targetPan = 0;
+          targetTilt = 0;
+        }
       } else {
       switch (look.movementMode) {
         case 'manual':
@@ -1956,12 +2121,17 @@ export class StageEngine {
 
       // Pan is relative to the audience (+Z), even on a radial or rotated mount.
       // A ceiling head emits along local −Y, while its floor counterpart emits along +Y.
-      targetPan -= fx.mountYaw;
-      if (look.movementMode === 'fan') {
-        if (fx.isFloor) targetTilt = -targetTilt;
-      } else {
+      if (fx.motion === 'tilt') {
+        targetPan = 0;
         if (!fx.isFloor) targetTilt = -targetTilt;
-        else if (look.movementMode !== 'manual') targetTilt = Math.abs(targetTilt) * 0.65 + 0.15;
+      } else {
+        targetPan -= fx.mountYaw;
+        if (look.movementMode === 'fan') {
+          if (fx.isFloor) targetTilt = -targetTilt;
+        } else {
+          if (!fx.isFloor) targetTilt = -targetTilt;
+          else if (look.movementMode !== 'manual') targetTilt = Math.abs(targetTilt) * 0.65 + 0.15;
+        }
       }
       }
 
@@ -2266,14 +2436,8 @@ export class StageEngine {
     this.laserShapes.clear();
     for (const piece of this.scenicPieces.values()) this.releaseGroup(piece.root);
     this.scenicPieces.clear();
-    if (this.mats) {
-      const textures = new Set<THREE.Texture>();
-      for (const material of Object.values(this.mats) as THREE.MeshStandardMaterial[]) {
-        for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
-        material.dispose();
-      }
-      textures.forEach(texture => texture.dispose());
-    }
+    this.modelCache?.dispose();
+    disposeSharedMaterials(this.mats);
     this.environmentTarget?.dispose();
     if (this.composer) {
       this.composer.passes.forEach(pass => pass.dispose());

@@ -652,3 +652,45 @@
   gap: 8px;
   font-size: 13px;
 }
+
+/* Fixture symbols layer & toolbar toggle */
+.sd-fixtures-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #bbc5c6;
+  font-size: 11px;
+  cursor: pointer;
+}
+.sd-fixtures-toggle + .sd-snap {
+  margin-left: 8px;
+}
+.sf-fixture-symbols {
+  pointer-events: none;
+}
+.sf-fixture-symbols path {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 1.1;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.sf-fixture-symbols .sf-sym-body {
+  fill: #24303a;
+  fill-opacity: 0.88;
+  stroke: #85c4dc;
+}
+.sf-fixture-symbols .sf-sym-lens {
+  fill: #38bdf8;
+  fill-opacity: 0.72;
+  stroke: #bae6fd;
+}
+.sf-fixture-symbols .sf-sym-accent {
+  fill: #f59e0b;
+  fill-opacity: 0.75;
+  stroke: #fde68a;
+}
+.sf-fixture-symbols .sf-sym-none {
+  fill: none;
+  stroke: #9fd7ea;
+}

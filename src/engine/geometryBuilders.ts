@@ -6,12 +6,22 @@ import type { PlanPoint, RigConfig, TrussShape, VenueType } from '../types/show'
 import { stageSurfaceHeight } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
 import type { SpeakerHang } from '../data/studioGeometry';
+import {
+  atlasSizeForTier,
+  createHardwareMaterials,
+  generateDeckPixels,
+  pixelsToCanvasTexture,
+  STAGE_DECK_SEED,
+  type RenderTier,
+} from './hardwareMaterials';
 
 // Shared high-quality PBR materials for authentic touring hardware
 export interface SharedMaterials {
   aluminumTruss: THREE.MeshStandardMaterial;
   darkSteel: THREE.MeshStandardMaterial;
   fixtureBody: THREE.MeshStandardMaterial;
+  hardwareBody: THREE.MeshStandardMaterial;
+  hardwareGlass: THREE.MeshStandardMaterial;
   hoistOrange: THREE.MeshStandardMaterial;
   stageDeck: THREE.MeshStandardMaterial;
   speakerCabinet: THREE.MeshStandardMaterial;
@@ -22,76 +32,72 @@ export interface SharedMaterials {
   chrome: THREE.MeshStandardMaterial;
 }
 
-export function createSharedMaterials(): SharedMaterials {
-  // Procedural subtle brushed stage marley texture
-  const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 512;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#373b40';
-  ctx.fillRect(0, 0, 512, 512);
-  // Deck panel seams
-  ctx.strokeStyle = '#222429';
-  ctx.lineWidth = 1.8;
-  for (let i = 0; i <= 512; i += 256) {
-    ctx.beginPath();
-    ctx.moveTo(i, 0);
-    ctx.lineTo(i, 512);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, i);
-    ctx.lineTo(512, i);
-    ctx.stroke();
-  }
-  // Subtle micro-scuff variation for specular realism
-  for (let i = 0; i < 650; i++) {
-    const x = Math.random() * 512;
-    const y = Math.random() * 512;
-    const len = 8 + Math.random() * 24;
-    ctx.strokeStyle = `rgba(255,255,255,${0.01 + Math.random() * 0.025})`;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineTo(x + (Math.random() - 0.5) * len, y + (Math.random() - 0.5) * len);
-    ctx.stroke();
-  }
-  const deckTex = new THREE.CanvasTexture(canvas);
-  deckTex.colorSpace = THREE.SRGBColorSpace;
-  deckTex.wrapS = THREE.RepeatWrapping;
-  deckTex.wrapT = THREE.RepeatWrapping;
-  deckTex.repeat.set(6, 3);
+export interface SharedMaterialOptions {
+  tier?: RenderTier;
+  maxAnisotropy?: number;
+}
 
-  // Stamp the perforations into a mipmapped surface so the grille resolves at FOH distance.
-  const perforations = document.createElement('canvas');
-  perforations.width = perforations.height = 128;
-  const grille = perforations.getContext('2d')!;
-  grille.fillStyle = '#575c62';
-  grille.fillRect(0, 0, 128, 128);
-  grille.globalCompositeOperation = 'destination-out';
-  grille.fillStyle = 'rgba(0,0,0,0.94)';
-  for (let row = 0; row < 16; row++) {
-    for (let col = -1; col <= 16; col++) {
-      grille.beginPath();
-      grille.arc(col * 8 + (row % 2) * 4, row * 8 + 4, 3.15, 0, Math.PI * 2);
-      grille.fill();
+export function createSharedMaterials(options: SharedMaterialOptions = {}): SharedMaterials {
+  const tier = options.tier ?? 'high';
+  const maxAnisotropy = options.maxAnisotropy ?? 1;
+  const deckSize = atlasSizeForTier(tier);
+  const hasDom = typeof document !== 'undefined';
+
+  let deckTex: THREE.CanvasTexture | null = null;
+  let grilleTex: THREE.CanvasTexture | null = null;
+  let clothTex: THREE.CanvasTexture | null = null;
+
+  if (hasDom) {
+    // Deterministic subtle brushed stage marley texture (seeded PRNG)
+    const deckPixels = generateDeckPixels(deckSize, STAGE_DECK_SEED);
+    deckTex = pixelsToCanvasTexture(deckPixels, deckSize, deckSize, THREE.SRGBColorSpace, tier === 'high' ? Math.min(4, maxAnisotropy) : 1);
+    if (deckTex) {
+      deckTex.name = 'stage-deck-marley';
+      deckTex.wrapS = THREE.RepeatWrapping;
+      deckTex.wrapT = THREE.RepeatWrapping;
+      deckTex.repeat.set(6, 3);
+    }
+
+    // Stamp the perforations into a mipmapped surface so the grille resolves at FOH distance.
+    const perforations = document.createElement('canvas');
+    perforations.width = perforations.height = 128;
+    const grille = perforations.getContext('2d');
+    if (grille) {
+      grille.fillStyle = '#575c62';
+      grille.fillRect(0, 0, 128, 128);
+      grille.globalCompositeOperation = 'destination-out';
+      grille.fillStyle = 'rgba(0,0,0,0.94)';
+      for (let row = 0; row < 16; row++) {
+        for (let col = -1; col <= 16; col++) {
+          grille.beginPath();
+          grille.arc(col * 8 + (row % 2) * 4, row * 8 + 4, 3.15, 0, Math.PI * 2);
+          grille.fill();
+        }
+      }
+      grilleTex = new THREE.CanvasTexture(perforations);
+      grilleTex.name = 'speaker-grille-perforations';
+      grilleTex.colorSpace = THREE.SRGBColorSpace;
+      grilleTex.wrapS = grilleTex.wrapT = THREE.RepeatWrapping;
+      grilleTex.repeat.set(5, 3);
+
+      const cloth = document.createElement('canvas');
+      cloth.width = cloth.height = 128;
+      const fabric = cloth.getContext('2d');
+      if (fabric) {
+        fabric.drawImage(perforations, 0, 0);
+        fabric.globalCompositeOperation = 'destination-over';
+        fabric.fillStyle = 'rgba(31,34,35,0.73)';
+        fabric.fillRect(0, 0, 128, 128);
+        clothTex = new THREE.CanvasTexture(cloth);
+        clothTex.name = 'speaker-acoustic-cloth';
+        clothTex.colorSpace = THREE.SRGBColorSpace;
+        clothTex.wrapS = clothTex.wrapT = THREE.RepeatWrapping;
+        clothTex.repeat.copy(grilleTex.repeat);
+      }
     }
   }
-  const grilleTex = new THREE.CanvasTexture(perforations);
-  grilleTex.colorSpace = THREE.SRGBColorSpace;
-  grilleTex.wrapS = grilleTex.wrapT = THREE.RepeatWrapping;
-  grilleTex.repeat.set(5, 3);
 
-  const cloth = document.createElement('canvas');
-  cloth.width = cloth.height = 128;
-  const fabric = cloth.getContext('2d')!;
-  fabric.drawImage(perforations, 0, 0);
-  fabric.globalCompositeOperation = 'destination-over';
-  fabric.fillStyle = 'rgba(31,34,35,0.73)';
-  fabric.fillRect(0, 0, 128, 128);
-  const clothTex = new THREE.CanvasTexture(cloth);
-  clothTex.colorSpace = THREE.SRGBColorSpace;
-  clothTex.wrapS = clothTex.wrapT = THREE.RepeatWrapping;
-  clothTex.repeat.copy(grilleTex.repeat);
+  const hardware = createHardwareMaterials(tier, maxAnisotropy);
 
   return {
     aluminumTruss: new THREE.MeshStandardMaterial({
@@ -109,13 +115,15 @@ export function createSharedMaterials(): SharedMaterials {
       metalness: 0.65,
       roughness: 0.38,
     }),
+    hardwareBody: hardware.hardwareBody,
+    hardwareGlass: hardware.hardwareGlass,
     hoistOrange: new THREE.MeshStandardMaterial({
       color: 0xff6a00,
       metalness: 0.45,
       roughness: 0.42,
     }),
     stageDeck: new THREE.MeshStandardMaterial({
-      color: 0xffffff,
+      color: deckTex ? 0xffffff : 0x373b40,
       map: deckTex,
       metalness: 0.08,
       roughness: 0.55,
@@ -136,14 +144,34 @@ export function createSharedMaterials(): SharedMaterials {
     }),
     speakerCone: new THREE.MeshStandardMaterial({ color: 0x505053, roughness: 0.79, metalness: 0.04 }),
     speakerRim: new THREE.MeshStandardMaterial({ color: 0x393c40, roughness: 0.43, metalness: 0.3 }),
-    speakerFabric: new THREE.MeshStandardMaterial({ color: 0xb4b1aa, map: clothTex,
-      roughness: 0.78, metalness: 0.18, transparent: true, depthWrite: false }),
+    speakerFabric: new THREE.MeshStandardMaterial({
+      color: 0xb4b1aa,
+      map: clothTex,
+      roughness: 0.78,
+      metalness: 0.18,
+      transparent: true,
+      depthWrite: false,
+    }),
     chrome: new THREE.MeshStandardMaterial({
       color: 0xe6edf7,
       metalness: 0.95,
       roughness: 0.14,
     }),
   };
+}
+
+/** Dispose every material and unique texture in a SharedMaterials bundle. */
+export function disposeSharedMaterials(mats: SharedMaterials | undefined) {
+  if (!mats) return;
+  const textures = new Set<THREE.Texture>();
+  for (const material of Object.values(mats) as THREE.MeshStandardMaterial[]) {
+    if (!material) continue;
+    for (const value of Object.values(material)) {
+      if (value instanceof THREE.Texture) textures.add(value);
+    }
+    material.dispose();
+  }
+  textures.forEach((texture) => texture.dispose());
 }
 
 // Bake static assemblies in local coordinates. The engine still moves the whole

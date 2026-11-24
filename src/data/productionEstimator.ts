@@ -1,5 +1,6 @@
 import type { FixtureType, FloorFxType, RigConfig, StagePropKind } from '../types/show';
-import { catalogDisplayName, getCatalogEntry, isFieldUnverified } from './equipmentCatalog';
+import { catalogDisplayName, getCatalogEntry, isFieldUnverified, type CatalogBodyFamily } from './equipmentCatalog';
+import { bodyFamilyFor } from './equipmentSymbols';
 import { PROP_CATALOG } from './stageProps';
 import { pathLength } from './stageDesign';
 import { ledPlacement } from './stageEquipment';
@@ -16,6 +17,8 @@ export interface CostLineItem {
   rentalCost: number;
   weightLbs: number;
   watts: number;
+  body?: CatalogBodyFamily;
+  catalogId?: string;
 }
 
 export interface LaborLineItem {
@@ -229,6 +232,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: legacyAllBeams * 195,
       weightLbs: legacyAllBeams * 44,
       watts: legacyAllBeams * 520,
+      body: 'moving-beam',
     });
   }
   if (legacyWashCount > 0) {
@@ -240,6 +244,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: legacyWashCount * 145,
       weightLbs: legacyWashCount * 28,
       watts: legacyWashCount * 400,
+      body: 'moving-wash',
     });
   }
   if (legacyStrobeCount > 0) {
@@ -251,6 +256,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: legacyStrobeCount * 135,
       weightLbs: legacyStrobeCount * 26,
       watts: legacyStrobeCount * 1200,
+      body: 'strobe-panel',
     });
   }
   if (legacyBlinderCount > 0) {
@@ -262,6 +268,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: legacyBlinderCount * 48,
       weightLbs: legacyBlinderCount * 24,
       watts: legacyBlinderCount * 2600,
+      body: 'blinder-4lite',
     });
   }
 
@@ -274,6 +281,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: legacyLaserCount * 560,
       weightLbs: legacyLaserCount * 32,
       watts: legacyLaserCount * 350,
+      body: 'laser-head',
     });
   }
   if (legacyFloorLaserCount > 0) {
@@ -285,6 +293,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: legacyFloorLaserCount * 950,
       weightLbs: legacyFloorLaserCount * 54,
       watts: legacyFloorLaserCount * 650,
+      body: 'laser-head',
     });
   }
 
@@ -308,6 +317,8 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: bucket.count * allowance.rentalCost,
       weightLbs: Math.round(bucket.count * (hasWeight ? entry!.weightKg! * KG_TO_LBS : allowance.weightLbs)),
       watts: Math.round(bucket.count * (hasPower ? entry!.powerW! : allowance.watts)),
+      body: entry?.body ?? bodyFamilyFor(bucket.type),
+      catalogId: bucket.catalogId,
     };
     if (allowance.category === 'Smoke & FX') fxCatalogRows.push(row);
     else equipmentItems.push(row);
@@ -343,6 +354,8 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: Math.round(area * 185),
       weightLbs: surface.cabinets && usePanelSpecs ? Math.round(cabinetCount * panelEntry!.weightKg! * KG_TO_LBS) : Math.round(area * 62),
       watts: surface.cabinets && usePanelSpecs ? Math.round(cabinetCount * panelEntry!.powerW!) : Math.round(area * 580),
+      body: 'led-panel',
+      catalogId: panelEntry?.id,
     });
   } else if (wall && wall.height > 0) {
     const totalLedArea = wall.width * wall.height + 2 * wall.wing.width * wall.wing.height;
@@ -355,6 +368,8 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: Math.round(totalLedArea * 185),
       weightLbs: rig.ledWall.cabinets && usePanelSpecs ? Math.round(cabinetCount * panelEntry!.weightKg! * KG_TO_LBS) : Math.round(totalLedArea * 62),
       watts: rig.ledWall.cabinets && usePanelSpecs ? Math.round(cabinetCount * panelEntry!.powerW!) : Math.round(totalLedArea * 580),
+      body: 'led-panel',
+      catalogId: panelEntry?.id,
     });
   }
   if (secondaryArea > 0) {
@@ -366,6 +381,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: Math.round(secondaryArea * 185),
       weightLbs: Math.round(secondaryArea * 62),
       watts: Math.round(secondaryArea * 580),
+      body: 'led-panel',
     });
   }
 
@@ -467,6 +483,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: legacyHazerCount * 240,
       weightLbs: legacyHazerCount * 79,
       watts: legacyHazerCount * 1400,
+      body: 'hazer-box',
     });
   }
   if (legacySmokeCount > 0) {
@@ -478,6 +495,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: legacySmokeCount * 75,
       weightLbs: legacySmokeCount * 48,
       watts: legacySmokeCount * 2000,
+      body: 'fogger-box',
     });
   }
   if (legacyCo2Count > 0) {
@@ -489,6 +507,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       rentalCost: legacyCo2Count * 180,
       weightLbs: legacyCo2Count * 95,
       watts: legacyCo2Count * 80,
+      body: 'co2-jet',
     });
   }
   equipmentItems.push(...fxCatalogRows);

@@ -693,13 +693,15 @@ export const App: React.FC = () => {
       throw error;
     }
     engineRef.current = engine;
-    // Read-only probe for browser tests: `?probe` exposes each head's beam axis.
+    // Read-only probe for browser tests: `?probe` exposes each head's beam axis & render metrics.
     const probe = new URLSearchParams(window.location.search).has('probe');
     if (probe) (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe = {
       beamAxes: () => engine.beamAxes(),
       screens: () => engine.screenDiagnostics(),
       primaryScreen: () => engine.screenTransport(),
       hangs: () => engine.hangDiagnostics(),
+      renderStats: () => engine.renderStats(),
+      rebuildRig: () => engine.forceRebuildCurrentRig(),
     };
 
     return () => {

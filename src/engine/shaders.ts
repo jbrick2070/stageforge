@@ -22,6 +22,7 @@ const AIR_GLSL = /* glsl */ `
 `;
 
 export const VOLUMETRIC_BEAM_VERT = /* glsl */ `
+  uniform float uLensOffset;
   varying vec2 vUv;
   varying vec3 vWorld;
   varying vec3 vRadial;
@@ -34,7 +35,7 @@ export const VOLUMETRIC_BEAM_VERT = /* glsl */ `
     vWorld = world.xyz;
     vRadial = normalize(mat3(modelMatrix) * vec3(normal.x, 0.0, normal.z));
     vAxis = normalize(mat3(modelMatrix) * vec3(0.0, sign(position.y), 0.0));
-    vec3 lens = (modelMatrix * vec4(0.0, sign(position.y) * 0.17, 0.0, 1.0)).xyz;
+    vec3 lens = (modelMatrix * vec4(0.0, sign(position.y) * uLensOffset, 0.0, 1.0)).xyz;
     vec3 across = cross(vAxis, cameraPosition - lens);
     across /= max(length(across), 0.0001);
     vec2 basis = vec2(dot(across, normalize(modelMatrix[0].xyz)), dot(across, normalize(modelMatrix[2].xyz)));

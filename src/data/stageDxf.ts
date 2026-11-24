@@ -5,6 +5,7 @@ import { buildDmxPatch } from './dmxPatch';
 import { getPlatforms, podWorldPoint, stageSurfaceHeight } from './stageDesign';
 import { PROP_CATALOG } from './stageProps';
 import { placeFixtures } from './fixturePlacement';
+import { bodyFamilyFor, symbolForHardware } from './equipmentSymbols';
 import type { NativeStage } from './showFile';
 import { authoredWallFrames, resolveStudioGeometry } from './studioGeometry';
 
@@ -47,17 +48,27 @@ function centerLine(pod: TrussPodConfig): PlanPoint[] {
   return [{ x: -half, z: 0 }, { x: half, z: 0 }];
 }
 
-// Drafting symbols indicate insertion/orientation; patch and model are attached to each INSERT.
-function fixtureSymbol(block: DxfBlock, type: Equipment) {
-  if (type === 'beam' || type === 'floor_beam' || type === 'wash') {
-    block.addCircle(point3d(0,0,0), type === 'wash' ? 0.19 : 0.14);
-    block.addLine(point3d(0,0,0), point3d(0,-0.23,0));
-  } else if (type === 'laser' || type === 'floor_laser') {
-    outline(block,[{x:-0.16,z:-0.13},{x:0.16,z:-0.13},{x:0,z:0.2}],0,'0',true);
-  } else {
-    const bar = type === 'strobe' || type === 'blinder';
-    outline(block,rectangle(0,0,bar ? 0.52 : 0.3,0.26),0,'0',true);
-    block.addLine(point3d(0,0,0), point3d(0,-0.18,0));
+// Drafting symbols come from equipmentSymbols (same silhouettes as 3D models, 2D plan and picker).
+function fixtureSymbol(block: DxfBlock, type: Equipment, catalogId?: string) {
+  const symbol = symbolForHardware(type, catalogId);
+  for (const spec of symbol.plan) {
+    if (spec.kind === 'circle') {
+      block.addCircle(point3d(spec.cx, -spec.cy, 0), spec.r);
+    } else if (spec.kind === 'rect') {
+      const pts: PlanPoint[] = [
+        { x: spec.x, z: spec.y },
+        { x: spec.x + spec.w, z: spec.y },
+        { x: spec.x + spec.w, z: spec.y + spec.h },
+        { x: spec.x, z: spec.y + spec.h },
+      ];
+      outline(block, pts, 0, '0', true);
+    } else if (spec.pts.length >= 2) {
+      if (spec.pts.length === 2 && !spec.closed) {
+        block.addLine(point3d(spec.pts[0][0], -spec.pts[0][1], 0), point3d(spec.pts[1][0], -spec.pts[1][1], 0));
+      } else {
+        outline(block, spec.pts.map(([x, z]) => ({ x, z })), 0, '0', spec.closed);
+      }
+    }
   }
 }
 
@@ -102,8 +113,12 @@ export function exportStageDxf(sourceRig: RigConfig, stage?: NativeStage): strin
   }
   function fixture(group: RigConfig['floorFx'][number] | TrussPodConfig['fixtures'][number],
     i: number, p: PlanPoint, elevation: number, rotation: number) {
-    const name = 'SF_' + group.type.toUpperCase();
-    if (!defined.has(name)) { fixtureSymbol(drawing.addBlock(name),group.type); defined.add(name); }
+    const defaultFamily = bodyFamilyFor(group.type);
+    const family = bodyFamilyFor(group.type, group.catalogId);
+    const name = family === defaultFamily
+      ? 'SF_' + group.type.toUpperCase()
+      : 'SF_' + group.type.toUpperCase() + '_' + family.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    if (!defined.has(name)) { fixtureSymbol(drawing.addBlock(name), group.type, group.catalogId); defined.add(name); }
     const insert = drawing.addInsert(name,cad(p,elevation),{layerName:'FIXTURES',rotationAngle: rotation * degrees});
     const metadata = insert.addXData('STAGEFORGE');
     addProperty(metadata,group.modelName);
@@ -111,6 +126,7 @@ export function exportStageDxf(sourceRig: RigConfig, stage?: NativeStage): strin
     const address = group.dmxStartChannel + i * footprint.get(group)!;
     const patchLabel = `U${group.dmxUniverse}.${String(address).padStart(3,'0')}${patch.unitStart(group,i) ? '' : ' (invalid patch)'}`;
     addProperty(metadata,patchLabel);
+    if (group.catalogId !== undefined) addProperty(metadata, group.catalogId);
     label(patchLabel,{x:p.x+0.18,z:p.z+0.1},elevation,0.13,'PATCH_TAGS');
     include(p);
   }

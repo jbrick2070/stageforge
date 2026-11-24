@@ -180,8 +180,11 @@ export class BeamPools {
       optics: ReturnType<typeof fixtureOptics>) {
     if (intensity <= 0.001) return;
     const sign = isFloor ? 1 : -1;
+    const lensOffset = typeof beam.userData?.lensOffsetY === 'number' && Number.isFinite(beam.userData.lensOffsetY)
+      ? beam.userData.lensOffsetY
+      : 0.17;
     beam.updateWorldMatrix(true, false);
-    this.lens.set(0, sign * 0.17, 0).applyMatrix4(beam.matrixWorld);
+    this.lens.set(0, sign * lensOffset, 0).applyMatrix4(beam.matrixWorld);
     this.direction.set(0, sign, 0).transformDirection(beam.matrixWorld);
     const wash = type === 'wash';
     const throwLength = optics.length;

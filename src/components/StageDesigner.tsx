@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent, ReactNode } from 'react';
 import { parseRigJson } from '../data/rigImport';
 import {
@@ -34,6 +34,8 @@ import {
 import type { PlanPoint, RigConfig, StagePlatform, TrussPodConfig } from '../types/show';
 import type { NativeStage } from '../data/showFile';
 import { GRID_HEIGHT } from '../data/stageEquipment';
+import { placeFixtures } from '../data/fixturePlacement';
+import { specToSvgPath, symbolForHardware } from '../data/equipmentSymbols';
 import {
   createSecondaryWall,
   MAX_STAGE_WALLS,
@@ -354,6 +356,7 @@ export function StageDesigner({ rig, stage, onChange, onClose }: EditorProps) {
   const [nextPoint, setNextPoint] = useState<PlanPoint>({ x: 0, z: 0 });
   const [hover, setHover] = useState<PlanPoint>();
   const [snap, setSnap] = useState(0.5);
+  const [showFixtures, setShowFixtures] = useState(true);
   const [propType, setPropType] = useState<LayoutProp['type']>('inflatable');
   const gridHeight = GRID_HEIGHT[draft.venue];
   const [elevation, setElevation] = useState(() => Math.min(7, gridHeight - 0.8));
@@ -401,6 +404,10 @@ export function StageDesigner({ rig, stage, onChange, onClose }: EditorProps) {
   const spans = shownStage?.layout?.trusses ?? [];
   const layoutProps = shownStage?.layout?.props ?? [];
   const replaced = shownStage?.layout?.replace === true;
+  const planFixtures = useMemo(
+    () => (showFixtures && !replaced ? placeFixtures(shownRig) : []),
+    [showFixtures, replaced, shownRig],
+  );
   const index = selected && !['platform', 'truss', 'wall'].includes(selected.kind) ? Number(selected.id) : -1;
   const platform = selected?.kind === 'platform' ? platforms.find((p) => p.id === selected.id) : undefined;
   const truss = selected?.kind === 'truss' ? shownRig.trussPods.find((p) => p.id === selected.id) : undefined;
@@ -971,6 +978,15 @@ export function StageDesigner({ rig, stage, onChange, onClose }: EditorProps) {
               <span>{name}</span>
             </button>
           ))}
+          <label className="sd-fixtures-toggle">
+            <input
+              type="checkbox"
+              aria-label="Show fixtures on plan"
+              checked={showFixtures}
+              onChange={(e) => setShowFixtures(e.target.checked)}
+            />
+            <span>Fixtures</span>
+          </label>
           <label className="sd-snap">
             Snap{' '}
             <select aria-label="Grid snap" value={snap} onChange={(e) => setSnap(Number(e.target.value))}>
@@ -1058,6 +1074,34 @@ export function StageDesigner({ rig, stage, onChange, onClose }: EditorProps) {
                   </g>
                 );
               })}
+              {planFixtures.length > 0 && (
+                <g
+                  className="sf-fixture-symbols"
+                  data-testid="plan-fixture-symbols"
+                  pointerEvents="none"
+                  aria-hidden="true"
+                >
+                  {planFixtures.map((unit) => {
+                    const symbol = symbolForHardware(unit.group.type, unit.group.catalogId);
+                    const deg = (-unit.yaw * 180) / Math.PI;
+                    return (
+                      <g
+                        key={`${unit.podId ?? 'floor'}:${unit.group.id}:${unit.index}`}
+                        className={`sf-plan-fixture sf-family-${symbol.family}`}
+                        transform={`translate(${unit.position.x} ${unit.position.z}) rotate(${deg})`}
+                      >
+                        {symbol.plan.map((spec, si) => (
+                          <path
+                            key={si}
+                            d={specToSvgPath(spec, false)}
+                            className={`sf-sym-${spec.fill ?? 'body'}`}
+                          />
+                        ))}
+                      </g>
+                    );
+                  })}
+                </g>
+              )}
               {spans.map((t, i) => (
                 <g key={'s' + i} data-item="span" data-id={i} aria-label={`Layout truss ${i + 1}`}
                   className={objectClass('span', selected?.kind === 'span' && index === i)}>

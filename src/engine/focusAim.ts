@@ -91,10 +91,10 @@ const wrap = (a: number) => {
  * the target expressed in the fixture's root frame. A hung head emits along -Y, a floor head along +Y.
  * Of the two equivalent solutions, the one closest to the current position is chosen so heads don't flip.
  */
-export function aimAngles(local: Vec3, isFloor: boolean, currentPan = 0, currentTilt = 0) {
+export function aimAngles(local: Vec3, isFloor: boolean, currentPan = 0, currentTilt = 0, pivot = HEAD_PIVOT) {
   const dir = isFloor ? 1 : -1;
   const vx = local.x,
-    vy = local.y - dir * HEAD_PIVOT,
+    vy = local.y - dir * pivot,
     vz = local.z;
   const len = Math.hypot(vx, vy, vz) || 1;
   const tilt = Math.acos(Math.max(-1, Math.min(1, (dir * vy) / len)));
@@ -106,4 +106,17 @@ export function aimAngles(local: Vec3, isFloor: boolean, currentPan = 0, current
   const best = cost(alternate) < cost(primary) ? alternate : primary;
   // A point beyond the tilt range (above the truss) gets the closest reachable angle.
   return { pan: best.pan, tilt: Math.max(-TILT_LIMIT, Math.min(TILT_LIMIT, best.tilt)) };
+}
+
+/**
+ * Tilt angle for a single-axis motorized batten (fixed pan = 0): projects `local` onto the fixture's YZ plane
+ * so the bar tilts toward the target without twisting its yoke.
+ */
+export function aimTiltOnly(local: Vec3, isFloor: boolean, pivot = HEAD_PIVOT): number {
+  const dir = isFloor ? 1 : -1;
+  const vy = local.y - dir * pivot;
+  const vz = local.z;
+  // Rotating head around +X maps local (0, dir, 0) -> (0, dir*cos(t), dir*sin(t)).
+  const raw = Math.atan2(dir * vz, dir * vy);
+  return Math.max(-TILT_LIMIT, Math.min(TILT_LIMIT, raw));
 }

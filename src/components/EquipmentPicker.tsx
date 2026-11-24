@@ -15,6 +15,7 @@ import {
 import { FIXTURE_CATALOG, FLOOR_FX_CATALOG } from '../data/presets';
 import { groupFootprint, type GroupModelUpdate } from '../data/dmxPatch';
 import type { FloorFxUnit, MountedFixtureGroup } from '../types/show';
+import { EquipmentThumbnail } from './EquipmentThumbnail';
 
 type Group = MountedFixtureGroup | FloorFxUnit;
 
@@ -150,6 +151,11 @@ export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply
               : 'Pick equipment model'
         }
       >
+        <EquipmentThumbnail
+          type={group.type as HardwareType}
+          catalogId={group.catalogId}
+          className="w-3.5 h-3.5 shrink-0"
+        />
         <span className="truncate font-medium">{triggerLabel}</span>
         <ChevronDown className="w-3 h-3 shrink-0 text-zinc-400" aria-hidden="true" />
       </button>
@@ -302,34 +308,43 @@ export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply
                         : 'bg-black/40 border-white/10 text-zinc-200 hover:border-white/25'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-[11px] truncate">
-                        {entry.manufacturer} {entry.model}
-                      </span>
-                      <span className="font-mono-tech text-[9px] text-cyan-300 shrink-0">
-                        {CATALOG_CATEGORY_LABELS[entry.category]}
-                        {isCurrent ? ' · active' : isDefault ? ' · default' : ''}
-                      </span>
-                    </div>
-                    <div className="font-mono-tech text-[9px] text-zinc-400 mt-0.5 flex flex-wrap gap-x-1.5 gap-y-0.5">
-                      {badges.map((b, i) => (
-                        <span key={i}>
-                          {i > 0 && <span aria-hidden="true">· </span>}
-                          {b.text}
-                          {b.unverified && (
-                            <span
-                              className="text-amber-300 ml-0.5"
-                              aria-label="unverified"
-                              title="Unverified specification"
-                            >
-                              ?
+                    <div className="flex items-start gap-2">
+                      <EquipmentThumbnail
+                        family={entry.body}
+                        catalogId={entry.id}
+                        className="w-7 h-7 shrink-0 mt-0.5 rounded bg-black/50 p-0.5 border border-white/10"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-[11px] truncate">
+                            {entry.manufacturer} {entry.model}
+                          </span>
+                          <span className="font-mono-tech text-[9px] text-cyan-300 shrink-0">
+                            {CATALOG_CATEGORY_LABELS[entry.category]}
+                            {isCurrent ? ' · active' : isDefault ? ' · default' : ''}
+                          </span>
+                        </div>
+                        <div className="font-mono-tech text-[9px] text-zinc-400 mt-0.5 flex flex-wrap gap-x-1.5 gap-y-0.5">
+                          {badges.map((b, i) => (
+                            <span key={i}>
+                              {i > 0 && <span aria-hidden="true">· </span>}
+                              {b.text}
+                              {b.unverified && (
+                                <span
+                                  className="text-amber-300 ml-0.5"
+                                  aria-label="unverified"
+                                  title="Unverified specification"
+                                >
+                                  ?
+                                </span>
+                              )}
                             </span>
+                          ))}
+                          {entry.placeholder && (
+                            <span className="text-amber-300">· placeholder</span>
                           )}
-                        </span>
-                      ))}
-                      {entry.placeholder && (
-                        <span className="text-amber-300">· placeholder</span>
-                      )}
+                        </div>
+                      </div>
                     </div>
                   </button>
                 );

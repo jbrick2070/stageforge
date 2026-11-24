@@ -1,6 +1,6 @@
 # Equipment catalogue and sources
 
-StageForge ships a curated catalogue of touring lighting, LED video panel, atmospheric and placeholder laser equipment in [`src/data/equipmentCatalog.ts`](../src/data/equipmentCatalog.ts).
+StageForge ships a curated catalogue of touring lighting, LED video panel, atmospheric and placeholder laser equipment in [`src/data/equipmentCatalog.ts`](../src/data/equipmentCatalog.ts). Procedural 3D models, deterministic PBR hardware textures, plan/DXF symbols, and mobile/desktop rendering budgets are documented in [`docs/assets.md`](assets.md).
 
 ## Sourcing policy
 
