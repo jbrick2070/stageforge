@@ -412,3 +412,60 @@ agy -i "Read HANDOFF.md and run Sprint 0, following its loop. Stop after the loc
 - **Leftovers / next up:**
   - Manual cross-tool check with BlenderDMX and grandMA3 onPC (checklist in `docs/mvr-exchange.md`).
   - Next up: Sprint 2 (Milestone 4, live DMX output: sACN E1.31 + Art-Net 4 in Electron main, validated IPC, safety/blackout/44 Hz cap/LIVE indicator, Web Serial Enttec Pro in browser, unit/loopback/desktop tests).
+
+### 2026-11-24 01:55 PST — Sprint 2: Milestone 4, live DMX output (`0cb0e73`)
+
+- **Consults & QA runs:**
+  - Opus 5.5 (`claude-opus-5-5`) available and consulted on zero-dep main-process sACN/Art-Net codec vs npm packages, UDP interface/port binding (avoiding `SO_REUSEADDR` on Windows), IPC validation & blackout lifecycle, 44 Hz pacing, Electron Web Serial (`select-serial-port` + in-memory session grants), and UI/LIVE badge placement.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) QA pass 1 on all Sprint 2 changes (0 Critical, 2 High, 7 Medium, 10 Low), followed by verification, targeted fixes, and regression tests.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) follow-up QA pass 2 on the step-4 fixes (0 Critical/High, 1 Medium, 5 Low), all six fixed with regression tests.
+- **What shipped:**
+  - **Zero-dependency sACN (ANSI E1.31-2018) & Art-Net 4 codecs and main-process sender (`desktop/dmx-packets.cjs`, `desktop/dmx-sender.cjs`):**
+    - Spec-accurate E1.31 Data Packet encoder/decoder (638 bytes: Root, Framing, DMP layers, persistent install CID in `userData/dmx-cid.txt`, UTF-8 code-point-safe Source Name, priority 0–200, per-universe sequence 0..255, multicast `239.255.hi.lo:5568` + TTL + `setMulticastInterface`, and unicast targets).
+    - Spec-accurate Art-Net 4 `ArtDmx` (530 bytes, OpCode `0x5000` LE, ProtVer 14 BE, 15-bit Port-Address Net/SubUni, sequence 1..255 never 0), `ArtPoll` (22 bytes), and defensive untrusted `ArtPollReply` parser (`>= 207` bytes, no ProtVer, bounded ports/strings, authoritative `rinfo.address`).
+    - Explicit IPv4 interface binding from fresh `os.networkInterfaces()` scan, ephemeral send socket (`bind(0, iface)`), temporary exclusive-bind UDP `6454` discovery socket during scans (never `reuseAddr`, friendly `EADDRINUSE` guidance), deadline-scheduled main-process frame loop with hard `hrtime` `<= 44 Hz` (`22,727,273 ns`) ceiling, transient-error `degraded` state with auto-recovery after 10 consecutive successful sends, and guaranteed blackout sequence (3 paced zero ticks **before** 3 sACN `Stream_Terminated` `0x40` ticks, isolated to closing socket, 750 ms timeout).
+  - **Validated Electron IPC & Web Serial security (`desktop/dmx-ipc.cjs`, `desktop/main.cjs`, `desktop/preload.cjs`, `desktop/protocol.cjs`, `desktop/prepare.mjs`):**
+    - Single fire-and-forget frame channel `stageforge:dmx-frame` validating `senderFrame === mainFrame`, `isAppPage(url)`, window ownership, active running state, `universe ∈ {1, 2}`, and exact `Uint8Array(512)`.
+    - Strict tagged-union `stageforge:dmx-control` (`listInterfaces`, `getStatus`, `enable`, `disable`, `discover`) enforcing no unknown keys, window ownership, and post-bind sender liveness; main disables background throttling (`setBackgroundThrottling(false)`) only while live and restores it on stop.
+    - Guaranteed blackout wired to `disable`, `render-process-gone`, `did-start-navigation`, `destroyed`, `closed`, `session-end`, `powerMonitor.suspend`/`shutdown`, and `before-quit` (with re-entry guard).
+    - Electron Web Serial support: `setPermissionCheckHandler` (`serial` for app pages only), `select-serial-port` (native `dialog.showMessageBox` chooser with FTDI devices prioritized, capped at 8, never auto-selected), and `setDevicePermissionHandler` backed by an in-memory per-session grant set.
+    - `desktop/prepare.mjs` copies `dmx-packets.cjs`, `dmx-sender.cjs`, and `dmx-ipc.cjs` (verified by a transitive `require` guard test); zero new npm dependencies added.
+  - **Web Serial Enttec DMX USB Pro & renderer integration (`src/dmx/enttecPro.ts`, `src/dmx/liveDmx.ts`, `src/dmx/useLiveDmxOutput.ts`, `src/engine/StageEngine.ts`):**
+    - Enttec Pro Label 6 framing (`7E 06 lenLo lenHi 00 [512] E7`, 518 bytes) and `EnttecProTransport` (`<= 44 Hz` backpressure-safe loop, blackout + abort + close timeouts on disable, `disconnect` handling, `pagehide` best-effort blackout).
+    - `StageEngine.setDmxFrameListener` pushes changed universe buffers at `<= 44 Hz` only while live without waking React state.
+    - Settings persist in `localStorage` without ever persisting `enabled` (always boots offline).
+  - **UI & safety indicators (`src/components/DmxOutputSection.tsx`, `src/components/LiveDmxBadge.tsx`, `src/components/DmxMonitorDrawer.tsx`, `src/App.tsx`):**
+    - Collapsible Output panel in `DmxMonitorDrawer` with two-step `Arm output` → `Go live`, protocol/interface/universe/rate/discovery controls, and USB Pro reload/crash hold-last-look warning.
+    - Fixed top-right `<LiveDmxBadge>` at App root with pulsing LIVE indicator, measured Hz, degraded warning, and one-click `Blackout & stop` button; remains visible in Cinema mode (`H`).
+  - **Docs & tests (+10 unit tests, 118 → 128; +1 desktop smoke test, 6 → 7):**
+    - Added `docs/live-dmx.md` (architecture, safety model, universe numbering, and manual hardware/cross-tool checklist for BlenderDMX, QLC+, grandMA3 onPC, multicast NIC, and Enttec Pro).
+    - Added `tests/dmx-output.test.mjs` (spec byte layouts, Enttec Pro codec/transport, sACN & Art-Net loopback UDP, ArtPoll loopback discovery, 44 Hz ceiling, and QA regressions), expanded `tests/desktop-security.test.mjs` (preload DMX whitelist, serial helpers, main IPC ownership/liveness tests, transitive packaging guard), and extended `tests/desktop/electron-smoke.spec.mjs` (verifies output stays off on boot, streams real sACN loopback on enable, keeps LIVE badge visible in cinema mode, and sends zero-then-terminate blackout on disable and `forcefullyCrashRenderer()`).
+- **Gate results (final code):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**128/128**)
+  - `npm run build`: PASS
+  - `npm run desktop:win`: PASS (portable exe built; zero new runtime deps; SPDX check green)
+  - `npm run test:desktop`: PASS (**7/7**, 7.1 s)
+  - `npx playwright test --workers=1`: PASS (**39/39**, 5.3 m)
+  - `git status --short`: clean
+- **QA findings verified and fixed:**
+  - *Pass 1 H1 & H2:* Added `'starting'` state, `sessionGen` counter, pre-bind `ownerId` reservation, concurrent `enable` rejection, and post-bind sender liveness check in `desktop/dmx-ipc.cjs` + `desktop/dmx-sender.cjs` (+delayed-bind shutdown, concurrent enable, and destroyed-sender regression tests).
+  - *Pass 1 M1:* Detached mutable globals on shutdown and bound blackout sending strictly to `closingSocket`/`closingConfig` with a timeout `cancelled` flag (+timed-out blackout isolation regression test).
+  - *Pass 1 M2:* Enforced window ownership on `disable` and `enable` in `desktop/dmx-ipc.cjs` and guarded hook unmount cleanup in `useLiveDmxOutput.ts` (+multi-window ownership regression tests).
+  - *Pass 1 M4:* Documented USB Pro reload/close hold-last-look behaviour in both `DmxOutputSection.tsx` and `docs/live-dmx.md`.
+  - *Pass 1 M5 & L2:* Added `writer.abort()` fallback, `port.close()` 1 s timeout, and `finally { emit(); }` in `EnttecProTransport.disable()`, and removed 0.5 ms rate slack (+stalled write/close regression test).
+  - *Pass 1 M6 & L3:* Preferred `rinfo.address` over self-reported IP in `parseArtPollReply`, rejected reserved/broadcast/cross-scope targets (`0/8`, `224/4`, `240/4`, `255.255.255.255`, interface broadcast, loopback mismatch) in `validateTargets` (+spoofed reply & bad-target regression tests).
+  - *Pass 1 M7:* Switched scheduler wait to `Math.ceil` and rescheduled early wakes rather than dropping ticks (+real-timer 44 Hz loopback test).
+  - *Pass 1 L1, L6, L8, L9, L10:* Cleared `degraded`/`lastError` after 10 consecutive good sends (+regression test), added `session-end` & `powerMonitor.shutdown` blackout hooks, removed dead `dmxForcePush` field in `StageEngine.ts`, defaulted loopback sACN mode to `unicast`, and suppressed idle `disable()` toast.
+  - *Pass 2 M1, L2–L6:* Validated config before `shutdown('reconfigure')` so bad reconfigure never blacks out a live show (+regression test), respected `MIN_FRAME_INTERVAL_NS` before the first closing blackout tick, coalesced concurrent `discover()` calls, scoped `getStatus` `enabled` to the owning window (+regression test), added `mountedRef` guard after async awaits in `useLiveDmxOutput.ts`, and blocked `0.0.0.0/8` in `isReservedOrBroadcastIpv4` (+regression test).
+- **QA findings rejected or deferred (with reasons):**
+  - *Pass 1 M3 (renderer liveness watchdog auto-blackout on `unresponsive`):* Rejected — per Opus 5.5 design and real console convention, holding the last look during a brief renderer stall is intentional (static cues send zero frame diffs by design; actual crashes trigger immediate blackout via `render-process-gone`). Documented in `docs/live-dmx.md`.
+  - *Pass 1 L4 (Windows weak-host out-of-subnet routing):* OS networking behaviour; documented in `docs/live-dmx.md`.
+  - *Pass 1 L7 (hot-plug during native serial chooser dialog):* Accepted trade-off of native `dialog.showMessageBox`.
+- **Design decisions:**
+  - Wrote owned zero-dependency CJS codecs (`desktop/dmx-packets.cjs`, `desktop/dmx-sender.cjs`) instead of adding `sacn`/`dmxnet` so `desktop/build/app` keeps zero runtime `node_modules` (`beforeBuild: false`), zero licence bloat, and full spec-byte control (per Opus 5.5 consult).
+  - Used a dedicated ephemeral send socket (`bind(0, iface)`) plus a scan-only exclusive-bind UDP `6454` discovery socket (never `SO_REUSEADDR`) so sending never collides with local QLC+/BlenderDMX instances.
+  - Gated test-only UDP destination port overrides (`STAGEFORGE_DMX_TEST_PORT`) strictly on `!app.isPackaged` so production builds never honour them.
+- **Leftovers / next up:**
+  - Manual hardware & cross-tool checks (BlenderDMX, QLC+, grandMA3 onPC, multicast Ethernet NIC, Enttec DMX USB Pro, minimized background rAF on Windows/macOS) documented in `docs/live-dmx.md`.
+  - Next up: Sprint 3 (Milestone 5, show control and tempo: OSC in main + WebSocket OSC in browser, Web MIDI MTC/MSC, Art-Net timecode, single clock owner, offline beat grid + live tempo with tap/nudge/half-double).
