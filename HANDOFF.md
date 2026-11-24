@@ -47,7 +47,7 @@ After Sprint 3, each round works like this. **Work Realism backlog items 1 to 8 
 - **Stack:**
   - Vite + React 19 + TypeScript + three.js, with an SVG stage plan.
   - Electron desktop app: sandboxed renderer, `stageforge://` protocol, strict CSP, preload `contextBridge` with a command whitelist in `desktop/preload.cjs`.
-- **Show format:** versioned JSON v1–v3. Schemas are in `public/schemas/`; see `docs/show-format.md`.
+- **Show format:** versioned JSON v1–v3. Canonical schemas live in `src/schemas/` (emitted to `schemas/` at build/dev time so published URLs stay unchanged); see `docs/show-format.md`.
 - **Shipped:**
   - Studio, stage plan and cue timeline.
   - GLB and DXF export, and show bundles (.zip).
@@ -197,7 +197,7 @@ See the roadmap, Milestone 3, steps 4 and 6 and acceptance tests 3–4:
   - persisted MVR UUIDs per StageForge object;
   - bounded passthrough of unrecognised MVR XML, so re-export keeps other tools' data.
   - v1–v3 files still save as v1–v3 when the block is absent.
-  - Update `docs/show-format.md` and add `public/schemas/show-v4.schema.json`.
+  - Update `docs/show-format.md` and add `src/schemas/show-v4.schema.json` (and register it in `vite.config.ts` `SHOW_SCHEMAS`).
 - **Edge-case tests:** CIE xyY colours, DMX break 0 vs 1, a multi-instance LED wall's footprint.
 - **Passthrough test:** import an MVR with unknown nodes, move one fixture, re-export, and check the unknown nodes and every UUID survive.
 - **Cross-tool check (needs the user):** write a step-by-step checklist in `docs/mvr-exchange.md` for BlenderDMX and grandMA3 onPC, for the user to run.
@@ -307,3 +307,53 @@ agy -i "Read HANDOFF.md and run Sprint 0, following its loop. Stop after the loc
 ## Overnight log
 
 (Each sprint appends: date and time, sprint, what shipped, gate results, QA findings fixed or rejected, design decisions and their reasons, leftovers.)
+
+### 2026-11-24 00:09 PST — Sprint 0: whole-codebase QA sweep (`4b2ddce`)
+
+- **Consults & QA runs:**
+  - Opus 5.5 (`claude-opus-5-5`) available and consulted on schema packaging, live telemetry store, desktop protocol extraction/single-instance lock, and exact dependency pinning.
+  - 6 area-focused read-only Sonnet 5.5 (`claude-sonnet-5-5`) QA sweeps: `src/engine/` + `src/audio/`, `src/data/` + `src/types/`, `src/components/` + `src/App.tsx` + `src/input/`, `src/interchange/`, `desktop/`, and `tests/` (coverage gaps).
+  - Final read-only Sonnet 5.5 QA pass on all uncommitted Sprint 0 changes, followed by verification, targeted fixes, and regression tests.
+- **What shipped:**
+  - **Schemas & Vite warning resolved:** Moved canonical schemas from `public/schemas/` to `src/schemas/show-v{1,2,3}.schema.json`; added `showSchemas()` Vite plugin in `vite.config.ts` (anchored to `${server.config.base}schemas/` in dev and emitting `schemas/show-v*.schema.json` into `dist/` and `desktop/build/app/renderer/`). Zero Vite public-directory warnings; published URLs unchanged; updated GitHub links in `README.md` and `docs/show-format.md`.
+  - **Exact dependency pins:** Pinned all `dependencies` and `devDependencies` in `package.json` to lockfile-resolved exact versions, synced `package-lock.json` (root specs only, zero upgrades), added `.npmrc` (`save-exact=true`), and added a unit test guard.
+  - **MVR/GDTF/XML/ZIP/GLB/bundle hardening:**
+    - `xml.ts`: O(N) BOM + trailing-NUL stripping before size check (fixes quadratic regex hang), XML depth cap (64) & element count cap (500,000), readable error wrapping, XML-1.0 illegal control-char stripping in `buildXml`.
+    - `archive.ts` & `showBundle.ts`: STORE size-mismatch check (`compression === 0 && size !== originalSize`), cumulative compressed-size <= archive-length check (blocks overlapping STORE zip bombs), readable `Error` wrapping (never raw `RangeError`), optional `only`/`maxInflated` filter in `readArchive`.
+    - `gdtf.ts` & `importMvr.ts`: `readGdtf` only inflates `description.xml`, bounded `Offset` loop (no stack-overflow spread, cap 512), depth-capped geometry walk, 64 distinct GDTF / 128 MiB nested inflate caps, improved `classifyGdtf` (static RGB pars with `Shutter1Strobe` no longer misclassified as `strobe`), readable missing-`verMajor` error, fallback note on corrupt embedded StageForge payload.
+    - `glb.ts`: Strict header/chunk bounds and 3-element finite array checks for `accessor.min`/`max` (no stray `TypeError`).
+    - `coords.ts`: `standing = w.z / |w| < -1e-6` (ignores `-6e-17` horizontal-boom noise while preserving tilted standing fixtures), vertical-`u` yaw fallback, corrected basis comment (`+90°` about X).
+    - `gdtfOptics.ts`: BOM/NUL strip, case-insensitive `description.xml`, STORE checks, `<!(DOCTYPE|ENTITY)` check, 256-profile cap, preserved error messages.
+  - **Data & DMX hardening:** 32 MiB JSON caps and UTF-8 BOM stripping in `showFile.ts`, `rigImport.ts`, `App.tsx`, `RigBuilderDrawer.tsx`; `rigImport.ts` schema-parity bounds (coordinates `±10000`, dimensions `<= 1000`, `trussPods <= 256`, `props <= 256`, pre-spread string length checks, `__proto__|prototype|constructor` ID ban, keeping legacy finite `rotationY`); `dmxPatch.ts` rejects mismatched-type extends and `count <= 0`; `showClock.ts` guards `NaN`/`Infinity` seeks; `studioGeometry.ts` caps wall-cue timestamps at 24 h (`MAX_WALL_CUE_MS`) and guards `NaN` geometry inputs; `fixturePlacement.ts` exports shared `hungUnits()` and `floorUnitX()`.
+  - **3D engine & shaders:** `StageEngine.ts` uses `hungUnits`/`floorUnitX` (true single source of truth), wraps constructor in try/catch with safe partial-instance `dispose()` (`this.mats ?? {}`) and `renderer.forceContextLoss()`, guards motor/pan/tilt lerps against `NaN`; `fohFraming.ts` + `stageGlb.ts` + `StageEngine.ts` share `LED_DISPLAY_MATERIAL_NAME` so secondary LED screens are framed in authored FOH; `shaders.ts` guards `cross(dFdx, dFdy)` and view-vector normalizations against zero-length `NaN`.
+  - **Desktop security & notices:** Extracted pure `desktop/protocol.cjs` (`isAppPage` rejects ports; `createRendererHandler` sets `Content-Security-Policy` + `X-Content-Type-Options: nosniff` on every response, closing the Windows case-insensitive `INDEX.HTML` CSP bypass); `desktop/main.cjs` uses `open()` + `stat().isFile()`, 32 MiB text / 512 MiB binary caps, zero-copy `Uint8Array` view, BOM strip, `requestSingleInstanceLock()`, `webviewTag: false`, audio-only `mediaType` check in permission check handler, cancels invalid downloads and alerts on `interrupted`; `desktop/preload.cjs` isolates throwing listeners; `desktop/prepare.mjs` copies `protocol.cjs`, resolves nested `node_modules`, skips `licenses/` dirs, sorts ASCII-deterministically, and enforces fail-closed SPDX permissive licence validation (`MIT`, `ISC`, `BSD-2/3-Clause`, `0BSD`, `Apache-2.0`).
+  - **React architecture & UI fixes:** Added `ErrorBoundary` (`src/main.tsx` + drawers/designer in `App.tsx`), `createLiveStore`/`useLive` (`src/state/liveTelemetry.ts`) decoupling 20 Hz FPS/audio/DMX HUD telemetry from `App` re-renders, atomic `openDocument`, monotonic `openRequestRef` + `designerOpenRef` race guards (with toast), hotkey `<select>`/`[role=listbox]`/`[role=combobox]` guard, wall-only ghost-take clearing on rig/MVR open, extension fallback in `onUploadScreen`, `StageDesigner` `Field` float-noise dirty-check and rejection resync, `ShowFiles` mounted-ref StrictMode fix + relink try/catch, `SecondaryScreenCues` 24 h cap, `DmxMonitorDrawer` closed short-circuit and `address >= 1` guard, `TopBar` finite `trackDuration` guard and live music/duration getters, `aria-live`/`role="alert"` on toast & blackout banner.
+  - **Tests (+24 unit tests, 88 → 112):** Added `tests/desktop-security.test.mjs`, `tests/dmx-patch.test.mjs`, `tests/sprint0-regressions.test.mjs`, frozen `tests/fixtures/legacy-v1.stageforge.show.json` & `legacy-v2.stageforge.show.json`, SHA-256 schema hash pins, strict `isReadableError` assertions in `show-file.test.mjs`, expanded `mvr-core`, `mvr-interchange`, `show-bundle`, `stage-dxf`, and `electron-smoke.spec.mjs`.
+- **Gate results (final code):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**112/112**)
+  - `npm run build`: PASS (`dist/schemas/show-v{1,2,3}.schema.json` emitted; 0 public-dir warnings)
+  - `npm run desktop:win`: PASS (portable exe built; `THIRD_PARTY_NOTICES.txt` passed SPDX gate)
+  - `npm run test:desktop`: PASS (**6/6**, 2.7 s)
+  - `npx playwright test --workers=1`: PASS (**39/39**, 5.3 m)
+  - `git status --short`: clean
+- **QA findings verified and fixed (post-implementation pass):**
+  - Fixed High #1: `StageEngine.releaseGroup` crashed with `TypeError` on `Object.values(this.mats)` when `dispose()` ran from constructor catch before `this.mats` was assigned; fixed with `this.mats ?? {}` + guarded catch + regression test.
+  - Fixed Medium #2: `rigImport.ts` `[...value].length` allocated huge array before length check; added `value.length <= max * 2` fast-fail + 10 MB name regression test.
+  - Fixed Medium #3: `coords.ts` `standing` threshold `-0.5` misclassified floor fixtures tilted > 60°; tightened to `-1e-6` + tilted-standing regression test.
+  - Fixed Low #5, #6, #11, #12: restored `rotationY: number` for v1 schema compatibility, added toast on designer-blocked async open, updated `HANDOFF.md` schema paths, extracted `LED_DISPLAY_MATERIAL_NAME`.
+- **QA findings rejected (with reasons):**
+  - *Components sweep H1 (`window.confirm` on `openFile`/`openExample`)* & *M3 (`window.confirm` on `StageDesigner` Cancel)*: rejected after checking existing e2e and desktop smoke contracts (`electron-smoke.spec.mjs:159` fails on unexpected dialogs; `stage-plan-authoring.spec.mjs:41-58` explicitly asserts Cancel closes immediately).
+  - *Data M2 `trussPods <= 64` in `rigImport.ts`*: set to `256` instead of `64` to stay consistent with `importMvr.ts`'s `MAX_IMPORTED_TRUSSES = 256` (asserted in `mvr-interchange.test.mjs:303`); still bounds fixture-less pod DoS.
+  - *Post-change QA Medium #4 (XML depth 64 / 500k elements)*: kept as-is; well above real MVR/GDTF hierarchy depth (~3–8) and element counts.
+- **Design decisions:**
+  - Chose `src/schemas/` + `vite.config.ts` `showSchemas()` plugin over duplicated `public/schemas/` copies so there is a single source of truth that works with `configFile: false` unit tests and emits identical `/schemas/` assets on build and dev (per Opus 5.5 consult).
+  - Chose `createLiveStore` + `useSyncExternalStore` over `React.memo` for 20 Hz HUD telemetry to avoid `useCallback` churn and stale-closure risk; passed live getters to `TopBar` for track seek position.
+  - Extracted `desktop/protocol.cjs` without Electron imports so protocol/CSP security tests run fast in Node without fragile mocks.
+- **Leftovers / deferred notes (low-priority or larger scope for future rounds):**
+  - *MVR/GDTF:* `importMvr` GDTF footprint-aware simulated overlap check (M4), preserving foreign fixture positions/yaw as an explicit flag (M7), GLB node TRS scene-graph traversal in `glbBounds` (M8), XSD validation in CI.
+  - *Data/Bundle:* streaming or lower in-memory peak for 512 MiB bundles (Data M3), `portableMedia` scheme allowlist for filenames containing colons (Data L5), DXF XDATA non-ASCII `\U+` handling (Data L6), floor-group spread clamping on repeated extend (Data L7), `fixtureOptics` gain cap & empty `{}` handling (Data L9), cross-pod duplicate group ID check (Data L10), `openDocument` passing pre-parsed object to avoid double `JSON.parse` on large files.
+  - *Engine/Audio:* hoist per-frame `THREE.Color`/`Vector3` allocations in `StageEngine.updateScene` (Engine L1), `BeamPools` `max(r(start), r(end))` bounds (Engine L2), `dmx8()` clamp helper (Engine L3), `AudioEngine` context-creation ordering and error normalization (Engine L4), `WallPlayer` `crossOrigin` (Engine L5), GLB export `visible`/instance-color fidelity (Engine L6), reduced-flash/photosensitivity option (Engine L7), deterministic RNG for scuffs/particles (Engine L8), `devicePixelRatio` update on resize (Engine L9).
+  - *Desktop:* Electron fuses in `builder.cjs` (`runAsNode: false`, etc., Desktop L1), `render-process-gone` / `unresponsive` recovery handler (Desktop L4), `will-frame-navigate`/`will-redirect` (Desktop L5), Range-request header forwarding on `stageforge://` for `<video>` seeking (Desktop L7).
+  - *Components/Tests:* same-name media asset collision warning (Components M7), `StageDesigner` frame-stable pan & pointer-capture loss recovery (Components L2–L4), `useShowGamepad` checkbox/radio focus exclusion (Components L6), component/hook unit tests (`useShowTimeline`, `useWallClock`, `AudioEngine`, `ErrorBoundary` React render, `will-download`/`readBoundedFile` main tests), replacing fixed sleeps in e2e specs with `expect.poll`.
+  - *Next up:* Sprint 1 (Milestone 3 completion: show v4 additive `interchange` block, edge-case tests, passthrough test, cross-tool checklist).
