@@ -27,6 +27,18 @@ The user is asleep. `scripts/overnight.ps1` runs you directly on `main`, with ev
 
 ## Self-directed rounds
 
+### Fix first (found by the morning review on 2026-11-24)
+
+**CI would fail on GitHub.** The Pages workflow runs `npm test` on a Linux (LF) checkout before it builds and deploys. `tests/show-file.test.mjs` pins SHA-256 hashes of the schema files, but the show-v1 to v3 pins were computed on this Windows machine's CRLF bytes, while the v4 to v6 pins are LF hashes. Verified: on an LF copy of `5cca549`, 176 of 177 unit tests pass and only the `show-v1.schema.json hash pin` assertion fails. Pushing as is would stop the deploy.
+
+Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
+
+- Normalise CRLF to LF before hashing in that test, and re-pin all six hashes to the LF (git blob) hashes.
+- Add a `.gitattributes` with `src/schemas/*.json text eol=lf` and `tests/fixtures/*.json text eol=lf`, so a Windows checkout hashes the same as Linux.
+- Look for any other byte-exact pins, fixtures or snapshots with the same line-ending dependence.
+- Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
+- Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
+
 After Sprint 3, each round works like this. **Work Realism backlog items 1 to 8 first, in order, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
