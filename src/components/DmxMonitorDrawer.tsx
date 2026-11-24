@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { X, Radio } from 'lucide-react';
 import { buildDmxPatch, DMX_CHANNELS } from '../data/dmxPatch';
+import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
 import { RigConfig } from '../types/show';
+import { DmxOutputSection } from './DmxOutputSection';
 
 export interface DmxSnapshot {
   u1: Uint8Array;
@@ -13,6 +15,7 @@ interface DmxMonitorDrawerProps {
   open: boolean;
   rig: RigConfig;
   dmxStore: LiveStore<DmxSnapshot>;
+  liveOutput: LiveDmxControllerApi;
   onClose: () => void;
 }
 
@@ -20,6 +23,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   open,
   rig,
   dmxStore,
+  liveOutput,
   onClose,
 }) => {
   const [universe, setUniverse] = useState<1 | 2>(1);
@@ -67,6 +71,8 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
           <X className="w-4 h-4" />
         </button>
       </div>
+
+      <DmxOutputSection output={liveOutput} />
 
       <div className="flex items-center justify-between px-3 py-1.5 bg-black/40 border-b border-white/10">
         <div className="flex gap-1">

@@ -2,6 +2,7 @@
 // File menu: main process -> IPC -> sandboxed preload -> contextBridge -> renderer.
 import { _electron as electron, expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
+import dgram from 'node:dgram';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -180,6 +181,9 @@ test.afterEach(async () => {
 
 test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload bridge and WebGL', async () => {
   expect(existsSync(path.join(appDir, 'protocol.cjs'))).toBe(true);
+  expect(existsSync(path.join(appDir, 'dmx-packets.cjs'))).toBe(true);
+  expect(existsSync(path.join(appDir, 'dmx-sender.cjs'))).toBe(true);
+  expect(existsSync(path.join(appDir, 'dmx-ipc.cjs'))).toBe(true);
   for (const v of [1, 2, 3, 4]) {
     expect(existsSync(path.join(appDir, 'renderer', 'schemas', `show-v${v}.schema.json`))).toBe(true);
   }
@@ -218,7 +222,13 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
       webgl2: !!gl && !gl.isContextLost(),
     };
   }, CSP_PROBE);
-  expect(world).toEqual({ bridge: ['onRigCommand'], node: 'undefined/undefined', secure: true, inlineScript: 'script-src-elem', webgl2: true });
+  expect(world).toEqual({
+    bridge: ['onRigCommand', 'sendDmxFrame', 'dmxControl', 'onDmxStatus'],
+    node: 'undefined/undefined',
+    secure: true,
+    inlineScript: 'script-src-elem',
+    webgl2: true,
+  });
   // A non-zero frame rate means the WebGL render loop is running.
   await expect(page.getByText(/fixtures · \d+ lasers · [1-9]\d* fps/)).toBeVisible();
   await expect(page.getByText('Master blackout', { exact: true })).toHaveCount(0);
@@ -335,4 +345,124 @@ test('File → Export → MVR scene writes a conforming .mvr that reopens throug
   await expect.poll(async () => (await received()).find(r => r.command === 'openMvr')?.sha256).toBe(sha256(bytes));
   await expect(page.getByText(new RegExp(`Opened ${SHOW_NAME} from MVR`))).toBeVisible();
   expectNoProblems();
+});
+
+test('live DMX output stays off by default, streams on enable, stays visible in cinema mode, and blackouts on disable and renderer crash', async () => {
+  const { decodeSacnPacket, SACN_OPT_STREAM_TERMINATED } = createRequire(import.meta.url)('../../desktop/dmx-packets.cjs');
+  const receiver = dgram.createSocket('udp4');
+  const packets = [];
+  receiver.on('message', (msg) => {
+    const decoded = decodeSacnPacket(Buffer.from(msg));
+    if (decoded) packets.push(decoded);
+  });
+  await new Promise((resolve, reject) => {
+    receiver.once('error', reject);
+    receiver.bind(0, '127.0.0.1', resolve);
+  });
+  const port = receiver.address().port;
+  const dmxTmp = await mkdtemp(path.join(os.tmpdir(), 'stageforge-dmx-smoke-'));
+  const packaged = process.env.STAGEFORGE_DESKTOP_EXE;
+  const profile = `--user-data-dir=${path.join(dmxTmp, 'profile')}`;
+  let dmxApp;
+  try {
+    dmxApp = await electron.launch(packaged
+      ? { executablePath: path.resolve(packaged), args: [profile] }
+      : {
+          executablePath: createRequire(import.meta.url)('electron'),
+          args: [appDir, profile],
+          env: { ...process.env, STAGEFORGE_DMX_TEST_PORT: String(port) },
+        });
+    const dmxPage = await dmxApp.firstWindow();
+    await dmxPage.waitForLoadState('domcontentloaded');
+    await expect(dmxPage.getByRole('button', { name: 'DMX monitor', exact: true })).toBeVisible();
+
+    // 1. Output MUST stay off by default for 1 s after boot: zero packets, status disabled, badge absent.
+    const initialStatus = await dmxPage.evaluate(() => window.stageforgeDesktop.dmxControl({ type: 'getStatus' }));
+    expect(initialStatus.enabled).toBe(false);
+    expect(initialStatus.state).toBe('idle');
+    await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
+    await dmxPage.waitForTimeout(1000);
+    expect(packets.length).toBe(0);
+
+    // 2. Open DMX monitor -> Output -> sACN unicast 127.0.0.1 -> Arm -> Go live.
+    await dmxPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
+    await dmxPage.getByTestId('dmx-output-toggle').click();
+    await dmxPage.getByTestId('dmx-output-mode-sacn').click();
+    await dmxPage.getByTestId('dmx-output-iface').selectOption('127.0.0.1');
+    await dmxPage.getByTestId('dmx-output-sacn-unicast').click();
+    await dmxPage.getByTestId('dmx-output-sacn-targets').fill('127.0.0.1');
+    await dmxPage.getByTestId('dmx-output-arm').click();
+    await dmxPage.getByTestId('dmx-output-go-live').click();
+
+    // 3. LIVE badge appears and remains visible in cinema mode (H).
+    await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
+    await expect(dmxPage.getByTestId('live-dmx-badge')).toContainText('LIVE · sACN');
+    await dmxPage.getByRole('button', { name: 'Cinema mode', exact: true }).click();
+    await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
+    await dmxPage.getByRole('button', { name: 'Show desk' }).click();
+
+    if (!packaged) {
+      // Trigger a cue so non-zero fixture channels stream through the frame IPC channel.
+      await dmxPage.locator('.cue-pad').first().click();
+      await expect.poll(() => packets.some((p) => p.universe === 1 && p.slots.some((v) => v > 0)), { timeout: 5000 }).toBe(true);
+
+      // 4. Blackout & stop sends zero data frames followed by Stream_Terminated, then goes silent.
+      const beforeDisable = packets.length;
+      await dmxPage.getByTestId('live-dmx-stop').click();
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
+      await expect.poll(() => {
+        const tail = packets.slice(beforeDisable).filter((p) => p.universe === 1);
+        const firstTerm = tail.findIndex((p) => (p.options & SACN_OPT_STREAM_TERMINATED) !== 0);
+        return firstTerm >= 3 && tail.slice(firstTerm).length >= 3;
+      }, { timeout: 5000 }).toBe(true);
+
+      const u1Tail = packets.slice(beforeDisable).filter((p) => p.universe === 1);
+      const firstTerm = u1Tail.findIndex((p) => (p.options & SACN_OPT_STREAM_TERMINATED) !== 0);
+      expect(firstTerm).toBeGreaterThanOrEqual(3);
+      // The 3 frames immediately preceding Stream_Terminated must be all-zero blackout frames.
+      for (const p of u1Tail.slice(firstTerm - 3, firstTerm)) {
+        expect(p.options & SACN_OPT_STREAM_TERMINATED).toBe(0);
+        expect(p.slots.every((v) => v === 0)).toBe(true);
+      }
+      expect(u1Tail.slice(firstTerm).length).toBe(3);
+      for (const p of u1Tail.slice(firstTerm)) {
+        expect(p.options & SACN_OPT_STREAM_TERMINATED).toBe(SACN_OPT_STREAM_TERMINATED);
+        expect(p.slots.every((v) => v === 0)).toBe(true);
+      }
+      const afterDisableCount = packets.length;
+      await dmxPage.waitForTimeout(300);
+      expect(packets.length).toBe(afterDisableCount);
+
+      // 5. Re-enable and forcibly crash the renderer: main process MUST still send blackout + terminate.
+      await dmxPage.getByTestId('dmx-output-toggle').click();
+      await dmxPage.getByTestId('dmx-output-arm').click();
+      await dmxPage.getByTestId('dmx-output-go-live').click();
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
+      await expect.poll(() => packets.length > afterDisableCount + 2, { timeout: 5000 }).toBe(true);
+
+      const beforeCrash = packets.length;
+      await dmxApp.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows()[0];
+        win?.webContents.forcefullyCrashRenderer();
+      });
+
+      await expect.poll(() => {
+        const tail = packets.slice(beforeCrash).filter((p) => p.universe === 1);
+        const termIdx = tail.findIndex((p) => (p.options & SACN_OPT_STREAM_TERMINATED) !== 0);
+        return termIdx >= 3 && tail.slice(termIdx).length >= 3;
+      }, { timeout: 5000 }).toBe(true);
+      const crashTail = packets.slice(beforeCrash).filter((p) => p.universe === 1);
+      const crashTermIdx = crashTail.findIndex((p) => (p.options & SACN_OPT_STREAM_TERMINATED) !== 0);
+      for (const p of crashTail.slice(crashTermIdx - 3, crashTermIdx)) {
+        expect(p.slots.every((v) => v === 0)).toBe(true);
+      }
+    } else {
+      await dmxPage.getByTestId('live-dmx-stop').click();
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
+    }
+  } finally {
+    await dmxApp?.close().catch(() => {});
+    await new Promise((resolve) => receiver.close(() => resolve()));
+    await rm(dmxTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
 });

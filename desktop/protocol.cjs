@@ -38,4 +38,71 @@ function createRendererHandler({ fetchFile, rendererRoot, csp = CSP }) {
   };
 }
 
-module.exports = { CSP, isAppPage, createRendererHandler };
+const FTDI_VENDOR_ID = 0x0403;
+
+function parseUsbId(value) {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffff) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^0x[0-9a-f]{1,4}$/i.test(trimmed)) return parseInt(trimmed, 16);
+    if (/^0[0-9a-f]{3}$/i.test(trimmed) || (/^[0-9a-f]{1,4}$/i.test(trimmed) && /[a-f]/i.test(trimmed))) {
+      return parseInt(trimmed, 16);
+    }
+    if (/^(?:0|[1-9]\d{0,4})$/.test(trimmed)) {
+      const n = Number(trimmed);
+      if (n >= 0 && n <= 0xffff) return n;
+    }
+  }
+  return null;
+}
+
+function isFtdiSerialPort(port) {
+  if (!port || typeof port !== 'object') return false;
+  return parseUsbId(port.vendorId) === FTDI_VENDOR_ID;
+}
+
+/**
+ * Stable per-session identity key for an approved serial port.
+ * Uses vendorId:productId:serialNumber when available, falling back to portId.
+ */
+function serialDeviceKey(device) {
+  if (!device || typeof device !== 'object') return '';
+  const vid = parseUsbId(device.vendorId);
+  const pid = parseUsbId(device.productId);
+  const serial = typeof device.serialNumber === 'string' ? device.serialNumber.trim() : '';
+  if (vid !== null && pid !== null && serial) {
+    return `${vid.toString(16)}:${pid.toString(16)}:${serial}`;
+  }
+  const portName = typeof device.portName === 'string' ? device.portName.trim() : '';
+  if (vid !== null && pid !== null && portName) {
+    return `${vid.toString(16)}:${pid.toString(16)}:${portName}`;
+  }
+  const id = typeof device.deviceId === 'string' ? device.deviceId : (typeof device.portId === 'string' ? device.portId : '');
+  return id ? `id:${id}` : '';
+}
+
+/**
+ * Order serial ports for the chooser: FTDI USB DMX devices first, capped at 8 entries.
+ */
+function selectVisibleSerialPorts(portList, maxPorts = 8) {
+  if (!Array.isArray(portList)) return [];
+  const ftdi = [];
+  const others = [];
+  for (const port of portList) {
+    if (!port || typeof port.portId !== 'string' || !port.portId) continue;
+    if (isFtdiSerialPort(port)) ftdi.push(port);
+    else others.push(port);
+  }
+  return [...ftdi, ...others].slice(0, maxPorts);
+}
+
+module.exports = {
+  CSP,
+  FTDI_VENDOR_ID,
+  isAppPage,
+  createRendererHandler,
+  parseUsbId,
+  isFtdiSerialPort,
+  serialDeviceKey,
+  selectVisibleSerialPorts,
+};

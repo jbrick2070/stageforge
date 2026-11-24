@@ -236,6 +236,10 @@ export class StageEngine {
   // DMX Universe buffers (2 x 512 real channels!)
   public dmxUniverse1 = new Uint8Array(512);
   public dmxUniverse2 = new Uint8Array(512);
+  private dmxFrameListener?: (u1: Uint8Array, u2: Uint8Array, u1Changed: boolean, u2Changed: boolean) => void;
+  private dmxAccum = 0;
+  private lastDmxU1 = new Uint8Array(512);
+  private lastDmxU2 = new Uint8Array(512);
 
   // Animation loop state
   private rafId: number | null = null;
@@ -1689,6 +1693,51 @@ export class StageEngine {
     }
   }
 
+  /**
+   * Register or clear the live DMX output frame listener.
+   * Only active while live DMX output is enabled; pushes changed universe buffers at <= 44 Hz
+   * without touching React state.
+   */
+  public setDmxFrameListener(
+    listener?: (u1: Uint8Array, u2: Uint8Array, u1Changed: boolean, u2Changed: boolean) => void
+  ) {
+    this.dmxFrameListener = listener;
+    this.dmxAccum = 0;
+    if (listener) {
+      this.lastDmxU1.set(this.dmxUniverse1);
+      this.lastDmxU2.set(this.dmxUniverse2);
+      listener(this.dmxUniverse1, this.dmxUniverse2, true, true);
+    }
+  }
+
+  private pushDmxFrame(dt: number) {
+    const listener = this.dmxFrameListener;
+    if (!listener) return;
+    const period = 1 / 44;
+    this.dmxAccum = Math.min(period * 2, this.dmxAccum + dt);
+    if (this.dmxAccum < period) return;
+    this.dmxAccum -= period;
+
+    let u1Changed = false;
+    let u2Changed = false;
+    for (let i = 0; i < 512; i++) {
+      if (this.dmxUniverse1[i] !== this.lastDmxU1[i]) {
+        u1Changed = true;
+        break;
+      }
+    }
+    for (let i = 0; i < 512; i++) {
+      if (this.dmxUniverse2[i] !== this.lastDmxU2[i]) {
+        u2Changed = true;
+        break;
+      }
+    }
+    if (!u1Changed && !u2Changed) return;
+    if (u1Changed) this.lastDmxU1.set(this.dmxUniverse1);
+    if (u2Changed) this.lastDmxU2.set(this.dmxUniverse2);
+    listener(this.dmxUniverse1, this.dmxUniverse2, u1Changed, u2Changed);
+  }
+
   private startLoop() {
     const animate = (now: number) => {
       this.rafId = requestAnimationFrame(animate);
@@ -1708,6 +1757,8 @@ export class StageEngine {
       const audio = this.audioGetter(dt);
       if (this.updateScene(dt, audio)) this.composer.render();
       else this.clearStage();
+
+      this.pushDmxFrame(dt);
 
       this.telemetryAccum += dt;
       if (this.onFrameTelemetry && this.telemetryAccum >= 0.05) {

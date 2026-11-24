@@ -1,7 +1,9 @@
-const { app, BrowserWindow, dialog, Menu, net, protocol, session, shell, systemPreferences } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, session, shell, systemPreferences, webContents } = require('electron');
 const { open: openFileHandle } = require('node:fs/promises');
 const path = require('node:path');
-const { isAppPage, createRendererHandler } = require('./protocol.cjs');
+const { isAppPage, createRendererHandler, serialDeviceKey, selectVisibleSerialPorts } = require('./protocol.cjs');
+const { createDmxController } = require('./dmx-sender.cjs');
+const { createDmxIpcHandlers } = require('./dmx-ipc.cjs');
 
 const startUrl = 'stageforge://app/';
 const rendererRoot = path.join(__dirname, 'renderer');
@@ -32,6 +34,35 @@ const serveRenderer = createRendererHandler({
   rendererRoot,
 });
 
+function parseTestPort(raw) {
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  const port = Number(raw);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : undefined;
+}
+
+function resolveTestPorts() {
+  // Never honour test port overrides in packaged production builds.
+  if (app.isPackaged) return null;
+  const sacn = parseTestPort(process.env.STAGEFORGE_DMX_TEST_PORT);
+  const artnet = parseTestPort(process.env.STAGEFORGE_DMX_TEST_ARTNET_PORT || process.env.STAGEFORGE_DMX_TEST_PORT);
+  const artnetDiscovery = parseTestPort(process.env.STAGEFORGE_DMX_TEST_DISCOVERY_PORT);
+  if (!sacn && !artnet && !artnetDiscovery) return null;
+  return { sacn, artnet, artnetDiscovery };
+}
+
+let dmx = null;
+let quittingAfterDmx = false;
+// Serial device grants live only in memory for this session (never persisted across launches).
+const grantedSerialDevices = new Set();
+
+function restoreBackgroundThrottling(wcId) {
+  if (typeof wcId !== 'number') return;
+  const wc = webContents.fromId(wcId);
+  if (wc && !wc.isDestroyed()) {
+    try { wc.setBackgroundThrottling(true); } catch { /* ignore */ }
+  }
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 540, minHeight: 420,
@@ -41,10 +72,37 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });
-  win.webContents.on('will-navigate', (event, url) => {
+  const wc = win.webContents;
+  const wcId = wc.id;
+  wc.on('will-navigate', (event, url) => {
     if (!isAppPage(url)) event.preventDefault();
   });
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  wc.on('did-start-navigation', (details) => {
+    if (details && details.isMainFrame && !details.isSameDocument && dmx && dmx.ownerId === wcId) {
+      void dmx.shutdown('navigation');
+    }
+  });
+  wc.on('render-process-gone', () => {
+    if (dmx && dmx.ownerId === wcId) {
+      void dmx.shutdown('renderer-crash');
+    }
+  });
+  wc.on('destroyed', () => {
+    if (dmx && dmx.ownerId === wcId) {
+      void dmx.shutdown('window-destroyed');
+    }
+  });
+  win.on('closed', () => {
+    if (dmx && dmx.ownerId === wcId) {
+      void dmx.shutdown('window-closed');
+    }
+  });
+  win.on('session-end', () => {
+    if (dmx && dmx.active) {
+      void dmx.shutdown('session-end');
+    }
+  });
+  wc.setWindowOpenHandler(({ url }) => {
     // The rig drawer links to the speaker manufacturer's product specifications.
     if (URL.canParse(url) && (new URL(url).origin === 'https://www.l-acoustics.com' ||
         url === 'https://github.com/jbrick2070/stageforge/blob/main/docs/show-format.md')) {
@@ -117,6 +175,12 @@ async function runRigCommand(command) {
   else send();
 }
 
+function registerDmxIpc() {
+  const { onFrame, onControl } = createDmxIpcHandlers(() => dmx);
+  ipcMain.on('stageforge:dmx-frame', onFrame);
+  ipcMain.handle('stageforge:dmx-control', onControl);
+}
+
 const hasLock = app.requestSingleInstanceLock();
 if (!hasLock) {
   app.quit();
@@ -129,8 +193,43 @@ if (!hasLock) {
     }
   });
 
+  app.on('before-quit', (event) => {
+    if (!dmx) return;
+    dmx.cancelDiscover();
+    if (!quittingAfterDmx && dmx.active) {
+      event.preventDefault();
+      quittingAfterDmx = true;
+      void dmx.shutdown('quit').finally(() => app.quit());
+    }
+  });
+
   app.whenReady().then(() => {
     protocol.handle('stageforge', serveRenderer);
+
+    dmx = createDmxController({
+      userDataDir: app.getPath('userData'),
+      testPorts: resolveTestPorts(),
+      onStatus: (status, targetOwnerId) => {
+        if (status.state === 'idle') {
+          restoreBackgroundThrottling(targetOwnerId);
+        }
+        if (typeof targetOwnerId === 'number') {
+          const wc = webContents.fromId(targetOwnerId);
+          if (wc && !wc.isDestroyed() && isAppPage(wc.getURL())) {
+            wc.send('stageforge:dmx-status', status);
+          }
+        }
+      },
+    });
+    registerDmxIpc();
+
+    powerMonitor.on('suspend', () => {
+      if (dmx && dmx.active) void dmx.shutdown('suspend');
+    });
+    powerMonitor.on('shutdown', () => {
+      if (dmx && dmx.active) void dmx.shutdown('os-shutdown');
+    });
+
     const ses = session.defaultSession;
     ses.on('will-download', (_event, item, contents) => {
       const choice = exportsBySuffix.find(([suffix]) => item.getFilename().endsWith(suffix));
@@ -148,11 +247,64 @@ if (!hasLock) {
         }
       });
     });
-    ses.setPermissionCheckHandler((contents, permission, requestingOrigin, details) =>
-      isAppPage(requestingOrigin) &&
-      (!contents || isAppPage(contents.getURL())) &&
-      permission === 'media' &&
-      (!details?.mediaType || details.mediaType === 'audio'));
+
+    ses.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
+      if (!isAppPage(requestingOrigin) || (contents && !isAppPage(contents.getURL()))) return false;
+      if (permission === 'media') {
+        return !details?.mediaType || details.mediaType === 'audio';
+      }
+      if (permission === 'serial') {
+        return true;
+      }
+      return false;
+    });
+
+    ses.setDevicePermissionHandler((details) => {
+      if (details.deviceType !== 'serial' || !isAppPage(details.origin)) return false;
+      const key = serialDeviceKey(details.device);
+      return Boolean(key && grantedSerialDevices.has(key));
+    });
+
+    ses.on('select-serial-port', (event, portList, contents, callback) => {
+      event.preventDefault();
+      if (!contents || contents.isDestroyed() || !isAppPage(contents.getURL())) {
+        callback('');
+        return;
+      }
+      const visible = selectVisibleSerialPorts(portList, 8);
+      if (!visible.length) {
+        callback('');
+        return;
+      }
+      const win = BrowserWindow.fromWebContents(contents) || BrowserWindow.getFocusedWindow() || undefined;
+      const labels = visible.map((port) => {
+        const name = port.displayName || port.portName || port.portId;
+        const serial = port.serialNumber ? ` (${port.serialNumber})` : '';
+        return `${name}${serial}`;
+      });
+      // Always require explicit user confirmation; never auto-select a serial device.
+      void dialog.showMessageBox(win, {
+        type: 'question',
+        title: 'Select DMX USB interface',
+        message: 'Choose a serial port for Enttec DMX USB Pro output:',
+        buttons: [...labels, 'Cancel'],
+        cancelId: labels.length,
+        defaultId: labels.length,
+        noLink: true,
+      }).then(({ response }) => {
+        if (response >= 0 && response < visible.length) {
+          const chosen = visible[response];
+          const key = serialDeviceKey(chosen);
+          if (key) grantedSerialDevices.add(key);
+          callback(chosen.portId);
+        } else {
+          callback('');
+        }
+      }).catch(() => {
+        callback('');
+      });
+    });
+
     ses.setPermissionRequestHandler((contents, permission, callback, details) => {
       if (!isAppPage(contents.getURL()) || permission !== 'media' || !details.mediaTypes?.length ||
           !details.mediaTypes.every(type => type === 'audio')) return callback(false);
@@ -160,6 +312,7 @@ if (!hasLock) {
         void systemPreferences.askForMediaAccess('microphone').then(callback, () => callback(false));
       } else callback(true);
     });
+
     const run = (cmd) => { void runRigCommand(cmd).catch(() => {}); };
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       ...(isMac ? [{ role: 'appMenu' }] : []),

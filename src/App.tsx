@@ -22,8 +22,10 @@ import { StageDesigner } from './components/StageDesigner';
 import { BottomConsole } from './components/BottomConsole';
 import { RigBuilderDrawer } from './components/RigBuilderDrawer';
 import { DmxMonitorDrawer, type DmxSnapshot } from './components/DmxMonitorDrawer';
+import { LiveDmxBadge } from './components/LiveDmxBadge';
 import { CostEstimatorModal } from './components/CostEstimatorModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { useLiveDmxOutput } from './dmx/useLiveDmxOutput';
 import { createLiveStore } from './state/liveTelemetry';
 import { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } from './data/presets';
 import { calculateProductionEstimate, formatUSD } from './data/productionEstimator';
@@ -181,6 +183,8 @@ export const App: React.FC = () => {
   const showToast = useCallback((msg: string) => {
     setToast(msg);
   }, []);
+
+  const liveDmx = useLiveDmxOutput(engineRef, showToast);
 
   // Revoke after a grace period so a renderer still holding the old URL can swap first.
   const releaseUrl = (url: string) => {
@@ -1076,6 +1080,17 @@ export const App: React.FC = () => {
         </div>
       )}
 
+      {/* Always-visible safety badge whenever live DMX output is enabled (including cinema mode) */}
+      <LiveDmxBadge
+        banner={liveDmx.banner}
+        busy={liveDmx.busy}
+        onStop={() => void liveDmx.disable()}
+        onOpenOutput={() => {
+          setCinemaMode(false);
+          setDmxDrawerOpen(true);
+        }}
+      />
+
       {showState.blackout && !demoOpeningBlack && (
         <div role="alert" className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none px-5 py-2 rounded-xl bg-rose-950/80 border border-rose-500/70 font-mono-tech text-sm tracking-widest text-rose-200 shadow-[0_0_30px_rgba(244,63,94,0.45)]">
           STAGE BLACKOUT — PRESS [SPACE] TO RESTORE
@@ -1118,6 +1133,7 @@ export const App: React.FC = () => {
             open={dmxDrawerOpen}
             rig={rig}
             dmxStore={live.dmx}
+            liveOutput={liveDmx}
             onClose={() => setDmxDrawerOpen(false)}
           />
         </ErrorBoundary>

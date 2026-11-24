@@ -1,0 +1,327 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { StageEngine } from '../engine/StageEngine';
+import { EnttecProTransport, isWebSerialSupported, type SerialTransportStatus } from './enttecPro';
+import {
+  loadDmxOutputSettings,
+  parseTargetList,
+  saveDmxOutputSettings,
+  type DmxOutputSettings,
+  type LiveDmxBannerState,
+} from './liveDmx';
+
+const INITIAL_SERIAL_STATUS: SerialTransportStatus = {
+  enabled: false,
+  universe: 1,
+  rateHz: 35,
+  measuredHz: 0,
+  packetsSent: 0,
+  error: null,
+  deviceLabel: null,
+};
+
+export interface LiveDmxControllerApi {
+  hasDesktopBridge: boolean;
+  hasWebSerial: boolean;
+  settings: DmxOutputSettings;
+  updateSettings: (patch: Partial<DmxOutputSettings>) => void;
+  interfaces: DmxNetworkInterfaceBridge[];
+  refreshInterfaces: () => Promise<void>;
+  desktopStatus: DmxStatusBridge | null;
+  serialStatus: SerialTransportStatus;
+  discoveredNodes: ArtNetDiscoveredNodeBridge[];
+  discovering: boolean;
+  discoveryWarning: string | null;
+  discoverArtNet: () => Promise<void>;
+  busy: boolean;
+  error: string | null;
+  isLive: boolean;
+  banner: LiveDmxBannerState;
+  enable: () => Promise<boolean>;
+  disable: () => Promise<void>;
+}
+
+export function useLiveDmxOutput(
+  engineRef: React.RefObject<StageEngine | null>,
+  onToast: (message: string) => void,
+): LiveDmxControllerApi {
+  const hasDesktopBridge = Boolean(typeof window !== 'undefined' && window.stageforgeDesktop);
+  const hasWebSerial = isWebSerialSupported();
+
+  const [settings, setSettings] = useState<DmxOutputSettings>(() => loadDmxOutputSettings(hasDesktopBridge));
+  const [interfaces, setInterfaces] = useState<DmxNetworkInterfaceBridge[]>([]);
+  const [desktopStatus, setDesktopStatus] = useState<DmxStatusBridge | null>(null);
+  const [serialStatus, setSerialStatus] = useState<SerialTransportStatus>(INITIAL_SERIAL_STATUS);
+  const [discoveredNodes, setDiscoveredNodes] = useState<ArtNetDiscoveredNodeBridge[]>([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoveryWarning, setDiscoveryWarning] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const serialRef = useRef<EnttecProTransport | null>(null);
+  if (!serialRef.current) {
+    serialRef.current = new EnttecProTransport((next) => {
+      setSerialStatus(next);
+      if (next.error) setError(next.error);
+    });
+  }
+
+  const updateSettings = useCallback((patch: Partial<DmxOutputSettings>) => {
+    setSettings((prev) => {
+      const next = { ...prev, ...patch };
+      saveDmxOutputSettings(next);
+      return next;
+    });
+    setError(null);
+  }, []);
+
+  const refreshInterfaces = useCallback(async () => {
+    const bridge = window.stageforgeDesktop;
+    if (!bridge?.dmxControl) return;
+    try {
+      const list = await bridge.dmxControl({ type: 'listInterfaces' });
+      setInterfaces(list);
+      setSettings((prev) => {
+        if (list.length > 0 && !list.some((item) => item.address === prev.iface)) {
+          const next = { ...prev, iface: list[0].address };
+          saveDmxOutputSettings(next);
+          return next;
+        }
+        return prev;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not enumerate network interfaces.');
+    }
+  }, []);
+
+  // Subscribe to main-process DMX status pushes and query initial (always off) status.
+  useEffect(() => {
+    const bridge = window.stageforgeDesktop;
+    if (!bridge?.onDmxStatus || !bridge?.dmxControl) return;
+    const unsub = bridge.onDmxStatus((status) => {
+      setDesktopStatus(status);
+      if (status.nodes.length > 0) setDiscoveredNodes(status.nodes);
+    });
+    void bridge.dmxControl({ type: 'getStatus' }).then(setDesktopStatus).catch(() => {});
+    return unsub;
+  }, []);
+
+  const desktopLive = Boolean(desktopStatus?.enabled);
+  const desktopLiveRef = useRef(false);
+  desktopLiveRef.current = desktopLive;
+  const mountedRef = useRef(true);
+
+  // Best-effort browser Web Serial blackout on page unload / tab close.
+  useEffect(() => {
+    mountedRef.current = true;
+    const onPageHide = () => {
+      serialRef.current?.emergencyBlackoutBestEffort();
+    };
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      mountedRef.current = false;
+      window.removeEventListener('pagehide', onPageHide);
+      void serialRef.current?.disable();
+      if (desktopLiveRef.current && window.stageforgeDesktop?.dmxControl) {
+        void window.stageforgeDesktop.dmxControl({ type: 'disable' }).catch(() => {});
+      }
+    };
+  }, []);
+
+  const serialLive = serialStatus.enabled;
+  const isLive = desktopLive || serialLive;
+
+  // Wire StageEngine's lightweight <= 44 Hz frame listener ONLY while live output is enabled.
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (!isLive) {
+      engine.setDmxFrameListener(undefined);
+      return;
+    }
+    const bridge = window.stageforgeDesktop;
+    const serial = serialRef.current;
+    engine.setDmxFrameListener((u1, u2, u1Changed, u2Changed) => {
+      if (desktopLive && bridge?.sendDmxFrame) {
+        if (u1Changed) bridge.sendDmxFrame(1, u1);
+        if (u2Changed) bridge.sendDmxFrame(2, u2);
+      }
+      if (serialLive && serial) {
+        if (u1Changed) serial.update(1, u1);
+        if (u2Changed) serial.update(2, u2);
+      }
+    });
+    return () => {
+      engine.setDmxFrameListener(undefined);
+    };
+  }, [engineRef, isLive, desktopLive, serialLive]);
+
+  const discoverArtNet = useCallback(async () => {
+    const bridge = window.stageforgeDesktop;
+    if (!bridge?.dmxControl || discovering) return;
+    setDiscovering(true);
+    setDiscoveryWarning(null);
+    setError(null);
+    try {
+      const result = await bridge.dmxControl({ type: 'discover', iface: settings.iface });
+      setDiscoveredNodes(result.nodes);
+      setDiscoveryWarning(result.warning);
+      if (result.nodes.length > 0) {
+        onToast(`Found ${result.nodes.length} Art-Net ${result.nodes.length === 1 ? 'node' : 'nodes'}.`);
+      } else if (!result.warning) {
+        onToast('No Art-Net nodes replied on this interface.');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Art-Net discovery failed.');
+    } finally {
+      setDiscovering(false);
+    }
+  }, [discovering, onToast, settings.iface]);
+
+  const disable = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    const wasActive = Boolean(serialRef.current?.isRunning() || desktopLiveRef.current);
+    try {
+      const tasks: Promise<unknown>[] = [];
+      if (serialRef.current?.isRunning()) {
+        tasks.push(serialRef.current.disable());
+      }
+      if (desktopLiveRef.current && window.stageforgeDesktop?.dmxControl) {
+        tasks.push(window.stageforgeDesktop.dmxControl({ type: 'disable' }).then(setDesktopStatus));
+      }
+      await Promise.all(tasks);
+      if (wasActive) onToast('DMX output stopped · blackout sent.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not stop DMX output.');
+    } finally {
+      setBusy(false);
+    }
+  }, [onToast]);
+
+  const enable = useCallback(async (): Promise<boolean> => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (settings.mode === 'serial') {
+        if (window.stageforgeDesktop?.dmxControl && desktopStatus?.enabled) {
+          await window.stageforgeDesktop.dmxControl({ type: 'disable' }).then(setDesktopStatus);
+        }
+        const status = await serialRef.current!.enable({
+          universe: settings.serialUniverse,
+          rateHz: Math.min(44, Math.max(1, settings.rateHz)),
+          allowAllDevices: settings.serialAllowAll,
+        });
+        if (!mountedRef.current) {
+          void serialRef.current?.disable();
+          return false;
+        }
+        setSerialStatus(status);
+        onToast(`Live USB DMX active on Universe ${status.universe}.`);
+        return true;
+      }
+
+      const bridge = window.stageforgeDesktop;
+      if (!bridge?.dmxControl) {
+        throw new Error('Network DMX (sACN / Art-Net 4) requires the StageForge desktop app.');
+      }
+      if (serialRef.current?.isRunning()) {
+        await serialRef.current.disable();
+      }
+      const config = settings.mode === 'sacn'
+        ? {
+            protocol: 'sacn' as const,
+            iface: settings.iface,
+            rateHz: Math.min(44, Math.max(1, settings.rateHz)),
+            sourceName: 'StageForge',
+            sacn: {
+              mode: settings.sacnMode,
+              universes: [settings.sacnUniverse1, settings.sacnUniverse2] as [number, number],
+              priority: settings.sacnPriority,
+              ttl: settings.sacnTtl,
+              targets: settings.sacnMode === 'unicast' ? parseTargetList(settings.sacnTargets) : [],
+            },
+          }
+        : {
+            protocol: 'artnet' as const,
+            iface: settings.iface,
+            rateHz: Math.min(44, Math.max(1, settings.rateHz)),
+            artnet: {
+              base: settings.artnetBase,
+              targets: parseTargetList(settings.artnetTargets),
+              broadcast: settings.artnetBroadcast,
+            },
+          };
+
+      const status = await bridge.dmxControl({ type: 'enable', config });
+      if (!mountedRef.current) {
+        void bridge.dmxControl({ type: 'disable' }).catch(() => {});
+        return false;
+      }
+      setDesktopStatus(status);
+      onToast(`Live ${settings.mode === 'sacn' ? 'sACN' : 'Art-Net 4'} output active.`);
+      return true;
+    } catch (err) {
+      if (mountedRef.current) {
+        setError(err instanceof Error ? err.message : 'Could not start DMX output.');
+      }
+      return false;
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  }, [desktopStatus?.enabled, onToast, settings]);
+
+  const banner = useMemo<LiveDmxBannerState>(() => {
+    if (desktopStatus?.enabled) {
+      const proto = desktopStatus.protocol === 'sacn' ? 'sACN' : 'Art-Net';
+      const uniLabel = desktopStatus.universes
+        ? `U${desktopStatus.universes[0]}/${desktopStatus.universes[1]}`
+        : '';
+      const hz = desktopStatus.measuredHz > 0 ? `${desktopStatus.measuredHz} Hz` : `${desktopStatus.rateHz} Hz`;
+      return {
+        active: true,
+        label: `LIVE · ${proto}`,
+        detail: [uniLabel, hz].filter(Boolean).join(' · '),
+        degraded: desktopStatus.degraded,
+        error: desktopStatus.lastError,
+      };
+    }
+    if (serialStatus.enabled) {
+      const hz = serialStatus.measuredHz > 0 ? `${serialStatus.measuredHz} Hz` : `${serialStatus.rateHz} Hz`;
+      return {
+        active: true,
+        label: 'LIVE · USB DMX',
+        detail: `U${serialStatus.universe} · ${hz}`,
+        degraded: Boolean(serialStatus.error),
+        error: serialStatus.error,
+      };
+    }
+    return {
+      active: false,
+      label: 'OFF',
+      detail: '',
+      degraded: false,
+      error: null,
+    };
+  }, [desktopStatus, serialStatus]);
+
+  return {
+    hasDesktopBridge,
+    hasWebSerial,
+    settings,
+    updateSettings,
+    interfaces,
+    refreshInterfaces,
+    desktopStatus,
+    serialStatus,
+    discoveredNodes,
+    discovering,
+    discoveryWarning,
+    discoverArtNet,
+    busy,
+    error,
+    isLive,
+    banner,
+    enable,
+    disable,
+  };
+}

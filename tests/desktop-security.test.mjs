@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import Module, { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,15 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
-const { CSP, isAppPage, createRendererHandler } = require('../desktop/protocol.cjs');
+const {
+  CSP,
+  isAppPage,
+  createRendererHandler,
+  parseUsbId,
+  isFtdiSerialPort,
+  serialDeviceKey,
+  selectVisibleSerialPorts,
+} = require('../desktop/protocol.cjs');
 const { isPermissiveSpdx, readLicenseField, thirdPartyNotices } = await import('../desktop/prepare.mjs');
 
 test('isAppPage enforces scheme, exact host, no port and no credentials', () => {
@@ -67,13 +75,22 @@ test('serveRenderer blocks hostile paths/methods and attaches CSP + nosniff to e
   assert.equal(fetched.length, countBefore, 'hostile requests must never call fetchFile');
 });
 
-test('preload enforces command/payload whitelist, replays pending once, and isolates throwing listeners', () => {
+test('preload enforces command/payload whitelist, DMX validation, replays pending once, and isolates throwing listeners', async () => {
   const ipcHandlers = new Map();
+  const sentMessages = [];
+  const invokedMessages = [];
   let exposedApi;
   const fakeElectron = {
     ipcRenderer: {
       on(channel, fn) {
         ipcHandlers.set(channel, fn);
+      },
+      send(channel, ...args) {
+        sentMessages.push([channel, ...args]);
+      },
+      async invoke(channel, ...args) {
+        invokedMessages.push([channel, ...args]);
+        return { ok: true };
       },
     },
     contextBridge: {
@@ -96,8 +113,11 @@ test('preload enforces command/payload whitelist, replays pending once, and isol
     Module._load = origLoad;
   }
   assert.ok(exposedApi && typeof exposedApi.onRigCommand === 'function');
+  assert.deepEqual(Object.keys(exposedApi), ['onRigCommand', 'sendDmxFrame', 'dmxControl', 'onDmxStatus']);
   const fire = ipcHandlers.get('stageforge:rig-command');
+  const fireStatus = ipcHandlers.get('stageforge:dmx-status');
   assert.ok(typeof fire === 'function');
+  assert.ok(typeof fireStatus === 'function');
 
   // Pending command queued before any listener registers is delivered once.
   fire({}, 'open', '{"rig":true}');
@@ -136,6 +156,173 @@ test('preload enforces command/payload whitelist, replays pending once, and isol
   unsubBad();
   unsubGood();
   assert.throws(() => exposedApi.onRigCommand('not-a-fn'), TypeError);
+
+  // DMX frame channel validation: only universe 1|2 and exact Uint8Array(512).
+  assert.equal(exposedApi.sendDmxFrame(0, new Uint8Array(512)), false);
+  assert.equal(exposedApi.sendDmxFrame(3, new Uint8Array(512)), false);
+  assert.equal(exposedApi.sendDmxFrame(1, new Uint8Array(511)), false);
+  assert.equal(exposedApi.sendDmxFrame(1, new Uint8Array(513)), false);
+  assert.equal(exposedApi.sendDmxFrame(1, new Int8Array(512)), false);
+  assert.equal(sentMessages.length, 0);
+  const validFrame = new Uint8Array(512);
+  validFrame[0] = 123;
+  assert.equal(exposedApi.sendDmxFrame(1, validFrame), true);
+  assert.equal(exposedApi.sendDmxFrame(2, validFrame), true);
+  assert.equal(sentMessages.length, 2);
+  assert.equal(sentMessages[0][0], 'stageforge:dmx-frame');
+
+  // DMX control whitelist
+  await assert.rejects(() => exposedApi.dmxControl({ type: 'exec' }), TypeError);
+  await assert.rejects(() => exposedApi.dmxControl(null), TypeError);
+  await exposedApi.dmxControl({ type: 'getStatus' });
+  assert.equal(invokedMessages.length, 1);
+  assert.equal(invokedMessages[0][0], 'stageforge:dmx-control');
+
+  // DMX status replay & listener isolation
+  fireStatus({}, { enabled: false, state: 'idle' });
+  const seenStatuses = [];
+  const unsubBadStatus = exposedApi.onDmxStatus(() => { throw new Error('status boom'); });
+  const unsubGoodStatus = exposedApi.onDmxStatus((st) => seenStatuses.push(st));
+  assert.equal(seenStatuses.length, 1);
+  fireStatus({}, { enabled: true, state: 'running' });
+  assert.equal(seenStatuses.length, 2);
+  assert.equal(seenStatuses[1].enabled, true);
+  unsubBadStatus();
+  unsubGoodStatus();
+  assert.throws(() => exposedApi.onDmxStatus('nope'), TypeError);
+});
+
+test('serial port helpers prioritize FTDI devices, cap at 8, and desktop/prepare.mjs copies every local main.cjs require', async () => {
+  assert.equal(parseUsbId('1027'), 0x0403);
+  assert.equal(parseUsbId('0x0403'), 0x0403);
+  assert.equal(parseUsbId('0403'), 0x0403);
+  assert.equal(parseUsbId('invalid'), null);
+  assert.equal(isFtdiSerialPort({ vendorId: '1027' }), true);
+  assert.equal(isFtdiSerialPort({ vendorId: '2341' }), false);
+
+  assert.equal(
+    serialDeviceKey({ vendorId: '1027', productId: '24577', serialNumber: 'EN12345' }),
+    '403:6001:EN12345',
+  );
+  const ports = Array.from({ length: 10 }, (_, i) => ({
+    portId: `p${i}`,
+    vendorId: i === 9 ? '1027' : '1234',
+    productId: '0001',
+    portName: `COM${i + 1}`,
+  }));
+  const visible = selectVisibleSerialPorts(ports, 8);
+  assert.equal(visible.length, 8);
+  assert.equal(visible[0].portId, 'p9', 'FTDI DMX interface must be listed first');
+
+  // Guard: every local require('./...') reachable from desktop/main.cjs must be copied by desktop/prepare.mjs.
+  const prepareSource = await readFile(path.join(root, 'desktop', 'prepare.mjs'), 'utf8');
+  const queue = ['main.cjs'];
+  const visited = new Set(queue);
+  const localRequires = [];
+  while (queue.length > 0) {
+    const file = queue.shift();
+    const source = await readFile(path.join(root, 'desktop', file), 'utf8');
+    for (const match of source.matchAll(/require\(['"]\.\/([^'"]+)['"]\)/g)) {
+      const mod = match[1];
+      if (!visited.has(mod)) {
+        visited.add(mod);
+        localRequires.push(mod);
+        queue.push(mod);
+      }
+    }
+  }
+  assert.ok(localRequires.includes('dmx-packets.cjs'));
+  assert.ok(localRequires.includes('dmx-sender.cjs'));
+  assert.ok(localRequires.includes('dmx-ipc.cjs'));
+  for (const mod of localRequires) {
+    assert.ok(
+      prepareSource.includes(`'${mod}'`),
+      `desktop/prepare.mjs must copy ${mod} reachable from desktop/main.cjs`,
+    );
+  }
+});
+
+test('main-process DMX IPC handlers enforce sender, mainFrame, window ownership (M2) and post-bind liveness (H1)', async () => {
+  const { createDmxIpcHandlers } = require('../desktop/dmx-ipc.cjs');
+  let ownerId = null;
+  let running = false;
+  let active = false;
+  let shutdownReason = null;
+  let lastUpdate = null;
+  const fakeDmx = {
+    get ownerId() { return ownerId; },
+    get active() { return active; },
+    isRunning: () => running,
+    listInterfaces: () => [{ name: 'Loopback', address: '127.0.0.1', netmask: '255.0.0.0', broadcast: null, internal: true }],
+    getStatus: () => ({ enabled: running, state: running ? 'running' : 'idle' }),
+    update: (u, data) => { lastUpdate = { u, byte0: data[0], len: data.byteLength }; return true; },
+    enable: async (_cfg, id) => { ownerId = id; running = true; active = true; return { enabled: true }; },
+    shutdown: async (reason) => { shutdownReason = reason; ownerId = null; running = false; active = false; return { enabled: false }; },
+    discover: async () => ({ nodes: [], warning: null }),
+  };
+  const { onFrame, onControl } = createDmxIpcHandlers(() => fakeDmx);
+
+  function makeEvent({ id = 1, url = 'stageforge://app/', frameUrl = url, isSubframe = false, destroyed = false } = {}) {
+    const mainFrame = { url };
+    const senderFrame = isSubframe ? { url: frameUrl } : mainFrame;
+    let isDestroyedFlag = destroyed;
+    let bgThrottling = true;
+    return {
+      senderFrame,
+      sender: {
+        id,
+        mainFrame,
+        getURL: () => url,
+        isDestroyed: () => isDestroyedFlag,
+        setDestroyed: (v) => { isDestroyedFlag = v; },
+        setBackgroundThrottling: (v) => { bgThrottling = v; },
+        get bgThrottling() { return bgThrottling; },
+      },
+    };
+  }
+
+  // Reject hostile origin, subframe, destroyed sender, and unknown command keys.
+  await assert.rejects(() => onControl(makeEvent({ url: 'https://evil.example/' }), { type: 'getStatus' }), /Unauthorized/);
+  await assert.rejects(() => onControl(makeEvent({ isSubframe: true }), { type: 'getStatus' }), /Unauthorized/);
+  await assert.rejects(() => onControl(makeEvent({ destroyed: true }), { type: 'getStatus' }), /Unauthorized/);
+  await assert.rejects(() => onControl(makeEvent(), { type: 'getStatus', extra: 1 }), /Unexpected/);
+
+  // Window 1 enables live output.
+  const win1 = makeEvent({ id: 1 });
+  await onControl(win1, { type: 'enable', config: { protocol: 'sacn' } });
+  assert.equal(win1.sender.bgThrottling, false);
+
+  // Offset Uint8Array(512) slice from owning window succeeds; wrong length / Int8Array / wrong owner fail.
+  const backing = new Uint8Array(600);
+  backing[16] = 177;
+  const slice512 = backing.subarray(16, 528);
+  assert.equal(onFrame(win1, 1, slice512), true);
+  assert.deepEqual(lastUpdate, { u: 1, byte0: 177, len: 512 });
+  assert.equal(onFrame(win1, 1, new Int8Array(512)), false);
+  assert.equal(onFrame(win1, 3, slice512), false);
+
+  // M2 & Pass 2 L4: Window 2 cannot send frames, sees enabled: false, cannot disable, and cannot hijack enable while Window 1 owns live output.
+  const win2 = makeEvent({ id: 2 });
+  assert.equal(onFrame(win2, 1, slice512), false);
+  const win2Status = await onControl(win2, { type: 'getStatus' });
+  assert.equal(win2Status.enabled, false, 'non-owner window must not falsely report LIVE');
+  await assert.rejects(() => onControl(win2, { type: 'disable' }), /owned by another/);
+  await assert.rejects(() => onControl(win2, { type: 'enable', config: { protocol: 'sacn' } }), /already active in another/);
+
+  // Window 1 disables cleanly.
+  await onControl(win1, { type: 'disable' });
+  assert.equal(shutdownReason, 'disable');
+
+  // H1: if sender is destroyed during async enable(), handler shuts down immediately and rejects.
+  const dyingWin = makeEvent({ id: 3 });
+  fakeDmx.enable = async (_cfg, id) => {
+    ownerId = id; running = true; active = true;
+    dyingWin.sender.setDestroyed(true);
+    return { enabled: true };
+  };
+  await assert.rejects(() => onControl(dyingWin, { type: 'enable', config: { protocol: 'sacn' } }), /closed or navigated/);
+  assert.equal(shutdownReason, 'owner-gone');
+  assert.equal(running, false);
 });
 
 test('prepare.mjs validates SPDX licences, resolves nested node_modules and skips licence directories', async () => {
