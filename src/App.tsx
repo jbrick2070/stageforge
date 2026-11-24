@@ -9,7 +9,7 @@ import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
-import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, referencedFiles, type NativeStage } from './data/showFile';
+import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, referencedFiles, type NativeStage, type ShowInterchange } from './data/showFile';
 import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
 import type { BundleAsset } from './data/showBundle';
 import { isCustomMainWall, MAX_WALL_CUE_MS, pruneNativeStage, removeSecondaryScreenEvent, upsertSecondaryScreenEvent, type SecondaryScreenEvent } from './data/studioGeometry';
@@ -92,10 +92,16 @@ export const App: React.FC = () => {
 
   const [savedDesign, setSavedDesign] = useState(readSavedDesign);
   const nativeStage = useRef<NativeStage | undefined>(undefined);
+  const interchangeRef = useRef<ShowInterchange | undefined>(undefined);
+  const mvrResourcesRef = useRef<Map<string, Uint8Array> | undefined>(undefined);
   const [studioStage, setStudioStage] = useState<NativeStage>();
   const installStage = (stage?: NativeStage) => {
     nativeStage.current = stage;
     setStudioStage(stage);
+  };
+  const installInterchange = (interchange?: ShowInterchange, resources?: Map<string, Uint8Array>) => {
+    interchangeRef.current = interchange;
+    mvrResourcesRef.current = resources;
   };
   // Replacing the rig drops authored walls, hangs and wall cues; never do that silently.
   const confirmDiscardStage = () => {
@@ -740,6 +746,7 @@ export const App: React.FC = () => {
     if (!object || typeof object !== 'object' || !('format' in object)) {
       const next = normalizeDesign(parseRigJson(json));
       installStage();
+      installInterchange();
       wallClock.set(0, false);
       timeline.stop();
       timeline.syncWallDuration(0, false, true);
@@ -760,6 +767,7 @@ export const App: React.FC = () => {
       screen: wall, music: file.media?.music ?? NO_MUSIC,
     });
     installStage(file.stage);
+    installInterchange(file.interchange);
     wallClock.set(0, false);
     setFollow(null); directorArmed.current = false;
     audioEngineRef.current?.stopAll();
@@ -793,11 +801,12 @@ export const App: React.FC = () => {
   // exactly; other files become trusses, fixtures, screens and props, with notes on what changed.
   const openMvrBytes = async (bytes: Uint8Array, request?: number) => {
     const { importMvr } = await import('./interchange/mvr/importMvr');
-    const { rig: next, stage, report } = importMvr(bytes);
+    const { rig: next, stage, interchange, resources, report } = importMvr(bytes);
     const normalized = normalizeDesign(next);
     if (request !== undefined && request !== openRequestRef.current) return;
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     installStage(stage);
+    installInterchange(interchange, resources);
     wallClock.set(0, false);
     timeline.stop();
     const lastWallMs = stage?.screenEvents.at(-1)?.atMs ?? 0;
@@ -839,7 +848,7 @@ export const App: React.FC = () => {
     if (action === 'show' || action === 'bundle') {
       const validActiveCue = cues.some(c => c.id === activeCueId) ? activeCueId : null;
       const file = makeShowFile(rig, cues, showState, validActiveCue, { camera: activeCamera, volume }, timeline.snapshot(),
-        { music: readMusic(), screen: readScreen() }, nativeStage.current);
+        { music: readMusic(), screen: readScreen() }, nativeStage.current, interchangeRef.current);
       if (action === 'bundle') {
         const { createShowBundle } = await import('./data/showBundle');
         downloadStageFile(rig.name, 'stageforge.zip', await createShowBundle(file, assets.current));
@@ -850,9 +859,15 @@ export const App: React.FC = () => {
       if (!engineRef.current) throw new Error('The 3D stage is still loading.');
       downloadStageFile(rig.name, 'glb', await engineRef.current.exportCurrentStageGlb());
     } else if (action === 'mvr') {
-      const [{ exportMvr }, { version }] = await Promise.all([import('./interchange/mvr/exportMvr'), import('../package.json')]);
-      const bytes = exportMvr(rig, nativeStage.current, version);
-      downloadStageFile(rig.name, 'mvr', new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'application/octet-stream' }));
+      const [{ exportMvrDocument }, { version }] = await Promise.all([import('./interchange/mvr/exportMvr'), import('../package.json')]);
+      const prev = interchangeRef.current;
+      const exported = exportMvrDocument(rig, nativeStage.current, version, prev, mvrResourcesRef.current);
+      // Persist emitted UUIDs while keeping any prior passthrough intact (never silently prune it on export).
+      interchangeRef.current = prev?.mvr?.passthrough
+        ? { mvr: { ...exported.interchange.mvr, passthrough: prev.mvr.passthrough } }
+        : exported.interchange;
+      downloadStageFile(rig.name, 'mvr', new Blob([exported.bytes as Uint8Array<ArrayBuffer>], { type: 'application/octet-stream' }));
+      if (exported.notes.length) showToast(`Exported MVR · ${exported.notes.join(' ')}`);
     } else if (action === 'dxf') {
       const { exportStageDxf } = await import('./data/stageDxf');
       downloadStageFile(rig.name, 'dxf', new Blob([exportStageDxf(rig, studioStage)], { type: 'application/dxf' }));
@@ -1079,7 +1094,10 @@ export const App: React.FC = () => {
             onOpenSavedDesign={savedDesign ? () => setDesignerRig(savedDesign) : undefined}
             onChangeRig={(next, replacing) => {
               if (replacing && !confirmDiscardStage()) return;
-              if (replacing) installStage();
+              if (replacing) {
+                installStage();
+                installInterchange();
+              }
               applyRig(next);
             }}
             onChangeStage={(next) => {
@@ -1113,6 +1131,7 @@ export const App: React.FC = () => {
             // A new blank design replaces the authored overlay and its wall cues, even if the user then
             // drew new screens or hangs; ask first, and keep the designer open if they decline.
             if (replacing && !confirmDiscardStage()) return false;
+            if (replacing) installInterchange();
             // The designer edits walls, hangs and layout alongside the rig; its stage keeps existing wall cues.
             const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
             installStage(stage);

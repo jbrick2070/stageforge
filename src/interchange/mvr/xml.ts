@@ -15,9 +15,11 @@ export type XmlNode = Record<string, unknown>;
 /** Elements that may repeat; they always parse as arrays so readers need no special cases. */
 const LISTS = new Set([
   'Layer', 'Fixture', 'Truss', 'VideoScreen', 'SceneObject', 'FocusPoint', 'GroupObject', 'Support', 'Projector',
-  'Address', 'Geometry3D', 'Symbol', 'Symdef', 'Data', 'Class', 'Position', 'Source', 'Mapping', 'Connection',
+  'Address', 'Geometry3D', 'Symbol', 'Symdef', 'Data', 'Class', 'Position', 'Source', 'Mapping', 'MappingDefinition', 'Connection',
+  'CustomCommand', 'Overwrite', 'Alignment', 'Protocol',
   'DMXMode', 'DMXChannel', 'LogicalChannel', 'ChannelFunction', 'ChannelSet', 'Attribute', 'FeatureGroup', 'Feature',
-  'ActivationGroup', 'Geometry', 'Axis', 'Beam', 'Model', 'Revision', 'GeometryReference', 'Break', 'Wheel',
+  'ActivationGroup', 'Geometry', 'Axis', 'Beam', 'Laser', 'Display', 'Model', 'Revision', 'GeometryReference', 'Break',
+  'Wheel', 'WheelSlot', 'Emitter', 'ColorSpace',
 ]);
 
 /** Strip XML 1.0 illegal control characters (C0 except TAB/LF/CR, plus U+FFFE/U+FFFF). */
@@ -35,7 +37,7 @@ export function stripXmlBomAndTrailingNuls(source: string): string {
  * Fast linear pre-scan to cap XML nesting depth and total element count before the recursive
  * parser builds JS objects. Ignores comments, CDATA, processing instructions and attribute quotes.
  */
-function checkXmlComplexity(text: string): void {
+function checkXmlComplexity(text: string, maxDepth = MAX_XML_DEPTH, maxElements = MAX_XML_ELEMENTS): void {
   let depth = 0;
   let elements = 0;
   const len = text.length;
@@ -79,30 +81,39 @@ function checkXmlComplexity(text: string): void {
     if (closing) {
       depth = Math.max(0, depth - 1);
     } else {
-      if (++elements > MAX_XML_ELEMENTS) throw new Error('This XML document has too many elements.');
+      if (++elements > maxElements) throw new Error('This XML document has too many elements.');
       const selfClosing = text.charCodeAt(j - 1) === 47 /* '/' */;
-      if (!selfClosing && ++depth > MAX_XML_DEPTH) {
-        throw new Error(`This XML document is nested more than ${MAX_XML_DEPTH} levels deep.`);
+      if (!selfClosing && ++depth > maxDepth) {
+        throw new Error(`This XML document is nested more than ${maxDepth} levels deep.`);
       }
     }
     i = j;
   }
 }
 
-export function parseXml(source: string): XmlNode {
+export interface ParseXmlLimits {
+  maxBytes?: number;
+  maxDepth?: number;
+  maxElements?: number;
+}
+
+export function parseXml(source: string, limits?: ParseXmlLimits): XmlNode {
+  const maxBytes = Math.min(MAX_XML_BYTES, limits?.maxBytes ?? MAX_XML_BYTES);
+  const maxDepth = Math.min(MAX_XML_DEPTH, limits?.maxDepth ?? MAX_XML_DEPTH);
+  const maxElements = Math.min(MAX_XML_ELEMENTS, limits?.maxElements ?? MAX_XML_ELEMENTS);
   // Fast-fail before scanning or encoding if the raw string cannot possibly fit under the byte cap
   // (UTF-16 code units <= UTF-8 bytes for ASCII, and 1 UTF-16 unit >= 1 UTF-8 byte except surrogates
-  // where 2 units = 4 bytes, so source.length > MAX_XML_BYTES * 2 is always over the cap).
-  if (source.length > MAX_XML_BYTES * 2) throw new Error('This XML document is too large.');
+  // where 2 units = 4 bytes, so source.length > maxBytes * 2 is always over the cap).
+  if (source.length > maxBytes * 2) throw new Error('This XML document is too large.');
   // Real-world MA library files can end with NUL bytes after the closing tag.
   const text = stripXmlBomAndTrailingNuls(source);
-  if (text.length > MAX_XML_BYTES || new TextEncoder().encode(text).length > MAX_XML_BYTES) {
+  if (text.length > maxBytes || new TextEncoder().encode(text).length > maxBytes) {
     throw new Error('This XML document is too large.');
   }
   // Reject a DTD anywhere, even inside a comment or CDATA: stripping those first can be fooled by
   // overlapping sections, and real MVR and GDTF files never mention a DTD.
   if (/<!(DOCTYPE|ENTITY)/i.test(text)) throw new Error('XML documents with a DTD are unsupported.');
-  checkXmlComplexity(text);
+  checkXmlComplexity(text, maxDepth, maxElements);
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: '@_',
@@ -127,17 +138,25 @@ export function parseXml(source: string): XmlNode {
   return doc as XmlNode;
 }
 
+const BUILDER_OPTIONS = {
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  format: true,
+  indentBy: '  ',
+  suppressEmptyNode: true,
+  processEntities: true,
+};
+
 export function buildXml(root: XmlNode): string {
-  const builder = new XMLBuilder({
-    ignoreAttributes: false,
-    attributeNamePrefix: '@_',
-    format: true,
-    indentBy: '  ',
-    suppressEmptyNode: true,
-    processEntities: true,
-  });
+  const builder = new XMLBuilder(BUILDER_OPTIONS);
   const xml = '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n' + builder.build(root);
   return xml.replace(ILLEGAL_XML_CHARS, '');
+}
+
+/** Serialize a single parsed element node into a clean standalone XML fragment (no XML declaration). */
+export function buildXmlFragment(tag: string, node: unknown): string {
+  const builder = new XMLBuilder({ ...BUILDER_OPTIONS, format: false });
+  return builder.build({ [tag]: node }).replace(ILLEGAL_XML_CHARS, '').trim();
 }
 
 /** Read a child list regardless of whether the parser produced one item or many. */

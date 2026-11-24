@@ -15,6 +15,7 @@ const coords = await compiler.ssrLoadModule('/src/interchange/mvr/coords.ts');
 const { writeArchive, readArchive } = await compiler.ssrLoadModule('/src/interchange/mvr/archive.ts');
 const { parseXml, buildXml, list, attr, text } = await compiler.ssrLoadModule('/src/interchange/mvr/xml.ts');
 const { boxGlb, glbBounds } = await compiler.ssrLoadModule('/src/interchange/mvr/glb.ts');
+const color = await compiler.ssrLoadModule('/src/interchange/mvr/color.ts');
 const THREE = await compiler.ssrLoadModule('three');
 
 const close = (a, b, eps) => assert.ok(Math.abs(a - b) <= eps, `${a} ≉ ${b}`);
@@ -182,4 +183,43 @@ test('glbBounds rejects hostile non-array min/max and readPose keeps near-horizo
   });
   assert.equal(tiltedFloor.standing, true);
   assert.ok(Number.isFinite(tiltedFloor.yawDeg));
+});
+
+test('CIE 1931 xyY colour parsing and sRGB conversion handle D65 white, primaries, out-of-gamut gels and invalid text', () => {
+  // D65 white (with and without braces) converts to #FFFFFF.
+  assert.equal(color.cieXyYToSrgb(color.parseCieXyY('0.3127,0.3290,100')).hex, '#FFFFFF');
+  assert.equal(color.cieXyYToSrgb(color.parseCieXyY('{0.3127, 0.329, 100}')).hex, '#FFFFFF');
+  // Black (Y = 0) converts to #000000 and round-trips to D65 with Y = 0.
+  assert.equal(color.cieXyYToSrgb(color.parseCieXyY('0.3127,0.3290,0')).hex, '#000000');
+  const blackXyY = color.srgbToCieXyY('#000000');
+  close(blackXyY.x, 0.3127, 1e-4);
+  close(blackXyY.y, 0.329, 1e-4);
+  assert.equal(blackXyY.Y, 0);
+
+  // sRGB primaries and warm amber round-trip within 1/255.
+  for (const hex of ['#FF0000', '#00FF00', '#0000FF', '#FFB869', '#38BDF8']) {
+    const xyY = color.srgbToCieXyY(hex);
+    const formatted = color.formatCieXyY(xyY);
+    const back = color.cieXyYToSrgb(color.parseCieXyY(formatted));
+    const n1 = parseInt(hex.slice(1), 16), n2 = parseInt(back.hex.slice(1), 16);
+    for (const shift of [16, 8, 0]) {
+      assert.ok(Math.abs(((n1 >> shift) & 0xff) - ((n2 >> shift) & 0xff)) <= 1, `${hex} -> ${formatted} -> ${back.hex}`);
+    }
+  }
+
+  // Out-of-gamut saturated laser green preserves hue via luminance-axis desaturation without NaN or > 1 channels.
+  const gel = color.cieXyYToSrgb(color.parseCieXyY('0.1,0.8,80'));
+  assert.ok([gel.r, gel.g, gel.b].every((c) => Number.isFinite(c) && c >= 0 && c <= 1));
+  assert.ok(gel.g > gel.r && gel.g > gel.b);
+
+  // Mid-luminance D65 (Y = 30) reflects physical 30% relative luminance (~0.584 gamma-encoded sRGB).
+  const grey30 = color.cieXyYToSrgb(color.parseCieXyY('0.3127,0.3290,30'));
+  close(grey30.r, grey30.g, 0.01);
+  close(grey30.g, grey30.b, 0.01);
+  assert.ok(grey30.r > 0.55 && grey30.r < 0.62);
+
+  // Malformed or physically impossible inputs fail with a readable Error.
+  for (const bad of ['0.3,0,50', '0.7,0.5,50', '-0.1,0.3,50', '0.3,0.3,101', '0.3,0.3,-1', 'NaN,0.3,50', '0.3,,50', '0.3,0.3', '']) {
+    assert.throws(() => color.parseCieXyY(bad), /Invalid CIE xyY colour/, `reject "${bad}"`);
+  }
 });

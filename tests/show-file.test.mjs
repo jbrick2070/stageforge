@@ -11,13 +11,13 @@ const compiler = await createServer({
   appType: 'custom', optimizeDeps: { noDiscovery: true },
 });
 after(() => compiler.close());
-const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
 const { RIG_TEMPLATES, INITIAL_SHOW_STATE, SHOW_CUES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { cueLook, differsFromCue } = await compiler.ssrLoadModule('/src/data/cueLook.ts');
 const { frameDelta } = await compiler.ssrLoadModule('/src/input/useShowTimeline.ts');
 const example = JSON.parse(await readFile(new URL('../public/examples/amber-walk-on.stageforge.show.json', import.meta.url), 'utf8'));
 const parse = value => parseShowFile(JSON.stringify(value));
-const write = show => makeShowFile(show.rig, show.cues, show.look, show.activeCueId, show.controls, show.timeline, show.media, show.stage);
+const write = show => makeShowFile(show.rig, show.cues, show.look, show.activeCueId, show.controls, show.timeline, show.media, show.stage, show.interchange);
 
 test('v1 remains writable and a v2 cue or take preserves independently focused and colored groups', () => {
   const authored = parse(example);
@@ -157,7 +157,7 @@ test('native walls, stage design and timed secondary screen events survive a v3 
 });
 
 const badEdits = [
-  ['unsupported file version', s => { s.version = 4; }],
+  ['unsupported file version', s => { s.version = 5; }],
   ['wrong schema', s => { s.$schema = 'https://other.invalid'; }],
   ['missing complete look field', s => { delete s.look.bpm; }],
   ['bad look color', s => { s.look.primaryColor = 'url(...)'; }],
@@ -221,11 +221,101 @@ test('frozen v1, v2 and v3 show fixtures load cleanly and published schema hashe
     1: '608b285937d333e80ba9811c009a5470cf549c7ea714d3e4a7f62cef7702721d',
     2: '8125404b9ecce247c05ff86fc322bd3f0ba155973782cae7a25d35054abc3d2c',
     3: '0dee980fe57afb46a842318b092a567e600dbdb2a5b272a3e8bf47460c789c11',
+    4: 'd114ce279e9de66b26fc9010c9e8ca8b7c260956c03a73a3813b8171b8996d49',
   };
   for (const [ver, hash] of Object.entries(expectedHashes)) {
     const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));
     assert.equal(createHash('sha256').update(raw).digest('hex'), hash, `show-v${ver}.schema.json hash pin`);
     const parsed = JSON.parse(raw.toString('utf8'));
     assert.equal(parsed.$id, `https://jbrick2070.github.io/stageforge/schemas/show-v${ver}.schema.json`);
+  }
+});
+
+test('show v4 interchange block is additive, round-trips with or without stage, and stays v1–v3 when empty', () => {
+  const interchange = {
+    mvr: {
+      uuids: {
+        'layer:stageforge': '11111111-2222-4333-8444-555555555555',
+        'truss:pod-front': 'AAAAAAAA-0000-4000-8000-000000000001',
+      },
+      synthetic: ['mvr-position-1'],
+      fixtureSpecs: {
+        'fixture:["pod","pod-front","g1",0]': { spec: 'Vendor@Spot.gdtf', mode: 'Extended' },
+      },
+      passthrough: {
+        userData: ['<Data provider="Vectorworks" ver="2025"/>'],
+        auxData: ['<Position uuid="CCCCCCCC-0000-4000-8000-000000000001" name="FOH"/>'],
+        sceneNodes: ['<Support uuid="DDDDDDDD-0000-4000-8000-000000000001" name="Hoist 1"><Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,8000}</Matrix></Support>'],
+        objectExtras: {
+          'fixture:["pod","pod-front","g1",0]': ['<Color>0.3127,0.329,100</Color>'],
+        },
+      },
+    },
+  };
+
+  // Without stage: writes v4 with interchange and no stage.
+  const v4NoStage = write({ ...example, interchange });
+  assert.equal(v4NoStage.version, 4);
+  assert.equal(v4NoStage.$schema, V4_SCHEMA_URL);
+  assert.equal(v4NoStage.stage, undefined);
+  assert.deepEqual(parse(v4NoStage), v4NoStage);
+
+  // With stage: writes v4 carrying both stage and interchange.
+  const stage = { format: 'stageforge-native-stage', version: 1, walls: [{ id: 'main-led' }], screenEvents: [] };
+  const v4WithStage = write({ ...example, stage, interchange });
+  assert.equal(v4WithStage.version, 4);
+  assert.deepEqual(parse(v4WithStage).stage, stage);
+  assert.deepEqual(parse(v4WithStage).interchange, interchange);
+
+  // Empty interchange containers collapse so v1–v3 remain selected.
+  for (const empty of [undefined, {}, { mvr: {} }, { mvr: { uuids: {}, synthetic: [], passthrough: { sceneNodes: [] } } }]) {
+    const savedV1 = write({ ...example, interchange: empty });
+    assert.equal(savedV1.version, 1);
+    assert.equal(savedV1.interchange, undefined);
+    const savedV3 = write({ ...example, stage, interchange: empty });
+    assert.equal(savedV3.version, 3);
+    assert.equal(savedV3.interchange, undefined);
+  }
+
+  // v4 supports up to 256 truss pods (matching MVR import capacity).
+  const manyPods = structuredClone(example);
+  manyPods.rig.trussPods = Array.from({ length: 100 }, (_, i) => ({
+    id: `pod-${i}`, name: `Truss ${i}`, shape: 'box', width: 2, x: i, baseY: 6, z: 0, rotationY: 0,
+    motorized: false, motorMinY: 6, motorMaxY: 6, fixtures: [],
+  }));
+  manyPods.cues = [];
+  manyPods.activeCueId = null;
+  manyPods.look.motors.podTargets = {};
+  delete manyPods.timeline;
+  const savedMany = write({ ...manyPods, interchange: { mvr: { uuids: { 'layer:stageforge': '11111111-2222-4333-8444-555555555555' } } } });
+  assert.equal(savedMany.version, 4);
+  assert.equal(parse(savedMany).rig.trussPods.length, 100);
+
+  // Hostile / invalid v4 interchange payloads fail with readable Error.
+  const badV4Edits = [
+    ['v4 missing interchange', s => { delete s.interchange; }],
+    ['lowercase uuid', s => { s.interchange.mvr.uuids['truss:pod-front'] = 'aaaaaaaa-0000-4000-8000-000000000001'; }],
+    ['bad key prefix', s => { s.interchange.mvr.uuids['unknown:x'] = 'AAAAAAAA-0000-4000-8000-000000000001'; }],
+    ['DTD in passthrough', s => { s.interchange.mvr.passthrough.sceneNodes = ['<!DOCTYPE x><Support/>']; }],
+    ['PI in passthrough', s => { s.interchange.mvr.passthrough.sceneNodes = ['<?xml version="1.0"?><Support/>']; }],
+    ['control char in passthrough', s => { s.interchange.mvr.passthrough.sceneNodes = ['<Support name="\u0007"/>']; }],
+    ['wrong root in auxData', s => { s.interchange.mvr.passthrough.auxData = ['<Script/>']; }],
+    ['ChildList in objectExtras', s => { s.interchange.mvr.passthrough.objectExtras['fixture:["pod","pod-front","g1",0]'] = ['<ChildList/>']; }],
+    ['spoofed StageForge UserData', s => { s.interchange.mvr.passthrough.userData = ['<Data provider="StageForge" ver="1"/>']; }],
+    ['quoted > before spoofed StageForge UserData (L3)', s => { s.interchange.mvr.passthrough.userData = ['<Data x=">" provider="StageForge" ver="1"/>']; }],
+    ['unbalanced passthrough fragment (L3)', s => { s.interchange.mvr.passthrough.sceneNodes = ['<Support name="open"']; }],
+    ['duplicate synthetic pod', s => { s.interchange.mvr.synthetic = ['mvr-position-1', 'mvr-position-1']; }],
+    ['over 8 MiB passthrough total', s => {
+      const chunk = '<Support name="' + 'A'.repeat(200_000) + '"/>';
+      s.interchange.mvr.passthrough.sceneNodes = Array.from({ length: 45 }, () => chunk);
+    }],
+  ];
+  for (const [label, edit] of badV4Edits) {
+    const draft = structuredClone(v4NoStage);
+    edit(draft);
+    assert.throws(() => parse(draft), isReadableError, label);
+  }
+  for (const version of [1, 2, 3]) {
+    assert.throws(() => parse({ ...v4NoStage, version, $schema: v4NoStage.$schema.replace('v4', 'v' + version) }), isReadableError, `v${version} rejects interchange`);
   }
 });

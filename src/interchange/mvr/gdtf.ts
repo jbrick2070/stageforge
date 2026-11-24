@@ -1,5 +1,6 @@
 import type { FixtureType, FloorFxType } from '../../types/show';
 import { readArchive, utf8, writeArchive } from './archive';
+import { cieXyYToSrgb, parseCieXyY, type CieXyY, type SrgbColor } from './color';
 import { attr, buildXml, child, list, MAX_XML_BYTES, MAX_XML_DEPTH, parseXml, type XmlNode } from './xml';
 import { uuidV5 } from './uuid';
 
@@ -219,18 +220,212 @@ export function profileArchive(profile: Profile): Uint8Array {
   return writeArchive([{ name: 'description.xml', data: utf8.encode(profileDescription(profile)) }]);
 }
 
+export interface GdtfChannelFunction {
+  name: string;
+  attribute: string;
+  /** Start DMX value in the channel's native resolution (0 .. 256^bytes - 1). */
+  dmxFrom: number;
+  /** Inclusive end DMX value in the channel's native resolution. */
+  dmxTo: number;
+  /** Channel byte resolution (1..4). */
+  bytes: number;
+  physicalFrom: number;
+  physicalTo: number;
+}
+
+export interface GdtfModeBreak {
+  /** 1-based GDTF DMXBreak (maps to MVR 0-based break = dmxBreak - 1). */
+  dmxBreak: number;
+  /** Highest occupied DMX slot (1..512) on this break. */
+  footprint: number;
+}
+
+export interface GdtfModeSummary {
+  name: string;
+  /** Highest slot on primary break (DMXBreak 1, or lowest break present). */
+  footprint: number;
+  /** Per-break footprints sorted ascending by 1-based dmxBreak. */
+  breaks: GdtfModeBreak[];
+  /** Sum of footprints across all breaks. */
+  totalSlots: number;
+  attributes: string[];
+  /** Parsed channel functions (present when the mode defines ChannelFunction elements). */
+  functions?: GdtfChannelFunction[];
+  /** Diagnostic flags for malformed breaks, cycles or out-of-range slots. */
+  flags?: string[];
+}
+
+export interface GdtfEmitterColor {
+  name: string;
+  color: CieXyY;
+  srgb: SrgbColor;
+}
+
 /** What the importer needs from a GDTF file. */
 export interface GdtfSummary {
   name: string;
   manufacturer: string;
-  modes: Array<{ name: string; footprint: number; attributes: string[] }>;
+  modes: GdtfModeSummary[];
   beamType?: string;
   beamAngle?: number;
   hasLaser: boolean;
+  emitters?: GdtfEmitterColor[];
 }
 
-/** Read the fixture type, modes (footprint from the highest Offset) and beam of a GDTF archive. */
-export function readGdtf(bytes: Uint8Array, budget?: { remaining: number }): GdtfSummary {
+const MAX_DMX_BREAK = 64;
+const MAX_GEOMETRY_REFS = 4096;
+const MAX_REF_TEMPLATE_OPS = 200_000;
+
+export interface GdtfReadBudget {
+  remaining: number;
+  /** Shared GeometryReference expansion/template work budget across modes and files. */
+  opsRemaining?: number;
+}
+
+/**
+ * Parse a GDTF DMX value string ("v/n", n in 1..4) and scale it to `targetBytes` (1..4).
+ * Returns undefined on malformed strings.
+ */
+export function parseGdtfDmxValue(raw: string | undefined, targetBytes = 1): number | undefined {
+  if (!raw) return undefined;
+  const match = /^\s*(\d+)\s*\/\s*([1-4])\s*$/.exec(raw);
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  const bytes = Number(match[2]);
+  const maxSrc = Math.pow(256, bytes);
+  if (!Number.isSafeInteger(value) || value < 0 || value >= maxSrc) return undefined;
+  const dst = Math.max(1, Math.min(4, Math.trunc(targetBytes)));
+  if (bytes === dst) return value;
+  if (bytes < dst) return value * Math.pow(256, dst - bytes);
+  return Math.floor(value / Math.pow(256, bytes - dst));
+}
+
+/**
+ * Interpolate a physical value for a GDTF channel function at `dmx`.
+ * Reversed ranges (physicalFrom > physicalTo) are preserved without swapping.
+ */
+export function physicalAt(
+  fn: Pick<GdtfChannelFunction, 'dmxFrom' | 'dmxTo' | 'physicalFrom' | 'physicalTo'>,
+  dmx: number,
+): number {
+  const clamped = Math.max(fn.dmxFrom, Math.min(fn.dmxTo, dmx));
+  const span = fn.dmxTo - fn.dmxFrom;
+  if (span <= 0) return fn.physicalFrom;
+  return fn.physicalFrom + (fn.physicalTo - fn.physicalFrom) * ((clamped - fn.dmxFrom) / span);
+}
+
+interface RefBreak {
+  dmxBreak: number;
+  dmxOffset: number;
+}
+
+interface ResolvedRef {
+  target: string;
+  breaks: RefBreak[];
+}
+
+/** Collect all non-GeometryReference geometry names within a geometry subtree. */
+function collectSubtreeNames(node: XmlNode, out: Set<string>, depth = 0): void {
+  if (depth > MAX_XML_DEPTH) return;
+  const ownName = attr(node, 'Name');
+  if (ownName) out.add(ownName);
+  for (const [key, value] of Object.entries(node)) {
+    if (key.startsWith('@_') || key === 'GeometryReference' || !value || typeof value !== 'object') continue;
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (item && typeof item === 'object') collectSubtreeNames(item as XmlNode, out, depth + 1);
+    }
+  }
+}
+
+function parseRefBreaks(refNode: XmlNode, flags: Set<string>): RefBreak[] {
+  const rawBreaks = list(refNode, 'Break');
+  if (!rawBreaks.length) return [{ dmxBreak: 1, dmxOffset: 1 }];
+  const out: RefBreak[] = [];
+  for (const brk of rawBreaks.slice(0, MAX_DMX_BREAK)) {
+    const rawBreak = attr(brk, 'DMXBreak');
+    const dmxBreak = rawBreak === undefined || rawBreak === '' ? 1 : Number(rawBreak);
+    const rawOffset = attr(brk, 'DMXOffset');
+    const dmxOffset = rawOffset === undefined || rawOffset === '' ? 1 : Number(rawOffset);
+    if (!Number.isInteger(dmxBreak) || dmxBreak < 1 || dmxBreak > MAX_DMX_BREAK) {
+      flags.add('invalidBreak');
+      continue;
+    }
+    if (!Number.isInteger(dmxOffset) || dmxOffset < 1 || dmxOffset > 512) {
+      flags.add('slotOutOfRange');
+      continue;
+    }
+    out.push({ dmxBreak, dmxOffset });
+  }
+  return out;
+}
+
+/**
+ * Walk a geometry subtree collecting GeometryReference instances (including nested 2D arrays like
+ * Wall -> Row -> Pixel) with cycle detection and strict expansion/work caps.
+ */
+function collectGeometryRefs(
+  node: XmlNode,
+  topGeos: Map<string, XmlNode>,
+  parentBreaks: RefBreak[] | undefined,
+  ancestors: Set<string>,
+  out: ResolvedRef[],
+  flags: Set<string>,
+  ops: { remaining: number },
+  depth = 0,
+): void {
+  if (depth > MAX_XML_DEPTH || out.length >= MAX_GEOMETRY_REFS || ops.remaining <= 0) {
+    if (out.length >= MAX_GEOMETRY_REFS || ops.remaining <= 0) flags.add('refLimitExceeded');
+    return;
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if (key.startsWith('@_') || !value || typeof value !== 'object') continue;
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (!item || typeof item !== 'object') continue;
+      if (--ops.remaining <= 0) {
+        flags.add('refLimitExceeded');
+        return;
+      }
+      const childNode = item as XmlNode;
+      if (key === 'GeometryReference') {
+        const target = attr(childNode, 'Geometry');
+        if (!target) continue;
+        if (ancestors.has(target)) {
+          flags.add('cyclicReference');
+          continue;
+        }
+        const ownBreaks = parseRefBreaks(childNode, flags);
+        let effectiveBreaks: RefBreak[];
+        if (!parentBreaks) {
+          effectiveBreaks = ownBreaks;
+        } else {
+          // Compose nested GeometryReference offsets: (parentOffset - 1) + ownOffset on parent's break.
+          effectiveBreaks = [];
+          for (const pb of parentBreaks) {
+            const match = ownBreaks.find((ob) => ob.dmxBreak === pb.dmxBreak) ?? ownBreaks[0];
+            if (!match) continue;
+            effectiveBreaks.push({ dmxBreak: pb.dmxBreak, dmxOffset: pb.dmxOffset + match.dmxOffset - 1 });
+          }
+        }
+        if (out.length >= MAX_GEOMETRY_REFS) {
+          flags.add('refLimitExceeded');
+          return;
+        }
+        out.push({ target, breaks: effectiveBreaks });
+        const targetNode = topGeos.get(target);
+        if (targetNode) {
+          ancestors.add(target);
+          collectGeometryRefs(targetNode, topGeos, effectiveBreaks, ancestors, out, flags, ops, depth + 1);
+          ancestors.delete(target);
+        }
+      } else {
+        collectGeometryRefs(childNode, topGeos, parentBreaks, ancestors, out, flags, ops, depth + 1);
+      }
+    }
+  }
+}
+
+/** Read the fixture type, modes (with per-break and multi-instance GeometryReference footprints) and optics of a GDTF archive. */
+export function readGdtf(bytes: Uint8Array, budget?: GdtfReadBudget): GdtfSummary {
   const maxInflated = budget ? Math.min(MAX_XML_BYTES, Math.max(0, budget.remaining)) : MAX_XML_BYTES;
   const files = readArchive(bytes, 'GDTF', {
     only: (baseNameLower) => baseNameLower === 'description.xml',
@@ -242,24 +437,216 @@ export function readGdtf(bytes: Uint8Array, budget?: { remaining: number }): Gdt
   const doc = parseXml(utf8.decode(description.data));
   const fixture = child(child(doc, 'GDTF'), 'FixtureType');
   if (!fixture) throw new Error('Invalid GDTF fixture description.');
-  const modes = list(child(fixture, 'DMXModes'), 'DMXMode').map((mode) => {
-    let footprint = 0;
+
+  // Index top-level geometries under <Geometries> by @Name so GeometryReference targets resolve cleanly.
+  const topGeos = new Map<string, XmlNode>();
+  const geometriesNode = child(fixture, 'Geometries') ?? {};
+  for (const [key, value] of Object.entries(geometriesNode)) {
+    if (key.startsWith('@_') || !value || typeof value !== 'object') continue;
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (!item || typeof item !== 'object') continue;
+      const gName = attr(item, 'Name');
+      if (gName && !topGeos.has(gName)) topGeos.set(gName, item as XmlNode);
+    }
+  }
+
+  const subtreeCache = new Map<string, Set<string>>();
+  const getSubtreeNames = (geoName: string): Set<string> => {
+    let set = subtreeCache.get(geoName);
+    if (!set) {
+      set = new Set<string>();
+      const node = topGeos.get(geoName);
+      if (node) collectSubtreeNames(node, set);
+      subtreeCache.set(geoName, set);
+    }
+    return set;
+  };
+
+  // Share a single ops budget across all DMXModes (and across GDTF files when caller passes budget.opsRemaining),
+  // and cache GeometryReference resolution per root geometry so repeated modes never re-walk the tree.
+  const ops = { remaining: budget?.opsRemaining ?? MAX_REF_TEMPLATE_OPS };
+  const rootRefCache = new Map<string, {
+    refsByTarget: Map<string, ResolvedRef[]>;
+    templateOwner: Map<string, string[]>;
+    flags: string[];
+  }>();
+  const getRootRefs = (rootName: string | undefined) => {
+    const cacheKey = rootName ?? '';
+    const cached = rootRefCache.get(cacheKey);
+    if (cached) return cached;
+    const refFlags = new Set<string>();
+    const rootNode = (rootName ? topGeos.get(rootName) : undefined) ?? topGeos.values().next().value;
+    const refs: ResolvedRef[] = [];
+    if (rootNode) {
+      const ancestors = new Set<string>();
+      if (rootName) ancestors.add(rootName);
+      collectGeometryRefs(rootNode, topGeos, undefined, ancestors, refs, refFlags, ops);
+    }
+    const refsByTarget = new Map<string, ResolvedRef[]>();
+    const templateOwner = new Map<string, string[]>();
+    for (const ref of refs) {
+      let bucket = refsByTarget.get(ref.target);
+      if (!bucket) {
+        bucket = [];
+        refsByTarget.set(ref.target, bucket);
+        for (const subName of getSubtreeNames(ref.target)) {
+          const owners = templateOwner.get(subName);
+          if (owners) owners.push(ref.target);
+          else templateOwner.set(subName, [ref.target]);
+        }
+      }
+      bucket.push(ref);
+    }
+    const entry = { refsByTarget, templateOwner, flags: [...refFlags] };
+    rootRefCache.set(cacheKey, entry);
+    return entry;
+  };
+
+  const modes: GdtfModeSummary[] = list(child(fixture, 'DMXModes'), 'DMXMode').map((mode) => {
+    const rootResolved = getRootRefs(attr(mode, 'Geometry'));
+    const flags = new Set<string>(rootResolved.flags);
+    const perBreak = new Map<number, number>();
     const attributes: string[] = [];
+    const functions: GdtfChannelFunction[] = [];
+    const { refsByTarget, templateOwner } = rootResolved;
+
     for (const channel of list(child(mode, 'DMXChannels'), 'DMXChannel')) {
       // Slots come from Offset ("1" or "1,2" for 16-bit), never from document order.
-      // Loop with explicit bounds so a hostile Offset string cannot overflow the call stack.
-      const rawOffsets = (attr(channel, 'Offset') ?? '').split(',');
-      for (let i = 0; i < rawOffsets.length && i < 512; i++) {
-        const n = Number(rawOffsets[i]);
-        if (Number.isInteger(n) && n > 0 && n <= 512 && n > footprint) footprint = n;
+      // Empty or "None" denotes a virtual channel (attributes only, no DMX slots).
+      const rawOffsetAttr = (attr(channel, 'Offset') ?? '').trim();
+      const offsets: number[] = [];
+      if (rawOffsetAttr && rawOffsetAttr.toLowerCase() !== 'none') {
+        const rawOffsets = rawOffsetAttr.split(',');
+        for (let i = 0; i < rawOffsets.length && i < 512; i++) {
+          const n = Number(rawOffsets[i].trim());
+          if (Number.isInteger(n) && n > 0 && n <= 512) offsets.push(n);
+        }
       }
+
+      const rawBreakAttr = (attr(channel, 'DMXBreak') ?? '').trim();
+      let channelBreak: number | 'Overwrite' | undefined;
+      if (!rawBreakAttr) {
+        channelBreak = 1;
+      } else if (rawBreakAttr === 'Overwrite') {
+        channelBreak = 'Overwrite';
+      } else {
+        const parsedBreak = Number(rawBreakAttr);
+        if (Number.isInteger(parsedBreak) && parsedBreak >= 1 && parsedBreak <= MAX_DMX_BREAK) {
+          channelBreak = parsedBreak;
+        } else {
+          flags.add('invalidBreak');
+        }
+      }
+
+      const channelBytes = Math.max(1, Math.min(4, offsets.length || 1));
+      const maxDmx = Math.pow(256, channelBytes) - 1;
       for (const logical of list(channel, 'LogicalChannel')) {
-        const name = attr(logical, 'Attribute');
-        if (name) attributes.push(name);
+        const attrName = attr(logical, 'Attribute');
+        if (attrName) attributes.push(attrName);
+        const rawFns = list(logical, 'ChannelFunction');
+        if (rawFns.length) {
+          const parsedFns: GdtfChannelFunction[] = [];
+          for (const fn of rawFns) {
+            const fnAttr = attr(fn, 'Attribute') ?? attrName ?? '';
+            const dmxFrom = parseGdtfDmxValue(attr(fn, 'DMXFrom'), channelBytes) ?? 0;
+            const rawFrom = Number(attr(fn, 'PhysicalFrom'));
+            const rawTo = Number(attr(fn, 'PhysicalTo'));
+            parsedFns.push({
+              name: attr(fn, 'Name') ?? fnAttr,
+              attribute: fnAttr,
+              dmxFrom,
+              dmxTo: maxDmx,
+              bytes: channelBytes,
+              physicalFrom: Number.isFinite(rawFrom) ? rawFrom : 0,
+              physicalTo: Number.isFinite(rawTo) ? rawTo : 1,
+            });
+          }
+          parsedFns.sort((a, b) => a.dmxFrom - b.dmxFrom);
+          for (let i = 0; i < parsedFns.length; i++) {
+            if (i + 1 < parsedFns.length) {
+              parsedFns[i].dmxTo = Math.max(parsedFns[i].dmxFrom, parsedFns[i + 1].dmxFrom - 1);
+            } else {
+              parsedFns[i].dmxTo = maxDmx;
+            }
+          }
+          functions.push(...parsedFns);
+        }
+      }
+
+      if (!offsets.length || channelBreak === undefined) continue;
+
+      const geoName = attr(channel, 'Geometry') ?? '';
+      const owners = geoName ? templateOwner.get(geoName) : undefined;
+      if (owners?.length) {
+        // Dedupe & sort offsets once per channel so each GeometryReference instance is O(1) (or O(log k) on overflow).
+        const sortedOffsets = [...new Set(offsets)].sort((a, b) => a - b);
+        const maxOff = sortedOffsets[sortedOffsets.length - 1];
+        for (const target of owners) {
+          const instances = refsByTarget.get(target) ?? [];
+          for (const instance of instances) {
+            if (--ops.remaining < 0) {
+              flags.add('refLimitExceeded');
+              break;
+            }
+            const brk = channelBreak === 'Overwrite'
+              ? instance.breaks[0]
+              : instance.breaks.find((b) => b.dmxBreak === channelBreak);
+            if (!brk) {
+              flags.add('missingBreak');
+              continue;
+            }
+            const maxSlot = maxOff + brk.dmxOffset - 1;
+            if (maxSlot <= 512) {
+              const prev = perBreak.get(brk.dmxBreak) ?? 0;
+              if (maxSlot > prev) perBreak.set(brk.dmxBreak, maxSlot);
+            } else {
+              flags.add('slotOutOfRange');
+              const limitOff = 513 - brk.dmxOffset;
+              // Binary search for the largest offset <= limitOff.
+              let lo = 0, hi = sortedOffsets.length - 1, best = -1;
+              while (lo <= hi) {
+                const mid = (lo + hi) >> 1;
+                if (sortedOffsets[mid] <= limitOff) { best = sortedOffsets[mid]; lo = mid + 1; }
+                else hi = mid - 1;
+              }
+              if (best > 0) {
+                const slot = best + brk.dmxOffset - 1;
+                const prev = perBreak.get(brk.dmxBreak) ?? 0;
+                if (slot > prev) perBreak.set(brk.dmxBreak, slot);
+              }
+            }
+          }
+        }
+      } else {
+        if (channelBreak === 'Overwrite') {
+          flags.add('invalidBreak');
+          continue;
+        }
+        let maxOff = 0;
+        for (const off of offsets) if (off > maxOff) maxOff = off;
+        const prev = perBreak.get(channelBreak) ?? 0;
+        if (maxOff > prev) perBreak.set(channelBreak, maxOff);
       }
     }
-    return { name: attr(mode, 'Name') ?? '', footprint, attributes };
+
+    const breaks: GdtfModeBreak[] = [...perBreak.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([dmxBreak, footprint]) => ({ dmxBreak, footprint }));
+    const totalSlots = breaks.reduce((sum, b) => sum + b.footprint, 0);
+    const footprint = perBreak.get(1) ?? breaks[0]?.footprint ?? 0;
+
+    return {
+      name: attr(mode, 'Name') ?? '',
+      footprint,
+      breaks,
+      totalSlots,
+      attributes,
+      ...(functions.length ? { functions } : {}),
+      ...(flags.size ? { flags: [...flags].sort() } : {}),
+    };
   });
+  if (budget && budget.opsRemaining !== undefined) budget.opsRemaining = Math.max(0, ops.remaining);
+
   let beamType: string | undefined, beamAngle: number | undefined, hasLaser = false;
   const visit = (node: XmlNode, depth = 0) => {
     if (depth > MAX_XML_DEPTH) return;
@@ -276,10 +663,24 @@ export function readGdtf(bytes: Uint8Array, budget?: { remaining: number }): Gdt
       }
     }
   };
-  visit(child(fixture, 'Geometries') ?? {});
+  visit(geometriesNode);
+
+  const emitters: GdtfEmitterColor[] = [];
+  for (const emitter of list(child(child(fixture, 'PhysicalDescriptions'), 'Emitters'), 'Emitter').slice(0, 64)) {
+    const rawColor = attr(emitter, 'Color');
+    if (!rawColor) continue;
+    try {
+      const color = parseCieXyY(rawColor);
+      emitters.push({ name: attr(emitter, 'Name') ?? 'Emitter', color, srgb: cieXyYToSrgb(color) });
+    } catch {
+      // Ignore malformed emitter colours.
+    }
+  }
+
   return {
     name: attr(fixture, 'Name') ?? 'Fixture', manufacturer: attr(fixture, 'Manufacturer') ?? '',
     modes, beamType, beamAngle, hasLaser,
+    ...(emitters.length ? { emitters } : {}),
   };
 }
 

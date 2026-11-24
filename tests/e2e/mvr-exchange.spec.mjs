@@ -76,4 +76,28 @@ test('a third-party MVR opens as trusses and fixtures with notes about what chan
   await expect(toast).toContainText('fixture types were guessed');
   await expect(toast).toContainText('focus point');
   await expect(page.locator('header').getByText(/^4 fixtures/).first()).toBeVisible();
+
+  // Save the imported foreign MVR as Show JSON (must emit v4 with persisted UUIDs & passthrough)
+  // and re-export MVR (must keep original UUIDs and unmodeled FocusPoint/Support).
+  const saveDialog = await files(page);
+  const jsonTransfer = page.waitForEvent('download');
+  await saveDialog.getByRole('button', { name: 'Save show JSON' }).click();
+  const jsonDownload = await jsonTransfer;
+  const jsonPath = info.outputPath(jsonDownload.suggestedFilename());
+  await jsonDownload.saveAs(jsonPath);
+  const savedShow = JSON.parse(await readFile(jsonPath, 'utf8'));
+  expect(savedShow.version).toBe(4);
+  expect(savedShow.interchange?.mvr?.uuids?.['truss:mvr-truss-1']).toBe('AAAAAAAA-0000-4000-8000-000000000001');
+  expect(savedShow.interchange?.mvr?.passthrough?.sceneNodes?.some(s => s.includes('CCCCCCCC-0000-4000-8000-000000000001'))).toBe(true);
+
+  const mvrTransfer = page.waitForEvent('download');
+  await saveDialog.getByRole('button', { name: /Rig for consoles and visualizers/ }).click();
+  const mvrDownload = await mvrTransfer;
+  const mvrPath = info.outputPath('reexport-' + mvrDownload.suggestedFilename());
+  await mvrDownload.saveAs(mvrPath);
+  const reexported = unzipSync(new Uint8Array(await readFile(mvrPath)));
+  const reexportedXml = strFromU8(reexported['GeneralSceneDescription.xml']);
+  expect(reexportedXml).toContain('AAAAAAAA-0000-4000-8000-000000000001');
+  expect(reexportedXml).toContain('BBBBBBBB-0000-4000-8000-000000000000');
+  expect(reexportedXml).toContain('CCCCCCCC-0000-4000-8000-000000000001');
 });

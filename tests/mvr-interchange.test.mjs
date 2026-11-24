@@ -11,17 +11,17 @@ const compiler = await createServer({
 });
 after(() => compiler.close());
 
-const { exportMvr, fixtureKey } = await compiler.ssrLoadModule('/src/interchange/mvr/exportMvr.ts');
-const { importMvr, readAddress } = await compiler.ssrLoadModule('/src/interchange/mvr/importMvr.ts');
+const { exportMvr, exportMvrDocument, fixtureKey, FIXTURE_XSD_ORDER } = await compiler.ssrLoadModule('/src/interchange/mvr/exportMvr.ts');
+const { importMvr, readAddress, readAddresses } = await compiler.ssrLoadModule('/src/interchange/mvr/importMvr.ts');
 const { readArchive, writeArchive, utf8 } = await compiler.ssrLoadModule('/src/interchange/mvr/archive.ts');
 const { parseXml, list, child, attr, text } = await compiler.ssrLoadModule('/src/interchange/mvr/xml.ts');
 const { compose, readPose, parseMatrix, readMatrix, matrixText, poseMatrix } = await compiler.ssrLoadModule('/src/interchange/mvr/coords.ts');
-const { readGdtf, profileArchive, PROFILES, classifyGdtf } = await compiler.ssrLoadModule('/src/interchange/mvr/gdtf.ts');
+const { readGdtf, profileArchive, PROFILES, classifyGdtf, physicalAt } = await compiler.ssrLoadModule('/src/interchange/mvr/gdtf.ts');
 const { placeFixtures, mountSlotIndex } = await compiler.ssrLoadModule('/src/data/fixturePlacement.ts');
 const { parseRigJson } = await compiler.ssrLoadModule('/src/data/rigImport.ts');
-const { parseShowFile } = await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { makeShowFile, parseShowFile } = await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { createBlankDesign, podWorldPoint, withPlatforms } = await compiler.ssrLoadModule('/src/data/stageDesign.ts');
-const { RIG_TEMPLATES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 
 const fixtureShow = parseShowFile(await readFile(new URL('./fixtures/native-authoring-v3.stageforge.show.json', import.meta.url), 'utf8'));
 const MATRIX_XSD = /^(\{-?[0-9]+\.?[0-9]*(e-?[0-9]*)?(,-?[0-9]+\.?[0-9]*(e-?[0-9]*)?){2}\}){4}$/;
@@ -195,7 +195,7 @@ test('GDTF reading follows Offset, not document order, and classification uses a
       <DMXChannel Offset="3" Geometry="Base"><LogicalChannel Attribute="Dimmer"/></DMXChannel>
     </DMXChannels></DMXMode></DMXModes></FixtureType></GDTF>\u0000`;
   const summary = readGdtf(writeArchive([{ name: 'description.xml', data: utf8.encode(xml) }]));
-  assert.deepEqual(summary.modes, [{ name: '16bit', footprint: 6, attributes: ['Tilt', 'Pan', 'Dimmer'] }]);
+  assert.deepEqual(summary.modes, [{ name: '16bit', footprint: 6, breaks: [{ dmxBreak: 1, footprint: 6 }], totalSlots: 6, attributes: ['Tilt', 'Pan', 'Dimmer'] }]);
   assert.equal(classifyGdtf(summary, '16bit', false), 'wash');
   assert.equal(classifyGdtf(summary, '16bit', true), 'floor_beam');
   assert.equal(readGdtf(profileArchive(PROFILES.strobe)).modes[0].footprint, 2);
@@ -496,4 +496,432 @@ test('hostile GLB, missing verMajor, corrupt StageForge payload, GroupObject off
   const overflow = importMvr(foreignMvr({ fixtures: manyFixtures }));
   assert.match(overflow.report.notes.join(' '), /Only the first 1024 of 1030 fixtures/);
   assert.match(overflow.report.notes.join(' '), /did not fit in two universes/);
+});
+
+test('DMX break 0 vs 1 mapping, reversed physical ranges and CIE xyY emitters work across MVR and GDTF', () => {
+  // MVR 0-based break="0" maps to GDTF 1-based DMXBreak=1; break="1" maps to DMXBreak=2.
+  const multi = readAddresses({
+    Addresses: {
+      Address: [
+        { '@_break': '1', '#text': '1025' },
+        { '@_break': '0', '#text': '513' },
+        { '@_break': '0', '#text': '999' }, // duplicate break ignored
+        { '@_break': '-1', '#text': '1' }, // invalid negative break ignored
+      ],
+    },
+  });
+  assert.deepEqual(multi, [
+    { mvrBreak: 0, dmxBreak: 1, universe: 2, channel: 1, absolute: 513 },
+    { mvrBreak: 1, dmxBreak: 2, universe: 3, channel: 1, absolute: 1025 },
+  ]);
+  // Missing break defaults to 0; a fixture with only break="1" still resolves as primary address.
+  assert.deepEqual(readAddresses({ Addresses: { Address: [{ '#text': '2.10' }] } })[0], {
+    mvrBreak: 0, dmxBreak: 1, universe: 2, channel: 10, absolute: 522,
+  });
+  assert.deepEqual(readAddress({ Addresses: { Address: [{ '@_break': '1', '#text': '513' }] } }), { universe: 2, channel: 1 });
+
+  // GDTF separates DMXBreak="1" vs DMXBreak="2", preserves reversed PhysicalFrom > PhysicalTo,
+  // sorts ChannelFunctions by DMXFrom, and parses CIE xyY emitters.
+  const gdtfXml = `<?xml version="1.0"?><GDTF DataVersion="1.2"><FixtureType Name="DualBreak" Manufacturer="Vendor">
+    <PhysicalDescriptions><Emitters><Emitter Name="White" Color="0.3127,0.329,100"/></Emitters></PhysicalDescriptions>
+    <Geometries><Geometry Name="Base"><Beam Name="Beam" BeamType="Spot" BeamAngle="12"/></Geometry></Geometries>
+    <DMXModes><DMXMode Name="Dual" Geometry="Base"><DMXChannels>
+      <DMXChannel DMXBreak="1" Offset="1,2" Geometry="Beam">
+        <LogicalChannel Attribute="Zoom">
+          <ChannelFunction Name="Narrow" Attribute="Zoom" DMXFrom="128/1" PhysicalFrom="20" PhysicalTo="3"/>
+          <ChannelFunction Name="Wide" Attribute="Zoom" DMXFrom="0/1" PhysicalFrom="45" PhysicalTo="20"/>
+        </LogicalChannel>
+      </DMXChannel>
+      <DMXChannel DMXBreak="1" Offset="3" Geometry="Beam">
+        <LogicalChannel Attribute="Dimmer">
+          <ChannelFunction Name="InvDim" Attribute="Dimmer" DMXFrom="0/1" PhysicalFrom="1" PhysicalTo="0"/>
+        </LogicalChannel>
+      </DMXChannel>
+      <DMXChannel DMXBreak="2" Offset="1,2,3,4" Geometry="Beam"><LogicalChannel Attribute="ColorAdd_R"/></DMXChannel>
+      <DMXChannel DMXBreak="1" Offset="None" Geometry="Beam"><LogicalChannel Attribute="CTO"/></DMXChannel>
+    </DMXChannels></DMXMode></DMXModes></FixtureType></GDTF>`;
+  const summary = readGdtf(writeArchive([{ name: 'description.xml', data: utf8.encode(gdtfXml) }]));
+  const mode = summary.modes[0];
+  assert.equal(mode.footprint, 3);
+  assert.deepEqual(mode.breaks, [{ dmxBreak: 1, footprint: 3 }, { dmxBreak: 2, footprint: 4 }]);
+  assert.equal(mode.totalSlots, 7);
+  assert.ok(mode.attributes.includes('CTO'), 'virtual Offset="None" channel keeps its attribute');
+  // Reversed physical range preserved without swapping and interpolated accurately.
+  const wide = mode.functions.find((f) => f.name === 'Wide');
+  const narrow = mode.functions.find((f) => f.name === 'Narrow');
+  const invDim = mode.functions.find((f) => f.name === 'InvDim');
+  assert.equal(wide.dmxFrom, 0);
+  assert.equal(wide.dmxTo, 32767);
+  assert.equal(narrow.dmxFrom, 32768);
+  assert.equal(narrow.dmxTo, 65535);
+  assert.equal(physicalAt(wide, 0), 45);
+  assert.equal(physicalAt(wide, 32767), 20);
+  assert.equal(physicalAt(narrow, 65535), 3);
+  assert.equal(physicalAt(invDim, 0), 1);
+  assert.equal(physicalAt(invDim, 255), 0);
+  assert.equal(summary.emitters[0].srgb.hex, '#FFFFFF');
+});
+
+test('multi-instance LED wall GDTF resolves GeometryReference breaks (single, multi-break, 2D nested and cyclic)', () => {
+  // Multi-break LED wall: 170 RGB pixels on DMXBreak 1 (510 slots) + 30 RGB pixels on DMXBreak 2 (90 slots) = 600 slots.
+  const pixelRefs = [
+    ...Array.from({ length: 170 }, (_, i) => `<GeometryReference Name="P1_${i + 1}" Geometry="Pixel"><Break DMXOffset="${i * 3 + 1}" DMXBreak="1"/></GeometryReference>`),
+    ...Array.from({ length: 30 }, (_, i) => `<GeometryReference Name="P2_${i + 1}" Geometry="Pixel"><Break DMXOffset="${i * 3 + 1}" DMXBreak="2"/></GeometryReference>`),
+  ].join('');
+  const wallXml = `<?xml version="1.0"?><GDTF DataVersion="1.2"><FixtureType Name="LED Wall 200px" Manufacturer="Vendor">
+    <Geometries>
+      <Geometry Name="Pixel"><Beam Name="PixelBeam" BeamType="Wash" BeamAngle="120"/></Geometry>
+      <Geometry Name="Wall">${pixelRefs}</Geometry>
+    </Geometries>
+    <DMXModes><DMXMode Name="RGB200" Geometry="Wall"><DMXChannels>
+      <DMXChannel DMXBreak="Overwrite" Offset="1" Geometry="PixelBeam"><LogicalChannel Attribute="ColorAdd_R"/></DMXChannel>
+      <DMXChannel DMXBreak="Overwrite" Offset="2" Geometry="PixelBeam"><LogicalChannel Attribute="ColorAdd_G"/></DMXChannel>
+      <DMXChannel DMXBreak="Overwrite" Offset="3" Geometry="PixelBeam"><LogicalChannel Attribute="ColorAdd_B"/></DMXChannel>
+    </DMXChannels></DMXMode></DMXModes></FixtureType></GDTF>`;
+  const wallSummary = readGdtf(writeArchive([{ name: 'description.xml', data: utf8.encode(wallXml) }]));
+  assert.equal(wallSummary.modes[0].footprint, 510);
+  assert.deepEqual(wallSummary.modes[0].breaks, [
+    { dmxBreak: 1, footprint: 510 },
+    { dmxBreak: 2, footprint: 90 },
+  ]);
+  assert.equal(wallSummary.modes[0].totalSlots, 600);
+
+  // 2D nested LED panel: 4 Rows × 4 RGB Pixels = 48 channels on break 1.
+  const nestedXml = `<?xml version="1.0"?><GDTF DataVersion="1.2"><FixtureType Name="Panel 4x4" Manufacturer="Vendor">
+    <Geometries>
+      <Geometry Name="Pixel"/>
+      <Geometry Name="Row">
+        <GeometryReference Name="C1" Geometry="Pixel"><Break DMXOffset="1" DMXBreak="1"/></GeometryReference>
+        <GeometryReference Name="C2" Geometry="Pixel"><Break DMXOffset="4" DMXBreak="1"/></GeometryReference>
+        <GeometryReference Name="C3" Geometry="Pixel"><Break DMXOffset="7" DMXBreak="1"/></GeometryReference>
+        <GeometryReference Name="C4" Geometry="Pixel"><Break DMXOffset="10" DMXBreak="1"/></GeometryReference>
+      </Geometry>
+      <Geometry Name="Panel">
+        <GeometryReference Name="R1" Geometry="Row"><Break DMXOffset="1" DMXBreak="1"/></GeometryReference>
+        <GeometryReference Name="R2" Geometry="Row"><Break DMXOffset="13" DMXBreak="1"/></GeometryReference>
+        <GeometryReference Name="R3" Geometry="Row"><Break DMXOffset="25" DMXBreak="1"/></GeometryReference>
+        <GeometryReference Name="R4" Geometry="Row"><Break DMXOffset="37" DMXBreak="1"/></GeometryReference>
+      </Geometry>
+    </Geometries>
+    <DMXModes><DMXMode Name="4x4" Geometry="Panel"><DMXChannels>
+      <DMXChannel DMXBreak="1" Offset="1" Geometry="Pixel"><LogicalChannel Attribute="ColorAdd_R"/></DMXChannel>
+      <DMXChannel DMXBreak="1" Offset="2" Geometry="Pixel"><LogicalChannel Attribute="ColorAdd_G"/></DMXChannel>
+      <DMXChannel DMXBreak="1" Offset="3" Geometry="Pixel"><LogicalChannel Attribute="ColorAdd_B"/></DMXChannel>
+    </DMXChannels></DMXMode></DMXModes></FixtureType></GDTF>`;
+  const nested = readGdtf(writeArchive([{ name: 'description.xml', data: utf8.encode(nestedXml) }]));
+  assert.equal(nested.modes[0].footprint, 48);
+  assert.equal(nested.modes[0].totalSlots, 48);
+
+  // Cyclic GeometryReference terminates cleanly and flags cyclicReference.
+  const cyclicXml = `<?xml version="1.0"?><GDTF DataVersion="1.2"><FixtureType Name="Loop" Manufacturer="Bad">
+    <Geometries>
+      <Geometry Name="A"><GeometryReference Name="ToB" Geometry="B"><Break DMXOffset="1" DMXBreak="1"/></GeometryReference></Geometry>
+      <Geometry Name="B"><GeometryReference Name="ToA" Geometry="A"><Break DMXOffset="1" DMXBreak="1"/></GeometryReference></Geometry>
+    </Geometries>
+    <DMXModes><DMXMode Name="M" Geometry="A"><DMXChannels>
+      <DMXChannel DMXBreak="1" Offset="1" Geometry="B"><LogicalChannel Attribute="Dimmer"/></DMXChannel>
+    </DMXChannels></DMXMode></DMXModes></FixtureType></GDTF>`;
+  const cyclic = readGdtf(writeArchive([{ name: 'description.xml', data: utf8.encode(cyclicXml) }]));
+  assert.ok(cyclic.modes[0].flags.includes('cyclicReference'));
+});
+
+test('passthrough: import MVR with unknown nodes, move one fixture, re-export (in-session & via v4 JSON) keeps every UUID and unknown node', async () => {
+  const { boxGlb } = await compiler.ssrLoadModule('/src/interchange/mvr/glb.ts');
+  const LAYER_UUID = '11111111-2222-4333-8444-555555555555';
+  const TRUSS_UUID = 'AAAAAAAA-0000-4000-8000-000000000001';
+  const SPOT1_UUID = 'BBBBBBBB-0000-4000-8000-000000000001';
+  const SPOT2_UUID = 'BBBBBBBB-0000-4000-8000-000000000002';
+  const FREE_UUID = 'BBBBBBBB-0000-4000-8000-000000000005';
+  const HAZER1_UUID = 'BBBBBBBB-0000-4000-8000-000000000003';
+  const HAZER2_UUID = 'BBBBBBBB-0000-4000-8000-000000000004';
+  const SCREEN_UUID = 'CCCCCCCC-0000-4000-8000-000000000001';
+  const RISER_UUID = 'DDDDDDDD-0000-4000-8000-000000000001';
+  const FOCUS_UUID = 'EEEEEEEE-0000-4000-8000-000000000001';
+  const SUPPORT_UUID = 'EEEEEEEE-0000-4000-8000-000000000002';
+  const PROJ_UUID = 'EEEEEEEE-0000-4000-8000-000000000003';
+  const GROUP_UUID = 'EEEEEEEE-0000-4000-8000-000000000004';
+  const GROUP_SUPPORT_UUID = 'EEEEEEEE-0000-4000-8000-000000000005';
+  const POS_UUID = 'FFFFFFFF-0000-4000-8000-000000000001';
+  const CLASS_UUID = 'FFFFFFFF-0000-4000-8000-000000000002';
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<GeneralSceneDescription verMajor="1" verMinor="6" provider="OtherTool" providerVersion="2026">
+  <UserData><Data provider="Vectorworks" ver="2026"/></UserData>
+  <Scene>
+    <AUXData>
+      <Position uuid="${POS_UUID}" name="FOH Bar"/>
+      <Class uuid="${CLASS_UUID}" name="VendorClass"/>
+    </AUXData>
+    <Layers><Layer uuid="${LAYER_UUID}" name="Tour Rig"><ChildList>
+      <Truss uuid="${TRUSS_UUID}" name="LX1">
+        <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,2000,7000}</Matrix>
+        <Geometries><Geometry3D fileName="truss.glb"/></Geometries>
+        <FixtureID></FixtureID><FixtureIDNumeric>0</FixtureIDNumeric>
+        <ChildList>
+          <Fixture uuid="${SPOT1_UUID}" name="Spot 1">
+            <Matrix>{1,0,0}{0,1,0}{0,0,1}{-1000,0,-300}</Matrix>
+            <GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode>
+            <Function>Key Light</Function>
+            <FixtureID>1</FixtureID><FixtureIDNumeric>1</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+            <Addresses><Address break="0">1</Address></Addresses>
+            <Color>0.3127,0.329,100</Color>
+            <CustomCommands><CustomCommand>Preset 1</CustomCommand></CustomCommands>
+          </Fixture>
+          <Fixture uuid="${SPOT2_UUID}" name="Spot 2">
+            <Matrix>{1,0,0}{0,1,0}{0,0,1}{1000,0,-300}</Matrix>
+            <GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode>
+            <FixtureID>2</FixtureID><FixtureIDNumeric>2</FixtureIDNumeric><UnitNumber>2</UnitNumber>
+            <Addresses><Address break="0">17</Address></Addresses>
+          </Fixture>
+        </ChildList>
+      </Truss>
+      <Fixture uuid="${FREE_UUID}" name="Free Spot">
+        <Matrix>{1,0,0}{0,1,0}{0,0,1}{4000,-3000,5000}</Matrix>
+        <GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode>
+        <FixtureID>5</FixtureID><FixtureIDNumeric>5</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+        <Addresses><Address break="0">33</Address></Addresses>
+      </Fixture>
+      <Fixture uuid="${HAZER1_UUID}" name="Hazer 1">
+        <Matrix>{1,0,0}{0,-1,0}{0,0,-1}{2000,-1000,0}</Matrix>
+        <GDTFSpec>Vendor@Hazer.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode>
+        <FixtureID>3</FixtureID><FixtureIDNumeric>3</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+        <Addresses><Address break="0">101</Address></Addresses>
+      </Fixture>
+      <Fixture uuid="${HAZER2_UUID}" name="Hazer 2">
+        <Matrix>{1,0,0}{0,-1,0}{0,0,-1}{-2000,-1000,0}</Matrix>
+        <GDTFSpec>Vendor@Hazer.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode>
+        <FixtureID>4</FixtureID><FixtureIDNumeric>4</FixtureIDNumeric><UnitNumber>2</UnitNumber>
+        <Addresses><Address break="0">102</Address></Addresses>
+      </Fixture>
+      <VideoScreen uuid="${SCREEN_UUID}" name="IMAG L">
+        <Matrix>{1,0,0}{0,1,0}{0,0,1}{-6000,0,4000}</Matrix>
+        <Geometries><Geometry3D fileName="screen.glb"/></Geometries>
+        <FixtureID></FixtureID><FixtureIDNumeric>0</FixtureIDNumeric>
+      </VideoScreen>
+      <SceneObject uuid="${RISER_UUID}" name="Drum riser">
+        <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,0}</Matrix>
+        <Geometries><Geometry3D fileName="riser.glb"/></Geometries>
+        <FixtureID></FixtureID><FixtureIDNumeric>0</FixtureIDNumeric>
+      </SceneObject>
+      <FocusPoint uuid="${FOCUS_UUID}" name="DSC">
+        <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,-2000,0}</Matrix><Geometries/>
+      </FocusPoint>
+      <Support uuid="${SUPPORT_UUID}" name="Hoist 1">
+        <Matrix>{1,0,0}{0,1,0}{0,0,1}{-3000,2000,9000}</Matrix><Geometries/>
+      </Support>
+      <Projector uuid="${PROJ_UUID}" name="Proj 1">
+        <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,-8000,4000}</Matrix><Geometries/>
+      </Projector>
+      <GroupObject uuid="${GROUP_UUID}" name="Hoist Group">
+        <Matrix>{1,0,0}{0,1,0}{0,0,1}{3000,2000,9000}</Matrix>
+        <ChildList>
+          <Support uuid="${GROUP_SUPPORT_UUID}" name="Hoist 2">
+            <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,0}</Matrix><Geometries/>
+          </Support>
+        </ChildList>
+      </GroupObject>
+    </ChildList></Layer></Layers>
+  </Scene>
+</GeneralSceneDescription>`;
+
+  const sourceBytes = writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(xml) },
+    { name: 'truss.glb', data: boxGlb(8, 0.3, 0.3) },
+    { name: 'screen.glb', data: boxGlb(3, 2, 0.1) },
+    { name: 'riser.glb', data: boxGlb(3, 0.6, 2, { base: true }) },
+    { name: 'Vendor@Spot.gdtf', data: profileArchive(PROFILES.beam) },
+    { name: 'Vendor@Hazer.gdtf', data: profileArchive(PROFILES.hazer) },
+  ]);
+
+  const imported = importMvr(sourceBytes);
+  assert.equal(imported.report.source, 'mvr');
+  assert.ok(imported.interchange?.mvr?.synthetic?.length === 1, 'free-floating fixture created one synthetic position bar');
+
+  // Move Hazer 1 by (+1.5 m X, -0.5 m Z); leave Hazer 2 untouched.
+  const movedRig = structuredClone(imported.rig);
+  const hazer1 = movedRig.floorFx.find((f) => Math.abs(f.x - 2) < 0.01);
+  assert.ok(hazer1);
+  hazer1.x += 1.5;
+  hazer1.z -= 0.5;
+
+  // 1) Re-export directly in-session (with original archive resources).
+  const inSession = exportMvrDocument(movedRig, imported.stage, '1.4.0', imported.interchange, imported.resources);
+  const s1 = scene(inSession.bytes);
+  assert.ok(s1.files.has('vendor@spot.gdtf'), 'original manufacturer GDTF kept in-session');
+  assert.ok(s1.files.has('vendor@hazer.gdtf'), 'original manufacturer hazer GDTF kept in-session');
+
+  // 2) Also verify full persistence through Show v4 JSON save/reload (without in-memory resources).
+  const v4Show = makeShowFile(movedRig, [], INITIAL_SHOW_STATE, null, undefined, undefined, undefined, imported.stage, imported.interchange);
+  assert.equal(v4Show.version, 4);
+  const reloadedShow = parseShowFile(JSON.stringify(v4Show));
+  const afterReload = exportMvrDocument(reloadedShow.rig, reloadedShow.stage, '1.4.0', reloadedShow.interchange);
+  const s2 = scene(afterReload.bytes);
+
+  for (const [label, out] of [['in-session', s1], ['after v4 JSON reload', s2]]) {
+    const rawXml = utf8.decode(out.files.get('generalscenedescription.xml').data);
+    for (const expectedUuid of [
+      LAYER_UUID, TRUSS_UUID, SPOT1_UUID, SPOT2_UUID, FREE_UUID, HAZER1_UUID, HAZER2_UUID,
+      SCREEN_UUID, RISER_UUID, FOCUS_UUID, SUPPORT_UUID, PROJ_UUID, GROUP_UUID, GROUP_SUPPORT_UUID,
+      POS_UUID, CLASS_UUID,
+    ]) {
+      assert.ok(rawXml.includes(expectedUuid), `${label}: UUID ${expectedUuid} survived`);
+    }
+    // Synthetic position bar must NOT be exported as a fake <Truss>.
+    assert.equal(list(out.childList, 'Truss').length, 1, `${label}: only the real truss is exported`);
+    assert.equal(attr(list(out.childList, 'Truss')[0], 'uuid'), TRUSS_UUID);
+
+    // Unknown/unmodeled nodes survive in UserData, AUXData, ChildList and Fixture extras.
+    assert.ok(list(child(out.root, 'UserData'), 'Data').some((d) => attr(d, 'provider') === 'Vectorworks'), `${label}: UserData survives`);
+    assert.ok(list(child(child(out.root, 'Scene'), 'AUXData'), 'Position').some((p) => attr(p, 'uuid') === POS_UUID), `${label}: AUXData Position survives`);
+    assert.ok(list(child(child(out.root, 'Scene'), 'AUXData'), 'Class').some((c) => attr(c, 'uuid') === CLASS_UUID), `${label}: AUXData Class survives`);
+    assert.ok(list(out.childList, 'Support').some((n) => attr(n, 'uuid') === SUPPORT_UUID), `${label}: Support survives`);
+    assert.ok(list(out.childList, 'Projector').some((n) => attr(n, 'uuid') === PROJ_UUID), `${label}: Projector survives`);
+    assert.ok(list(out.childList, 'FocusPoint').some((n) => attr(n, 'uuid') === FOCUS_UUID), `${label}: foreign FocusPoint survives`);
+    const groupNode = list(out.childList, 'GroupObject').find((n) => attr(n, 'uuid') === GROUP_UUID);
+    assert.ok(groupNode, `${label}: unimported GroupObject survives intact`);
+    assert.ok(list(child(groupNode, 'ChildList'), 'Support').some((n) => attr(n, 'uuid') === GROUP_SUPPORT_UUID), `${label}: nested Support inside GroupObject survives`);
+
+    // Moved floor fixture matrix reflects new (3.5, 0, 0.5) m; unmoved Hazer 2 stays at (-2, 0, 1) m.
+    const f1 = list(out.childList, 'Fixture').find((f) => attr(f, 'uuid') === HAZER1_UUID);
+    const f2 = list(out.childList, 'Fixture').find((f) => attr(f, 'uuid') === HAZER2_UUID);
+    const p1 = readPose(parseMatrix(text(f1, 'Matrix'))).position;
+    const p2 = readPose(parseMatrix(text(f2, 'Matrix'))).position;
+    assert.ok(Math.abs(p1.x - 3.5) < 0.002 && Math.abs(p1.z - 0.5) < 0.002, `${label}: moved Hazer 1 landed at (3.5, 0, 0.5)`);
+    assert.ok(Math.abs(p2.x + 2) < 0.002 && Math.abs(p2.z - 1) < 0.002, `${label}: unmoved Hazer 2 stayed at (-2, 0, 1)`);
+
+    // Fixture extras survive in strict MVR 1.6 XSD sequence order.
+    const spot1 = list(out.childList, 'Fixture').find((f) => attr(f, 'uuid') === SPOT1_UUID);
+    assert.equal(text(spot1, 'Color'), '0.3127,0.329,100');
+    assert.equal(text(spot1, 'Function'), 'Key Light');
+    assert.ok(child(spot1, 'CustomCommands'));
+    const childTags = Object.keys(spot1).filter((k) => !k.startsWith('@_'));
+    const orderIndices = childTags.map((t) => FIXTURE_XSD_ORDER.indexOf(t));
+    assert.ok(orderIndices.every((idx, i) => idx >= 0 && (i === 0 || idx > orderIndices[i - 1])), `${label}: Fixture tags in XSD order: ${childTags.join(',')}`);
+  }
+
+  // Re-importing the StageForge-exported MVR through restore() still merges a truss move by its preserved foreign UUID!
+  const beforeTruss = matrixText(poseMatrix({ x: movedRig.trussPods[0].x, y: movedRig.trussPods[0].baseY, z: movedRig.trussPods[0].z }, 0));
+  const afterTruss = matrixText(poseMatrix({ x: movedRig.trussPods[0].x, y: movedRig.trussPods[0].baseY, z: movedRig.trussPods[0].z - 1 }, 0));
+  const movedAgain = importMvr(editScene(inSession.bytes, (raw) => raw.replace(beforeTruss, afterTruss)));
+  assert.equal(movedAgain.report.source, 'stageforge');
+  assert.ok(Math.abs(movedAgain.rig.trussPods[0].z - (movedRig.trussPods[0].z - 1)) < 0.002, 'truss move merged by preserved foreign UUID');
+  assert.match(movedAgain.report.notes.join(' '), /Moved LX1/);
+  assert.ok(!movedAgain.report.notes.some((n) => /added in another tool/.test(n)), 'preserved foreign fixtures are not misreported as added');
+});
+
+test('Sprint 1 QA regressions: GDTF DAG cap, UUID remap, invalid-matrix restore, resource collision, dangling GDTF and long escaped keys', async () => {
+  const { boxGlb } = await compiler.ssrLoadModule('/src/interchange/mvr/glb.ts');
+
+  // H1: 16-deep exponential GeometryReference DAG + 64 DMXModes finishes quickly via root cache + shared ops budget.
+  const chainGeos = Array.from({ length: 16 }, (_, i) => {
+    const next = `T${i + 1}`;
+    return `<Geometry Name="T${i}">
+      <GeometryReference Name="A${i}" Geometry="${next}"><Break DMXOffset="1" DMXBreak="1"/></GeometryReference>
+      <GeometryReference Name="B${i}" Geometry="${next}"><Break DMXOffset="2" DMXBreak="1"/></GeometryReference>
+    </Geometry>`;
+  }).join('') + '<Geometry Name="T16"/>';
+  const manyModes = Array.from({ length: 64 }, (_, i) => `<DMXMode Name="M${i}" Geometry="T0"><DMXChannels>
+    <DMXChannel DMXBreak="1" Offset="1" Geometry="T16"><LogicalChannel Attribute="Dimmer"/></DMXChannel>
+  </DMXChannels></DMXMode>`).join('');
+  const dagXml = `<?xml version="1.0"?><GDTF DataVersion="1.2"><FixtureType Name="DAG" Manufacturer="Hostile">
+    <Geometries>${chainGeos}</Geometries><DMXModes>${manyModes}</DMXModes></FixtureType></GDTF>`;
+  const t0 = performance.now();
+  const dagSummary = readGdtf(writeArchive([{ name: 'description.xml', data: utf8.encode(dagXml) }]));
+  assert.ok(performance.now() - t0 < 500, 'exponential DAG × 64 modes finishes quickly');
+  assert.ok(dagSummary.modes[0].flags.includes('refLimitExceeded'));
+
+  // L2: All-invalid Break entries flag cleanly without crashing.
+  const badBreakXml = `<?xml version="1.0"?><GDTF DataVersion="1.2"><FixtureType Name="BadBreak" Manufacturer="V">
+    <Geometries><Geometry Name="P"/><Geometry Name="Root"><GeometryReference Name="R" Geometry="P"><Break DMXBreak="999" DMXOffset="999"/></GeometryReference></Geometry></Geometries>
+    <DMXModes><DMXMode Name="M" Geometry="Root"><DMXChannels><DMXChannel DMXBreak="Overwrite" Offset="1" Geometry="P"><LogicalChannel Attribute="Dimmer"/></DMXChannel></DMXChannels></DMXMode></DMXModes>
+  </FixtureType></GDTF>`;
+  const badBreak = readGdtf(writeArchive([{ name: 'description.xml', data: utf8.encode(badBreakXml) }]));
+  assert.ok(badBreak.modes[0].flags.includes('invalidBreak'));
+  assert.equal(badBreak.modes[0].footprint, 0);
+
+  // H2 + M7 + M4: Colliding UUID inside passthrough GroupObject is remapped (not dropped),
+  // foreign truss-3000.glb colliding with generated truss-3000.glb is renamed without clobbering,
+  // and dangling passthrough Fixture GDTFSpec falls back to a bundled generic GDTF when resources are absent.
+  const DUP_UUID = 'AAAAAAAA-0000-4000-8000-000000000077';
+  const GRP_UUID = 'EEEEEEEE-0000-4000-8000-000000000077';
+  const PASS_FIX_UUID = 'BBBBBBBB-0000-4000-8000-000000000077';
+  const foreignTrussGlb = boxGlb(9, 1, 1); // Distinct bytes from StageForge's 3 m truss-3000.glb.
+  const rig3m = createBlankDesign();
+  rig3m.trussPods = [{
+    id: 'p1', name: 'Main', shape: 'box', width: 3, x: 0, baseY: 6, z: 0, rotationY: 0,
+    motorized: false, motorMinY: 6, motorMaxY: 6, fixtures: [],
+  }];
+  const collisionInterchange = {
+    mvr: {
+      uuids: { 'truss:p1': DUP_UUID },
+      passthrough: {
+        auxData: [
+          `<Symdef uuid="FFFFFFFF-0000-4000-8000-000000000077" name="CustomSym"><ChildList><Geometry3D fileName="sym.glb"/></ChildList></Symdef>`,
+        ],
+        sceneNodes: [
+          `<GroupObject uuid="${GRP_UUID}" name="G"><Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,0}</Matrix><ChildList>` +
+            `<Support uuid="${DUP_UUID}" name="Colliding Hoist"><Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,5000}</Matrix>` +
+            `<Geometries><Geometry3D fileName="truss-3000.glb"/></Geometries></Support></ChildList></GroupObject>`,
+          `<Fixture uuid="${PASS_FIX_UUID}" name="Overflow Spot"><Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,4000}</Matrix>` +
+            `<GDTFSpec>Missing@Vendor.gdtf</GDTFSpec><GDTFMode>Std</GDTFMode><FixtureID>99</FixtureID><FixtureIDNumeric>99</FixtureIDNumeric><UnitNumber>1</UnitNumber></Fixture>`,
+        ],
+      },
+    },
+  };
+  const symGlb = boxGlb(2, 2, 2);
+  const withRes = exportMvrDocument(rig3m, undefined, '1', collisionInterchange, new Map([['truss-3000.glb', foreignTrussGlb], ['sym.glb', symGlb]]));
+  assert.match(withRes.notes.join(' '), /Remapped 1 colliding passthrough UUID/);
+  assert.match(withRes.notes.join(' '), /not available in this session/);
+  const outRes = scene(withRes.bytes);
+  assert.ok(outRes.files.has('sym.glb'), 'Symdef/ChildList/Geometry3D file bundled from resources');
+  assert.deepEqual(outRes.files.get('sym.glb').data, symGlb);
+  // GroupObject and nested Support both survived with a distinct remapped UUID.
+  const keptGroup = list(outRes.childList, 'GroupObject').find((g) => attr(g, 'uuid') === GRP_UUID);
+  assert.ok(keptGroup, 'GroupObject survived UUID collision');
+  const nestedSupport = list(child(keptGroup, 'ChildList'), 'Support')[0];
+  assert.ok(nestedSupport && attr(nestedSupport, 'uuid') !== DUP_UUID, 'colliding Support UUID remapped');
+  // Foreign truss-3000.glb was renamed rather than clobbered by StageForge's 3 m truss box.
+  const renamedFile = attr(list(child(nestedSupport, 'Geometries'), 'Geometry3D')[0], 'fileName');
+  assert.notEqual(renamedFile.toLowerCase(), 'truss-3000.glb');
+  assert.deepEqual(outRes.files.get(renamedFile.toLowerCase()).data, foreignTrussGlb);
+  assert.ok(outRes.files.has('truss-3000.glb'));
+  // Dangling passthrough Fixture GDTFSpec fell back to a bundled generic .gdtf present in the archive!
+  const passFix = list(outRes.childList, 'Fixture').find((f) => attr(f, 'uuid') === PASS_FIX_UUID);
+  assert.ok(passFix);
+  const resolvedSpec = text(passFix, 'GDTFSpec');
+  assert.ok(outRes.files.has(resolvedSpec.toLowerCase()), `passthrough Fixture GDTFSpec "${resolvedSpec}" is bundled in archive`);
+
+  // M3: restore() keeps an invalid-matrix new foreign Support intact without rewriting its matrix to origin,
+  // and reports when an existing passthrough Support was moved in another tool.
+  const SUP_VALID = 'EEEEEEEE-0000-4000-8000-000000000088';
+  const SUP_BAD = 'EEEEEEEE-0000-4000-8000-000000000089';
+  const baseWithSup = exportMvrDocument(rig3m, undefined, '1', {
+    mvr: {
+      passthrough: {
+        sceneNodes: [`<Support uuid="${SUP_VALID}" name="Hoist"><Matrix>{1,0,0}{0,1,0}{0,0,1}{1000,0,5000}</Matrix><Geometries/></Support>`],
+      },
+    },
+  });
+  const editedForRestore = editScene(baseWithSup.bytes, (raw) =>
+    raw
+      .replace('{1,0,0}{0,1,0}{0,0,1}{1000,0,5000}', '{1,0,0}{0,1,0}{0,0,1}{2000,0,5000}')
+      .replace('</ChildList>', `<Support uuid="${SUP_BAD}" name="Broken"><Matrix>{1,0,0}{0,1,0}{0,0,1}{NaN,0,0}</Matrix><Geometries/></Support></ChildList>`),
+  );
+  const restored = importMvr(editedForRestore);
+  assert.match(restored.report.notes.join(' '), /1 other moved object .* was not merged/);
+  const savedBad = restored.interchange.mvr.passthrough.sceneNodes.find((s) => s.includes(SUP_BAD));
+  assert.ok(savedBad && savedBad.includes('NaN'), 'invalid-matrix Support preserved intact, not rewritten to origin');
+
+  // M6 sub-risk: 256-char IDs full of quotes/backslashes escape past 1024 chars yet save/parse cleanly in Show v4.
+  const nastyId = '"\\'.repeat(128); // 256 chars -> 512 chars after JSON escaping
+  const nastyRig = createBlankDesign();
+  nastyRig.trussPods = [{
+    id: nastyId, name: 'Long', shape: 'box', width: 4, x: 0, baseY: 6, z: 0, rotationY: 0,
+    motorized: false, motorMinY: 6, motorMaxY: 6,
+    fixtures: [{ id: nastyId, type: 'beam', modelName: 'Spot', count: 1, dmxUniverse: 1, dmxStartChannel: 1 }],
+  }];
+  const nastyExport = exportMvrDocument(nastyRig);
+  const nastyShow = makeShowFile(nastyRig, [], INITIAL_SHOW_STATE, null, undefined, undefined, undefined, undefined, nastyExport.interchange);
+  assert.equal(nastyShow.version, 4);
+  assert.deepEqual(parseShowFile(JSON.stringify(nastyShow)).interchange, nastyExport.interchange);
 });

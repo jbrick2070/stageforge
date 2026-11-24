@@ -1,6 +1,7 @@
 import schemaV1 from '../schemas/show-v1.schema.json';
 import schemaV2 from '../schemas/show-v2.schema.json';
 import schemaV3 from '../schemas/show-v3.schema.json';
+import schemaV4 from '../schemas/show-v4.schema.json';
 import type { BumpState, CameraPreset, MusicRef, RigConfig, ScreenRef, ShowCue, ShowState } from '../types/show';
 import { parseRigJson } from './rigImport';
 import { focusMarks } from '../engine/focusAim';
@@ -8,10 +9,35 @@ import { laserProjectors } from './laserProjectors';
 
 export type { MusicRef, ScreenRef } from '../types/show';
 export const MAX_SHOW_JSON_BYTES = 32 * 1024 * 1024;
+export const MAX_PASSTHROUGH_BYTES = 8 * 1024 * 1024;
 export const SHOW_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v1.schema.json';
 
 const V2_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v2.schema.json';
 const V3_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v3.schema.json';
+export const V4_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v4.schema.json';
+
+export interface MvrFixtureSpec {
+  spec: string;
+  mode: string;
+}
+
+export interface MvrPassthrough {
+  userData?: string[];
+  auxData?: string[];
+  sceneNodes?: string[];
+  objectExtras?: Record<string, string[]>;
+}
+
+export interface MvrInterchange {
+  uuids?: Record<string, string>;
+  synthetic?: string[];
+  fixtureSpecs?: Record<string, MvrFixtureSpec>;
+  passthrough?: MvrPassthrough;
+}
+
+export interface ShowInterchange {
+  mvr?: MvrInterchange;
+}
 
 export interface NativeStage {
   format: 'stageforge-native-stage';
@@ -65,9 +91,9 @@ export function referencedFiles(media: ShowMedia | undefined, cues: ShowCue[], t
 }
 
 export interface StageForgeShowFile {
-  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL;
+  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL | typeof V4_SCHEMA_URL;
   format: 'stageforge-show';
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   rig: RigConfig;
   cues: ShowCue[];
   look: ShowState;
@@ -76,6 +102,7 @@ export interface StageForgeShowFile {
   timeline?: ShowTimeline;
   media?: ShowMedia;
   stage?: NativeStage;
+  interchange?: ShowInterchange;
 }
 
 // The public schema also supplies the reader's field allowlist and value bounds.
@@ -105,7 +132,7 @@ interface Rule {
 }
 
 type ShowSchema = Rule & { $defs: Record<string, Rule> };
-const versions = { 1: schemaV1 as ShowSchema, 2: schemaV2 as ShowSchema, 3: schemaV3 as ShowSchema };
+const versions = { 1: schemaV1 as ShowSchema, 2: schemaV2 as ShowSchema, 3: schemaV3 as ShowSchema, 4: schemaV4 as ShowSchema };
 const compiledPatterns = new Map<string, RegExp>();
 
 class ShowFormatError extends Error {}
@@ -134,6 +161,7 @@ function read(value: unknown, rule: Rule, path: string, writing: boolean, schema
       invalid(path, 'is out of range');
   } else if (typeof value === 'string') {
     if (rule.minLength !== undefined || rule.maxLength !== undefined) {
+      if (rule.maxLength !== undefined && value.length > rule.maxLength * 2) invalid(path, 'has an invalid length');
       const length = [...value].length;
       if (length < (rule.minLength ?? 0) || length > (rule.maxLength ?? Infinity)) invalid(path, 'has an invalid length');
     }
@@ -232,9 +260,103 @@ function checkLook(look: Partial<ShowState>, refs: RigReferences, path: string) 
     invalid(path + '.motors.podTargets', 'contains an unknown pod ID');
 }
 
+const ILLEGAL_XML_FRAGMENT_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/;
+const USER_DATA_ROOT = /^<Data(?:\s|\/|>)/;
+const AUX_DATA_ROOT = /^<(?:Symdef|Position|MappingDefinition|Class)(?:\s|\/|>)/;
+const SCENE_NODE_ROOT = /^<(?:Support|Projector|FocusPoint|GroupObject|Fixture|Truss|VideoScreen|SceneObject)(?:\s|\/|>)/;
+const OBJECT_EXTRA_ROOT = /^<[A-Za-z_][A-Za-z0-9_.:-]*(?:\s|\/|>)/;
+const STAGEFORGE_PROVIDER_ATTR = /\bprovider\s*=\s*(?:"StageForge"|'StageForge')/i;
+
+/** Strip empty containers from an interchange block so an empty block never triggers v4. */
+export function normalizeInterchange(interchange?: ShowInterchange): ShowInterchange | undefined {
+  if (!interchange?.mvr) return undefined;
+  const src = interchange.mvr;
+  const mvr: MvrInterchange = {};
+  if (src.uuids && Object.keys(src.uuids).length) mvr.uuids = { ...src.uuids };
+  if (src.synthetic?.length) mvr.synthetic = [...new Set(src.synthetic)];
+  if (src.fixtureSpecs && Object.keys(src.fixtureSpecs).length) mvr.fixtureSpecs = { ...src.fixtureSpecs };
+  if (src.passthrough) {
+    const pt: MvrPassthrough = {};
+    if (src.passthrough.userData?.length) pt.userData = [...src.passthrough.userData];
+    if (src.passthrough.auxData?.length) pt.auxData = [...src.passthrough.auxData];
+    if (src.passthrough.sceneNodes?.length) pt.sceneNodes = [...src.passthrough.sceneNodes];
+    if (src.passthrough.objectExtras) {
+      const extras = Object.fromEntries(
+        Object.entries(src.passthrough.objectExtras).filter(([, list]) => list.length > 0).map(([k, list]) => [k, [...list]]),
+      );
+      if (Object.keys(extras).length) pt.objectExtras = extras;
+    }
+    if (Object.keys(pt).length) mvr.passthrough = pt;
+  }
+  return Object.keys(mvr).length ? { mvr } : undefined;
+}
+
+/** Return the opening tag slice "<Tag ...>" respecting quoted attributes, or undefined if malformed. */
+function openingTagSlice(trimmed: string): string | undefined {
+  if (!trimmed.startsWith('<') || !trimmed.endsWith('>')) return undefined;
+  let quote = 0;
+  for (let i = 1; i < trimmed.length; i++) {
+    const ch = trimmed.charCodeAt(i);
+    if (quote) {
+      if (ch === quote) quote = 0;
+    } else if (ch === 34 /* '"' */ || ch === 39 /* "'" */) {
+      quote = ch;
+    } else if (ch === 62 /* '>' */) {
+      return trimmed.slice(0, i + 1);
+    }
+  }
+  return undefined;
+}
+
+function checkInterchange(interchange: ShowInterchange, path: string) {
+  const mvr = interchange.mvr;
+  if (!mvr) return;
+  if (mvr.synthetic) {
+    const seen = new Set<string>();
+    for (const id of mvr.synthetic) {
+      if (seen.has(id)) invalid(path + '.mvr.synthetic', 'contains a duplicate pod ID');
+      seen.add(id);
+    }
+  }
+  const pt = mvr.passthrough;
+  if (!pt) return;
+  let totalBytes = 0;
+  const encoder = new TextEncoder();
+  const checkFragment = (fragment: string, rootPattern: RegExp, fragPath: string, forbidStageForgeProvider = false, forbidChildList = false) => {
+    const trimmed = fragment.trim();
+    if (trimmed.includes('<!') || trimmed.includes('<?') || ILLEGAL_XML_FRAGMENT_CHARS.test(fragment)) {
+      invalid(fragPath, 'contains disallowed XML constructs');
+    }
+    const openTag = openingTagSlice(trimmed);
+    if (!openTag || !rootPattern.test(openTag)) invalid(fragPath, 'does not start with an allowed MVR element');
+    if (forbidChildList && /^<ChildList(?:\s|\/|>)/.test(openTag)) invalid(fragPath, 'cannot contain ChildList');
+    if (forbidStageForgeProvider && STAGEFORGE_PROVIDER_ATTR.test(openTag)) {
+      invalid(fragPath, 'cannot spoof the StageForge UserData provider');
+    }
+    totalBytes += encoder.encode(fragment).length;
+    if (totalBytes > MAX_PASSTHROUGH_BYTES) invalid(path + '.mvr.passthrough', 'exceeds the 8 MiB passthrough limit');
+  };
+  pt.userData?.forEach((frag, i) => checkFragment(frag, USER_DATA_ROOT, `${path}.mvr.passthrough.userData[${i}]`, true));
+  pt.auxData?.forEach((frag, i) => checkFragment(frag, AUX_DATA_ROOT, `${path}.mvr.passthrough.auxData[${i}]`));
+  pt.sceneNodes?.forEach((frag, i) => checkFragment(frag, SCENE_NODE_ROOT, `${path}.mvr.passthrough.sceneNodes[${i}]`));
+  if (pt.objectExtras) {
+    for (const [key, list] of Object.entries(pt.objectExtras)) {
+      list.forEach((frag, i) => checkFragment(frag, OBJECT_EXTRA_ROOT, `${path}.mvr.passthrough.objectExtras.${key}[${i}]`, false, true));
+    }
+  }
+}
+
+/** Validate a standalone interchange block (for example from an embedded MVR payload). */
+export function parseInterchange(value: unknown): ShowInterchange {
+  const schema = versions[4];
+  const parsed = read(value, schema.$defs.interchange, 'interchange', false, schema) as ShowInterchange;
+  checkInterchange(parsed, 'interchange');
+  return parsed;
+}
+
 function decode(value: unknown, writing: boolean): StageForgeShowFile {
   const version = value && typeof value === 'object' && 'version' in value ? value.version : undefined;
-  if (version !== 1 && version !== 2 && version !== 3) invalid('show.version', 'has an unsupported value');
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4) invalid('show.version', 'has an unsupported value');
   const schema = versions[version];
   const show = read(value, schema, 'show', writing, schema) as StageForgeShowFile;
   // Share ID, geometry, patch count and motor-range checks with the legacy rig reader.
@@ -272,20 +394,25 @@ function decode(value: unknown, writing: boolean): StageForgeShowFile {
       previous = event.atMs;
     }
   }
+  if (show.interchange) checkInterchange(show.interchange, 'show.interchange');
   return show;
 }
 
 export function makeShowFile(
   rig: RigConfig, cues: ShowCue[], look: ShowState, activeCueId: string | null,
   controls?: ShowControls, timeline?: ShowTimeline, media?: ShowMedia, stage?: NativeStage,
+  interchange?: ShowInterchange,
 ): StageForgeShowFile {
   const refs = rigReferences(rig);
+  const cleanInterchange = normalizeInterchange(interchange);
   // A browser take may end before a secondary wall's last native event.
   // Both tracks share the file's duration when either one is edited.
   const stageEnd = stage?.screenEvents.at(-1)?.atMs ?? 0;
   if (stageEnd > (timeline?.durationMs ?? 0)) timeline = { durationMs: stageEnd, events: timeline?.events ?? [] };
+  const version = cleanInterchange ? 4 : stage ? 3 : 2;
+  const $schema = cleanInterchange ? V4_SCHEMA_URL : stage ? V3_SCHEMA_URL : V2_SCHEMA_URL;
   const show = decode({
-    $schema: stage ? V3_SCHEMA_URL : V2_SCHEMA_URL, format: 'stageforge-show', version: stage ? 3 : 2, rig, stage,
+    $schema, format: 'stageforge-show', version, rig, stage, interchange: cleanInterchange,
     cues: cues.map(cue => ({
       ...cue, state: portableLook(cue.state, refs), screen: cue.screen && portableMedia(cue.screen),
     })),
@@ -299,7 +426,7 @@ export function makeShowFile(
     },
     media: media && { music: portableMedia(media.music), screen: portableMedia(media.screen) },
   }, true);
-  if (stage) return show;
+  if (cleanInterchange || stage) return show;
   // Emit the oldest schema that represents every field, including saved cues and takes.
   const legacy = { ...show, version: 1 as const, $schema: SHOW_SCHEMA_URL as typeof SHOW_SCHEMA_URL };
   try {
