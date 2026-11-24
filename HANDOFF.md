@@ -7,9 +7,26 @@ You are the implementing agent for StageForge. Work sprint by sprint from the ba
 3. **QA** with Claude CLI on Sonnet 5.5, in read-only mode (below).
 4. **Verify and fix:** for each QA finding, check it against the code first. Fix the real ones, add a regression test for each, and write down why you rejected any false positive.
 5. **Re-run the gate.** If you changed more than about 50 lines in step 4, run one more QA pass on just those fixes.
-6. **Commit locally** with a descriptive message, then **stop and report** to the user. Include gate results, QA findings (fixed or rejected) and what's next.
+6. **Commit locally** with a descriptive message, then **report**. Include gate results, QA findings (fixed or rejected) and what's next. In an overnight run, append the report to the Overnight log at the bottom of this file and carry on with the next sprint.
 
 **Never push.** A push to `main` deploys GitHub Pages; only the user approves that, every time.
+
+## Overnight run (unattended)
+
+The user is asleep. `scripts/overnight.ps1` runs you once per sprint, each in a fresh session, on a local branch `overnight/<date>`. Nobody can answer questions, so:
+
+- **Decide and log.** Make reasonable calls yourself and record each decision, with its reason, in the Overnight log.
+- **Consult Opus on design.** Before implementing a sprint with real design choices (the v4 `interchange` block, the DMX sender and IPC architecture, clock ownership), and whenever you're stuck on architecture, ask Claude Opus 5.5 using the design consult command below. Opus advises; you decide.
+- **Never commit failing code.** If the gate still fails after three fix rounds, leave the work uncommitted, log what's failing, and end the session. The runner stashes unfinished work as `overnight sprint N unfinished` and starts the next sprint clean.
+- **Stay in scope.**
+  - Work only inside this repo.
+  - Don't install global tools, and don't connect to other machines.
+  - Never push, force or rewrite history, and don't switch branches.
+  - Network use is limited to `npm install` of permissive, pinned packages and the Claude CLI.
+- **Loopback only.** DMX, OSC and MIDI tests send only to `127.0.0.1`. Never send to a real network interface: this PC has a direct Ethernet link to another machine.
+- **Hardware steps:** anything needing hardware or a person (a cross-tool check, a real DMX node, a USB interface) becomes a checklist in the docs, not a blocker.
+- **Leave the PC tidy:** after each gate, stop any Vite, preview or Electron processes you started.
+- **Stop time:** don't start new work after 07:00. The runner also stops launching sprints then.
 
 ## Where things stand (2026-11-23)
 
@@ -119,6 +136,23 @@ Confirm explicitly: v1–v3 shows still load, no new non-permissive licences,
 no new IPC without validation, no stray files.
 ```
 
+### Design consult (Claude Opus 5.5, read-only)
+
+Write the question to `$qa\sprint-N-design.md` (the same temp folder as QA). Include:
+
+- the goal;
+- the constraints from Non-negotiables;
+- the files involved;
+- the two or three options you see.
+
+Then run:
+
+```powershell
+Get-Content "$qa\sprint-N-design.md" -Raw | claude -p --model claude-opus-5-5 --allowedTools "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" | Out-File -Encoding utf8 "$qa\sprint-N-design-reply.md"
+```
+
+Opus 5.5 needs Claude Code 2.1.280 or newer. If the call fails with a version error, rerun the same command with `--model claude-sonnet-5-5` and say so in the Overnight log.
+
 ## Backlog (in this order)
 
 ### Sprint 0: whole-codebase QA sweep
@@ -189,12 +223,18 @@ Only if the user asks:
 
 ## Kickoff
 
-From this folder:
+**Overnight**, unattended (Sprints 0–3, stopping at 07:00), from this folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\overnight.ps1
+```
+
+**One sprint**, interactively:
 
 ```powershell
 agy -i "Read HANDOFF.md and run Sprint 0, following its loop. Stop after the local commit and report." --mode accept-edits
 ```
 
-## Notes from sprints
+## Overnight log
 
-(Append triaged leftovers and decisions here.)
+(Each sprint appends: date and time, sprint, what shipped, gate results, QA findings fixed or rejected, design decisions and their reasons, leftovers.)
