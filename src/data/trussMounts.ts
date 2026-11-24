@@ -6,21 +6,28 @@ interface Mount extends PlanPoint {
 }
 
 /** Mount points in the truss's local frame, shared by the renderer and drafting exports. */
-export function trussMounts(shape: TrussShape, width: number, path: readonly PlanPoint[] = [], fixtureCount?: number): Mount[] {
+export function trussMounts(
+  shape: TrussShape,
+  width: number,
+  path: readonly PlanPoint[] = [],
+  fixtureCount?: number,
+  mountY?: number,
+): Mount[] {
   const half = width / 2;
   if (shape === 'circle') {
     const count = Math.max(24, fixtureCount ?? 0);
-    const y = -Math.min(0.24, width * 0.14) - 0.04;
+    const y = mountY !== undefined ? mountY : -Math.min(0.24, width * 0.14) - 0.04;
     return Array.from({ length: count }, (_, i) => {
       const a = 2 * Math.PI * i / count;
       return { x: half * Math.cos(a), z: half * Math.sin(a), y, rotY: Math.PI / 2 - a };
     });
   }
+  const y = mountY !== undefined ? mountY : -0.28;
   if (shape === 'box') {
     const count = Math.max(32, fixtureCount ?? 0);
     const inset = Math.min(0.65, half * 0.2);
     return Array.from({ length: count }, (_, i) => ({
-      x: (half - inset) * (2 * i / (count - 1) - 1), z: 0, y: -0.28, rotY: 0,
+      x: (half - inset) * (2 * i / (count - 1) - 1), z: 0, y, rotY: 0,
     }));
   }
   if (shape === 'chevron') {
@@ -29,7 +36,7 @@ export function trussMounts(shape: TrussShape, width: number, path: readonly Pla
       const left = i < perSide;
       const t = ((i % perSide) + 0.5) / perSide;
       const x = width * ((left ? -0.46 : 0.04) + 0.42 * t);
-      return { x, z: -Math.abs(x) * Math.tan(0.36), y: -0.28, rotY: left ? -0.36 : 0.36 };
+      return { x, z: -Math.abs(x) * Math.tan(0.36), y, rotY: left ? -0.36 : 0.36 };
     });
   }
   // Space along cumulative path length, including the closing segment of a loop.
@@ -52,6 +59,6 @@ export function trussMounts(shape: TrussShape, width: number, path: readonly Pla
     const segment = segments[segmentIndex];
     const t = (distance - segment.offset) / segment.span;
     return { x: segment.start.x + t * segment.dx, z: segment.start.z + t * segment.dz,
-      y: -0.28, rotY: -Math.atan2(segment.dz, segment.dx) };
+      y, rotY: -Math.atan2(segment.dz, segment.dx) };
   });
 }

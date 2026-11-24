@@ -1,4 +1,6 @@
 import { GRID_HEIGHT, stageBayWidth } from '../data/stageEquipment';
+import { hoistPoints } from '../data/hoistPoints';
+import { getTrussProfile, trussAnchorY, trussBraceRadius, trussChordRadius, trussHalfHeight, trussMountY } from '../data/rigCatalog';
 import { trussMounts } from '../data/trussMounts';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -295,15 +297,18 @@ const MAX_BARRICADE_BAYS = 96;
 
 // Draw four continuous chords through the corners. Both adjoining spans use
 // the same mitred cross-section, including the closing joint on a loop.
-function buildTrussPath(path: readonly PlanPoint[], mats: SharedMaterials) {
+function buildTrussPath(path: readonly PlanPoint[], mats: SharedMaterials, trussProfileId?: string) {
   const group = new THREE.Group();
-  const anchorPoints: THREE.Vector3[] = [];
+  const hSize = trussHalfHeight(trussProfileId);
+  const chordR = trussChordRadius(trussProfileId);
+  const braceR = trussBraceRadius(trussProfileId);
+  const anchorY = trussAnchorY(trussProfileId, 'path');
   const points: THREE.Vector2[] = [];
   for (const p of path) {
     const point = new THREE.Vector2(p.x, p.z);
     if (!points.length || points[points.length - 1].distanceToSquared(point) > 1e-8) points.push(point);
   }
-  if (points.length < 2) return { group, anchorPoints };
+  if (points.length < 2) return { group, anchorPoints: [] as THREE.Vector3[] };
   const closed = points[0].distanceToSquared(points[points.length - 1]) < 1e-8;
   const segments = points.slice(1).map((end, i) => {
     const direction = end.clone().sub(points[i]);
@@ -321,10 +326,10 @@ function buildTrussPath(path: readonly PlanPoint[], mats: SharedMaterials) {
   // Long festival runs keep their full length while sharing a finite bracing budget.
   const bayLength = Math.max(0.85, total / MAX_TRUSS_BAYS);
   const ring = (p: THREE.Vector2, n: THREE.Vector2) => [
-    new THREE.Vector3(p.x + n.x * 0.24, -0.24, p.y + n.y * 0.24),
-    new THREE.Vector3(p.x + n.x * 0.24,  0.24, p.y + n.y * 0.24),
-    new THREE.Vector3(p.x - n.x * 0.24,  0.24, p.y - n.y * 0.24),
-    new THREE.Vector3(p.x - n.x * 0.24, -0.24, p.y - n.y * 0.24),
+    new THREE.Vector3(p.x + n.x * hSize, -hSize, p.y + n.y * hSize),
+    new THREE.Vector3(p.x + n.x * hSize,  hSize, p.y + n.y * hSize),
+    new THREE.Vector3(p.x - n.x * hSize,  hSize, p.y - n.y * hSize),
+    new THREE.Vector3(p.x - n.x * hSize, -hSize, p.y - n.y * hSize),
   ];
   for (const [i, seg] of segments.entries()) {
     let from = ring(seg.start, joints[i]);
@@ -333,21 +338,17 @@ function buildTrussPath(path: readonly PlanPoint[], mats: SharedMaterials) {
       const to = ring(seg.start.clone().lerp(seg.end, j / bays), j === bays ? joints[i + 1] : seg.normal);
       for (let corner = 0; corner < 4; corner++) {
         const next = (corner + 1) % 4;
-        addTubeStrut(group, from[corner], to[corner], 0.038, mats.aluminumTruss);
-        addTubeStrut(group, from[j % 2 ? corner : next], to[j % 2 ? next : corner], 0.023, mats.aluminumTruss);
+        addTubeStrut(group, from[corner], to[corner], chordR, mats.aluminumTruss);
+        addTubeStrut(group, from[j % 2 ? corner : next], to[j % 2 ? next : corner], braceR, mats.aluminumTruss);
         if (j === 1) addTubeStrut(group, from[corner], from[next], 0.026, mats.chrome);
         if (!closed && i === segments.length - 1 && j === bays) addTubeStrut(group, to[corner], to[next], 0.026, mats.chrome);
       }
       from = to;
     }
   }
-  const anchors = new Set<string>();
-  for (const p of points) {
-    const key = `${p.x},${p.y}`;
-    if (anchors.has(key)) continue;
-    anchors.add(key);
-    anchorPoints.push(new THREE.Vector3(p.x, 0.29, p.y));
-  }
+  const anchorPoints = hoistPoints({ shape: 'path', width: 0, path }).map(
+    (p) => new THREE.Vector3(p.x, anchorY, p.z),
+  );
   batchHardware(group);
   return { group, anchorPoints };
 }
@@ -358,18 +359,25 @@ export function buildTrussGeometry(
   width: number,
   mats: SharedMaterials,
   path: readonly PlanPoint[] = [],
-  fixtureCount?: number
+  fixtureCount?: number,
+  trussProfileId?: string,
+  hoistCount?: number,
 ): { group: THREE.Group; anchorPoints: THREE.Vector3[]; mountSlots: { pos: THREE.Vector3; rotY: number }[] } {
-  const mountSlots = trussMounts(shape, width, path, fixtureCount).map(m => ({
+  const knownProfile = getTrussProfile(trussProfileId);
+  const mountY = knownProfile ? trussMountY(trussProfileId, shape, width) : undefined;
+  const mountSlots = trussMounts(shape, width, path, fixtureCount, mountY).map(m => ({
     pos: new THREE.Vector3(m.x, m.y, m.z), rotY: m.rotY,
   }));
-  if (shape === 'path') return { ...buildTrussPath(path, mats), mountSlots };
+  if (shape === 'path') return { ...buildTrussPath(path, mats, trussProfileId), mountSlots };
   const group = new THREE.Group();
-  const anchorPoints: THREE.Vector3[] = [];
 
-  const chordR = 0.038;
-  const braceR = 0.023;
-  const hSize = shape === 'circle' ? Math.min(0.24, width * 0.14) : 0.24;
+  const chordR = trussChordRadius(trussProfileId);
+  const braceR = trussBraceRadius(trussProfileId);
+  const hSize = trussHalfHeight(trussProfileId, shape, width);
+  const anchorY = trussAnchorY(trussProfileId, shape, width);
+  const anchorPoints = hoistPoints({ shape, width, path, hoistCount }).map(
+    (p) => new THREE.Vector3(p.x, anchorY, p.z),
+  );
 
   if (shape === 'box') {
     const halfW = width / 2;
@@ -447,21 +455,6 @@ export function buildTrussGeometry(
       plate.position.set(ex, 0, 0);
       group.add(plate);
     }
-
-    // Hoist anchor points (2 or 3 depending on span)
-    if (width >= 14) {
-      anchorPoints.push(
-        new THREE.Vector3(-halfW * 0.78, hSize + 0.05, 0),
-        new THREE.Vector3(0, hSize + 0.05, 0),
-        new THREE.Vector3(halfW * 0.78, hSize + 0.05, 0)
-      );
-    } else {
-      anchorPoints.push(
-        new THREE.Vector3(-halfW * 0.72, hSize + 0.05, 0),
-        new THREE.Vector3(halfW * 0.72, hSize + 0.05, 0)
-      );
-    }
-
   } else if (shape === 'circle') {
     const radius = width / 2;
     const ringOffsets = [
@@ -490,24 +483,17 @@ export function buildTrussGeometry(
       addTubeStrut(group, inner0, inner1, braceR, mats.aluminumTruss);
       addTubeStrut(group, outer0, new THREE.Vector3(Math.cos(a0) * (radius - hSize), hSize, Math.sin(a0) * (radius - hSize)), braceR, mats.aluminumTruss);
     }
-
-    // 4 hoist anchor points around circle
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
-      anchorPoints.push(new THREE.Vector3(Math.cos(a) * radius, hSize + 0.05, Math.sin(a) * radius));
-    }
-
   } else {
     // Chevron / Angled Kinetic Wing truss
     const angle = 0.36;
     const armLen = width / (2 * Math.cos(angle));
     const armDepth = Math.sin(angle) * armLen;
-    const leftArm = buildTrussGeometry('box', armLen, mats);
+    const leftArm = buildTrussGeometry('box', armLen, mats, [], undefined, trussProfileId);
     leftArm.group.position.set(-width / 4, 0, -armDepth / 2);
     leftArm.group.rotation.y = -angle;
     group.add(leftArm.group);
 
-    const rightArm = buildTrussGeometry('box', armLen, mats);
+    const rightArm = buildTrussGeometry('box', armLen, mats, [], undefined, trussProfileId);
     rightArm.group.position.set(width / 4, 0, -armDepth / 2);
     rightArm.group.rotation.y = angle;
     group.add(rightArm.group);
@@ -515,13 +501,6 @@ export function buildTrussGeometry(
     // Center steel corner junction block
     const hub = new THREE.Mesh(new THREE.BoxGeometry(0.62, hSize * 2.2, hSize * 2.2), mats.darkSteel);
     group.add(hub);
-
-    anchorPoints.push(
-      new THREE.Vector3(-width * 0.42, hSize + 0.05, -armDepth * 0.84),
-      new THREE.Vector3(0, hSize + 0.05, 0.05),
-      new THREE.Vector3(width * 0.42, hSize + 0.05, -armDepth * 0.84)
-    );
-
   }
 
   batchHardware(group);

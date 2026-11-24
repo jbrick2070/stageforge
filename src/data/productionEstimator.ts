@@ -1,9 +1,11 @@
 import type { FixtureType, FloorFxType, RigConfig, StagePropKind } from '../types/show';
 import { catalogDisplayName, getCatalogEntry, isFieldUnverified, type CatalogBodyFamily } from './equipmentCatalog';
 import { bodyFamilyFor } from './equipmentSymbols';
+import { hoistPoints } from './hoistPoints';
+import { getHoistProfile, getTrussProfile, hoistDisplayName, trussDisplayName } from './rigCatalog';
 import { PROP_CATALOG } from './stageProps';
 import { pathLength } from './stageDesign';
-import { ledPlacement } from './stageEquipment';
+import { GRID_HEIGHT, ledPlacement } from './stageEquipment';
 import type { NativeStage } from './showFile';
 import { authoredWallFrames, authoredWallSurface, resolveStudioGeometry } from './studioGeometry';
 
@@ -16,6 +18,8 @@ export interface CostLineItem {
   kind?: CostItemKind;
   label: string;
   qty: string;
+  /** Optional numeric unit count (e.g. hoist point count) so consumers don't regex-parse qty. */
+  unitCount?: number;
   buyCost: number;
   rentalCost: number;
   weightLbs: number;
@@ -112,8 +116,12 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   });
 
   // 2. Trusses & Kinetic Chain Hoist Motors
-  let totalTrussMeters = 0;
+  let legacyTrussMeters = 0;
+  let legacyMotors = 0;
   let totalMotors = 0;
+  const profiledTrusses = new Map<string, { meters: number }>();
+  const profiledHoists = new Map<string, { count: number; weightLbs: number; watts: number }>();
+  const gridHeight = GRID_HEIGHT[rig.venue] ?? 14;
   // Totals across BOTH legacy and catalogue groups (drive crew, LSO and SFX counts).
   let totalBeamCount = 0;
   let totalWashCount = 0;
@@ -159,10 +167,36 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   for (const pod of rig.trussPods) {
     const path = pod.shape === 'path' ? pod.path : undefined;
     const meters = path ? pathLength(path) : pod.shape === 'circle' ? Math.PI * pod.width : pod.width;
-    totalTrussMeters += meters;
-    const anchors = path ? new Set(path.map(p => p.x + ',' + p.z)).size :
-      pod.shape === 'circle' ? 4 : pod.shape === 'chevron' ? 3 : pod.width >= 14 ? 3 : 2;
-    if (pod.motorized) totalMotors += anchors;
+    const trussProfile = getTrussProfile(pod.trussProfileId);
+    if (trussProfile) {
+      const existing = profiledTrusses.get(trussProfile.id);
+      if (existing) existing.meters += meters;
+      else profiledTrusses.set(trussProfile.id, { meters });
+    } else {
+      legacyTrussMeters += meters;
+    }
+
+    const anchors = hoistPoints(pod).length;
+    if (pod.motorized) {
+      totalMotors += anchors;
+      const hoistProfile = getHoistProfile(pod.hoistId);
+      if (hoistProfile) {
+        const dropM = Math.max(0.5, gridHeight - pod.baseY);
+        const unitKg = hoistProfile.bodyKg + hoistProfile.chainKgPerM * dropM;
+        const weightLbs = anchors * unitKg * KG_TO_LBS;
+        const watts = anchors * hoistProfile.motorW;
+        const existing = profiledHoists.get(hoistProfile.id);
+        if (existing) {
+          existing.count += anchors;
+          existing.weightLbs += weightLbs;
+          existing.watts += watts;
+        } else {
+          profiledHoists.set(hoistProfile.id, { count: anchors, weightLbs, watts });
+        }
+      } else {
+        legacyMotors += anchors;
+      }
+    }
 
     for (const fg of pod.fixtures) {
       if (fg.type === 'beam') totalBeamCount += fg.count;
@@ -183,29 +217,57 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
     }
   }
 
-  if (totalTrussMeters > 0) {
+  if (legacyTrussMeters > 0) {
     equipmentItems.push({
       category: 'Rigging & Motors',
       kind: 'truss',
       label: 'Aluminum truss sections',
-      qty: `${Math.round(totalTrussMeters)} m`,
-      buyCost: Math.round(totalTrussMeters * 460),
-      rentalCost: Math.round(totalTrussMeters * 26),
-      weightLbs: Math.round(totalTrussMeters * 30),
+      qty: `${Math.round(legacyTrussMeters)} m`,
+      buyCost: Math.round(legacyTrussMeters * 460),
+      rentalCost: Math.round(legacyTrussMeters * 26),
+      weightLbs: Math.round(legacyTrussMeters * 30),
+      watts: 0,
+    });
+  }
+  for (const [profileId, bucket] of profiledTrusses.entries()) {
+    const profile = getTrussProfile(profileId)!;
+    equipmentItems.push({
+      category: 'Rigging & Motors',
+      kind: 'truss',
+      label: trussDisplayName(profile),
+      qty: `${Math.round(bucket.meters)} m`,
+      buyCost: Math.round(bucket.meters * 460),
+      rentalCost: Math.round(bucket.meters * 26),
+      weightLbs: Math.round(bucket.meters * profile.kgPerMeter * KG_TO_LBS),
       watts: 0,
     });
   }
 
-  if (totalMotors > 0) {
+  if (legacyMotors > 0) {
     equipmentItems.push({
       category: 'Rigging & Motors',
       kind: 'motor',
       label: 'Kinesys / CM Lodestar 1-Ton Kinetic Chain Motors',
-      qty: `${totalMotors} hoists`,
-      buyCost: totalMotors * 7800,
-      rentalCost: totalMotors * 275,
-      weightLbs: totalMotors * 124,
-      watts: totalMotors * 1500,
+      qty: `${legacyMotors} hoists`,
+      unitCount: legacyMotors,
+      buyCost: legacyMotors * 7800,
+      rentalCost: legacyMotors * 275,
+      weightLbs: legacyMotors * 124,
+      watts: legacyMotors * 1500,
+    });
+  }
+  for (const [hoistId, bucket] of profiledHoists.entries()) {
+    const hoist = getHoistProfile(hoistId)!;
+    equipmentItems.push({
+      category: 'Rigging & Motors',
+      kind: 'motor',
+      label: hoistDisplayName(hoist),
+      qty: `${bucket.count} ${hoist.safetyClass === 'deadhang' ? 'points' : 'hoists'}`,
+      unitCount: bucket.count,
+      buyCost: hoist.safetyClass === 'deadhang' ? bucket.count * 250 : bucket.count * 7800,
+      rentalCost: hoist.safetyClass === 'deadhang' ? bucket.count * 25 : bucket.count * 275,
+      weightLbs: Math.round(bucket.weightLbs),
+      watts: Math.round(bucket.watts),
     });
   }
 

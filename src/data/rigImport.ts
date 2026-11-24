@@ -1,5 +1,6 @@
 import { VENUE_TYPES, type RigConfig } from '../types/show';
 import { CATALOG_ID_PATTERN, getCatalogEntry, getCatalogMode, type HardwareType } from './equipmentCatalog';
+import { CIRCUIT_GROUP_PATTERN } from './rigCatalog';
 import { MAX_ANGLE, MAX_LUMENS, MIN_ANGLE } from './fixtureOptics';
 import { FIXTURE_CATALOG, FLOOR_FX_CATALOG } from './presets';
 import { SPEAKER_PROFILES } from './speakerProfiles';
@@ -65,12 +66,21 @@ const catalogIdCheck: Check = (value) =>
   typeof value === 'string' && value.length <= 64 && CATALOG_ID_PATTERN.test(value);
 const dmxModeCheck: Check = (value) =>
   typeof value === 'string' && value.length <= 128 && value.trim().length > 0 && [...value].length <= 64 && !/[\u0000-\u001f\u007f]/.test(value);
+const circuitGroupCheck: Check = (value) =>
+  typeof value === 'string' && value.length <= 32 && value.trim().length > 0 && CIRCUIT_GROUP_PATTERN.test(value);
+const phaseCheck: Check = (value) => value === 'L1' || value === 'L2' || value === 'L3';
+const powerSystemCheck: Check = (value) =>
+  value === 'us_208_3p' || value === 'eu_400_3p' || value === 'us_120_1p' || value === 'eu_230_1p';
+const powerPinTargetCheck: Check = (value) =>
+  value === 'ledWall' || value === 'audio' || value === 'foh' || value === 'hoists';
 
 const equipment = {
   modelName: text,
   catalogId: optional(catalogIdCheck),
   dmxMode: optional(dmxModeCheck),
   dmxChannels: optional(integer(1, 512)),
+  circuitGroup: optional(circuitGroupCheck),
+  phase: optional(phaseCheck),
   count: integer(1, 512),
   dmxUniverse: integer(1, 2),
   dmxStartChannel: integer(1, 512),
@@ -182,7 +192,13 @@ function checkRig(value: unknown): asserts value is RigConfig {
       motorized: bool,
       motorMinY: coord,
       motorMaxY: coord,
+      trussProfileId: optional(catalogIdCheck),
+      hoistId: optional(catalogIdCheck),
+      hoistCount: optional(integer(2, 4)),
     });
+    if (pod.hoistCount !== undefined && pod.shape !== 'box') {
+      throw new Error(`${path}.hoistCount is only supported on box trusses.`);
+    }
     if (Number(pod.motorMinY) > Number(pod.motorMaxY))
       throw new Error(`Motor height limits are reversed at ${path}.`);
     if (pod.shape === 'path') {
@@ -224,6 +240,36 @@ function checkRig(value: unknown): asserts value is RigConfig {
     checkList(value.props, 'props', (prop, path) => {
       if (!isStageProp(prop)) throw new Error(`Invalid scenery settings at ${path}.`);
     }, MAX_PROPS);
+  }
+  if (value.power !== undefined) {
+    checkFields(value.power, 'rig.power', {
+      system: powerSystemCheck,
+      feederA: optional(integer(10, 4000)),
+    });
+    const powerObj = value.power as Fields;
+    for (const key of Object.keys(powerObj)) {
+      if (key !== 'system' && key !== 'feederA' && key !== 'pins') {
+        throw new Error(`Unknown property rig.power.${key}.`);
+      }
+    }
+    if (powerObj.pins !== undefined) {
+      if (!Array.isArray(powerObj.pins) || powerObj.pins.length > 8) {
+        throw new Error('rig.power.pins must be a list of at most 8 phase pins.');
+      }
+      const targets = new Set<string>();
+      powerObj.pins.forEach((pin: unknown, i: number) => {
+        const pinPath = `rig.power.pins[${i}]`;
+        checkFields(pin, pinPath, { target: powerPinTargetCheck, phase: phaseCheck });
+        for (const key of Object.keys(pin)) {
+          if (key !== 'target' && key !== 'phase') {
+            throw new Error(`Unknown property ${pinPath}.${key}.`);
+          }
+        }
+        const target = pin.target as string;
+        if (targets.has(target)) throw new Error(`Duplicate target "${target}" in rig.power.pins.`);
+        targets.add(target);
+      });
+    }
   }
 }
 

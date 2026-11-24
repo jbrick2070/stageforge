@@ -10,7 +10,9 @@ Version 4 adds a required `interchange` block (with optional `stage`) for persis
 
 Version 5 is an additive superset (both `stage` and `interchange` optional) that adds optional SMPTE timecode metadata on `timeline`: `frameRate` (`24`, `25`, `29.97` drop-frame, or `30`) and `timecodeOffsetMs` (`0..86399999`, e.g. `3600000` for `01:00:00:00`). The writer selects v5 only when `timeline.frameRate` or `timeline.timecodeOffsetMs` is present. [Version 5 schema](../src/schemas/show-v5.schema.json)
 
-Version 6 is an additive superset that adds optional equipment catalogue metadata on overhead fixtures and floor effects (`catalogId`, `dmxMode`, `dmxChannels`) and LED cabinet presets (`ledWall.cabinets.cabinetId`). Whenever `catalogId` is set on a fixture or floor-FX group, both `dmxMode` and `dmxChannels` are also required so DMX address layout remains deterministic even if catalogue data changes later. The writer selects v6 only when at least one v6 catalogue field is present; all six schemas ship with the web reader for offline validation. [Version 6 schema](../src/schemas/show-v6.schema.json) · [Equipment catalogue](equipment.md)
+Version 6 is an additive superset that adds optional equipment catalogue metadata on overhead fixtures and floor effects (`catalogId`, `dmxMode`, `dmxChannels`) and LED cabinet presets (`ledWall.cabinets.cabinetId`). Whenever `catalogId` is set on a fixture or floor-FX group, both `dmxMode` and `dmxChannels` are also required so DMX address layout remains deterministic even if catalogue data changes later. The writer selects v6 only when at least one v6 catalogue field is present. [Version 6 schema](../src/schemas/show-v6.schema.json) · [Equipment catalogue](equipment.md)
+
+Version 7 is an additive superset that adds optional rigging and electrical specifications: truss profile (`trussProfileId`), chain hoist rating (`hoistId`), and box-truss hoist point count (`hoistCount`, 2–4 on `box` pods only) on `rig.trussPods[*]`, optional dimmer/power circuit labels (`circuitGroup`, up to 32 ASCII chars) and phase pins (`phase`: `L1`/`L2`/`L3`) on `fixtures[*]` and `floorFx[*]`, and optional `rig.power` (`system`, `feederA`, `pins[]` up to 8 unique department pins). The writer selects v7 only when at least one v7 field is present; all seven schemas ship with the web reader for offline validation. [Version 7 schema](../src/schemas/show-v7.schema.json) · [Rigging & power](rigging-power.md)
 
 ## Opening the examples
 
@@ -22,11 +24,11 @@ Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay tak
 
 | Field | Meaning |
 | --- | --- |
-| `$schema` | The public schema URL ending in `show-v1.schema.json`, `show-v2.schema.json`, `show-v3.schema.json`, `show-v4.schema.json`, `show-v5.schema.json` or `show-v6.schema.json`, matching the version. |
-| `format`, `version` | The string `"stageforge-show"` and the integer `1`, `2`, `3`, `4`, `5` or `6`. |
-| `stage` | Required in v3, optional in v4–v6. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
-| `interchange` | Required in v4, optional in v5–v6. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
-| `rig` | Stage dimensions and venue, optional platforms and scenic props, trusses with their fixtures, floor effects, sound system and LED wall (in v6, fixture/floorFx groups may carry `catalogId`/`dmxMode`/`dmxChannels`, and `ledWall.cabinets` may carry `cabinetId`). Positions and lengths use metres. |
+| `$schema` | The public schema URL ending in `show-v1.schema.json` through `show-v7.schema.json`, matching the version. |
+| `format`, `version` | The string `"stageforge-show"` and the integer `1`, `2`, `3`, `4`, `5`, `6` or `7`. |
+| `stage` | Required in v3, optional in v4–v7. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
+| `interchange` | Required in v4, optional in v5–v7. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
+| `rig` | Stage dimensions and venue, optional platforms and scenic props, trusses with their fixtures, floor effects, sound system and LED wall (in v6: `catalogId`/`dmxMode`/`dmxChannels`, `cabinetId`; in v7: `trussProfileId`/`hoistId`/`hoistCount`, `circuitGroup`/`phase`, and `rig.power`). Positions and lengths use metres. |
 | `cues` | Array in playback order. Each cue has a unique `id`, a display `name`, `tag`, hex `accent` and a partial desk `state`. Optional `screen` sets the main-wall media. |
 | `look`, `activeCueId` | Complete current desk settings and the current cue ID, or `null`. Desk changes made after calling a cue belong in `look`. |
 | `controls` | Optional named camera preset and music volume from zero to one. |

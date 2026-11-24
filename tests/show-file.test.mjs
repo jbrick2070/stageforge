@@ -11,7 +11,7 @@ const compiler = await createServer({
   appType: 'custom', optimizeDeps: { noDiscovery: true },
 });
 after(() => compiler.close());
-const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL, V6_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL, V6_SCHEMA_URL, V7_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
 const { RIG_TEMPLATES, INITIAL_SHOW_STATE, SHOW_CUES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { cueLook, differsFromCue } = await compiler.ssrLoadModule('/src/data/cueLook.ts');
 const { frameDelta } = await compiler.ssrLoadModule('/src/input/useShowTimeline.ts');
@@ -224,6 +224,7 @@ test('frozen v1, v2 and v3 show fixtures load cleanly and published schema hashe
     4: 'd114ce279e9de66b26fc9010c9e8ca8b7c260956c03a73a3813b8171b8996d49',
     5: '9cbf644005c09bd1ec92be20aad348fe0f8a7377134ae05c9e5826bdf5b0350f',
     6: '6db46f168be983490fb5f226ad375df55881800304a872471583c3719e9ba2e2',
+    7: '3477be940a11c56d4a7c121903cd63e966be2110f2db0d3b120693e24fe9d98e',
   };
   for (const [ver, hash] of Object.entries(expectedHashes)) {
     const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));
@@ -443,8 +444,93 @@ test('show v6 catalogue fields are additive, round-trip each field independently
   );
   // 7. Unknown future version fails with a readable Error.
   assert.throws(
-    () => parse({ ...savedOverhead, version: 7 }),
+    () => parse({ ...savedOverhead, version: 8 }),
     isReadableError,
-    'unsupported version 7 fails cleanly',
+    'unsupported version 8 fails cleanly',
   );
+});
+
+test('show v7 rigging and power fields are additive, round-trip each field independently, and reject hostile inputs', () => {
+  // 1. Any single v7 field upgrades to v7 and round-trips cleanly.
+  const fieldCases = [
+    ['trussProfileId', (s) => { s.rig.trussPods[0].trussProfileId = 'prolyte-h30v'; }],
+    ['hoistId', (s) => { s.rig.trussPods[0].hoistId = 'chainmaster-d8plus-500'; }],
+    ['hoistCount', (s) => { s.rig.trussPods[0].shape = 'box'; s.rig.trussPods[0].hoistCount = 3; }],
+    ['fixture.circuitGroup', (s) => { s.rig.trussPods[0].fixtures[0].circuitGroup = 'LX-01'; }],
+    ['fixture.phase', (s) => { s.rig.trussPods[0].fixtures[0].phase = 'L2'; }],
+    ['floorFx.circuitGroup', (s) => {
+      s.rig.floorFx = [{
+        id: 'fx-c1', type: 'hazer', modelName: 'MDG ATMe', count: 1, x: 0, z: 0, spread: 0,
+        dmxUniverse: 2, dmxStartChannel: 1, circuitGroup: 'FX-A',
+      }];
+    }],
+    ['floorFx.phase', (s) => {
+      s.rig.floorFx = [{
+        id: 'fx-p1', type: 'hazer', modelName: 'MDG ATMe', count: 1, x: 0, z: 0, spread: 0,
+        dmxUniverse: 2, dmxStartChannel: 1, phase: 'L3',
+      }];
+    }],
+    ['rig.power', (s) => {
+      s.rig.power = { system: 'eu_400_3p', feederA: 63, pins: [{ target: 'ledWall', phase: 'L1' }] };
+    }],
+  ];
+
+  for (const [label, mutate] of fieldCases) {
+    const draft = structuredClone(example);
+    mutate(draft);
+    const saved = write(draft);
+    assert.equal(saved.version, 7, `${label} writes v7`);
+    assert.equal(saved.$schema, V7_SCHEMA_URL, `${label} $schema`);
+    assert.deepEqual(parse(saved), saved, `${label} round-trips`);
+  }
+
+  // 2. Unknown future trussProfileId / hoistId are preserved for forward compatibility.
+  const futureIds = structuredClone(example);
+  futureIds.rig.trussPods[0].trussProfileId = 'future-truss-99';
+  futureIds.rig.trussPods[0].hoistId = 'future-hoist-5t';
+  const savedFuture = write(futureIds);
+  assert.equal(savedFuture.version, 7);
+  assert.equal(parse(savedFuture).rig.trussPods[0].trussProfileId, 'future-truss-99');
+  assert.equal(parse(savedFuture).rig.trussPods[0].hoistId, 'future-hoist-5t');
+
+  // 3. Removing v7 fields drops cleanly back to v1.
+  const stripped = structuredClone(savedFuture);
+  delete stripped.rig.trussPods[0].trussProfileId;
+  delete stripped.rig.trussPods[0].hoistId;
+  assert.equal(write(stripped).version, 1);
+
+  // 4. v6 rejects v7 fields with a readable Error.
+  assert.throws(
+    () => parse({ ...savedFuture, version: 6, $schema: V6_SCHEMA_URL }),
+    isReadableError,
+    'v6 rejects trussProfileId',
+  );
+
+  // 5. Hostile v7 payloads fail with readable Errors (never TypeError).
+  const baseV7 = write(futureIds);
+  const badV7 = [
+    ['hoistCount on circle truss', (s) => { s.rig.trussPods[0].shape = 'circle'; s.rig.trussPods[0].hoistCount = 3; }],
+    ['hoistCount on chevron truss', (s) => { s.rig.trussPods[0].shape = 'chevron'; s.rig.trussPods[0].hoistCount = 2; }],
+    ['hoistCount out of range (5)', (s) => { s.rig.trussPods[0].shape = 'box'; s.rig.trussPods[0].hoistCount = 5; }],
+    ['circuitGroup > 32 chars', (s) => { s.rig.trussPods[0].fixtures[0].circuitGroup = 'A'.repeat(33); }],
+    ['circuitGroup control char', (s) => { s.rig.trussPods[0].fixtures[0].circuitGroup = 'LX\n1'; }],
+    ['invalid phase L4', (s) => { s.rig.trussPods[0].fixtures[0].phase = 'L4'; }],
+    ['more than 8 power pins', (s) => {
+      s.rig.power = { system: 'us_208_3p', pins: Array.from({ length: 9 }, () => ({ target: 'foh', phase: 'L1' })) };
+    }],
+    ['duplicate power pin target', (s) => {
+      s.rig.power = { system: 'us_208_3p', pins: [{ target: 'ledWall', phase: 'L1' }, { target: 'ledWall', phase: 'L2' }] };
+    }],
+    ['non-finite feederA', (s) => { s.rig.power = { system: 'us_208_3p', feederA: Number.NaN }; }],
+    ['unknown property on rig.power', (s) => { s.rig.power = { system: 'us_208_3p', extra: 1 }; }],
+  ];
+  for (const [label, mutate] of badV7) {
+    const draft = structuredClone(baseV7);
+    mutate(draft);
+    assert.throws(() => parse(draft), isReadableError, label);
+  }
+  // Raw JSON with __proto__ inside rig.power is rejected cleanly.
+  const protoJson = JSON.stringify({ ...baseV7, rig: { ...baseV7.rig, power: { system: 'us_208_3p' } } })
+    .replace('"system":"us_208_3p"', '"system":"us_208_3p","__proto__":{"polluted":true}');
+  assert.throws(() => parseShowFile(protoJson), isReadableError, '__proto__ in rig.power');
 });

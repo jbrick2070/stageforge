@@ -108,6 +108,21 @@ export interface FixtureOptics {
   profile?: BeamProfile;
 }
 
+export type PowerSystemId = 'us_208_3p' | 'eu_400_3p' | 'us_120_1p' | 'eu_230_1p';
+export type PhaseId = 'L1' | 'L2' | 'L3';
+export type PowerPinTarget = 'ledWall' | 'audio' | 'foh' | 'hoists';
+
+export interface PowerPin {
+  target: PowerPinTarget;
+  phase: PhaseId;
+}
+
+export interface RigPowerConfig {
+  system: PowerSystemId;
+  feederA?: number;
+  pins?: PowerPin[];
+}
+
 export interface MountedFixtureGroup {
   id: string;
   type: FixtureType;
@@ -119,6 +134,10 @@ export interface MountedFixtureGroup {
   count: number;
   dmxUniverse: 1 | 2;
   dmxStartChannel: number;
+  /** Optional dimmer/relay/power circuit group label (Show v7, max 32 chars). */
+  circuitGroup?: string;
+  /** Optional phase pin for this group's circuits (Show v7). */
+  phase?: PhaseId;
 }
 
 export interface TrussPodConfig {
@@ -134,6 +153,12 @@ export interface TrussPodConfig {
   motorized: boolean;
   motorMinY: number;
   motorMaxY: number;
+  /** Optional real truss profile ID from rigCatalog (Show v7). */
+  trussProfileId?: string;
+  /** Optional real chain hoist / dead-hang ID from rigCatalog (Show v7). */
+  hoistId?: string;
+  /** Optional hoist point count override for box trusses (2..4, Show v7). */
+  hoistCount?: number;
   fixtures: MountedFixtureGroup[];
 }
 
@@ -151,6 +176,10 @@ export interface FloorFxUnit {
   spread: number;
   dmxUniverse: 1 | 2;
   dmxStartChannel: number;
+  /** Optional dimmer/relay/power circuit group label (Show v7, max 32 chars). */
+  circuitGroup?: string;
+  /** Optional phase pin for this group's circuits (Show v7). */
+  phase?: PhaseId;
 }
 
 export type StagePropKind = 'tentacle' | 'star' | 'arch' | 'marquee' | 'riser';
@@ -204,6 +233,8 @@ export interface RigConfig {
   trussPods: TrussPodConfig[];
   floorFx: FloorFxUnit[];
   props?: StageProp[]; // Earlier rig files predate scenic props.
+  /** Optional rigging electrical distribution settings (Show v7). */
+  power?: RigPowerConfig;
 }
 
 export interface MotorPodTarget {

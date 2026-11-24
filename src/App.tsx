@@ -1255,6 +1255,9 @@ export const App: React.FC = () => {
     } else if (action === 'inventoryCsv') {
       const { equipmentInventoryCsv } = await import('./data/equipmentInventory');
       downloadStageFile(rig.name, 'equipment.csv', new Blob([equipmentInventoryCsv(rig, studioStage, shopStock)], { type: 'text/csv;charset=utf-8' }));
+    } else if (action === 'riggingPowerCsv') {
+      const { riggingPowerCsv } = await import('./data/powerReport');
+      downloadStageFile(rig.name, 'rigging-power.csv', new Blob([riggingPowerCsv(rig, studioStage)], { type: 'text/csv;charset=utf-8' }));
     } else {
       downloadStageFile(rig.name, 'patch.csv', new Blob([patchCsv(rig)], { type: 'text/csv;charset=utf-8' }));
     }
@@ -1597,6 +1600,10 @@ export const App: React.FC = () => {
               stage={studioStage}
               shopStock={shopStock}
               onChangeShopStock={updateShopStock}
+              onChangeRig={(next) => {
+                previewRig();
+                applyRig(next);
+              }}
               onClose={() => setCostModalOpen(false)}
               onDeployRig={() => showToast('Virtual Crew Load-In Approved ($0.00) — Show Live!')}
               onNotify={showToast}

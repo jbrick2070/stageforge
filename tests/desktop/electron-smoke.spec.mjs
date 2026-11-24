@@ -184,7 +184,7 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
   expect(existsSync(path.join(appDir, 'dmx-packets.cjs'))).toBe(true);
   expect(existsSync(path.join(appDir, 'dmx-sender.cjs'))).toBe(true);
   expect(existsSync(path.join(appDir, 'dmx-ipc.cjs'))).toBe(true);
-  for (const v of [1, 2, 3, 4, 5, 6]) {
+  for (const v of [1, 2, 3, 4, 5, 6, 7]) {
     expect(existsSync(path.join(appDir, 'renderer', 'schemas', `show-v${v}.schema.json`))).toBe(true);
   }
   expect(await app.evaluate(({ app }) => app.getPath('userData'))).toBe(path.join(tmp, 'profile'));
@@ -586,6 +586,32 @@ test('Gear & production Inventory loads under stageforge:// CSP, prints via wind
   expect(csvBody.startsWith('\uFEFF')).toBe(true);
   expect(csvBody).toContain('Category,Manufacturer,Model,Catalogue ID,DMX mode');
   expect(csvBody).toContain('Total,');
+
+  // Switch to Rigging & power tab and verify .rigging-power.csv download passes main's suffix whitelist.
+  await dialog.getByRole('tab', { name: /Rigging & power/ }).click();
+  const rpPanel = dialog.getByRole('tabpanel', { name: /Rigging & power/ });
+  await expect(rpPanel).toContainText('Simplified static guidance only');
+  const rpTarget = path.join(tmp, 'rig-loads.rigging-power.csv');
+  await app.evaluate(({ session }, target) => {
+    const record = globalThis.__stageforgeTest.download = { state: 'waiting' };
+    const listener = (_event, item) => {
+      session.defaultSession.off('will-download', listener);
+      record.filename = item.getFilename();
+      record.options = item.getSaveDialogOptions();
+      item.setSavePath(target);
+      item.once('done', (_e, state) => { record.state = state; });
+    };
+    session.defaultSession.on('will-download', listener);
+  }, rpTarget);
+  await rpPanel.getByRole('button', { name: 'Export CSV' }).click();
+  await expect.poll(() => app.evaluate(() => globalThis.__stageforgeTest.download.state), { timeout: 15_000 }).toBe('completed');
+  const rpDl = await app.evaluate(() => globalThis.__stageforgeTest.download);
+  expect(rpDl.filename).toMatch(/\.rigging-power\.csv$/);
+  expect(rpDl.options.title).toBe('Export rigging and power report');
+  const rpBody = await readFile(rpTarget, 'utf8');
+  expect(rpBody.startsWith('\uFEFF')).toBe(true);
+  expect(rpBody).toContain('section,pod_or_group,item');
+  expect(rpBody).toContain('summary,');
 
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();

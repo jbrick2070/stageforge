@@ -351,6 +351,13 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
 .head-targets button[aria-pressed="true"] { border-color: #a995df; background: #3c304e; color: #fff; }
 .head-color-mode { display: flex; align-items: center; gap: .35rem; font-size: .7rem; color: #d5d2df; }
 
+@media (pointer: coarse) {
+  .gear-touch-control {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
 /* Gear & production modal (phone layout + stacked card tables) */
 @media (max-width: 600px) {
   .gear-modal {

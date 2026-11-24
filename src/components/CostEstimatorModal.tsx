@@ -1,22 +1,27 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ClipboardList, DollarSign, Package, X } from 'lucide-react';
+import { Anchor, ClipboardList, DollarSign, Package, X } from 'lucide-react';
 import type { RigConfig } from '../types/show';
 import type { NativeStage } from '../data/showFile';
 import { calculateProductionEstimate } from '../data/productionEstimator';
 import { computeInventory } from '../data/equipmentInventory';
+import { computePowerReport } from '../data/powerReport';
+import { evaluateRigLoads } from '../data/rigLoads';
 import { DEFAULT_SHOP_STATE, type ShopStockState } from '../data/shopStock';
 import { CostCrewPanel } from './CostCrewPanel';
 import { InventoryPanel } from './InventoryPanel';
 import { InventoryPrintSheet } from './InventoryPrintSheet';
+import { RiggingPowerPanel } from './RiggingPowerPanel';
+import { RiggingPowerPrintSheet } from './RiggingPowerPrintSheet';
 
-type GearTab = 'inventory' | 'cost';
+type GearTab = 'inventory' | 'rigging' | 'cost';
+const TAB_ORDER: readonly GearTab[] = ['inventory', 'rigging', 'cost'];
 
 const GEAR_TAB_STORAGE_KEY = 'stageforge.gearTab.v1';
 
 function readInitialTab(): GearTab {
   try {
     const saved = window.localStorage.getItem(GEAR_TAB_STORAGE_KEY);
-    return saved === 'cost' ? 'cost' : 'inventory';
+    return saved === 'cost' || saved === 'rigging' ? saved : 'inventory';
   } catch {
     return 'inventory';
   }
@@ -44,6 +49,7 @@ export interface CostEstimatorModalProps {
   stage?: NativeStage;
   shopStock?: ShopStockState;
   onChangeShopStock?: (next: ShopStockState) => void;
+  onChangeRig?: (next: RigConfig) => void;
   onClose: () => void;
   onDeployRig?: () => void;
   onNotify?: (message: string) => void;
@@ -54,13 +60,16 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
   stage,
   shopStock = DEFAULT_SHOP_STATE,
   onChangeShopStock,
+  onChangeRig,
   onClose,
   onDeployRig,
   onNotify,
 }) => {
   const [activeTab, setActiveTab] = useState<GearTab>(readInitialTab);
+  const [applyD8Derate, setApplyD8Derate] = useState(true);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inventoryTabRef = useRef<HTMLButtonElement>(null);
+  const riggingTabRef = useRef<HTMLButtonElement>(null);
   const costTabRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -75,21 +84,30 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
 
   const est = useMemo(() => calculateProductionEstimate(rig, stage), [rig, stage]);
   const inventory = useMemo(() => computeInventory(rig, stage, shopStock), [rig, stage, shopStock]);
+  const loads = useMemo(() => evaluateRigLoads(rig, stage, { applyD8Derate }), [rig, stage, applyD8Derate]);
+  const power = useMemo(() => computePowerReport(rig, stage), [rig, stage]);
+
+  const tabRefFor = (tab: GearTab) =>
+    tab === 'inventory' ? inventoryTabRef : tab === 'rigging' ? riggingTabRef : costTabRef;
 
   const selectTab = (next: GearTab, moveFocus = false) => {
     setActiveTab(next);
     saveTab(next);
     if (moveFocus) {
       requestAnimationFrame(() => {
-        (next === 'inventory' ? inventoryTabRef : costTabRef).current?.focus();
+        tabRefFor(next).current?.focus();
       });
     }
   };
 
   const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+    const idx = TAB_ORDER.indexOf(activeTab);
+    if (event.key === 'ArrowRight') {
       event.preventDefault();
-      selectTab(activeTab === 'inventory' ? 'cost' : 'inventory', true);
+      selectTab(TAB_ORDER[(idx + 1) % TAB_ORDER.length], true);
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      selectTab(TAB_ORDER[(idx - 1 + TAB_ORDER.length) % TAB_ORDER.length], true);
     } else if (event.key === 'Home') {
       event.preventDefault();
       selectTab('inventory', true);
@@ -98,6 +116,9 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
       selectTab('cost', true);
     }
   };
+
+  const riggingAlertCount =
+    loads.totals.overloadPods + loads.totals.upliftPods + power.totals.overloadedCircuits;
 
   return (
     <>
@@ -161,7 +182,7 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
             <div
               role="tablist"
               aria-label="Gear and production sections"
-              className="flex items-stretch gap-1 px-4 sm:px-5"
+              className="flex items-stretch gap-1 px-4 sm:px-5 overflow-x-auto"
             >
               <button
                 ref={inventoryTabRef}
@@ -173,7 +194,7 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
                 tabIndex={activeTab === 'inventory' ? 0 : -1}
                 onClick={() => selectTab('inventory')}
                 onKeyDown={handleTabKeyDown}
-                className={`gear-touch-control inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold border-b-2 transition cursor-pointer ${
+                className={`gear-touch-control shrink-0 inline-flex items-center justify-center gap-1 px-2.5 sm:px-3.5 py-2 text-[11px] sm:text-xs font-semibold border-b-2 transition cursor-pointer ${
                   activeTab === 'inventory'
                     ? 'border-cyan-400 text-cyan-200 bg-cyan-500/10'
                     : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -188,6 +209,30 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
                 )}
               </button>
               <button
+                ref={riggingTabRef}
+                id="gear-tab-rigging"
+                role="tab"
+                type="button"
+                aria-selected={activeTab === 'rigging'}
+                aria-controls="gear-panel-rigging"
+                tabIndex={activeTab === 'rigging' ? 0 : -1}
+                onClick={() => selectTab('rigging')}
+                onKeyDown={handleTabKeyDown}
+                className={`gear-touch-control shrink-0 inline-flex items-center justify-center gap-1 px-2.5 sm:px-3.5 py-2 text-[11px] sm:text-xs font-semibold border-b-2 transition cursor-pointer ${
+                  activeTab === 'rigging'
+                    ? 'border-amber-400 text-amber-200 bg-amber-500/10'
+                    : 'border-transparent text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <Anchor className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Rigging &amp; power</span>
+                {riggingAlertCount > 0 && (
+                  <span className="rounded-full bg-rose-500/25 border border-rose-400/50 px-1.5 py-0.5 font-mono-tech text-[9px] text-rose-200">
+                    {riggingAlertCount} alert
+                  </span>
+                )}
+              </button>
+              <button
                 ref={costTabRef}
                 id="gear-tab-cost"
                 role="tab"
@@ -197,7 +242,7 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
                 tabIndex={activeTab === 'cost' ? 0 : -1}
                 onClick={() => selectTab('cost')}
                 onKeyDown={handleTabKeyDown}
-                className={`gear-touch-control inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold border-b-2 transition cursor-pointer ${
+                className={`gear-touch-control shrink-0 inline-flex items-center justify-center gap-1 px-2.5 sm:px-3.5 py-2 text-[11px] sm:text-xs font-semibold border-b-2 transition cursor-pointer ${
                   activeTab === 'cost'
                     ? 'border-emerald-400 text-emerald-200 bg-emerald-500/10'
                     : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -226,6 +271,24 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
                 onNotify={onNotify}
               />
             </div>
+          ) : activeTab === 'rigging' ? (
+            <div
+              id="gear-panel-rigging"
+              role="tabpanel"
+              aria-labelledby="gear-tab-rigging"
+              className="flex-1 min-h-0 flex flex-col overflow-hidden"
+            >
+              <RiggingPowerPanel
+                rig={rig}
+                stage={stage}
+                loads={loads}
+                power={power}
+                applyD8Derate={applyD8Derate}
+                onChangeD8Derate={setApplyD8Derate}
+                onChangeRig={onChangeRig}
+                onNotify={onNotify}
+              />
+            </div>
           ) : (
             <div
               id="gear-panel-cost"
@@ -246,6 +309,9 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
 
       {activeTab === 'inventory' && (
         <InventoryPrintSheet rig={rig} inventory={inventory} shopStock={shopStock} />
+      )}
+      {activeTab === 'rigging' && (
+        <RiggingPowerPrintSheet rig={rig} loads={loads} power={power} />
       )}
     </>
   );

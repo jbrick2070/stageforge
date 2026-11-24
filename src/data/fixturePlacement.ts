@@ -1,5 +1,6 @@
 import type { FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show';
 import { buildDmxPatch } from './dmxPatch';
+import { getTrussProfile, trussMountY } from './rigCatalog';
 import { podWorldPoint, stageSurfaceHeight } from './stageDesign';
 import { trussMounts } from './trussMounts';
 
@@ -66,7 +67,10 @@ export function placeFixtures(rig: RigConfig): FixturePlacement[] {
   };
   for (const pod of rig.trussPods) {
     const hung = hungUnits(pod.fixtures);
-    const slots = trussMounts(pod.shape, pod.width, pod.path, hung.length);
+    const mountY = getTrussProfile(pod.trussProfileId)
+      ? trussMountY(pod.trussProfileId, pod.shape, pod.width)
+      : undefined;
+    const slots = trussMounts(pod.shape, pod.width, pod.path, hung.length, mountY);
     hung.forEach(({ group, index }, n) => {
       const mount = slots[mountSlotIndex(n, hung.length, slots.length)];
       if (!mount) return;

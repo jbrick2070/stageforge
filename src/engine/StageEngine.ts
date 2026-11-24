@@ -1356,7 +1356,15 @@ export class StageEngine {
       podGroup.rotation.y = pod.rotationY;
 
       const fixtureCount = pod.fixtures.reduce((count, group) => count + group.count, 0);
-      const built = buildTrussGeometry(pod.shape, pod.width, this.mats, pod.path, fixtureCount);
+      const built = buildTrussGeometry(
+        pod.shape,
+        pod.width,
+        this.mats,
+        pod.path,
+        fixtureCount,
+        pod.trussProfileId,
+        pod.hoistCount,
+      );
       built.group.name = 'Truss structure';
       podGroup.add(built.group);
 

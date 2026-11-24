@@ -4,6 +4,7 @@ import schemaV3 from '../schemas/show-v3.schema.json';
 import schemaV4 from '../schemas/show-v4.schema.json';
 import schemaV5 from '../schemas/show-v5.schema.json';
 import schemaV6 from '../schemas/show-v6.schema.json';
+import schemaV7 from '../schemas/show-v7.schema.json';
 import type { BumpState, CameraPreset, MusicRef, RigConfig, ScreenRef, ShowCue, ShowState } from '../types/show';
 import { parseRigJson } from './rigImport';
 import { focusMarks } from '../engine/focusAim';
@@ -19,6 +20,7 @@ const V3_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v3.s
 export const V4_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v4.schema.json';
 export const V5_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v5.schema.json';
 export const V6_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v6.schema.json';
+export const V7_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v7.schema.json';
 
 export type SmpteFrameRate = 24 | 25 | 29.97 | 30;
 
@@ -99,9 +101,9 @@ export function referencedFiles(media: ShowMedia | undefined, cues: ShowCue[], t
 }
 
 export interface StageForgeShowFile {
-  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL | typeof V4_SCHEMA_URL | typeof V5_SCHEMA_URL | typeof V6_SCHEMA_URL;
+  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL | typeof V4_SCHEMA_URL | typeof V5_SCHEMA_URL | typeof V6_SCHEMA_URL | typeof V7_SCHEMA_URL;
   format: 'stageforge-show';
-  version: 1 | 2 | 3 | 4 | 5 | 6;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   rig: RigConfig;
   cues: ShowCue[];
   look: ShowState;
@@ -140,7 +142,15 @@ interface Rule {
 }
 
 type ShowSchema = Rule & { $defs: Record<string, Rule> };
-const versions = { 1: schemaV1 as ShowSchema, 2: schemaV2 as ShowSchema, 3: schemaV3 as ShowSchema, 4: schemaV4 as ShowSchema, 5: schemaV5 as ShowSchema, 6: schemaV6 as ShowSchema };
+const versions = {
+  1: schemaV1 as ShowSchema,
+  2: schemaV2 as ShowSchema,
+  3: schemaV3 as ShowSchema,
+  4: schemaV4 as ShowSchema,
+  5: schemaV5 as ShowSchema,
+  6: schemaV6 as ShowSchema,
+  7: schemaV7 as ShowSchema,
+};
 const compiledPatterns = new Map<string, RegExp>();
 
 class ShowFormatError extends Error {}
@@ -392,7 +402,7 @@ export function pruneInterchangeFixtureSpecs(
 
 function decode(value: unknown, writing: boolean): StageForgeShowFile {
   const version = value && typeof value === 'object' && 'version' in value ? value.version : undefined;
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6) invalid('show.version', 'has an unsupported value');
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) invalid('show.version', 'has an unsupported value');
   const schema = versions[version];
   const show = read(value, schema, 'show', writing, schema) as StageForgeShowFile;
   // Share ID, geometry, patch count and motor-range checks with the legacy rig reader.
@@ -452,13 +462,23 @@ export function makeShowFile(
       ...(timeline?.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: timeline.timecodeOffsetMs } : {}),
     };
   }
+  const hasV7 =
+    rig.power !== undefined ||
+    rig.trussPods.some(
+      (pod) =>
+        pod.trussProfileId !== undefined ||
+        pod.hoistId !== undefined ||
+        pod.hoistCount !== undefined ||
+        pod.fixtures.some((f) => f.circuitGroup !== undefined || f.phase !== undefined),
+    ) ||
+    rig.floorFx.some((f) => f.circuitGroup !== undefined || f.phase !== undefined);
   const hasV6 =
     rig.trussPods.some((pod) => pod.fixtures.some((f) => f.catalogId !== undefined || f.dmxMode !== undefined || f.dmxChannels !== undefined)) ||
     rig.floorFx.some((f) => f.catalogId !== undefined || f.dmxMode !== undefined || f.dmxChannels !== undefined) ||
     rig.ledWall.cabinets?.cabinetId !== undefined;
   const hasV5Timeline = timeline?.frameRate !== undefined || timeline?.timecodeOffsetMs !== undefined;
-  const version = hasV6 ? 6 : hasV5Timeline ? 5 : cleanInterchange ? 4 : stage ? 3 : 2;
-  const $schema = version === 6 ? V6_SCHEMA_URL : version === 5 ? V5_SCHEMA_URL : version === 4 ? V4_SCHEMA_URL : version === 3 ? V3_SCHEMA_URL : V2_SCHEMA_URL;
+  const version = hasV7 ? 7 : hasV6 ? 6 : hasV5Timeline ? 5 : cleanInterchange ? 4 : stage ? 3 : 2;
+  const $schema = version === 7 ? V7_SCHEMA_URL : version === 6 ? V6_SCHEMA_URL : version === 5 ? V5_SCHEMA_URL : version === 4 ? V4_SCHEMA_URL : version === 3 ? V3_SCHEMA_URL : V2_SCHEMA_URL;
   const show = decode({
     $schema, format: 'stageforge-show', version, rig, stage, interchange: cleanInterchange,
     cues: cues.map(cue => ({
@@ -476,7 +496,7 @@ export function makeShowFile(
     },
     media: media && { music: portableMedia(media.music), screen: portableMedia(media.screen) },
   }, true);
-  if (hasV6 || hasV5Timeline || cleanInterchange || stage) return show;
+  if (hasV7 || hasV6 || hasV5Timeline || cleanInterchange || stage) return show;
   // Emit the oldest schema that represents every field, including saved cues and takes.
   const legacy = { ...show, version: 1 as const, $schema: SHOW_SCHEMA_URL as typeof SHOW_SCHEMA_URL };
   try {

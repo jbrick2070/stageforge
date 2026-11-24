@@ -26,6 +26,7 @@ const exportsBySuffix = [
   ['.glb', 'Export 3D scene', [{ name: 'glTF binary', extensions: ['glb'] }]],
   ['.patch.csv', 'Export channel patch', [{ name: 'CSV table', extensions: ['csv'] }]],
   ['.equipment.csv', 'Export equipment list', [{ name: 'CSV table', extensions: ['csv'] }]],
+  ['.rigging-power.csv', 'Export rigging and power report', [{ name: 'CSV table', extensions: ['csv'] }]],
 ];
 
 protocol.registerSchemesAsPrivileged([{
