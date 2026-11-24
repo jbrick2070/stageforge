@@ -1,0 +1,4 @@
+# Published schemas and frozen test fixtures keep LF everywhere, so a Windows checkout has the
+# same bytes as GitHub's Linux runner (which tests before every Pages deploy).
+src/schemas/*.json text eol=lf
+tests/fixtures/*.json text eol=lf

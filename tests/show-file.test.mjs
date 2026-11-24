@@ -217,10 +217,13 @@ test('frozen v1, v2 and v3 show fixtures load cleanly and published schema hashe
   assert.equal(v3.version, 3);
   assert.equal(splitRig.version, 2);
 
+  // Pins are over LF text (the committed form), so a Windows CRLF checkout and GitHub's Linux
+  // runner, which tests before every Pages deploy, compute the same digest.
+  const schemaDigest = (raw) => createHash('sha256').update(raw.toString('utf8').replace(/\r\n/g, '\n')).digest('hex');
   const expectedHashes = {
-    1: '608b285937d333e80ba9811c009a5470cf549c7ea714d3e4a7f62cef7702721d',
-    2: '8125404b9ecce247c05ff86fc322bd3f0ba155973782cae7a25d35054abc3d2c',
-    3: '0dee980fe57afb46a842318b092a567e600dbdb2a5b272a3e8bf47460c789c11',
+    1: '7baa3f2dd7c75e2d6207fab317219528b91b19d9ae275a005650633f6d0d129a',
+    2: 'ddec7de0eac8e9df9620a5b93d6185f0779432f45b37c7c3d945987435ba9437',
+    3: 'b0efe812338e41838923e332c700ef4a077e8a8609990e8ee1ed12c752236881',
     4: 'd114ce279e9de66b26fc9010c9e8ca8b7c260956c03a73a3813b8171b8996d49',
     5: '9cbf644005c09bd1ec92be20aad348fe0f8a7377134ae05c9e5826bdf5b0350f',
     6: '6db46f168be983490fb5f226ad375df55881800304a872471583c3719e9ba2e2',
@@ -228,7 +231,9 @@ test('frozen v1, v2 and v3 show fixtures load cleanly and published schema hashe
   };
   for (const [ver, hash] of Object.entries(expectedHashes)) {
     const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));
-    assert.equal(createHash('sha256').update(raw).digest('hex'), hash, `show-v${ver}.schema.json hash pin`);
+    assert.equal(schemaDigest(raw), hash, `show-v${ver}.schema.json hash pin`);
+    const lf = raw.toString('utf8').replace(/\r\n/g, '\n');
+    assert.equal(schemaDigest(Buffer.from(lf.replace(/\n/g, '\r\n'))), hash, `show-v${ver}.schema.json pin ignores CRLF`);
     const parsed = JSON.parse(raw.toString('utf8'));
     assert.equal(parsed.$id, `https://jbrick2070.github.io/stageforge/schemas/show-v${ver}.schema.json`);
   }
