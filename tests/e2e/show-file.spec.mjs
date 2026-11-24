@@ -45,6 +45,13 @@ test('a web save preserves native stage data and a replacement rig starts withou
   expect(saved.stage).toEqual(stage);
   await files.getByRole('button', { name: 'Close Show files' }).click();
   await page.getByRole('button', { name: 'Rig builder', exact: true }).click();
+  // Replacing the rig asks before discarding authored walls, hangs and wall cues.
+  const prompts = [];
+  page.once('dialog', dialog => { prompts.push(dialog.message()); void dialog.dismiss(); });
+  await page.getByRole('button', { name: /Small Proscenium Theatre/ }).click();
+  await expect.poll(() => prompts.length).toBe(1);
+  expect(prompts[0]).toMatch(/discards .*secondary screens.*wall cues.*aimed speaker hangs/);
+  page.once('dialog', dialog => void dialog.accept());
   await page.getByRole('button', { name: /Small Proscenium Theatre/ }).click();
   await page.getByRole('button', { name: 'Close Rig Builder' }).click();
   await openFiles(page);

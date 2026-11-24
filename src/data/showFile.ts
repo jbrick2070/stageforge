@@ -51,9 +51,9 @@ export interface ShowMedia {
   screen: ScreenRef;
 }
 
-export function referencedFiles(media: ShowMedia | undefined, cues: ShowCue[], timeline?: ShowTimeline) {
+export function referencedFiles(media: ShowMedia | undefined, cues: ShowCue[], timeline?: ShowTimeline, stage?: NativeStage) {
   const refs = [media?.music, media?.screen, ...cues.map(cue => cue.screen),
-    ...(timeline?.events.flatMap(event => [event.music, event.screen]) ?? [])];
+    ...(timeline?.events.flatMap(event => [event.music, event.screen]) ?? []), ...(stage?.screenEvents ?? [])];
   const keys = new Set<string>();
   for (const ref of refs) {
     if (ref && (ref.kind === 'file' || ref.kind === 'image' || ref.kind === 'video')) {

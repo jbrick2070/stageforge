@@ -11,9 +11,12 @@ import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
 import { makeShowFile, parseShowFile, referencedFiles, type NativeStage } from './data/showFile';
 import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
+import type { BundleAsset } from './data/showBundle';
+import { isCustomMainWall, pruneNativeStage, removeSecondaryScreenEvent, upsertSecondaryScreenEvent, type SecondaryScreenEvent } from './data/studioGeometry';
 import { ShowFiles, type FileAction } from './components/ShowFiles';
 import { CueListEditor } from './components/CueListEditor';
 import { useShowTimeline } from './input/useShowTimeline';
+import { useWallClock } from './input/useWallClock';
 import { patchCsv } from './data/patchCsv';
 import { StageDesigner } from './components/StageDesigner';
 import { BottomConsole } from './components/BottomConsole';
@@ -78,6 +81,23 @@ export const App: React.FC = () => {
 
   const [savedDesign, setSavedDesign] = useState(readSavedDesign);
   const nativeStage = useRef<NativeStage | undefined>(undefined);
+  const [studioStage, setStudioStage] = useState<NativeStage>();
+  const installStage = (stage?: NativeStage) => {
+    nativeStage.current = stage;
+    setStudioStage(stage);
+  };
+  // Replacing the rig drops authored walls, hangs and wall cues; never do that silently.
+  const confirmDiscardStage = () => {
+    const stage = pruneNativeStage(nativeStage.current);
+    if (!stage) return true;
+    const parts = [
+      stage.walls.some(w => w.id !== 'main-led') && 'secondary screens',
+      stage.screenEvents.length && `${stage.screenEvents.length} wall cues`,
+      stage.layout?.hangs && 'aimed speaker hangs',
+      (stage.layout?.trusses?.length || stage.layout?.props?.length) && 'authored trusses and props',
+    ].filter(Boolean);
+    return window.confirm(`Replacing the rig discards ${parts.length ? parts.join(', ') : 'the authored stage layout'}. Continue?`);
+  };
   const [rig, setRig] = useState<RigConfig>(() => savedDesign ?? structuredClone(RIG_TEMPLATES.arena_mainstage));
   const [showState, setShowState] = useState<ShowState>(() => structuredClone(INITIAL_SHOW_STATE));
   const [bump, setBump] = useState<BumpState>(EMPTY_BUMP);
@@ -106,6 +126,7 @@ export const App: React.FC = () => {
   const [captureVideoPosition, setCaptureVideoPosition] = useState(false);
   const [linkedVersion, setLinkedVersion] = useState(0);
   const assets = useRef(new Map<string, { file: File; url?: string }>());
+  const wallClock = useWallClock(engineRef, nativeStage, assets);
   const mediaUrls = useRef(new Set<string>());
   const expectedMusic = useRef<MusicRef>(NO_MUSIC);
   const replaying = useRef(false);
@@ -141,6 +162,19 @@ export const App: React.FC = () => {
     setToast(msg);
   }, []);
 
+  // Revoke after a grace period so a renderer still holding the old URL can swap first.
+  const releaseUrl = (url: string) => {
+    mediaUrls.current.delete(url);
+    window.setTimeout(() => { if (!mediaUrls.current.has(url)) URL.revokeObjectURL(url); }, 5000);
+  };
+  /** Drop linked media the incoming show never references (e.g. a previous bundle's clips). */
+  const pruneAssets = (keep: Set<string>) => {
+    for (const [key, asset] of assets.current) {
+      if (keep.has(key)) continue;
+      assets.current.delete(key);
+      if (asset.url) releaseUrl(asset.url);
+    }
+  };
   const registerAsset = (kind: 'file' | 'image' | 'video', file: File) => {
     const key = kind + ':' + file.name;
     const previous = assets.current.get(key);
@@ -149,6 +183,12 @@ export const App: React.FC = () => {
     if (url) mediaUrls.current.add(url);
     const asset = { file, url };
     assets.current.set(key, asset);
+    if (previous?.url) {
+      // Keep the main LED wall on the replacement file instead of a soon-revoked URL.
+      if (kind !== 'file' && screen.kind === kind && screen.name === file.name)
+        setShowState(s => s.led.customMediaUrl === previous.url ? { ...s, led: { ...s.led, customMediaUrl: url! } } : s);
+      releaseUrl(previous.url);
+    }
     setLinkedVersion(v => v + 1);
     return asset;
   };
@@ -167,7 +207,8 @@ export const App: React.FC = () => {
   };
   const readScreen = (): ScreenRef => {
     if (screen.kind !== 'video' || !showState.led.customMediaUrl) return screen;
-    const active = showState.led.enabled && showState.led.visualMode === 'custom' && rig.ledWall.enabled;
+    const hasWall = rig.ledWall.enabled || isCustomMainWall(nativeStage.current?.walls.find(w => w.id === 'main-led'));
+    const active = showState.led.enabled && showState.led.visualMode === 'custom' && hasWall;
     const transport = engineRef.current?.screenTransport();
     return { ...screen, ...transport, playing: !!(active && transport?.playing) };
   };
@@ -191,10 +232,10 @@ export const App: React.FC = () => {
         replayScreenClock.current = performance.now() - lateMs;
         setScreen(event.screen);
       }
+      const fullLook = !!(event.look?.motors && event.look.masterDimmer !== undefined);
       if (event.look || event.screen) {
-        const prior = event.atMs === 0 && event.look?.motors && event.look.masterDimmer !== undefined
-          ? event.look as ShowState : replayLook.current;
-        const next = wallLook({ ...prior, ...event.look }, replayScreen.current);
+        const prior = fullLook ? event.look as ShowState : replayLook.current;
+        const next = wallLook(fullLook ? prior : { ...prior, ...event.look }, replayScreen.current);
         replayLook.current = next; autoDirRef.current = next.autoDirector;
         setShowState(next); engine?.setShowState(next); ae?.setBpm(next.bpm);
       }
@@ -207,13 +248,16 @@ export const App: React.FC = () => {
       if (event.cueId !== undefined) {
         setActiveCueId(event.cueId);
         const cue = cues.find(c => c.id === event.cueId);
-        setCueModified(event.atMs === 0 && differsFromCue(replayLook.current, cue, replayScreen.current));
+        // Full frames (the take's first event, or a seek/resume reconstruction) can land
+        // on a cue whose look was edited after it fired; partial cue events cannot.
+        setCueModified(fullLook && differsFromCue(replayLook.current, cue, replayScreen.current));
       } else if (event.look) setCueModified(true);
       if (event.bump) { setBump(event.bump); setControllerBump(EMPTY_BUMP); engine?.setBumpState(event.bump); }
       if (event.camera) { setActiveCamera(event.camera); engine?.setCameraPreset(event.camera); }
       if (event.volume !== undefined) { setVolume(event.volume); ae?.setVolume(event.volume); }
     },
     () => {
+      wallClock.set(wallClock.position(), false);
       replaying.current = false; directorArmed.current = false;
       const music = readMusic();
       expectedMusic.current = { ...music, playing: false };
@@ -227,6 +271,7 @@ export const App: React.FC = () => {
       }
       setBump(EMPTY_BUMP); setControllerBump(EMPTY_BUMP);
     },
+    () => nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0,
   );
 
   const flushDesign = useCallback(() => {
@@ -340,7 +385,12 @@ export const App: React.FC = () => {
     engineRef.current = engine;
     // Read-only probe for browser tests: `?probe` exposes each head's beam axis.
     const probe = new URLSearchParams(window.location.search).has('probe');
-    if (probe) (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe = { beamAxes: () => engine.beamAxes() };
+    if (probe) (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe = {
+      beamAxes: () => engine.beamAxes(),
+      screens: () => engine.screenDiagnostics(),
+      primaryScreen: () => engine.screenTransport(),
+      hangs: () => engine.hangDiagnostics(),
+    };
 
     return () => {
       if (probe) delete (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe;
@@ -381,8 +431,11 @@ export const App: React.FC = () => {
       firstRigMount.current = false;
       return;
     }
-    engineRef.current?.rebuildRig(rig);
-  }, [rig]);
+    engineRef.current?.setStageScreens(studioStage?.walls);
+    engineRef.current?.rebuildRig(rig, studioStage);
+    wallClock.refresh();
+  }, [rig, studioStage, wallClock.refresh]);
+  useEffect(() => { wallClock.refresh(); }, [linkedVersion, wallClock.refresh]);
 
   // Global keyboard live show hotkeys (when not typing in a text box)
   useEffect(() => {
@@ -608,9 +661,9 @@ export const App: React.FC = () => {
   }, [rig]);
 
   const oneNightCostLabel = useMemo(() => {
-    const est = calculateProductionEstimate(rig);
+    const est = calculateProductionEstimate(rig, studioStage);
     return `${formatUSD(est.oneNightShowTotal)}/NT`;
-  }, [rig]);
+  }, [rig, studioStage]);
 
   const toggleDirector = () => {
     directorArmed.current = true; setFollow(null);
@@ -644,18 +697,26 @@ export const App: React.FC = () => {
     if (saveNow) flushDesign();
     else saveTimer.current = window.setTimeout(flushDesign, 250);
   }, [savedDesign, flushDesign]);
-  const openDocument = (json: string) => {
+  const openDocument = (json: string, bundledMedia: BundleAsset[] = []) => {
     let object: unknown;
     try { object = JSON.parse(json); } catch { throw new Error('Choose a valid StageForge JSON file.'); }
     if (!object || typeof object !== 'object' || !('format' in object)) {
       const next = normalizeDesign(parseRigJson(json));
-      nativeStage.current = undefined;
+      installStage();
+      wallClock.set(0,false);
       timeline.stop();
       applyRig(next, true); previewRig(); showToast(`Opened ${next.name}.`); return;
     }
     const file = parseShowFile(json);
-    nativeStage.current = file.stage;
-    timeline.replace(file.timeline);
+    pruneAssets(referencedFiles(file.media, file.cues, file.timeline, file.stage));
+    for (const { kind, file: medium } of bundledMedia) registerAsset(kind, medium);
+    timeline.replace(file.timeline, {
+      look: file.look, cueId: file.activeCueId, camera: file.controls?.camera ?? 'foh',
+      volume: file.controls?.volume ?? 0.72, bump: EMPTY_BUMP,
+      screen: file.media?.screen ?? NO_SCREEN, music: file.media?.music ?? NO_MUSIC,
+    });
+    installStage(file.stage);
+    wallClock.set(0,false);
     setFollow(null); directorArmed.current = false;
     audioEngineRef.current?.stopAll(); setAudioMetrics(EMPTY_AUDIO);
     setControllerBump(EMPTY_BUMP); setBump(EMPTY_BUMP);
@@ -669,24 +730,43 @@ export const App: React.FC = () => {
     setScreen(wall); setCaptureVideoPosition(false); setVolume(file.controls?.volume ?? 0.72); setActiveCamera(file.controls?.camera ?? 'foh');
     audioEngineRef.current?.setBpm(look.bpm); audioEngineRef.current?.setVolume(file.controls?.volume ?? 0.72);
     engineRef.current?.releaseDirector(false); engineRef.current?.setShowState(look); previewRig();
+    if (wall.kind === 'video') engineRef.current?.restoreScreenTransport(wall.playing, wall.offsetSeconds);
     engineRef.current?.setCameraPreset(file.controls?.camera ?? 'foh');
-    const missingCount = [...referencedFiles(file.media, file.cues, file.timeline)].filter(key => !assets.current.has(key)).length;
+    const missingCount = [...referencedFiles(file.media, file.cues, file.timeline, file.stage)].filter(key => !assets.current.has(key)).length;
     const warning = missingCount ? ` · ${missingCount} missing media ${missingCount === 1 ? 'file' : 'files'}` : '';
     showToast(`Opened ${file.rig.name} · ${file.cues.length} cues${warning}.`);
   };
+  const openBundleBytes = async (bytes: Uint8Array) => {
+    const { MAX_BUNDLE_BYTES, openShowBundle } = await import('./data/showBundle');
+    if (bytes.byteLength > MAX_BUNDLE_BYTES) throw new Error('This show exceeds the 512 MiB in-memory bundle limit.');
+    // Fully verified (hashes, paths, schema) before any desk state changes.
+    const bundle = await openShowBundle(bytes);
+    openDocument(JSON.stringify(bundle.show), bundle.files);
+  };
+  const openFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.zip')) return openDocument(await file.text());
+    const { MAX_BUNDLE_BYTES } = await import('./data/showBundle');
+    if (file.size > MAX_BUNDLE_BYTES) throw new Error('This show exceeds the 512 MiB in-memory bundle limit.');
+    await openBundleBytes(new Uint8Array(await file.arrayBuffer()));
+  };
   const saveDocument = async (action: FileAction) => {
     if (action === 'rig') return downloadRig(rig);
-    if (action === 'show') {
+    if (action === 'show' || action === 'bundle') {
       const validActiveCue = cues.some(c => c.id === activeCueId) ? activeCueId : null;
       const file = makeShowFile(rig, cues, showState, validActiveCue, { camera: activeCamera, volume }, timeline.snapshot(),
         { music: readMusic(), screen: readScreen() }, nativeStage.current);
-      downloadStageFile(rig.name, 'stageforge.show.json', new Blob([JSON.stringify(file, null, 2) + '\n'], { type: 'application/json' }));
+      if (action === 'bundle') {
+        const { createShowBundle } = await import('./data/showBundle');
+        downloadStageFile(rig.name, 'stageforge.zip', await createShowBundle(file, assets.current));
+      } else {
+        downloadStageFile(rig.name, 'stageforge.show.json', new Blob([JSON.stringify(file, null, 2) + '\n'], { type: 'application/json' }));
+      }
     } else if (action === 'glb') {
       if (!engineRef.current) throw new Error('The 3D stage is still loading.');
       downloadStageFile(rig.name, 'glb', await engineRef.current.exportCurrentStageGlb());
     } else if (action === 'dxf') {
       const { exportStageDxf } = await import('./data/stageDxf');
-      downloadStageFile(rig.name, 'dxf', new Blob([exportStageDxf(rig)], { type: 'application/dxf' }));
+      downloadStageFile(rig.name, 'dxf', new Blob([exportStageDxf(rig, studioStage)], { type: 'application/dxf' }));
     } else {
       downloadStageFile(rig.name, 'patch.csv', new Blob([patchCsv(rig)], { type: 'text/csv;charset=utf-8' }));
     }
@@ -700,8 +780,8 @@ export const App: React.FC = () => {
     openDocument(json);
   };
   const media = { music: readMusic(), screen: readScreen() };
-  const referencedMedia = useMemo(() => referencedFiles(media, cues, timeline.timeline),
-    [cues, timeline.timeline, media.music.name, media.music.kind, media.screen.name, media.screen.kind]);
+  const referencedMedia = useMemo(() => referencedFiles(media, cues, timeline.timeline, studioStage),
+    [studioStage, cues, timeline.timeline, media.music.name, media.music.kind, media.screen.name, media.screen.kind]);
   const missing = useMemo(() => [...referencedMedia].filter(k => !assets.current.has(k)).map(k => k.slice(k.indexOf(':') + 1)), [referencedMedia, linkedVersion]);
   const onRelink = (files: File[]) => {
     let count = 0;
@@ -720,25 +800,30 @@ export const App: React.FC = () => {
           engineRef.current?.setShowState(look);
           engineRef.current?.restoreScreenTransport(ref.playing, replayScreenOffset());
         } else if (kind !== 'file' && kind === screen.kind && screen.name === f.name) {
-          setShowState(s => ({ ...s, led: { ...s.led, customMediaType: kind, customMediaUrl: asset.url! } }));
+          const next = { ...showState, led: { ...showState.led, customMediaType: kind, customMediaUrl: asset.url! } };
+          setShowState(next);
+          engineRef.current?.setShowState(next);
+          if (kind === 'video') engineRef.current?.restoreScreenTransport(screen.playing, screen.offsetSeconds);
         }
         count++;
       }
     }
+    if (count) wallClock.refresh();
     return count ? `Relinked ${count} media reference${count === 1 ? '' : 's'}.` : 'Choose media with the filenames listed in this show.';
   };
-  const fileCommand = React.useEffectEvent((command: 'open' | 'export' | 'show' | 'glb' | 'dxf' | 'csv', json?: string) => {
+  const fileCommand = React.useEffectEvent(async (command: 'open' | 'openBundle' | 'export' | FileAction, source?: string | Uint8Array) => {
     if (designerRig) {
       window.alert('Apply or cancel the open stage plan before opening or exporting a rig.');
       return;
     }
-    if (command !== 'open') {
+    if (command !== 'open' && command !== 'openBundle') {
       void saveDocument(command === 'export' ? 'rig' : command).catch(e => window.alert(e.message));
       return;
     }
-    if (json === undefined) return;
+    if (source === undefined) return;
     try {
-      openDocument(json);
+      if (command === 'openBundle' && typeof source !== 'string') await openBundleBytes(source);
+      else if (typeof source === 'string') openDocument(source);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'Could not open this StageForge rig.');
     }
@@ -858,8 +943,8 @@ export const App: React.FC = () => {
       {missing.length > 0 && <button type="button" className="media-relink-alert" onClick={() => setFilesOpen(true)}>
         {missing.length} missing media {missing.length === 1 ? 'file' : 'files'} · Relink
       </button>}
-      {filesOpen && <ShowFiles name={rig.name} media={media} timeline={timeline.timeline} missing={missing} cueNames={new Map(cues.map(c => [c.id, c.name]))}
-        onOpen={openDocument} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onClose={() => setFilesOpen(false)}/>}
+      {filesOpen && <ShowFiles name={rig.name} media={media} stage={studioStage} timeline={timeline.timeline} missing={missing} cueNames={new Map(cues.map(c => [c.id, c.name]))}
+        onOpen={openFile} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onClose={() => setFilesOpen(false)}/>}
       {cueEditor && <CueListEditor cues={cues} capture={() => ({ id: crypto.randomUUID(), name: 'New look',
         tag: 'USER', accent: showState.primaryColor, state: structuredClone(showState), screen: cueScreen() })}
         onApply={next => {
@@ -886,12 +971,21 @@ export const App: React.FC = () => {
         <RigBuilderDrawer
           open={rigDrawerOpen}
           rig={rig}
+          stage={studioStage}
           onClose={() => setRigDrawerOpen(false)}
           onDesignStage={() => setDesignerRig(rig)}
           onOpenSavedDesign={savedDesign ? () => setDesignerRig(savedDesign) : undefined}
           onChangeRig={(next, replacing) => {
-            if (replacing) nativeStage.current = undefined;
+            if (replacing && !confirmDiscardStage()) return;
+            if (replacing) installStage();
             applyRig(next);
+          }}
+          onChangeStage={(next) => {
+            const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
+            installStage(next);
+            const nextEvents = next?.screenEvents ?? [];
+            if (hadEvents || nextEvents.length) timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
+            previewRig();
           }}
         />
       )}
@@ -910,13 +1004,15 @@ export const App: React.FC = () => {
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
       {designerRig && <StageDesigner rig={designerRig} onClose={() => setDesignerRig(null)} onChange={(design, replacing) => {
         const next = normalizeDesign(design);
-        if (replacing || designerRig !== rig) nativeStage.current = undefined;
+        if (replacing && !confirmDiscardStage()) return;
+        if (replacing) installStage();
         applyRig(next, true);
         previewRig();
         setDesignerRig(null);
       }} />}
       {costModalOpen && <CostEstimatorModal
         rig={rig}
+        stage={studioStage}
         onClose={() => setCostModalOpen(false)}
         onDeployRig={() => showToast('Virtual Crew Load-In Approved ($0.00) — Show Live!')}
       />}
@@ -991,13 +1087,80 @@ export const App: React.FC = () => {
           onResetCue={() => { if (cues[0]) triggerCue(cues[0]); }}
           onHold={() => setFollow('held')}
           follow={follow}
-          take={{ mode: timeline.mode, timeMs: timeline.timeMs, hasTake: !!timeline.timeline?.events.length,
-            record: () => { if (!timeline.timeline?.events.length || window.confirm('Replace the recorded take in this session?')) timeline.record(); },
+          stage={studioStage}
+          onApplyWallCue={(event: SecondaryScreenEvent, file?: File) => {
+            if (file && event.kind !== 'none') registerAsset(event.kind, file);
+            const nextStage = upsertSecondaryScreenEvent(rig, nativeStage.current, event);
+            // upsert rejects unknown walls and unnamed media; leave the desk untouched then.
+            if (!nextStage.screenEvents.some(e => e.target === event.target && e.atMs === Math.max(0, Math.round(event.atMs)))) return;
+            installStage(nextStage);
+            const lastWallMs = nextStage.screenEvents.at(-1)?.atMs ?? 0;
+            timeline.syncWallDuration(lastWallMs, nextStage.screenEvents.length > 0);
+            previewRig();
+            const endMs = Math.max(timeline.timeline?.durationMs ?? 0, lastWallMs);
+            // While a take records or replays, keep the walls on the shared clock;
+            // when idle, preview the edited cue at its own time.
+            if (timeline.mode === 'idle') wallClock.set(event.atMs, false, endMs);
+            else wallClock.set(wallClock.position(), true, timeline.mode === 'recording' ? Infinity : endMs);
+          }}
+          onRemoveWallCue={(target, atMs) => {
+            const nextStage = removeSecondaryScreenEvent(rig, nativeStage.current, target, atMs);
+            installStage(nextStage);
+            const nextEvents = nextStage?.screenEvents ?? [];
+            timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
+            wallClock.refresh();
+          }}
+          take={{
+            mode: timeline.mode,
+            timeMs: timeline.timeMs,
+            durationMs: Math.max(timeline.timeline?.durationMs ?? 0, studioStage?.screenEvents.at(-1)?.atMs ?? 0),
+            hasTake: !!timeline.timeline && (timeline.timeline.events.length > 0 || timeline.timeline.durationMs > 0),
+            canResume: timeline.canResume,
+            cues: (timeline.timeline?.events ?? [])
+              .filter((e): e is TimelineEvent & { cueId: string } => typeof e.cueId === 'string')
+              .slice(0, 24)
+              .map(e => ({ atMs: e.atMs, cueId: e.cueId, name: cues.find(c => c.id === e.cueId)?.name ?? e.cueId })),
+            record: () => {
+              if (!timeline.timeline?.events.length || window.confirm('Replace the recorded take in this session?')) {
+                timeline.record();
+                wallClock.set(0, true);
+              }
+            },
             play: () => {
               if (missing.length) showToast(`Playing with missing media. Relink ${missing.join(', ')} in Files.`);
+              const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
               setFollow(null); replaying.current = true; replayLook.current = showState; replayScreen.current = NO_SCREEN; replayMusicClock.current = 0;
-              engineRef.current?.releaseDirector(false); previewRig(); timeline.play();
-            }, stop: timeline.stop }}
+              engineRef.current?.releaseDirector(false); previewRig(); timeline.play(false);
+              wallClock.set(0, true, endMs);
+            },
+            resume: () => {
+              if (missing.length) showToast(`Playing with missing media. Relink ${missing.join(', ')} in Files.`);
+              const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+              setFollow(null); replaying.current = true; replayLook.current = showState; replayMusicClock.current = 0;
+              engineRef.current?.releaseDirector(false); previewRig(); timeline.play(true);
+              wallClock.set(timeline.playhead(), true, endMs);
+            },
+            pause: () => {
+              timeline.pause();
+              replaying.current = false;
+              const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+              wallClock.set(timeline.playhead(), false, endMs);
+            },
+            seek: (ms: number) => {
+              const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+              const clamped = Math.max(0, Math.min(endMs, Math.round(ms)));
+              const keepPlaying = timeline.mode === 'playing' && clamped < endMs;
+              setFollow(null); replaying.current = keepPlaying;
+              engineRef.current?.releaseDirector(false); previewRig();
+              timeline.seek(clamped);
+              wallClock.set(clamped, keepPlaying, endMs);
+            },
+            stop: () => {
+              timeline.stop();
+              replaying.current = false;
+              wallClock.set(timeline.playhead(), false);
+            },
+          }}
           onSetBump={(key, active) => setBump((b) => ({ ...b, [key]: active }))}
         />
       )}

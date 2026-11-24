@@ -2,6 +2,8 @@ import type { RigConfig, StagePropKind } from '../types/show';
 import { PROP_CATALOG } from './stageProps';
 import { pathLength } from './stageDesign';
 import { ledPlacement } from './stageEquipment';
+import type { NativeStage } from './showFile';
+import { authoredWallFrames, authoredWallSurface, resolveStudioGeometry } from './studioGeometry';
 
 export interface CostLineItem {
   category: 'Rigging & Motors' | 'Lighting' | 'Lasers' | 'LED Video' | 'Audio / Speakers' | 'Smoke & FX' | 'Stage & FOH' | 'Scenery (simulation allowance)';
@@ -46,7 +48,8 @@ const scenicAllowance = {
   riser: { buyCost: 1600, rentalCost: 90, weightLbs: 175, watts: 0 },
 } satisfies Record<StagePropKind, Pick<CostLineItem, 'buyCost' | 'rentalCost' | 'weightLbs' | 'watts'>>;
 
-export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate {
+export function calculateProductionEstimate(sourceRig: RigConfig, stage?: NativeStage): ProductionEstimate {
+  const { rig, hangs, props: authoredProps } = resolveStudioGeometry(sourceRig, stage?.layout);
   const equipmentItems: CostLineItem[] = [];
 
   // 1. Stage deck & FOH control
@@ -206,9 +209,26 @@ export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate 
     });
   }
 
-  // 4. Giant LED Video Wall + IMAG Side Wings
-  const wall = rig.ledWall.enabled ? ledPlacement(rig) : undefined;
-  if (wall && wall.height > 0) {
+  // 4. Giant LED Video Wall + IMAG Side Wings + Authored Secondary Walls
+  // A custom main-led replaces the stock wall and its wings (StageEngine builds one panel).
+  const frames = authoredWallFrames(rig, stage);
+  const customMain = frames.find(frame => frame.id === 'main-led');
+  const wall = rig.ledWall.enabled && !customMain ? ledPlacement(rig) : undefined;
+  const secondaryWalls = frames.filter(frame => frame.id !== 'main-led');
+  const secondaryArea = secondaryWalls.reduce((sum, w) => sum + w.width * w.height, 0);
+  if (customMain) {
+    const surface = authoredWallSurface(rig, customMain);
+    const area = customMain.width * customMain.height;
+    equipmentItems.push({
+      category: 'LED Video',
+      label: 'LED wall (authored placement)',
+      qty: surface.cabinets ? `${surface.columns * surface.rows} cabinets · ${Number(area.toFixed(2))} m²` : `${Number(area.toFixed(2))} m²`,
+      buyCost: Math.round(area * 3800),
+      rentalCost: Math.round(area * 185),
+      weightLbs: Math.round(area * 62),
+      watts: Math.round(area * 580),
+    });
+  } else if (wall && wall.height > 0) {
     const totalLedArea = wall.width * wall.height + 2 * wall.wing.width * wall.wing.height;
     const cabinetCount = wall.columns * wall.rows + 2 * wall.wing.columns * wall.wing.rows;
     equipmentItems.push({
@@ -221,11 +241,36 @@ export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate 
       watts: Math.round(totalLedArea * 580),
     });
   }
+  if (secondaryArea > 0) {
+    equipmentItems.push({
+      category: 'LED Video',
+      label: `Secondary LED walls (${secondaryWalls.length})`,
+      qty: `${Number(secondaryArea.toFixed(2))} m²`,
+      buyCost: Math.round(secondaryArea * 3800),
+      rentalCost: Math.round(secondaryArea * 185),
+      weightLbs: Math.round(secondaryArea * 62),
+      watts: Math.round(secondaryArea * 580),
+    });
+  }
 
   // Each hang keeps its amplifier rack. The 9-box configuration retains the
   // original rental, purchase, weight and power assumptions for saved rigs.
   const k2 = rig.audioRig.speakerProfile === 'k2';
-  if (rig.audioRig.lineArrays) {
+  if (hangs !== undefined) {
+    const boxes = hangs.reduce((sum, h) => sum + Math.max(1, Math.min(16, Math.round(h.count))), 0);
+    if (boxes > 0) {
+      const racks = hangs.length;
+      equipmentItems.push({
+        category: 'Audio / Speakers',
+        label: k2 ? `K2 flown speaker hangs (${racks} arrays)` : `Flown speaker hangs (${racks} arrays)`,
+        qty: `${boxes} boxes + ${racks} ${racks === 1 ? 'rack' : 'racks'}`,
+        buyCost: racks * 17000 + boxes * 14500,
+        rentalCost: racks * 650 + boxes * 350,
+        weightLbs: racks * 300 + boxes * (k2 ? 123 : 200),
+        watts: racks * 1200 + boxes * 1200,
+      });
+    }
+  } else if (rig.audioRig.lineArrays) {
     const boxes = 2 * Math.max(4, Math.min(12, Math.round(rig.audioRig.boxesPerSide ?? 9)));
     equipmentItems.push({
       category: 'Audio / Speakers',
@@ -269,6 +314,25 @@ export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate 
     equipmentItems.push({
       category: 'Scenery (simulation allowance)',
       label: PROP_CATALOG[kind].label,
+      qty: `${qty} ${qty === 1 ? 'piece' : 'pieces'}`,
+      buyCost: qty * unit.buyCost,
+      rentalCost: qty * unit.rentalCost,
+      weightLbs: qty * unit.weightLbs,
+      watts: qty * unit.watts,
+    });
+  }
+
+  // Native-authored layout props: air-filled pieces carry the tentacle (blower)
+  // allowance; rigid scenic flats carry the riser allowance.
+  for (const [type, label, unit] of [
+    ['inflatable', 'Authored inflatables', scenicAllowance.tentacle],
+    ['scenic', 'Authored scenic pieces', scenicAllowance.riser],
+  ] as const) {
+    const qty = authoredProps.filter(prop => prop.type === type).length;
+    if (qty === 0) continue;
+    equipmentItems.push({
+      category: 'Scenery (simulation allowance)',
+      label,
       qty: `${qty} ${qty === 1 ? 'piece' : 'pieces'}`,
       buyCost: qty * unit.buyCost,
       rentalCost: qty * unit.rentalCost,
@@ -323,10 +387,11 @@ export function calculateProductionEstimate(rig: RigConfig): ProductionEstimate 
   const totalLasers = laserCount + floorLaserCount;
   const shiftHours = rig.venue === 'festival' ? 16 : rig.venue === 'arena' ? 14 : rig.venue === 'club' ? 8 : 10;
 
-  const riggerCount = Math.max(2, Math.ceil((totalMotors + (rig.audioRig.lineArrays ? 4 : 0)) / 3));
+  const paPoints = hangs !== undefined ? hangs.length * 2 : (rig.audioRig.lineArrays ? 4 : 0);
+  const riggerCount = Math.max(2, Math.ceil((totalMotors + paPoints) / 3));
   const lightingCrew = Math.max(2, Math.ceil(totalFixtures / 10));
   const audioCrew = (rig.audioRig.lineArrays ? 4 : 1) + (rig.audioRig.subWall ? 2 : 0);
-  const videoCrew = wall && wall.height > 0 ? (wall.wing.width > 0 ? 4 : 2) : 0;
+  const videoCrew = wall && wall.height > 0 ? (wall.wing.width > 0 ? 4 : 2) : (customMain || secondaryWalls.length ? 2 : 0);
   const stageHands = Math.max(4, Math.ceil(totalWeightLbs / 4500));
 
   const laborItems: LaborLineItem[] = [

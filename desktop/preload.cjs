@@ -2,9 +2,16 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const listeners = new Set();
 let pending;
-ipcRenderer.on('stageforge:rig-command', (_event, command, source) => {
-  if (!['export', 'show', 'dxf', 'glb', 'csv'].includes(command) && !(command === 'open' && typeof source === 'string')) return;
-  const args = command === 'open' ? [command, source] : [command];
+// Realm-independent checks: IPC values are created in the preload's isolated world.
+const isBytes = value => ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Uint8Array]';
+const isBuffer = value => Object.prototype.toString.call(value) === '[object ArrayBuffer]';
+
+ipcRenderer.on('stageforge:rig-command', (_event, command, rawSource) => {
+  // Hand the renderer a Uint8Array: contextBridge copies typed arrays reliably.
+  const source = command === 'openBundle' && isBuffer(rawSource) ? new Uint8Array(rawSource) : rawSource;
+  const opening = (command === 'open' && typeof source === 'string') || (command === 'openBundle' && isBytes(source));
+  if (!opening && !['export', 'show', 'bundle', 'dxf', 'glb', 'csv'].includes(command)) return;
+  const args = opening ? [command, source] : [command];
   if (!listeners.size) pending = args;
   else for (const listener of listeners) listener(...args);
 });

@@ -1,5 +1,5 @@
 const { app, BrowserWindow, dialog, Menu, net, protocol, session, shell, systemPreferences } = require('electron');
-const { readFile } = require('node:fs/promises');
+const { readFile, stat } = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
@@ -7,8 +7,11 @@ const startUrl = 'stageforge://app/';
 const rendererRoot = path.join(__dirname, 'renderer');
 const isMac = process.platform === 'darwin';
 const rigFilters = [{ name: 'StageForge rig', extensions: ['json'] }];
-const showFilters = [{ name: 'StageForge show or rig', extensions: ['json'] }];
+const showFilters = [{ name: 'StageForge show JSON', extensions: ['json'] }];
+const bundleFilters = [{ name: 'StageForge show bundle', extensions: ['zip'] }];
+const openFilters = [{ name: 'StageForge shows, bundles and rigs', extensions: ['json','zip'] }];
 const exportsBySuffix = [
+  ['.stageforge.zip', 'Save show bundle', bundleFilters],
   ['.stageforge.show.json', 'Save show', showFilters],
   ['.stageforge.json', 'Export rig', rigFilters],
   ['.dxf', 'Export CAD plan', [{ name: 'DXF drawing', extensions: ['dxf'] }]],
@@ -77,11 +80,17 @@ async function runRigCommand(command) {
   let source;
   if (command === 'open') {
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: 'Open show or rig', filters: showFilters, properties: ['openFile'],
+      title: 'Open show or rig', filters: openFilters, properties: ['openFile'],
     });
     if (canceled || !filePaths.length) return;
     try {
-      source = await readFile(filePaths[0], 'utf8');
+      const filename = filePaths[0];
+      if (filename.toLowerCase().endsWith('.zip')) {
+        if ((await stat(filename)).size > 512 * 1024 * 1024) throw new Error('This show exceeds the 512 MiB in-memory bundle limit.');
+        // Structured clone delivers a Uint8Array to the preload; no extra ArrayBuffer copy.
+        source = new Uint8Array(await readFile(filename));
+        command = 'openBundle';
+      } else source = await readFile(filename, 'utf8');
     } catch (error) {
       dialog.showErrorBox('Could not open file', error.message);
       return;
@@ -124,6 +133,7 @@ app.whenReady().then(() => {
     { label: 'File', submenu: [
       { label: 'Open show or rig…', accelerator: 'CmdOrCtrl+O', click: () => runRigCommand('open') },
       { label: 'Save show as…', accelerator: 'CmdOrCtrl+S', click: () => runRigCommand('show') },
+      { label: 'Save show bundle…', click: () => runRigCommand('bundle') },
       { label: 'Export rig…', accelerator: 'CmdOrCtrl+Shift+S', click: () => runRigCommand('export') },
       { label: 'Export', submenu: [
         { label: 'CAD plan (DXF)…', click: () => runRigCommand('dxf') },

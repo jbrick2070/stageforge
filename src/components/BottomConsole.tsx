@@ -32,7 +32,10 @@ import { headLook } from '../data/movingGroups';
 import { COLOR_PALETTES } from '../data/presets';
 import { FOCUS_NUDGE_RANGE, focusMarks } from '../engine/focusAim';
 import { LaserProjectorControls } from './LaserProjectorControls';
+import { SecondaryScreenCues } from './SecondaryScreenCues';
 import { timecode } from './ShowFiles';
+import type { NativeStage } from '../data/showFile';
+import type { SecondaryScreenEvent } from '../data/studioGeometry';
 
 type ConsoleTab = 'show' | 'dmx' | 'laser' | 'motors_fx';
 
@@ -62,7 +65,23 @@ interface BottomConsoleProps {
   onResetCue: () => void;
   onHold: () => void;
   follow: number | 'held' | null;
-  take: { mode: 'idle' | 'recording' | 'playing'; timeMs: number; hasTake: boolean; record: () => void; play: () => void; stop: () => void };
+  stage?: NativeStage;
+  onApplyWallCue: (event: SecondaryScreenEvent, file?: File) => void;
+  onRemoveWallCue: (target: string, atMs: number) => void;
+  take: {
+    mode: 'idle' | 'recording' | 'playing';
+    timeMs: number;
+    durationMs: number;
+    hasTake: boolean;
+    canResume: boolean;
+    cues: Array<{ atMs: number; cueId: string; name: string }>;
+    record: () => void;
+    play: () => void;
+    resume: () => void;
+    pause: () => void;
+    seek: (ms: number) => void;
+    stop: () => void;
+  };
   onSetBump: (key: keyof BumpState, active: boolean) => void;
 }
 
@@ -139,10 +158,27 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   onTriggerCue,
   onSaveCue,
   captureVideoPosition, onCaptureVideoPosition,
-  onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onResetCue, onHold, follow, take,
+  onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onResetCue, onHold, follow,
+  stage, onApplyWallCue, onRemoveWallCue, take,
   onSetBump,
 }) => {
   const [tab, setTab] = useState<ConsoleTab>('show');
+  // Coalesce scrubber drags to one seek per frame; each seek re-resolves the whole desk.
+  const seekFrame = useRef(0);
+  const seekTarget = useRef(0);
+  const latestTake = useRef(take);
+  latestTake.current = take;
+  const scrub = (ms: number) => {
+    seekTarget.current = ms;
+    if (seekFrame.current) return;
+    seekFrame.current = requestAnimationFrame(() => {
+      seekFrame.current = 0;
+      latestTake.current.seek(seekTarget.current);
+    });
+  };
+  useEffect(() => () => cancelAnimationFrame(seekFrame.current), []);
+  // Round the range up to the step so the final position stays reachable; App clamps.
+  const scrubMax = Math.ceil(take.durationMs / 50) * 50;
   const marks = useMemo(() => focusMarks(rig), [rig]);
   const [headTarget, setHeadTarget] = useState<'all' | HeadGroup>('all');
   const head = headTarget === 'all' ? state : headLook(state, headTarget);
@@ -235,9 +271,47 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                     {take.mode === 'idle' ? <>
                       <button onClick={take.record}>{take.hasTake ? 'Record new take' : 'Record take'}</button>
                       <button onClick={take.play} disabled={!take.hasTake}>Replay take</button>
-                    </> : <button onClick={take.stop}>{take.mode === 'recording' ? 'Stop recording' : 'Stop replay'}</button>}
-                    {(take.mode !== 'idle' || take.hasTake) && <output>{timecode(take.timeMs)}</output>}
+                      {take.canResume && <button onClick={take.resume}>Resume take</button>}
+                    </> : <>
+                      {take.mode === 'playing' && <button onClick={take.pause}>Pause replay</button>}
+                      <button onClick={take.stop}>{take.mode === 'recording' ? 'Stop recording' : 'Stop replay'}</button>
+                    </>}
+                    {(take.mode !== 'idle' || take.hasTake) && (
+                      <output>
+                        {timecode(take.timeMs)}
+                        {take.hasTake && take.mode !== 'recording' ? ` / ${timecode(take.durationMs)}` : ''}
+                      </output>
+                    )}
                   </div>
+                  {take.hasTake && take.mode !== 'recording' && take.durationMs > 0 && (
+                    <div className="mb-1.5 space-y-1">
+                      <input
+                        type="range"
+                        aria-label="Take position"
+                        min={0}
+                        max={scrubMax}
+                        step={50}
+                        value={Math.min(take.timeMs, take.durationMs)}
+                        aria-valuetext={`${timecode(Math.min(take.timeMs, take.durationMs))} of ${timecode(take.durationMs)}`}
+                        onChange={e => scrub(e.currentTarget.valueAsNumber)}
+                        className="console-slider w-full"
+                      />
+                      {take.cues.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {take.cues.map((entry, i) => (
+                            <button
+                              key={`${entry.atMs}-${entry.cueId}-${i}`}
+                              type="button"
+                              onClick={() => { cancelAnimationFrame(seekFrame.current); seekFrame.current = 0; take.seek(entry.atMs); }}
+                              className="px-1.5 py-0.5 rounded bg-white/5 hover:bg-cyan-500/20 border border-white/10 text-[9px] font-mono-tech text-zinc-200 cursor-pointer"
+                            >
+                              {timecode(entry.atMs)} {entry.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="cue-bank">
                     {cues.map((cue, idx) => {
                       const isActive = activeCueId === cue.id;
@@ -695,6 +769,12 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                       <input type="checkbox" checked={captureVideoPosition} onChange={e => onCaptureVideoPosition(e.target.checked)} />
                       Store cues at current video position
                     </label>}
+                    <SecondaryScreenCues
+                      stage={stage}
+                      playheadMs={take.timeMs}
+                      onApplyEvent={onApplyWallCue}
+                      onRemoveEvent={onRemoveWallCue}
+                    />
                   </div>
                 </div>
               </div>

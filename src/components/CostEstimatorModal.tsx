@@ -11,16 +11,19 @@ import {
   Clock,
 } from 'lucide-react';
 import { RigConfig } from '../types/show';
+import type { NativeStage } from '../data/showFile';
 import { calculateProductionEstimate, formatUSD } from '../data/productionEstimator';
 
 interface CostEstimatorModalProps {
   rig: RigConfig;
+  stage?: NativeStage;
   onClose: () => void;
   onDeployRig?: () => void;
 }
 
 export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
   rig,
+  stage,
   onClose,
   onDeployRig,
 }) => {
@@ -40,7 +43,7 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
       opener?.focus();
     };
   }, []);
-  const est = useMemo(() => calculateProductionEstimate(rig), [rig]);
+  const est = useMemo(() => calculateProductionEstimate(rig, stage), [rig, stage]);
   const steps = [
     `Unloading ${est.trucksNeeded} × 53ft semi-truck${est.trucksNeeded > 1 ? 's' : ''} (${Math.round(est.totalWeightLbs).toLocaleString()} lbs)...`,
     `High-steel riggers hoisting trusses & kinetic chain motors...`,

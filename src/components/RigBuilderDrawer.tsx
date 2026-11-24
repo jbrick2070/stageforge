@@ -2,6 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ScenicBuilder } from './ScenicBuilder';
 import { LedCabinetEditor } from './LedCabinetEditor';
 import { FixtureOpticsEditor } from './FixtureOpticsEditor';
+import { SpeakerHangsEditor } from './SpeakerHangsEditor';
+import { ScreenWallsEditor } from './ScreenWallsEditor';
+import type { NativeStage } from '../data/showFile';
+import { isCustomMainWall } from '../data/studioGeometry';
 import { addPatchedUnits, allocateDmx } from '../data/dmxPatch';
 import { downloadRig, parseRigJson } from '../data/rigImport';
 import { GRID_HEIGHT, ledPlacement } from '../data/stageEquipment';
@@ -32,8 +36,10 @@ import { FIXTURE_CATALOG, FLOOR_FX_CATALOG, RIG_TEMPLATES } from '../data/preset
 interface RigBuilderDrawerProps {
   open: boolean;
   rig: RigConfig;
+  stage?: NativeStage;
   onClose: () => void;
   onChangeRig: (next: RigConfig, replacing?: boolean) => void;
+  onChangeStage: (next?: NativeStage) => void;
   onDesignStage: () => void;
   onOpenSavedDesign?: () => void;
 }
@@ -77,8 +83,10 @@ function TrussDimension({ label, value, low, high, minimum, increment, onChange 
 export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   open,
   rig,
+  stage,
   onClose,
   onChangeRig,
+  onChangeStage,
   onDesignStage,
   onOpenSavedDesign,
 }) => {
@@ -181,6 +189,8 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     }
   };
 
+  const authoredHangs = stage?.layout?.hangs;
+  const customMainWall = isCustomMainWall(stage?.walls.find(w => w.id === 'main-led'));
   return (
     <aside aria-label="Rig Builder" className="rig-builder-panel fixed top-16 bottom-[270px] right-2.5 w-[min(356px,calc(100vw-20px))] z-35 glass-panel rounded-xl shadow-2xl flex flex-col overflow-hidden">
       {/* Header */}
@@ -293,17 +303,23 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
             />
             <ToggleChip
               label="Curved LED"
-              active={rig.ledWall.curved}
+              active={!customMainWall && rig.ledWall.curved}
+              disabled={customMainWall}
+              title={customMainWall ? 'Custom main-led placement replaces the curved wall and IMAG wings' : undefined}
               onClick={() => onChangeRig({ ...rig, ledWall: { ...rig.ledWall, curved: !rig.ledWall.curved } })}
             />
             <ToggleChip
               label="IMAG Side Wings"
-              active={rig.ledWall.sideWings}
+              active={!customMainWall && rig.ledWall.sideWings}
+              disabled={customMainWall}
+              title={customMainWall ? 'Custom main-led placement replaces the curved wall and IMAG wings' : undefined}
               onClick={() => onChangeRig({ ...rig, ledWall: { ...rig.ledWall, sideWings: !rig.ledWall.sideWings } })}
             />
             <ToggleChip
               label="Line Arrays"
-              active={rig.audioRig.lineArrays}
+              active={authoredHangs !== undefined ? authoredHangs.length > 0 : rig.audioRig.lineArrays}
+              disabled={authoredHangs !== undefined}
+              title={authoredHangs !== undefined ? 'Managed by Authored Speaker Hangs below' : undefined}
               onClick={() => onChangeRig({ ...rig, audioRig: { ...rig.audioRig, lineArrays: !rig.audioRig.lineArrays } })}
             />
             <ToggleChip
@@ -327,6 +343,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                 : `No clearance for the LED wall under the ${gridHeight} m grid at this deck height.`}
             </p>
           )}
+          <ScreenWallsEditor rig={rig} stage={stage} onChangeStage={onChangeStage} />
           <label className="flex items-center gap-2">
             <span className="font-mono-tech text-[10px] text-zinc-300">Speaker system</span>
             <select aria-label="Speaker system" value={profileId}
@@ -348,17 +365,26 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
             {([
               ['boxesPerSide', 'Flown boxes per side', 4, 12, 9],
               ['monitorCount', 'Monitor wedges', 0, 8, 0],
-            ] as const).map(([key, label, min, max, fallback]) => (
-              <label key={key} className="font-mono-tech text-[10px] text-zinc-300">
-                <span className="flex justify-between"><span>{label}</span>
-                  <output className="text-cyan-300">{key === 'boxesPerSide' && !rig.audioRig.lineArrays ? 0 : rig.audioRig[key] ?? fallback}</output>
-                </span>
-                <input aria-label={label} type="range" min={min} max={max} step="1"
-                  value={rig.audioRig[key] ?? fallback} className="console-slider w-full"
-                  onChange={e => onChangeRig({ ...rig, audioRig: { ...rig.audioRig, [key]: Number(e.target.value),
-                    ...(key === 'boxesPerSide' ? { lineArrays: true } : {}) } })} />
-              </label>
-            ))}
+            ] as const).map(([key, label, min, max, fallback]) => {
+              const managedByHangs = key === 'boxesPerSide' && authoredHangs !== undefined;
+              const authoredTotal = managedByHangs ? authoredHangs.reduce((sum, h) => sum + h.count, 0) : 0;
+              return (
+                <label key={key} className="font-mono-tech text-[10px] text-zinc-300">
+                  <span className="flex justify-between">
+                    <span>{managedByHangs ? 'Authored boxes' : label}</span>
+                    <output className="text-cyan-300">
+                      {managedByHangs ? authoredTotal : (key === 'boxesPerSide' && !rig.audioRig.lineArrays ? 0 : rig.audioRig[key] ?? fallback)}
+                    </output>
+                  </span>
+                  <input aria-label={label} type="range" min={min} max={max} step="1"
+                    disabled={managedByHangs}
+                    title={managedByHangs ? 'Edit cabinet counts in Authored Speaker Hangs below' : undefined}
+                    value={rig.audioRig[key] ?? fallback} className="console-slider w-full disabled:opacity-40"
+                    onChange={e => onChangeRig({ ...rig, audioRig: { ...rig.audioRig, [key]: Number(e.target.value),
+                      ...(key === 'boxesPerSide' ? { lineArrays: true } : {}) } })} />
+                </label>
+              );
+            })}
             <div>
               <div className="flex justify-between font-mono-tech text-[9px] text-zinc-400 mb-0.5">
                 <span>SUBWOOFERS</span>
@@ -405,6 +431,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
               />
             </div>
           </div>
+          <SpeakerHangsEditor rig={rig} stage={stage} onChangeStage={onChangeStage} />
         </div>
 
         {/* 3. Overhead Truss Pods + Chain Motors + Fixtures */}
@@ -581,14 +608,19 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   );
 };
 
-const ToggleChip: React.FC<{ label: string; active: boolean; onClick: () => void }> = ({
+const ToggleChip: React.FC<{ label: string; active: boolean; disabled?: boolean; title?: string; onClick: () => void }> = ({
   label,
   active,
+  disabled,
+  title,
   onClick,
 }) => (
   <button
+    type="button"
+    disabled={disabled}
+    title={title}
     onClick={onClick}
-    className={`px-2 py-1 rounded text-[10px] font-mono-tech border text-left flex items-center justify-between cursor-pointer ${
+    className={`px-2 py-1 rounded text-[10px] font-mono-tech border text-left flex items-center justify-between cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
       active
         ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-100'
         : 'bg-white/5 border-white/10 text-zinc-500'

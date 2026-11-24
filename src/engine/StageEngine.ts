@@ -34,6 +34,7 @@ import {
   buildTrussGeometry,
   buildVenueArchitecture,
   createChainHoistUnit,
+  createAuthoredLineArray,
   createDjBooth,
   createLineArray,
   createMonitorWedge,
@@ -45,6 +46,9 @@ import { FocusMark, HEAD_OFFSET, YOKE_OFFSET, PAN_LIMIT, TILT_LIMIT, aimAngles, 
 import { headLook } from '../data/movingGroups';
 import { buildDmxPatch } from '../data/dmxPatch';
 import { stageSurfaceHeight } from '../data/stageDesign';
+import type { NativeStage } from '../data/showFile';
+import { authoredWallSurface, isCustomMainWall, resolveStudioGeometry, resolveWallFrame } from '../data/studioGeometry';
+import { createAuthoredProp } from './authoredScenery';
 import { ledPlacement, monitorPositions, type LedSurface } from '../data/stageEquipment';
 import { AtmosphericParticles } from './ParticleSystem';
 import { laserGeometry } from './laserGeometry';
@@ -56,6 +60,7 @@ import { buildScenicPiece, ScenicPiece } from './scenicProps';
 import { SPEAKER_PROFILES } from '../data/speakerProfiles';
 import { PROP_CATALOG } from '../data/stageProps';
 import { exportStageGlb, nameFixtureUnit } from './stageGlb';
+import { createMissingMediaSlate, WallPlayer, type SecondaryScreenState, type StageScreen } from './StageScreens';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS, demoFade } from '../data/demoLighting';
 
 interface MovingFixtureInstance {
@@ -170,6 +175,10 @@ export class StageEngine {
 
   // Dynamic rig root so rebuilding templates is clean & leak-free
   private rigGroup = new THREE.Group();
+  private geometryLayout?: NativeStage['layout'];
+  private geometryKey?: string;
+  private geometrySource?: RigConfig;
+  private geometryCache?: ReturnType<typeof resolveStudioGeometry>;
   private focusLocal = new THREE.Vector3();
   private focusMarkCache?: { rig: RigConfig; marks: FocusMark[] };
   private particles: AtmosphericParticles;
@@ -194,6 +203,8 @@ export class StageEngine {
 
   // LED Wall
   private ledWallMats: THREE.ShaderMaterial[] = [];
+  private screenLayout?: StageScreen[];
+  private secondaryPlayers = new Map<string, WallPlayer>();
   private textCanvas: HTMLCanvasElement;
   private textTex: THREE.CanvasTexture;
   private lastTourText = '';
@@ -509,7 +520,7 @@ export class StageEngine {
           // Keep the eye inside the room: in front of the rear wall and under the ceiling.
           const rearLimit = room ? room.rearZ - 1.5 : rig?.venue === 'warehouse' ? 32 : rig?.venue === 'arena' ? 45 : 60;
           const eyeCeiling = room ? room.ceilingY : this.roofY;
-          if (rig && (rig.platforms !== undefined || rig.trussPods.some(pod => pod.shape === 'path'))) {
+          if (rig && (this.screenLayout?.some(w => w.id !== 'main-led' || isCustomMainWall(w)) || rig.platforms !== undefined || rig.trussPods.some(pod => pod.shape === 'path'))) {
             // The first rig child is the venue shell. Remaining children are stage equipment.
             const subjects = [...this.rigGroup.children.slice(1), ...Array.from(this.scenicPieces.values(), p => p.root)];
             const frame = fitAuthoredFoh(subjects, this.ledWallMats, this.camera.aspect, eyeCeiling, rearLimit, CAMERA_FOV);
@@ -582,7 +593,17 @@ export class StageEngine {
         if (!rig) break;
         const x = -rig.stageWidth / 2 - 1.35;
         const z = rig.stageDepth / 2 - 0.4;
-        if (rig.audioRig.lineArrays) {
+        const hang = this.geometryLayout?.hangs?.[0];
+        if (hang) {
+          const height = SPEAKER_PROFILES[rig.audioRig.speakerProfile ?? 'touring'].array.height;
+          const lookY = hang.y - hang.count * height / 2;
+          const sideInward = hang.x === 0 ? -1 : -Math.sign(hang.x);
+          const rawX = hang.x + sideInward * 2.4;
+          const camX = this.room ? THREE.MathUtils.clamp(rawX, -this.room.halfWidth + 0.8, this.room.halfWidth - 0.8) : rawX;
+          const camZ = this.room ? Math.min(this.room.rearZ - 1.0, hang.z + 5.0) : hang.z + 5.0;
+          this.cameraTargetLook.set(hang.x, lookY, hang.z);
+          this.cameraTargetPos.set(camX, lookY + 0.45, camZ);
+        } else if (rig.audioRig.lineArrays) {
           const y = Math.min(this.roofY - 1.65, 11.65) - (rig.audioRig.boxesPerSide ?? 9) * 0.185;
           this.cameraTargetPos.set(x - 2.4, y - 0.6, z + 6.1);
           this.cameraTargetLook.set(x + 0.55, y, z);
@@ -648,39 +669,7 @@ export class StageEngine {
   public setMissingScreen(name: string | null) {
     if ((this.missingScreenTex?.name ?? null) === name) return;
     this.missingScreenTex?.dispose();
-    this.missingScreenTex = null;
-    if (name) {
-      const slate = document.createElement('canvas');
-      slate.width = 1024;
-      slate.height = 512;
-      const ctx = slate.getContext('2d')!;
-      ctx.fillStyle = '#12171f';
-      ctx.fillRect(0, 0, slate.width, slate.height);
-      ctx.strokeStyle = '#ffbe50';
-      ctx.lineWidth = 12;
-      ctx.strokeRect(20, 20, 984, 472);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#ffbe50';
-      ctx.font = 'bold 88px sans-serif';
-      ctx.fillText('MISSING MEDIA', 512, 211, 920);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 50px sans-serif';
-      // Keep both the identifying prefix and file extension legible even for long filenames.
-      let label = name;
-      if (ctx.measureText(label).width > 900) {
-        const characters = Array.from(name);
-        let count = Math.ceil(characters.length / 2);
-        do {
-          count--;
-          label = characters.slice(0, count).join('') + '…' + characters.slice(-count).join('');
-        } while (count > 1 && ctx.measureText(label).width > 900);
-      }
-      ctx.fillText(label, 512, 322, 920);
-      this.missingScreenTex = new THREE.CanvasTexture(slate);
-      this.missingScreenTex.name = name;
-      this.missingScreenTex.colorSpace = THREE.SRGBColorSpace;
-    }
+    this.missingScreenTex = name ? createMissingMediaSlate(name) : null;
     this.bindScreenTexture();
   }
 
@@ -719,7 +708,10 @@ export class StageEngine {
     }
     this.screenSeekClock = now;
     const led = this.currentState.led;
-    this.screenRunning = !!this.currentRig?.ledWall.enabled && led.enabled && led.visualMode === 'custom' && this.screenWantsPlay;
+    // A bare {id:'main-led'} entry follows the rig; only a custom frame builds a wall on its own.
+    const hasAuthoredPrimary = isCustomMainWall(this.screenLayout?.find(wall => wall.id === 'main-led'));
+    const hasPrimary = hasAuthoredPrimary || !!this.currentRig?.ledWall.enabled;
+    this.screenRunning = hasPrimary && led.enabled && led.visualMode === 'custom' && this.screenWantsPlay;
     if (video.readyState < 1) return;
     if (this.pendingScreenOffset !== undefined) {
       const offset = this.pendingScreenOffset;
@@ -853,12 +845,59 @@ export class StageEngine {
     return exportStageGlb(this.currentRig, roots, this.mats);
   }
 
-  public rebuildRig(rig: RigConfig) {
+  public setStageScreens(walls?: StageScreen[]) {
+    if (this.screenLayout === walls) return;
+    this.screenLayout = walls;
+    const ids = new Set(walls?.filter(w => w.id !== 'main-led').map(w => w.id));
+    for (const [id, player] of this.secondaryPlayers) {
+      if (!ids.has(id)) { player.dispose(); this.secondaryPlayers.delete(id); }
+    }
+    for (const id of ids) {
+      if (!this.secondaryPlayers.has(id)) this.secondaryPlayers.set(id, new WallPlayer(id, this.textTex, this.onMediaError));
+    }
+  }
+
+  public syncSecondaryScreens(states: Readonly<Record<string, SecondaryScreenState>>) {
+    for (const [id, player] of this.secondaryPlayers) player.apply(Object.hasOwn(states, id) ? states[id] : undefined);
+  }
+
+  public screenDiagnostics() {
+    return Array.from(this.secondaryPlayers.values(), player => player.diagnostics());
+  }
+
+  public hangDiagnostics() {
+    const out: Array<{ name: string; position: [number, number, number]; cabinets: number; yaw: number; tilt: number; splay: number }> = [];
+    this.rigGroup.traverse(obj => {
+      if (obj.userData?.kind !== 'lineArray') return;
+      out.push({
+        name: obj.name,
+        position: [obj.position.x, obj.position.y, obj.position.z],
+        cabinets: Number(obj.userData.cabinets ?? 0),
+        yaw: Number(obj.userData.yaw ?? 0),
+        tilt: Number(obj.userData.tilt ?? 0),
+        splay: Number(obj.userData.splay ?? 0),
+      });
+    });
+    return out;
+  }
+
+  public rebuildRig(sourceRig: RigConfig, stage?: NativeStage) {
+    // Screen-event edits clone the stage; compare the physical layout by value so
+    // they do not rebuild the rig, and reuse the resolved rig so identity checks hold.
+    const layoutKey = JSON.stringify([stage?.layout ?? null, this.screenLayout ?? null]);
+    const sameLayout = layoutKey === this.geometryKey;
+    const geometry = sameLayout && this.geometrySource === sourceRig && this.geometryCache
+      ? this.geometryCache : resolveStudioGeometry(sourceRig, stage?.layout);
+    const { rig } = geometry;
+    this.geometryKey = layoutKey;
+    this.geometrySource = sourceRig;
+    this.geometryCache = geometry;
+    this.geometryLayout = stage?.layout;
     const old = this.currentRig;
     this.currentRig = rig;
     this.syncScreenPlayback();
     this.syncScenery(rig);
-    if (old && old.stageWidth === rig.stageWidth && old.stageHeight === rig.stageHeight &&
+    if (sameLayout && old && old.stageWidth === rig.stageWidth && old.stageHeight === rig.stageHeight &&
       old.platforms === rig.platforms &&
       old.stageDepth === rig.stageDepth && old.venue === rig.venue && old.audioRig === rig.audioRig &&
       old.ledWall === rig.ledWall && old.trussPods === rig.trussPods && old.floorFx === rig.floorFx) return;
@@ -941,7 +980,13 @@ export class StageEngine {
 
     // Hanging L-Acoustics Style Curved Line Arrays
     const speakerProfile = rig.audioRig.speakerProfile ?? 'touring';
-    if (rig.audioRig.lineArrays) {
+    if (geometry.hangs) {
+      for (const [index, hang] of geometry.hangs.entries()) {
+        const array = createAuthoredLineArray(hang, this.mats, speakerProfile);
+        array.name = `Speaker hang ${index + 1}`;
+        stageGroup.add(array);
+      }
+    } else if (rig.audioRig.lineArrays) {
       const hangY = Math.min(this.roofY - 1.65, 11.65);
       for (const side of [-1, 1] as const) {
         const array = createLineArray(side, this.mats, rig.audioRig.boxesPerSide ?? 9, this.roofY - hangY, speakerProfile);
@@ -951,6 +996,8 @@ export class StageEngine {
         stageGroup.add(array);
       }
     }
+
+    geometry.props.forEach((prop, index) => stageGroup.add(createAuthoredProp(prop, index, rig, this.mats)));
 
     // Front-of-Stage Subwoofer Wall (SB28 twin-18" concert subs)
     if (rig.audioRig.subWall) {
@@ -982,9 +1029,43 @@ export class StageEngine {
     }
     this.rigGroup.add(stageGroup);
 
-    // 3. Giant Concert LED Video Wall + Side IMAG Wings
+    // 3. Giant Concert LED Video Wall + Side IMAG Wings + Authored Secondary Walls
     const wall = ledPlacement(rig);
-    if (rig.ledWall.enabled && wall.height > 0) {
+    const authoredMain = this.screenLayout?.find(screen => screen.id === 'main-led');
+    const hasCustomMain = isCustomMainWall(authoredMain);
+    const buildAuthoredScreen = (screen: StageScreen, primary: boolean) => {
+      const placement = resolveWallFrame(rig, screen);
+      const { width, height } = placement;
+      const surface = authoredWallSurface(rig, placement);
+      const cabinetGrid = surface.cabinets;
+      const material = this.createLedMaterial(surface, cabinetGrid);
+      const mount = new THREE.Group();
+      mount.position.set(placement.x, placement.y, placement.z);
+      mount.rotation.y = THREE.MathUtils.degToRad(placement.yaw);
+      mount.name = screen.label || screen.id;
+      mount.userData = { kind: 'screen', screenId: screen.id, width, height, yaw: placement.yaw, ...(cabinetGrid ? {
+        cabinetGrid: [surface.columns, surface.rows], canvasPixels: [surface.pixelsWide, surface.pixelsHigh] } : {}) };
+      const panel = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+      panel.name = 'LED surface ' + screen.id;
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(width + 0.10, height + 0.10, 0.12), this.mats.darkSteel);
+      frame.position.z = -0.075;
+      mount.add(panel, frame);
+      this.rigGroup.add(mount);
+      if (primary) this.ledWallMats.push(material);
+      else {
+        material.uniforms.uMode.value = LED_MODE_INDEX.custom;
+        material.uniforms.uBrightness.value = 0;
+        this.secondaryPlayers.get(screen.id)?.bind(material);
+      }
+    };
+    if (this.screenLayout?.length) {
+      for (const screen of this.screenLayout) {
+        if (screen.id !== 'main-led') buildAuthoredScreen(screen, false);
+      }
+    }
+    if (hasCustomMain && authoredMain) {
+      buildAuthoredScreen(authoredMain, true);
+    } else if (rig.ledWall.enabled && wall.height > 0) {
       const { y: wallY, z: wallZ } = wall;
       const ledMat = this.createLedMaterial(wall, !!rig.ledWall.cabinets);
       const cabinetMetadata = (face: LedSurface) => rig.ledWall.cabinets ? {
@@ -1995,6 +2076,7 @@ export class StageEngine {
 
     // 5. Update Concert LED Video Wall Shaders
     const ledBright = s.led.enabled ? s.led.brightness * master : 0;
+    for (const player of this.secondaryPlayers.values()) player.setMaster(master);
     const ledModeNum = LED_MODE_INDEX[s.led.visualMode];
     for (const m of this.ledWallMats) {
       m.uniforms.uTime.value = t;
@@ -2092,6 +2174,8 @@ export class StageEngine {
   }
 
   public dispose() {
+    for (const player of this.secondaryPlayers.values()) player.dispose();
+    this.secondaryPlayers.clear();
     this.mediaGeneration++;
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.resizeObserver.disconnect();

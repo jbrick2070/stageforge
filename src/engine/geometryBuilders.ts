@@ -5,6 +5,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import type { PlanPoint, RigConfig, TrussShape, VenueType } from '../types/show';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
+import type { SpeakerHang } from '../data/studioGeometry';
 
 // Shared high-quality PBR materials for authentic touring hardware
 export interface SharedMaterials {
@@ -704,6 +705,30 @@ export function createLineArray(side: -1 | 1, mats: SharedMaterials, boxCount = 
   }
   batchHardware(group);
   group.rotation.y = -side * 0.14;
+  return group;
+}
+
+/** Each cabinet pivots about the previous joint under the fly point. */
+export function createAuthoredLineArray(hang: SpeakerHang, mats: SharedMaterials, profile: SpeakerProfileId) {
+  const group = new THREE.Group();
+  group.position.set(hang.x, hang.y, hang.z);
+  // Match Godot's intrinsic Y-X-Z convention and positive-Z cabinet face.
+  group.rotation.set(THREE.MathUtils.degToRad(hang.tilt), THREE.MathUtils.degToRad(hang.yaw), 0, 'YXZ');
+  group.userData = { kind: 'lineArray', model: SPEAKER_PROFILES[profile].array.label, cabinets: hang.count,
+    yaw: hang.yaw, tilt: hang.tilt, splay: hang.splay };
+  const spec = SPEAKER_PROFILES[profile].array;
+  const prototype = profile === 'k2' ? k2Cabinet(mats) : touringArrayCabinet(mats);
+  batchHardware(prototype);
+  const joint = new THREE.Vector3();
+  for (let i = 0; i < hang.count; i++) {
+    const cab = prototype.clone();
+    cab.name = `Cabinet ${i + 1}`;
+    cab.rotation.x = THREE.MathUtils.degToRad(-i * hang.splay);
+    const drop = new THREE.Vector3(0, -spec.height, 0).applyQuaternion(cab.quaternion);
+    cab.position.copy(joint).addScaledVector(drop, 0.5);
+    group.add(cab);
+    joint.add(drop);
+  }
   return group;
 }
 

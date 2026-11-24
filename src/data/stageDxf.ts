@@ -5,6 +5,8 @@ import { buildDmxPatch } from './dmxPatch';
 import { getPlatforms, podWorldPoint, stageSurfaceHeight } from './stageDesign';
 import { PROP_CATALOG } from './stageProps';
 import { trussMounts } from './trussMounts';
+import type { NativeStage } from './showFile';
+import { authoredWallFrames, resolveStudioGeometry } from './studioGeometry';
 
 type Equipment = FixtureType | FloorFxType;
 type ShapeWriter = Pick<DxfWriter, 'addLWPolyline' | 'addLine' | 'addCircle'>;
@@ -73,7 +75,8 @@ function propSymbol(block: DxfBlock, kind: StagePropKind) {
 }
 
 /** Editable R2010 model-space plan. All dimensions, block coordinates and elevations are metres. */
-export function exportStageDxf(rig: RigConfig): string {
+export function exportStageDxf(sourceRig: RigConfig, stage?: NativeStage): string {
+  const { rig, hangs, props: authoredProps } = resolveStudioGeometry(sourceRig, stage?.layout);
   const drawing = new DxfWriter();
   drawing.setVariable('$ACADVER', { 1: 'AC1024' });
   drawing.setUnits(Units.Meters);
@@ -81,6 +84,10 @@ export function exportStageDxf(rig: RigConfig): string {
   for (const [name, color] of [['DECKS',4],['TRUSSES',2],['FIXTURES',1],['PROPS',3],['LABELS',7],['PATCH_TAGS',-7]] as const) {
     drawing.addLayer(name, color, 'Continuous');
   }
+  // Same frames StageEngine builds: every secondary wall plus a custom main-led (stock fallbacks filled in).
+  const walls = authoredWallFrames(rig, stage);
+  if (hangs?.length) drawing.addLayer('PA', 5, 'Continuous');
+  if (walls.length) drawing.addLayer('VIDEO_WALLS', 6, 'Continuous');
   drawing.tables.addAppId('STAGEFORGE');
   const patch = buildDmxPatch(rig);
   const footprint = new Map(patch.rows.map(row => [row.group, row.width]));
@@ -156,6 +163,42 @@ export function exportStageDxf(rig: RigConfig): string {
     addProperty(insert.addXData('STAGEFORGE'),prop.id);
     include(prop);
     label(PROP_CATALOG[prop.kind].label,{x:prop.x+0.12,z:prop.z+0.4*prop.scale},elevation);
+  }
+  for (const [i, prop] of authoredProps.entries()) {
+    const name = prop.type === 'inflatable' ? 'SF_INFLATABLE' : 'SF_SCENIC';
+    if (!defined.has(name)) {
+      const block = drawing.addBlock(name);
+      if (prop.type === 'inflatable') block.addCircle(point3d(0, 0, 0), 0.5);
+      else outline(block, rectangle(0, 0, 0.95, 0.7), 0, '0', true);
+      defined.add(name);
+    }
+    const elevation = stageSurfaceHeight(rig, prop.x, prop.z);
+    drawing.addInsert(name, cad(prop, elevation), { layerName: 'PROPS' });
+    include(prop);
+    label(`${prop.type === 'inflatable' ? 'Inflatable' : 'Scenic'} ${i + 1}`, { x: prop.x + 0.15, z: prop.z + 0.3 }, elevation);
+  }
+  if (hangs?.length) {
+    const block = drawing.addBlock('SF_PA_HANG');
+    outline(block, rectangle(0, 0, 1.1, 0.55), 0, '0', true);
+    block.addLine(point3d(0, 0, 0), point3d(0, -0.8, 0));
+    hangs.forEach((hang, i) => {
+      const insert = drawing.addInsert('SF_PA_HANG', cad(hang, hang.y), { layerName: 'PA', rotationAngle: hang.yaw });
+      const data = insert.addXData('STAGEFORGE');
+      addProperty(data, `PA Hang ${i + 1}`);
+      addProperty(data, `${hang.count} boxes · yaw ${hang.yaw} · tilt ${hang.tilt} · splay ${hang.splay}`);
+      include(hang);
+      label(`PA ${i + 1} (${hang.count}x)`, { x: hang.x + 0.2, z: hang.z + 0.3 }, hang.y);
+    });
+  }
+  for (const wall of walls) {
+    const { width: w, x, y, z } = wall;
+    // Three.js yaw about +Y maps local +X to (cos, -sin) in plan; cad() then flips Z.
+    const rad = (wall.yaw * Math.PI) / 180;
+    const dx = Math.cos(rad) * (w / 2), dz = -Math.sin(rad) * (w / 2);
+    const pts: PlanPoint[] = [{ x: x - dx, z: z - dz }, { x: x + dx, z: z + dz }];
+    outline(drawing, pts, y, 'VIDEO_WALLS', false);
+    pts.forEach(include);
+    label(wall.label || wall.id, { x: x + 0.15, z: z - 0.25 }, y);
   }
   label(`${rig.name}   |   PLAN IN METRES   |   +Y UPSTAGE`,{x:minX,z:downstage+1.2},0,0.3);
   return drawing.stringify().replace(/\r?\n/g,'\r\n') + '\r\n';
