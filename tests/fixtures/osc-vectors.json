@@ -1,0 +1,76 @@
+{
+  "valid": [
+    {
+      "name": "bare go (exact 4-byte boundary address length 14 + 2 NULs)",
+      "hex": "2f7374616765666f7267652f676f00002c000000",
+      "messages": [
+        { "address": "/stageforge/go", "args": [] }
+      ]
+    },
+    {
+      "name": "exact multiple-of-4 address length 16 gets 4 NUL bytes",
+      "hex": "2f7374616765666f7267652f6261636b000000002c000000",
+      "messages": [
+        { "address": "/stageforge/back", "args": [] }
+      ]
+    },
+    {
+      "name": "go with int32 cue index 3",
+      "hex": "2f7374616765666f7267652f676f00002c69000000000003",
+      "messages": [
+        { "address": "/stageforge/go", "args": [{ "type": "i", "value": 3 }] }
+      ]
+    },
+    {
+      "name": "master with float32 0.5",
+      "hex": "2f7374616765666f7267652f6d617374657200002c6600003f000000",
+      "messages": [
+        { "address": "/stageforge/master", "args": [{ "type": "f", "value": 0.5 }] }
+      ]
+    },
+    {
+      "name": "go with exact 4-char string cue id 'drop' (gets 4 NULs)",
+      "hex": "2f7374616765666f7267652f676f00002c73000064726f7000000000",
+      "messages": [
+        { "address": "/stageforge/go", "args": [{ "type": "s", "value": "drop" }] }
+      ]
+    },
+    {
+      "name": "blackout with True/False/Nil tags",
+      "hex": "2f7374616765666f7267652f626c61636b6f7574000000002c54464e00000000",
+      "messages": [
+        {
+          "address": "/stageforge/blackout",
+          "args": [
+            { "type": "T", "value": true },
+            { "type": "F", "value": false },
+            { "type": "N", "value": null }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "blob of 3 bytes padded to 4",
+      "hex": "2f626c6f620000002c62000000000003deadbe00",
+      "messages": [
+        { "address": "/blob", "args": [{ "type": "b", "hex": "deadbe" }] }
+      ]
+    },
+    {
+      "name": "bundle with two messages",
+      "hex": "2362756e646c65000000000000000001000000142f7374616765666f7267652f676f00002c000000000000182f7374616765666f7267652f73746f70000000002c000000",
+      "messages": [
+        { "address": "/stageforge/go", "args": [] },
+        { "address": "/stageforge/stop", "args": [] }
+      ]
+    }
+  ],
+  "invalid": [
+    { "name": "pattern wildcard star", "hex": "2f7374616765666f7267652f2a0000002c000000" },
+    { "name": "unknown type tag X", "hex": "2f7374616765666f7267652f676f00002c580000" },
+    { "name": "non-zero padding byte", "hex": "2f7374616765666f7267652f676f00012c000000" },
+    { "name": "truncated int32", "hex": "2f7374616765666f7267652f676f00002c690000" },
+    { "name": "missing leading slash", "hex": "7374616765666f72676500002c000000" },
+    { "name": "bundle element exceeds buffer", "hex": "2362756e646c65000000000000000001000001002f6100002c000000" }
+  ]
+}

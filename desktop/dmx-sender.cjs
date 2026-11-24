@@ -13,6 +13,7 @@ const path = require('node:path');
 const {
   SACN_PORT,
   ARTNET_PORT,
+  ARTNET_OPCODE_POLL_REPLY,
   SACN_OPT_STREAM_TERMINATED,
   MAX_DMX_HZ,
   MIN_FRAME_INTERVAL_NS,
@@ -252,6 +253,7 @@ function createDmxController({
   userDataDir = null,
   onStatus = () => {},
   testPorts = null,
+  artnetRx = null,
   osModule = os,
   dgramModule = dgram,
   nowNs = () => process.hrtime.bigint(),
@@ -703,21 +705,33 @@ function createDmxController({
     }
 
     // Attempt exclusive bind on UDP 6454 (0.0.0.0) so directed broadcasts arrive on all OSes.
+    // If the shared Art-Net RX multiplexer already holds port 6454 (e.g., Art-Net TC RX active),
+    // subscribe to OpPollReply (0x2100) on that socket instead of colliding with ourselves.
     // Never set reuseAddr: on Windows SO_REUSEADDR can steal port 6454 from a running QLC+/console.
     const discoveryBindPort = (testPorts && testPorts.artnetDiscovery !== undefined)
       ? testPorts.artnetDiscovery
       : ARTNET_PORT;
+    let releaseSharedRx = null;
     if (discoveryBindPort > 0) {
-      const candidate = dgramModule.createSocket({ type: 'udp4' });
-      candidate.on('error', () => {});
-      candidate.on('message', handleReply);
-      try {
-        await bindSocket(candidate, { port: discoveryBindPort, address: '0.0.0.0', exclusive: true });
-        listenSock = candidate;
-      } catch (err) {
-        await closeSocket(candidate);
-        if (err && err.code === 'EADDRINUSE') {
-          warning = 'Discovery unavailable on UDP 6454 — another Art-Net app owns port 6454 on this machine. Enter node IPs manually.';
+      if (artnetRx && artnetRx.isBound && (artnetRx.port === discoveryBindPort || (testPorts && testPorts.artnetDiscovery === undefined))) {
+        try {
+          const handle = await artnetRx.acquire(ARTNET_OPCODE_POLL_REPLY, handleReply, { port: discoveryBindPort });
+          releaseSharedRx = handle.release;
+        } catch {
+          // Fall back to direct ephemeral reply listening.
+        }
+      } else {
+        const candidate = dgramModule.createSocket({ type: 'udp4' });
+        candidate.on('error', () => {});
+        candidate.on('message', handleReply);
+        try {
+          await bindSocket(candidate, { port: discoveryBindPort, address: '0.0.0.0', exclusive: true });
+          listenSock = candidate;
+        } catch (err) {
+          await closeSocket(candidate);
+          if (err && err.code === 'EADDRINUSE') {
+            warning = 'Discovery unavailable on UDP 6454 — another Art-Net app owns port 6454 on this machine. Enter node IPs manually.';
+          }
         }
       }
     }
@@ -750,7 +764,11 @@ function createDmxController({
       };
     });
 
-    await Promise.all([closeSocket(sendSock), closeSocket(listenSock)]);
+    await Promise.all([
+      closeSocket(sendSock),
+      closeSocket(listenSock),
+      releaseSharedRx ? releaseSharedRx().catch(() => {}) : Promise.resolve(),
+    ]);
     const nodes = [...discoveredNodes.values()];
     emitStatus();
     return { nodes, warning };

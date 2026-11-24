@@ -33,6 +33,8 @@ import { COLOR_PALETTES } from '../data/presets';
 import { FOCUS_NUDGE_RANGE, focusMarks } from '../engine/focusAim';
 import { LaserProjectorControls } from './LaserProjectorControls';
 import { SecondaryScreenCues } from './SecondaryScreenCues';
+import type { TempoControlProps } from './TopBar';
+import type { ClockMode } from '../showControl/clockOwner';
 import type { NativeStage, ScreenRef } from '../data/showFile';
 import type { SecondaryScreenEvent } from '../data/studioGeometry';
 import {
@@ -98,6 +100,8 @@ interface BottomConsoleProps {
     seek: (ms: number) => void;
     stop: () => void;
   };
+  clockMode: ClockMode;
+  tempo: TempoControlProps;
   onSetBump: (key: keyof BumpState, active: boolean) => void;
 }
 
@@ -269,6 +273,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   captureVideoPosition, onCaptureVideoPosition,
   onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onResetCue, onHold, follow,
   stage, mainScreen, missingMedia, onApplyWallCue, onRemoveWallCue, take,
+  clockMode, tempo,
   onSetBump,
 }) => {
   const [tab, setTab] = useState<ConsoleTab>('show');
@@ -372,11 +377,11 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                     {follow === 'held' && <span className="cue-countdown">Follow held · manual GO</span>}
                   </div>
                   <div className="cue-actions">
-                    <button className="cue-go" disabled={!cues.length || take.mode === 'playing'} onClick={onGo}>GO</button>
-                    <button onClick={onResetCue} disabled={!cues.length || take.mode === 'playing'}>Reset to cue 1</button>
+                    <button className="cue-go" disabled={!cues.length || take.mode === 'playing' || clockMode === 'chase'} onClick={onGo}>GO</button>
+                    <button onClick={onResetCue} disabled={!cues.length || take.mode === 'playing' || clockMode === 'chase'}>Reset to cue 1</button>
                     <button onClick={onEditCues} disabled={take.mode !== 'idle'}>Edit cue list</button>
                     <button
-                      disabled={take.mode === 'playing'}
+                      disabled={take.mode === 'playing' || clockMode === 'chase'}
                       onClick={() => setStoreMode((s) => !s)}
                       className={`px-2 py-0.5 rounded text-[10px] font-mono-tech flex items-center gap-1 border cursor-pointer transition ${
                         storeMode
@@ -392,8 +397,8 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                   <div className="cue-actions take-actions">
                     {take.mode === 'idle' ? <>
                       <button onClick={take.record}>{take.hasTake ? 'Record new take' : 'Record take'}</button>
-                      <button onClick={take.play} disabled={!take.hasTake}>Replay take</button>
-                      {take.canResume && <button onClick={take.resume}>Resume take</button>}
+                      <button onClick={take.play} disabled={!take.hasTake || clockMode !== 'master'}>Replay take</button>
+                      {take.canResume && clockMode === 'master' && <button onClick={take.resume}>Resume take</button>}
                     </> : <>
                       {take.mode === 'playing' && <button onClick={take.pause}>Pause replay</button>}
                       <button onClick={take.stop}>{take.mode === 'recording' ? 'Stop recording' : 'Stop replay'}</button>
@@ -452,7 +457,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                       return (
                         <button
                           key={cue.id}
-                          disabled={take.mode === 'playing'}
+                          disabled={take.mode === 'playing' || clockMode === 'chase'}
                           onClick={() => {
                             if (storeMode) {
                               onSaveCue(cue.id);
@@ -536,6 +541,66 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                     <InlineSlider label="HAZE" value={state.atmo.hazeLevel} onChange={(v) => onPatchAtmo({ hazeLevel: v })} color="#94a3b8" />
                     <InlineSlider label="LASER" value={state.laser.intensity} onChange={(v) => onPatchLaser({ intensity: v, enabled: v > 0.01 })} color="#00ff88" />
                     <InlineSlider label="BLOOM" value={state.bloomStrength / 1.2} display={`${Math.round((state.bloomStrength / 1.2) * 100)}%`} onChange={(v) => onPatchState({ bloomStrength: v * 1.2 })} color="#e879f9" />
+                  </div>
+
+                  {/* Tempo & Beat Grid Strip */}
+                  <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-white/10 font-mono-tech text-[9px]" role="group" aria-label="Desk tempo controls">
+                    <span className="text-zinc-400 mr-0.5 tabular-nums" data-testid="desk-bpm-readout">{state.bpm} BPM</span>
+                    <button
+                      type="button"
+                      data-testid="desk-tap-tempo"
+                      onClick={tempo.onTapTempo}
+                      title="Tap tempo (key T)"
+                      className="px-1.5 py-0.5 rounded bg-cyan-500/20 border border-cyan-400/40 text-cyan-200 hover:bg-cyan-500/30 cursor-pointer"
+                    >Tap</button>
+                    <button
+                      type="button"
+                      data-testid="desk-half-time"
+                      aria-label="Desk half time"
+                      aria-disabled={!tempo.canHalfTime}
+                      title={tempo.canHalfTime ? 'Half time (½×)' : 'Half time would fall below 70 BPM'}
+                      onClick={() => { if (tempo.canHalfTime) tempo.onHalfTime(); }}
+                      className={`px-1.5 py-0.5 rounded border cursor-pointer ${tempo.canHalfTime ? 'bg-white/5 border-white/15 text-zinc-200 hover:bg-white/10' : 'bg-white/5 border-white/5 text-zinc-600 cursor-not-allowed'}`}
+                    >½×</button>
+                    <button
+                      type="button"
+                      data-testid="desk-double-time"
+                      aria-label="Desk double time"
+                      aria-disabled={!tempo.canDoubleTime}
+                      title={tempo.canDoubleTime ? 'Double time (2×)' : 'Double time would exceed 180 BPM'}
+                      onClick={() => { if (tempo.canDoubleTime) tempo.onDoubleTime(); }}
+                      className={`px-1.5 py-0.5 rounded border cursor-pointer ${tempo.canDoubleTime ? 'bg-white/5 border-white/15 text-zinc-200 hover:bg-white/10' : 'bg-white/5 border-white/5 text-zinc-600 cursor-not-allowed'}`}
+                    >2×</button>
+                    <button
+                      type="button"
+                      data-testid="desk-live-bpm"
+                      aria-pressed={tempo.followLiveBpm}
+                      onClick={tempo.onToggleFollowLiveBpm}
+                      title={tempo.liveBpmStatus.state === 'unavailable' ? tempo.liveBpmStatus.reason : 'Follow live audio tempo'}
+                      className={`px-1.5 py-0.5 rounded border cursor-pointer ${
+                        tempo.followLiveBpm
+                          ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-200'
+                          : 'bg-white/5 border-white/10 text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      Live BPM{tempo.liveBpmStatus.state === 'locked' ? ` ${tempo.liveBpmStatus.candidateBpm.toFixed(0)}` : ''}
+                    </button>
+                    {tempo.beatGridStatus.state === 'analyzing' && (
+                      <span className="text-cyan-300 ml-auto">Grid analysing…</span>
+                    )}
+                    {tempo.beatGridStatus.state === 'too_long' && (
+                      <span className="text-amber-300 ml-auto" title={tempo.beatGridStatus.reason}>Grid: too long</span>
+                    )}
+                    {tempo.beatGridStatus.state === 'ready' && (
+                      <span className="ml-auto flex items-center gap-0.5" data-testid="desk-grid-controls">
+                        <span className="text-cyan-300 mr-0.5">Grid {tempo.beatGridStatus.grid.bpm.toFixed(1)}</span>
+                        <button type="button" onClick={() => tempo.onNudgeGrid(-50)} className="px-1 rounded bg-white/10 hover:bg-white/20 text-zinc-200 cursor-pointer" title="Nudge downbeat -50 ms">−50</button>
+                        <button type="button" onClick={() => tempo.onNudgeGrid(-10)} className="px-1 rounded bg-white/10 hover:bg-white/20 text-zinc-200 cursor-pointer" title="Nudge downbeat -10 ms">−10</button>
+                        <button type="button" onClick={() => tempo.onNudgeGrid(10)} className="px-1 rounded bg-white/10 hover:bg-white/20 text-zinc-200 cursor-pointer" title="Nudge downbeat +10 ms">+10</button>
+                        <button type="button" onClick={() => tempo.onNudgeGrid(50)} className="px-1 rounded bg-white/10 hover:bg-white/20 text-zinc-200 cursor-pointer" title="Nudge downbeat +50 ms">+50</button>
+                        <button type="button" onClick={tempo.onSetDownbeat} className="px-1 rounded bg-cyan-500/25 border border-cyan-400/40 text-cyan-200 cursor-pointer" title="Set downbeat at current track position">1!</button>
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

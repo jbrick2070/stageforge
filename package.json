@@ -22,7 +22,9 @@
     "lucide-react": "1.77.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "three": "0.187.0"
+    "realtime-bpm-analyzer": "6.3.0",
+    "three": "0.187.0",
+    "web-audio-beat-detector": "8.2.39"
   },
   "devDependencies": {
     "@playwright/test": "1.65.1",

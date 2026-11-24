@@ -223,7 +223,7 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
     };
   }, CSP_PROBE);
   expect(world).toEqual({
-    bridge: ['onRigCommand', 'sendDmxFrame', 'dmxControl', 'onDmxStatus'],
+    bridge: ['onRigCommand', 'sendDmxFrame', 'dmxControl', 'onDmxStatus', 'showControl', 'onShowControlEvent', 'onShowControlStatus'],
     node: 'undefined/undefined',
     secure: true,
     inlineScript: 'script-src-elem',
@@ -464,5 +464,84 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
     await dmxApp?.close().catch(() => {});
     await new Promise((resolve) => receiver.close(() => resolve()));
     await rm(dmxTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('show control boots offline in Master mode, ignores OSC in Master, and triggers cues once in Cue Caller mode', async () => {
+  const { encodeOscMessage } = createRequire(import.meta.url)('../../desktop/osc-packets.cjs');
+  const scTmp = await mkdtemp(path.join(os.tmpdir(), 'stageforge-sc-smoke-'));
+  const packaged = process.env.STAGEFORGE_DESKTOP_EXE;
+  const profile = `--user-data-dir=${path.join(scTmp, 'profile')}`;
+  const oscPort = 18000 + Math.floor(Math.random() * 10000);
+  const udp = dgram.createSocket('udp4');
+  await new Promise((resolve, reject) => {
+    udp.once('error', reject);
+    udp.bind(0, '127.0.0.1', resolve);
+  });
+  let scApp;
+  try {
+    scApp = await electron.launch(packaged
+      ? { executablePath: path.resolve(packaged), args: [profile] }
+      : { executablePath: createRequire(import.meta.url)('electron'), args: [appDir, profile] });
+    const scPage = await scApp.firstWindow();
+    await scPage.waitForLoadState('domcontentloaded');
+    await expect(scPage.getByRole('button', { name: 'Show control', exact: true })).toBeVisible();
+
+    // 1. Boots offline in Master mode (no listeners active, ClockBadge absent).
+    const initial = await scPage.evaluate(() => window.stageforgeDesktop.showControl({ type: 'getStatus' }));
+    expect(initial.active).toBe(false);
+    expect(initial.oscRxListening).toBe(false);
+    await expect(scPage.getByTestId('clock-owner-badge')).toHaveCount(0);
+
+    // 2. Open Show Control drawer, set port (commit on Enter) and enable UDP OSC listener.
+    await scPage.getByRole('button', { name: 'Show control', exact: true }).click();
+    const portInput = scPage.getByTestId('sc-osc-port');
+    await portInput.fill(String(oscPort));
+    await portInput.press('Enter');
+    await scPage.getByTestId('sc-osc-rx-toggle').check();
+    await expect.poll(
+      () => scPage.evaluate(() => window.stageforgeDesktop.showControl({ type: 'getStatus' }).then((s) => s.oscRxListening)),
+      { timeout: 5000 },
+    ).toBe(true);
+
+    // 3. In Master mode, incoming OSC /stageforge/go 2 is ignored and logged as "ignored: master".
+    udp.send(encodeOscMessage('/stageforge/go', [{ type: 'i', value: 2 }]), oscPort, '127.0.0.1');
+    await expect(scPage.getByTestId('sc-event-log')).toContainText('ignored: master');
+
+    // 4. Switch to Cue Caller mode -> ClockBadge visible -> two back-to-back OSC /stageforge/go 2
+    //    packets activate cue 2 once and deduplicate the second within 250 ms.
+    await scPage.getByTestId('clock-mode-caller').click();
+    await expect(scPage.getByTestId('clock-owner-badge')).toContainText('CALLER');
+    const go2 = encodeOscMessage('/stageforge/go', [{ type: 'i', value: 2 }]);
+    udp.send(go2, oscPort, '127.0.0.1');
+    udp.send(go2, oscPort, '127.0.0.1');
+    await expect(scPage.locator('.cue-pad').nth(1)).toHaveAttribute('aria-pressed', 'true');
+    await expect(scPage.getByTestId('sc-event-log')).toContainText('deduped');
+
+    // 6. Verify realtime-bpm-analyzer AudioWorklet loads cleanly under Electron strict script-src 'self' CSP.
+    const cspErrors = [];
+    scPage.on('console', (msg) => {
+      if (msg.type() === 'error' && /Content Security Policy|CSP|AudioWorklet/i.test(msg.text())) {
+        cspErrors.push(msg.text());
+      }
+    });
+    await scPage.getByRole('button', { name: 'Close show control', exact: true }).click();
+    await scPage.getByTestId('clock-badge-master').click();
+    await expect(scPage.getByTestId('clock-owner-badge')).toHaveCount(0);
+    await scPage.getByRole('button', { name: 'Play demo' }).click();
+    const liveBpmBtn = scPage.getByTestId('desk-live-bpm');
+    await liveBpmBtn.click();
+    await scPage.waitForTimeout(400);
+    await expect(liveBpmBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(cspErrors).toEqual([]);
+    await liveBpmBtn.click();
+
+    // 7. Stop OSC listener cleanly.
+    await scPage.getByRole('button', { name: 'Show control', exact: true }).click();
+    await scPage.getByTestId('sc-osc-rx-toggle').uncheck();
+  } finally {
+    await scApp?.close().catch(() => {});
+    await new Promise((resolve) => udp.close(() => resolve()));
+    await rm(scTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

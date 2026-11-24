@@ -1,6 +1,12 @@
 import type { AudioMetrics, MusicRef } from '../types/show';
 import { DEMO_TOTAL_STEPS, getDemoPosition } from '../data/demoShow';
 import { DemoScore } from './demoScore';
+import {
+  beatGridPhase,
+  createLiveBpmHandle,
+  type BeatGrid,
+  type LiveBpmHandle,
+} from './tempoEngine';
 
 interface ScheduledStep {
   step: number;
@@ -85,6 +91,18 @@ export class AudioEngine {
   private beatPulse = 0;
   private spectrum32 = new Float32Array(32);
 
+  // Offline beat grid (loaded file path only) & live BPM analyzer
+  private beatGrid: BeatGrid | null = null;
+  private lastGridBeatIndex: number | null = null;
+  private liveBpmEnabled = false;
+  private liveBpmGen = 0;
+  private liveBpmHandle: LiveBpmHandle | null = null;
+  private liveBpmSourceNode: AudioNode | null = null;
+  private liveBpmCallbacks: {
+    onReading: (bpm: number, locked: boolean) => void;
+    onUnavailable: (reason: string) => void;
+  } | null = null;
+
   public getMetrics(dt: number): AudioMetrics {
     this.beatPulse = Math.max(0, this.beatPulse - dt * 3.8);
 
@@ -153,6 +171,16 @@ export class AudioEngine {
       }
       drop = (demo.sectionId === 'drop' || demo.sectionId === 'finale') &&
         demo.barInSection === 0 && demo.stepInBar < 4;
+    } else if (this.source === 'file' && this.activeFile && this.beatGrid) {
+      // Phase-locked beat pulse driven by the analyzed / nudged offline beat grid.
+      const playbackMs = this.activeFile.element.currentTime * 1000;
+      const { beatIndex, isDownbeat } = beatGridPhase(this.beatGrid, playbackMs);
+      if (this.lastGridBeatIndex !== null && beatIndex !== this.lastGridBeatIndex) {
+        beat = true;
+        this.beatPulse = isDownbeat ? 1 : Math.min(1, 0.55 + bass * 0.45);
+      }
+      this.lastGridBeatIndex = beatIndex;
+      drop = bass > 0.72 && energy > 0.52;
     } else {
       this.bassHistory.push(bass);
       if (this.bassHistory.length > 42) this.bassHistory.shift();
@@ -231,12 +259,15 @@ export class AudioEngine {
   }
 
   private releaseActiveSource() {
+    this.detachLiveBpm();
     this.playing = false;
     this.source = 'none';
     this.trackName = 'No Audio Loaded';
     this.bassHistory.length = 0;
     this.lastBeatTime = 0;
     this.beatPulse = 0;
+    this.beatGrid = null;
+    this.lastGridBeatIndex = null;
     this.releaseScore();
     this.heldStep = 0;
     this.lastDemoBeat = -1;
@@ -272,6 +303,7 @@ export class AudioEngine {
     this.nextStepTime = origin + (this.nextStep - this.heldStep) * duration;
     this.scheduled.push({ step: this.heldStep, time: origin, duration });
     this.startPump();
+    if (this.liveBpmEnabled) void this.attachLiveBpm();
   }
 
   private outputTime() {
@@ -374,7 +406,81 @@ export class AudioEngine {
     this.trackName = file.name.replace(/\.[^/.]+$/, '');
     this.playing = playing;
     if (playing) this.ensureContext();
+    if (this.liveBpmEnabled) void this.attachLiveBpm();
     return this.trackName;
+  }
+
+  public setBeatGrid(grid: BeatGrid | null) {
+    this.beatGrid = grid;
+    this.lastGridBeatIndex = null;
+  }
+
+  public getBeatGrid(): BeatGrid | null {
+    return this.beatGrid;
+  }
+
+  public getPlaybackMs(): number {
+    if (this.source === 'file' && this.activeFile) {
+      return this.activeFile.element.currentTime * 1000;
+    }
+    return 0;
+  }
+
+  private detachLiveBpm() {
+    this.liveBpmGen++;
+    if (this.liveBpmSourceNode && this.liveBpmHandle) {
+      try { this.liveBpmSourceNode.disconnect(this.liveBpmHandle.input); } catch { /* ignore */ }
+    }
+    this.liveBpmSourceNode = null;
+    if (this.liveBpmHandle) {
+      this.liveBpmHandle.stop();
+      this.liveBpmHandle = null;
+    }
+  }
+
+  private async attachLiveBpm() {
+    this.detachLiveBpm();
+    if (!this.liveBpmEnabled || !this.liveBpmCallbacks || !this.ctx) return;
+    const sourceNode = this.source === 'mic' ? this.micSrc : this.masterGain;
+    if (!sourceNode) return;
+    const liveTrack = this.source === 'mic' ? this.micStream?.getAudioTracks()[0] : undefined;
+    const gen = ++this.liveBpmGen;
+    const handle = await createLiveBpmHandle(this.ctx, {
+      liveTrack,
+      onReading: this.liveBpmCallbacks.onReading,
+      onUnavailable: this.liveBpmCallbacks.onUnavailable,
+    });
+    if (!handle) return;
+    if (gen !== this.liveBpmGen || !this.liveBpmEnabled || !this.ctx) {
+      handle.stop();
+      return;
+    }
+    try {
+      sourceNode.connect(handle.input);
+      this.liveBpmSourceNode = sourceNode;
+      this.liveBpmHandle = handle;
+    } catch {
+      handle.stop();
+      this.liveBpmCallbacks.onUnavailable('Could not connect audio source to live BPM analyzer.');
+    }
+  }
+
+  public setLiveBpmAnalysis(
+    enabled: boolean,
+    callbacks?: {
+      onReading: (bpm: number, locked: boolean) => void;
+      onUnavailable: (reason: string) => void;
+    },
+  ) {
+    this.liveBpmEnabled = enabled;
+    this.liveBpmCallbacks = callbacks ?? null;
+    if (!enabled) {
+      this.detachLiveBpm();
+      return;
+    }
+    if (this.ctx && (this.source === 'mic' || this.source === 'file' || this.source === 'synth')) {
+      void this.attachLiveBpm();
+    }
   }
 
   public trackDuration() {
@@ -385,6 +491,7 @@ export class AudioEngine {
   public seekTrack(seconds: number) {
     if (this.activeFile && Number.isFinite(seconds)) {
       this.activeFile.element.currentTime = Math.max(0, Math.min(seconds, this.trackDuration()));
+      this.lastGridBeatIndex = null;
     }
   }
 
@@ -528,6 +635,7 @@ export class AudioEngine {
     this.trackName = 'Live Mic / Line-In';
     this.playing = true;
     this.ensureContext();
+    if (this.liveBpmEnabled) void this.attachLiveBpm();
   }
 
   public getStatus() {
@@ -541,6 +649,8 @@ export class AudioEngine {
   }
 
   public dispose() {
+    this.liveBpmEnabled = false;
+    this.detachLiveBpm();
     this.stopAll();
     this.masterGain?.disconnect();
     this.masterGain = null;

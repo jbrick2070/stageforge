@@ -2,14 +2,18 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const listeners = new Set();
 const dmxStatusListeners = new Set();
+const showControlEventListeners = new Set();
+const showControlStatusListeners = new Set();
 let pending;
 let latestDmxStatus;
+let latestShowControlStatus;
 
 // Realm-independent checks: IPC values are created in the preload's isolated world.
 const isBytes = value => ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Uint8Array]';
 const isBuffer = value => Object.prototype.toString.call(value) === '[object ArrayBuffer]';
 const isUniverse = value => value === 1 || value === 2;
 const DMX_CONTROL_TYPES = new Set(['listInterfaces', 'getStatus', 'enable', 'disable', 'discover']);
+const SHOW_CONTROL_TYPES = new Set(['getStatus', 'configure', 'stop', 'send']);
 
 function deliver(listener, args) {
   try {
@@ -34,6 +38,18 @@ ipcRenderer.on('stageforge:dmx-status', (_event, status) => {
   if (!status || typeof status !== 'object') return;
   latestDmxStatus = status;
   for (const listener of [...dmxStatusListeners]) deliver(listener, [status]);
+});
+
+ipcRenderer.on('stageforge:show-control-event', (_event, payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  if (payload.kind !== 'trigger' && payload.kind !== 'timecode') return;
+  for (const listener of [...showControlEventListeners]) deliver(listener, [payload]);
+});
+
+ipcRenderer.on('stageforge:show-control-status', (_event, status) => {
+  if (!status || typeof status !== 'object') return;
+  latestShowControlStatus = status;
+  for (const listener of [...showControlStatusListeners]) deliver(listener, [status]);
 });
 
 contextBridge.exposeInMainWorld('stageforgeDesktop', {
@@ -63,5 +79,22 @@ contextBridge.exposeInMainWorld('stageforgeDesktop', {
     dmxStatusListeners.add(listener);
     if (latestDmxStatus) deliver(listener, [latestDmxStatus]);
     return () => dmxStatusListeners.delete(listener);
+  },
+  showControl(command) {
+    if (!command || typeof command !== 'object' || Array.isArray(command) || !SHOW_CONTROL_TYPES.has(command.type)) {
+      return Promise.reject(new TypeError('Expected a valid show control command'));
+    }
+    return ipcRenderer.invoke('stageforge:show-control', command);
+  },
+  onShowControlEvent(listener) {
+    if (typeof listener !== 'function') throw new TypeError('Expected a show control event listener');
+    showControlEventListeners.add(listener);
+    return () => showControlEventListeners.delete(listener);
+  },
+  onShowControlStatus(listener) {
+    if (typeof listener !== 'function') throw new TypeError('Expected a show control status listener');
+    showControlStatusListeners.add(listener);
+    if (latestShowControlStatus) deliver(listener, [latestShowControlStatus]);
+    return () => showControlStatusListeners.delete(listener);
   },
 });

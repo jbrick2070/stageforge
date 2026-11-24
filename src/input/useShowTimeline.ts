@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ShowState } from '../types/show';
-import type { ShowTimeline, TimelineEvent } from '../data/showFile';
+import type { ShowTimeline, SmpteFrameRate, TimelineEvent } from '../data/showFile';
 import { resolveTakeFrame, type TransportFrame } from '../data/showClock';
 
 export type DeskFrame = Required<Omit<TimelineEvent, 'atMs' | 'look'>> & { look: ShowState; cueModified: boolean };
@@ -56,7 +56,12 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
   const [canResume, setCanResume] = useState(false);
   const baseline = useRef<TransportFrame | undefined>(undefined);
   const heldPosition = useRef(0);
-  const session = useRef<{ mode: 'recording' | 'playing'; started: number; events: TimelineEvent[]; durationMs: number; previous?: DeskFrame; sampledMs: number; index: number } | null>(null);
+  const chaseIndex = useRef(0);
+  const chaseNeedsSeek = useRef(true);
+  const chaseLastUiMs = useRef(0);
+  const timelineRef = useRef(timeline);
+  timelineRef.current = timeline;
+  const session = useRef<{ mode: 'recording' | 'playing'; started: number; events: TimelineEvent[]; durationMs: number; previous?: DeskFrame; sampledMs: number; index: number; frameRate?: SmpteFrameRate; timecodeOffsetMs?: number } | null>(null);
   const timer = useRef(0);
   const raf = useRef(0);
   const sampleChange = () => {
@@ -79,8 +84,15 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
     setCanResume(false);
     if (run.mode === 'recording') {
       sampleChange();
-      setTimeline({ durationMs: Math.max(run.sampledMs, Math.round(live.current.minDurationMs())), events: run.events });
+      setTimeline({
+        durationMs: Math.max(run.sampledMs, Math.round(live.current.minDurationMs())),
+        events: run.events,
+        ...(run.frameRate !== undefined ? { frameRate: run.frameRate } : {}),
+        ...(run.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: run.timecodeOffsetMs } : {}),
+      });
       heldPosition.current = run.sampledMs;
+      chaseIndex.current = 0;
+      chaseNeedsSeek.current = true;
       setTimeMs(run.sampledMs);
     }
     session.current = null;
@@ -114,14 +126,18 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
       if (run) setTimeMs(Math.round(performance.now() - run.started));
     }, 150);
   };
-  const record = () => {
+  const record = (meta?: { frameRate?: SmpteFrameRate; timecodeOffsetMs?: number }) => {
     if (session.current) return;
     const frame = live.current.sample();
     baseline.current = frame;
     heldPosition.current = 0;
     const { cueModified: _modified, ...snapshot } = frame;
-    session.current = { mode: 'recording', started: performance.now(), events: [{ atMs: 0, ...snapshot }],
-      durationMs: 0, sampledMs: 0, previous: frame, index: 0 };
+    session.current = {
+      mode: 'recording', started: performance.now(), events: [{ atMs: 0, ...snapshot }],
+      durationMs: 0, sampledMs: 0, previous: frame, index: 0,
+      frameRate: meta?.frameRate,
+      timecodeOffsetMs: meta?.timecodeOffsetMs,
+    };
     setMode('recording');
     startClock();
   };
@@ -167,9 +183,72 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
     stop();
     baseline.current = base;
     heldPosition.current = 0;
+    chaseIndex.current = 0;
+    chaseNeedsSeek.current = true;
     setCanResume(false);
     setTimeline(next);
     setTimeMs(0);
+  };
+  /** Seek silently for external timecode chase/locate: applies resolved look without firing skipped events. */
+  const chaseSeek = (requestedMs: number, running: boolean) => {
+    const take = timelineRef.current;
+    if (!playable(take) || session.current?.mode === 'recording') return;
+    if (session.current) stop();
+    const ms = Math.max(0, Math.min(take.durationMs, Math.round(requestedMs)));
+    baseline.current ??= live.current.sample();
+    if (take.events.length) {
+      live.current.apply(resolveTakeFrame(take, ms, baseline.current, running && ms < take.durationMs), 0);
+    }
+    let idx = 0;
+    while (idx < take.events.length && take.events[idx].atMs <= ms) idx++;
+    chaseIndex.current = idx;
+    chaseNeedsSeek.current = false;
+    heldPosition.current = ms;
+    setTimeMs(ms);
+    setCanResume(false);
+  };
+  /** Advance monotonically along external timecode: fires only events in (cursor, ms] and never re-fires on jitter. */
+  const chaseAdvance = (requestedMs: number) => {
+    const take = timelineRef.current;
+    if (!playable(take) || session.current?.mode === 'recording') return;
+    if (chaseNeedsSeek.current) {
+      chaseSeek(requestedMs, true);
+      return;
+    }
+    if (session.current) stop();
+    const ms = Math.max(0, Math.min(take.durationMs, Math.round(requestedMs)));
+    while (chaseIndex.current < take.events.length && take.events[chaseIndex.current].atMs <= ms) {
+      const event = take.events[chaseIndex.current++];
+      live.current.apply(event, Math.max(0, ms - event.atMs));
+    }
+    heldPosition.current = ms;
+    const now = performance.now();
+    if (now - chaseLastUiMs.current >= 100 || ms >= take.durationMs) {
+      chaseLastUiMs.current = now;
+      setTimeMs(ms);
+    }
+  };
+  /** Reset chase cursor cleanly (e.g. on leaving Chase mode or replacing a take). */
+  const resetChase = () => {
+    chaseIndex.current = 0;
+    chaseNeedsSeek.current = true;
+  };
+  /** Update SMPTE frame rate / offset metadata on the active take (or pending recording). */
+  const setMetadata = (meta: { frameRate?: SmpteFrameRate; timecodeOffsetMs?: number }) => {
+    const run = session.current;
+    if (run?.mode === 'recording') {
+      if ('frameRate' in meta) run.frameRate = meta.frameRate;
+      if ('timecodeOffsetMs' in meta) run.timecodeOffsetMs = meta.timecodeOffsetMs;
+    }
+    setTimeline(prev => {
+      if (!prev) return prev;
+      const next: ShowTimeline = { durationMs: prev.durationMs, events: prev.events };
+      const fr = 'frameRate' in meta ? meta.frameRate : prev.frameRate;
+      const off = 'timecodeOffsetMs' in meta ? meta.timecodeOffsetMs : prev.timecodeOffsetMs;
+      if (fr !== undefined) next.frameRate = fr;
+      if (off !== undefined) next.timecodeOffsetMs = off;
+      return next;
+    });
   };
   // Wall cues may start, extend or clean up a wall-only take; a recorded lighting take is never shortened.
   const syncWallDuration = (ms: number, hasWallEvents: boolean, allowShrink = false) => {
@@ -192,7 +271,14 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
         setTimeMs(nextDuration);
         setCanResume(false);
       }
-      setTimeline(nextDuration > 0 ? { durationMs: nextDuration, events: [] } : undefined);
+      chaseIndex.current = 0;
+      chaseNeedsSeek.current = true;
+      setTimeline(nextDuration > 0 ? {
+        durationMs: nextDuration,
+        events: [],
+        ...(current?.frameRate !== undefined ? { frameRate: current.frameRate } : {}),
+        ...(current?.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: current.timecodeOffsetMs } : {}),
+      } : undefined);
       const run = session.current;
       if (run?.mode === 'playing') run.durationMs = nextDuration;
       return;
@@ -210,7 +296,12 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
     const run = session.current;
     if (!run || run.mode !== 'recording') return timeline;
     sampleChange();
-    return { durationMs: run.sampledMs, events: [...run.events] };
+    return {
+      durationMs: run.sampledMs,
+      events: [...run.events],
+      ...(run.frameRate !== undefined ? { frameRate: run.frameRate } : {}),
+      ...(run.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: run.timecodeOffsetMs } : {}),
+    };
   };
-  return { timeline, mode, timeMs, canResume, record, play, pause, seek, playhead, stop, replace, syncWallDuration, snapshot };
+  return { timeline, mode, timeMs, canResume, record, play, pause, seek, playhead, stop, replace, syncWallDuration, snapshot, chaseSeek, chaseAdvance, resetChase, setMetadata };
 }

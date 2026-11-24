@@ -3,7 +3,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
-const SHOW_SCHEMAS = ['show-v1.schema.json', 'show-v2.schema.json', 'show-v3.schema.json', 'show-v4.schema.json'] as const;
+const SHOW_SCHEMAS = ['show-v1.schema.json', 'show-v2.schema.json', 'show-v3.schema.json', 'show-v4.schema.json', 'show-v5.schema.json'] as const;
 const schemaDir = new URL('./src/schemas/', import.meta.url);
 
 /**

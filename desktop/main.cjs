@@ -2,8 +2,11 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, 
 const { open: openFileHandle } = require('node:fs/promises');
 const path = require('node:path');
 const { isAppPage, createRendererHandler, serialDeviceKey, selectVisibleSerialPorts } = require('./protocol.cjs');
+const { createArtNetRxMux } = require('./artnet-rx.cjs');
 const { createDmxController } = require('./dmx-sender.cjs');
 const { createDmxIpcHandlers } = require('./dmx-ipc.cjs');
+const { createShowControlService } = require('./show-control-service.cjs');
+const { createShowControlIpcHandlers } = require('./show-control-ipc.cjs');
 
 const startUrl = 'stageforge://app/';
 const rendererRoot = path.join(__dirname, 'renderer');
@@ -46,12 +49,16 @@ function resolveTestPorts() {
   const sacn = parseTestPort(process.env.STAGEFORGE_DMX_TEST_PORT);
   const artnet = parseTestPort(process.env.STAGEFORGE_DMX_TEST_ARTNET_PORT || process.env.STAGEFORGE_DMX_TEST_PORT);
   const artnetDiscovery = parseTestPort(process.env.STAGEFORGE_DMX_TEST_DISCOVERY_PORT);
-  if (!sacn && !artnet && !artnetDiscovery) return null;
-  return { sacn, artnet, artnetDiscovery };
+  const artnetRx = parseTestPort(process.env.STAGEFORGE_ARTNET_RX_TEST_PORT);
+  const artnetTcTx = parseTestPort(process.env.STAGEFORGE_ARTNET_TC_TX_TEST_PORT);
+  if (!sacn && !artnet && !artnetDiscovery && !artnetRx && !artnetTcTx) return null;
+  return { sacn, artnet, artnetDiscovery, artnetRx, artnetTcTx };
 }
 
 let dmx = null;
-let quittingAfterDmx = false;
+let artnetRx = null;
+let showControl = null;
+let quittingAfterShutdown = false;
 // Serial device grants live only in memory for this session (never persisted across launches).
 const grantedSerialDevices = new Set();
 
@@ -78,29 +85,26 @@ function createWindow() {
     if (!isAppPage(url)) event.preventDefault();
   });
   wc.on('did-start-navigation', (details) => {
-    if (details && details.isMainFrame && !details.isSameDocument && dmx && dmx.ownerId === wcId) {
-      void dmx.shutdown('navigation');
+    if (details && details.isMainFrame && !details.isSameDocument) {
+      if (dmx && dmx.ownerId === wcId) void dmx.shutdown('navigation');
+      if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
     }
   });
   wc.on('render-process-gone', () => {
-    if (dmx && dmx.ownerId === wcId) {
-      void dmx.shutdown('renderer-crash');
-    }
+    if (dmx && dmx.ownerId === wcId) void dmx.shutdown('renderer-crash');
+    if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
   });
   wc.on('destroyed', () => {
-    if (dmx && dmx.ownerId === wcId) {
-      void dmx.shutdown('window-destroyed');
-    }
+    if (dmx && dmx.ownerId === wcId) void dmx.shutdown('window-destroyed');
+    if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
   });
   win.on('closed', () => {
-    if (dmx && dmx.ownerId === wcId) {
-      void dmx.shutdown('window-closed');
-    }
+    if (dmx && dmx.ownerId === wcId) void dmx.shutdown('window-closed');
+    if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
   });
   win.on('session-end', () => {
-    if (dmx && dmx.active) {
-      void dmx.shutdown('session-end');
-    }
+    if (dmx && dmx.active) void dmx.shutdown('session-end');
+    if (showControl && showControl.active) void showControl.shutdown();
   });
   wc.setWindowOpenHandler(({ url }) => {
     // The rig drawer links to the speaker manufacturer's product specifications.
@@ -179,6 +183,8 @@ function registerDmxIpc() {
   const { onFrame, onControl } = createDmxIpcHandlers(() => dmx);
   ipcMain.on('stageforge:dmx-frame', onFrame);
   ipcMain.handle('stageforge:dmx-control', onControl);
+  const { onControl: onShowControl } = createShowControlIpcHandlers(() => showControl);
+  ipcMain.handle('stageforge:show-control', onShowControl);
 }
 
 const hasLock = app.requestSingleInstanceLock();
@@ -194,21 +200,27 @@ if (!hasLock) {
   });
 
   app.on('before-quit', (event) => {
-    if (!dmx) return;
-    dmx.cancelDiscover();
-    if (!quittingAfterDmx && dmx.active) {
+    if (dmx) dmx.cancelDiscover();
+    const needsShutdown = Boolean((dmx && dmx.active) || (showControl && showControl.active));
+    if (!quittingAfterShutdown && needsShutdown) {
       event.preventDefault();
-      quittingAfterDmx = true;
-      void dmx.shutdown('quit').finally(() => app.quit());
+      quittingAfterShutdown = true;
+      void Promise.all([
+        dmx && dmx.active ? dmx.shutdown('quit') : Promise.resolve(),
+        showControl && showControl.active ? showControl.shutdown() : Promise.resolve(),
+      ]).finally(() => app.quit());
     }
   });
 
   app.whenReady().then(() => {
     protocol.handle('stageforge', serveRenderer);
 
+    const testPorts = resolveTestPorts();
+    artnetRx = createArtNetRxMux();
     dmx = createDmxController({
       userDataDir: app.getPath('userData'),
-      testPorts: resolveTestPorts(),
+      testPorts,
+      artnetRx,
       onStatus: (status, targetOwnerId) => {
         if (status.state === 'idle') {
           restoreBackgroundThrottling(targetOwnerId);
@@ -221,13 +233,36 @@ if (!hasLock) {
         }
       },
     });
+    showControl = createShowControlService({
+      artnetRx,
+      testPorts,
+      allowZeroPort: !app.isPackaged,
+      onEvent: (payload, targetOwnerId) => {
+        if (typeof targetOwnerId === 'number') {
+          const wc = webContents.fromId(targetOwnerId);
+          if (wc && !wc.isDestroyed() && isAppPage(wc.getURL())) {
+            wc.send('stageforge:show-control-event', payload);
+          }
+        }
+      },
+      onStatus: (status, targetOwnerId) => {
+        if (typeof targetOwnerId === 'number') {
+          const wc = webContents.fromId(targetOwnerId);
+          if (wc && !wc.isDestroyed() && isAppPage(wc.getURL())) {
+            wc.send('stageforge:show-control-status', status);
+          }
+        }
+      },
+    });
     registerDmxIpc();
 
     powerMonitor.on('suspend', () => {
       if (dmx && dmx.active) void dmx.shutdown('suspend');
+      if (showControl && showControl.active) void showControl.shutdown();
     });
     powerMonitor.on('shutdown', () => {
       if (dmx && dmx.active) void dmx.shutdown('os-shutdown');
+      if (showControl && showControl.active) void showControl.shutdown();
     });
 
     const ses = session.defaultSession;
@@ -250,10 +285,11 @@ if (!hasLock) {
 
     ses.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
       if (!isAppPage(requestingOrigin) || (contents && !isAppPage(contents.getURL()))) return false;
+      if (details && details.isMainFrame === false) return false;
       if (permission === 'media') {
         return !details?.mediaType || details.mediaType === 'audio';
       }
-      if (permission === 'serial') {
+      if (permission === 'serial' || permission === 'midi' || permission === 'midiSysex') {
         return true;
       }
       return false;
@@ -306,7 +342,13 @@ if (!hasLock) {
     });
 
     ses.setPermissionRequestHandler((contents, permission, callback, details) => {
-      if (!isAppPage(contents.getURL()) || permission !== 'media' || !details.mediaTypes?.length ||
+      if (!isAppPage(contents.getURL())) return callback(false);
+      if (details && details.isMainFrame === false) return callback(false);
+      if (details?.requestingUrl && !isAppPage(details.requestingUrl)) return callback(false);
+      if (permission === 'midi' || permission === 'midiSysex') {
+        return callback(true);
+      }
+      if (permission !== 'media' || !details.mediaTypes?.length ||
           !details.mediaTypes.every(type => type === 'audio')) return callback(false);
       if (isMac) {
         void systemPreferences.askForMediaAccess('microphone').then(callback, () => callback(false));

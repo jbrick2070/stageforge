@@ -11,7 +11,7 @@ const compiler = await createServer({
   appType: 'custom', optimizeDeps: { noDiscovery: true },
 });
 after(() => compiler.close());
-const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
 const { RIG_TEMPLATES, INITIAL_SHOW_STATE, SHOW_CUES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { cueLook, differsFromCue } = await compiler.ssrLoadModule('/src/data/cueLook.ts');
 const { frameDelta } = await compiler.ssrLoadModule('/src/input/useShowTimeline.ts');
@@ -157,7 +157,7 @@ test('native walls, stage design and timed secondary screen events survive a v3 
 });
 
 const badEdits = [
-  ['unsupported file version', s => { s.version = 5; }],
+  ['unsupported file version', s => { s.version = 6; }],
   ['wrong schema', s => { s.$schema = 'https://other.invalid'; }],
   ['missing complete look field', s => { delete s.look.bpm; }],
   ['bad look color', s => { s.look.primaryColor = 'url(...)'; }],
@@ -222,6 +222,7 @@ test('frozen v1, v2 and v3 show fixtures load cleanly and published schema hashe
     2: '8125404b9ecce247c05ff86fc322bd3f0ba155973782cae7a25d35054abc3d2c',
     3: '0dee980fe57afb46a842318b092a567e600dbdb2a5b272a3e8bf47460c789c11',
     4: 'd114ce279e9de66b26fc9010c9e8ca8b7c260956c03a73a3813b8171b8996d49',
+    5: '9cbf644005c09bd1ec92be20aad348fe0f8a7377134ae05c9e5826bdf5b0350f',
   };
   for (const [ver, hash] of Object.entries(expectedHashes)) {
     const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));
@@ -318,4 +319,40 @@ test('show v4 interchange block is additive, round-trips with or without stage, 
   for (const version of [1, 2, 3]) {
     assert.throws(() => parse({ ...v4NoStage, version, $schema: v4NoStage.$schema.replace('v4', 'v' + version) }), isReadableError, `v${version} rejects interchange`);
   }
+});
+
+test('show v5 timeline frame-rate and timecodeOffsetMs are additive, work with/without interchange, and fall back to v1-v4 when omitted', () => {
+  const withTc = structuredClone(example);
+  withTc.timeline.frameRate = 29.97;
+  withTc.timeline.timecodeOffsetMs = 3_600_000;
+  const savedV5 = write(withTc);
+  assert.equal(savedV5.version, 5);
+  assert.equal(savedV5.$schema, V5_SCHEMA_URL);
+  assert.equal(savedV5.interchange, undefined);
+  assert.equal(savedV5.timeline.frameRate, 29.97);
+  assert.equal(savedV5.timeline.timecodeOffsetMs, 3_600_000);
+  assert.deepEqual(parse(savedV5), savedV5);
+
+  // Removing frameRate and timecodeOffsetMs returns cleanly to v1.
+  const stripped = structuredClone(savedV5);
+  delete stripped.timeline.frameRate;
+  delete stripped.timeline.timecodeOffsetMs;
+  assert.equal(write(stripped).version, 1);
+
+  // v5 + interchange round-trips together.
+  const interchange = { mvr: { uuids: { 'layer:stageforge': '11111111-2222-4333-8444-555555555555' } } };
+  const v5Interchange = write({ ...withTc, interchange });
+  assert.equal(v5Interchange.version, 5);
+  assert.deepEqual(parse(v5Interchange).interchange, interchange);
+  assert.equal(parse(v5Interchange).timeline.frameRate, 29.97);
+
+  // Out-of-enum frameRate or out-of-range offset rejected with readable Error.
+  const badRate = structuredClone(savedV5);
+  badRate.timeline.frameRate = 60;
+  assert.throws(() => parse(badRate), isReadableError);
+  const badOffset = structuredClone(savedV5);
+  badOffset.timeline.timecodeOffsetMs = 86_400_000;
+  assert.throws(() => parse(badOffset), isReadableError);
+  // v1-v4 reject frameRate on timeline.
+  assert.throws(() => parse({ ...savedV5, version: 4, $schema: V4_SCHEMA_URL, interchange }), isReadableError);
 });

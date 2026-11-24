@@ -1,8 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StageEngine } from './engine/StageEngine';
 import { AudioEngine } from './audio/AudioEngine';
-import { CAMERAS, TopBar } from './components/TopBar';
+import {
+  analyzeFileBeatGrid,
+  doubleTimeBpm,
+  foldBpm,
+  halfTimeBpm,
+  LiveBpmStabilizer,
+  nudgeBeatGrid,
+  setBeatGridDownbeat,
+  TapTempoTracker,
+  type BeatGridStatus,
+  type LiveBpmStatus,
+} from './audio/tempoEngine';
+import { CAMERAS, TopBar, type TempoControlProps } from './components/TopBar';
 import { ShowOverlay } from './components/ShowOverlay';
+import { ShowControlDrawer } from './components/ShowControlDrawer';
+import { ClockBadge } from './components/ClockBadge';
+import { allows, type ClockMode } from './showControl/clockOwner';
+import { useShowControl } from './showControl/useShowControl';
 import { useShowGamepad } from './input/useShowGamepad';
 import { cueLook, differsFromCue } from './data/cueLook';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
@@ -140,7 +156,22 @@ export const App: React.FC = () => {
   const [activeCamera, setActiveCamera] = useState<CameraPreset>('foh');
   const [rigDrawerOpen, setRigDrawerOpen] = useState(false);
   const [dmxDrawerOpen, setDmxDrawerOpen] = useState(false);
+  const [showControlOpen, setShowControlOpen] = useState(false);
   const [costModalOpen, setCostModalOpen] = useState(false);
+  const [beatGridStatus, setBeatGridStatus] = useState<BeatGridStatus>({ state: 'idle' });
+  const [liveBpmStatus, setLiveBpmStatus] = useState<LiveBpmStatus>({ state: 'off' });
+  const [followLiveBpm, setFollowLiveBpm] = useState(false);
+  const followLiveBpmRef = useRef(false);
+  followLiveBpmRef.current = followLiveBpm;
+  const tapTrackerRef = useRef(new TapTempoTracker());
+  const liveBpmStabilizerRef = useRef(new LiveBpmStabilizer());
+  const beatGridAbortRef = useRef<AbortController | null>(null);
+  const takeMetaExplicitRef = useRef(false);
+  const bpmRef = useRef(showState.bpm);
+  bpmRef.current = showState.bpm;
+  const activeCueIdRef = useRef(activeCueId);
+  activeCueIdRef.current = activeCueId;
+  const clockModeRef = useRef<ClockMode>('master');
   const [designerRig, setDesignerRig] = useState<RigConfig | null>(null);
   const designerOpenRef = useRef(false);
   designerOpenRef.current = !!designerRig;
@@ -330,14 +361,18 @@ export const App: React.FC = () => {
   }, [toast]);
 
   // Trigger a show cue cleanly preserving user's custom media/text/master
-  const triggerCue = useCallback((cue: ShowCue, automatic = false) => {
+  const triggerCue = useCallback((cue: ShowCue, automatic = false, source: 'manual' | 'autoLD' | 'follow' | 'osc' | 'msc' = automatic ? 'autoLD' : 'manual') => {
+    const mode = clockModeRef.current;
+    if (automatic && !allows(mode, source, source === 'follow' ? 'cue_follow' : 'auto_ld')) return;
+    if (!automatic && !allows(mode, source, 'go')) return;
     if (!automatic) {
       previewRig();
       engineRef.current?.releaseDirector(false);
       autoDirRef.current = false;
     }
     const index = cuesRef.current.findIndex(c => c.id === cue.id);
-    setFollow(!automatic && cue.followSeconds && index >= 0 && index + 1 < cuesRef.current.length
+    const allowFollow = !automatic && allows(mode, 'follow', 'cue_follow');
+    setFollow(allowFollow && cue.followSeconds && index >= 0 && index + 1 < cuesRef.current.length
       ? performance.now() + cue.followSeconds * 1000 : null);
     if (cue.screen) setScreen({ ...cue.screen });
     if (cue.state.bpm !== undefined) audioEngineRef.current?.setBpm(cue.state.bpm);
@@ -353,12 +388,245 @@ export const App: React.FC = () => {
   const nextCue = followingCue ?? cues[0];
   const previousCue = cues[currentIndex > 0 ? currentIndex - 1 : cues.length - 1];
   useEffect(() => {
-    if (typeof follow !== 'number' || !followingCue || replaying.current) return;
+    if (typeof follow !== 'number' || !followingCue || replaying.current || !allows(clockModeRef.current, 'follow', 'cue_follow')) return;
     const id = window.setTimeout(() => {
-      if (!replaying.current) triggerCue(followingCue);
+      if (!replaying.current && allows(clockModeRef.current, 'follow', 'cue_follow')) triggerCue(followingCue, false, 'manual');
     }, Math.max(0, follow - performance.now()));
     return () => window.clearTimeout(id);
   }, [follow, followingCue, triggerCue]);
+
+  const applyDeskBpm = useCallback((nextBpm: number) => {
+    const clamped = Math.round(Math.max(70, Math.min(180, nextBpm)) * 10) / 10;
+    setCueModified(true);
+    setShowState((s) => ({ ...s, bpm: clamped }));
+    audioEngineRef.current?.setBpm(clamped);
+    const currentGrid = audioEngineRef.current?.getBeatGrid();
+    if (currentGrid) {
+      const updated = { ...currentGrid, bpm: clamped };
+      audioEngineRef.current?.setBeatGrid(updated);
+      setBeatGridStatus({ state: 'ready', grid: updated });
+    }
+  }, []);
+
+  const handleTapTempo = useCallback(() => {
+    const { bpm: tapped } = tapTrackerRef.current.tap(performance.now());
+    if (tapped !== null) {
+      applyDeskBpm(tapped);
+      showToast(`Tap tempo: ${tapped} BPM`);
+    }
+  }, [applyDeskBpm, showToast]);
+
+  const handleHalfTime = useCallback(() => {
+    const next = halfTimeBpm(bpmRef.current);
+    if (next !== null) applyDeskBpm(next);
+  }, [applyDeskBpm]);
+
+  const handleDoubleTime = useCallback(() => {
+    const next = doubleTimeBpm(bpmRef.current);
+    if (next !== null) applyDeskBpm(next);
+  }, [applyDeskBpm]);
+
+  const handleNudgeGrid = useCallback((deltaMs: number) => {
+    const current = audioEngineRef.current?.getBeatGrid();
+    if (!current) return;
+    const nudged = nudgeBeatGrid(current, deltaMs);
+    audioEngineRef.current?.setBeatGrid(nudged);
+    setBeatGridStatus({ state: 'ready', grid: nudged });
+  }, []);
+
+  const handleSetDownbeat = useCallback(() => {
+    const current = audioEngineRef.current?.getBeatGrid();
+    if (!current || !audioEngineRef.current) return;
+    const anchored = setBeatGridDownbeat(current, audioEngineRef.current.getPlaybackMs());
+    audioEngineRef.current.setBeatGrid(anchored);
+    setBeatGridStatus({ state: 'ready', grid: anchored });
+    showToast(`Downbeat set (${anchored.offsetMs.toFixed(0)} ms)`);
+  }, [showToast]);
+
+  const handleToggleFollowLiveBpm = useCallback(() => {
+    const next = !followLiveBpmRef.current;
+    followLiveBpmRef.current = next;
+    setFollowLiveBpm(next);
+    liveBpmStabilizerRef.current.reset();
+    if (!next) {
+      audioEngineRef.current?.setLiveBpmAnalysis(false);
+      setLiveBpmStatus({ state: 'off' });
+      return;
+    }
+    setLiveBpmStatus({ state: 'starting' });
+    audioEngineRef.current?.setLiveBpmAnalysis(true, {
+      onReading: (rawBpm, locked) => {
+        const { medianBpm, applyBpm } = liveBpmStabilizerRef.current.observe(
+          rawBpm,
+          bpmRef.current,
+          followLiveBpmRef.current,
+          Date.now(),
+        );
+        if (medianBpm !== null) {
+          setLiveBpmStatus(locked
+            ? { state: 'locked', candidateBpm: medianBpm }
+            : { state: 'listening', candidateBpm: medianBpm });
+        }
+        if (applyBpm !== null) {
+          applyDeskBpm(applyBpm);
+        }
+      },
+      onUnavailable: (reason) => {
+        setLiveBpmStatus({ state: 'unavailable', reason });
+        setFollowLiveBpm(false);
+        followLiveBpmRef.current = false;
+        showToast(reason);
+      },
+    });
+  }, [applyDeskBpm, showToast]);
+
+  const showControl = useShowControl({
+    getCues: () => cuesRef.current,
+    getActiveCueId: () => activeCueIdRef.current,
+    getTakePlayheadMs: () => timeline.playhead(),
+    isTakePlaying: () => timeline.mode === 'playing',
+    onModeReset: (nextMode) => {
+      clockModeRef.current = nextMode;
+      setFollow(null);
+      // Unconditionally clear chase/replay state & freeze wallClock when switching modes (H3).
+      if (timeline.mode === 'playing') {
+        timeline.stop();
+      }
+      timeline.resetChase();
+      replaying.current = false;
+      wallClock.set(timeline.playhead(), false);
+      if (nextMode !== 'master' && autoDirRef.current) {
+        engineRef.current?.releaseDirector(true);
+        autoDirRef.current = false;
+        setShowState((s) => (s.autoDirector ? { ...s, autoDirector: false } : s));
+      }
+    },
+    onTriggerCue: (cue) => {
+      setFollow(null);
+      triggerCue(cue, false, 'osc');
+    },
+    onNextCue: () => {
+      const list = cuesRef.current;
+      if (!list.length) return;
+      const idx = list.findIndex((c) => c.id === activeCueIdRef.current);
+      const next = list[idx + 1] ?? list[0];
+      if (next) {
+        setFollow(null);
+        triggerCue(next, false, 'osc');
+      }
+    },
+    onPrevCue: () => {
+      const list = cuesRef.current;
+      if (!list.length) return;
+      const idx = list.findIndex((c) => c.id === activeCueIdRef.current);
+      const prev = list[idx > 0 ? idx - 1 : list.length - 1];
+      if (prev) {
+        setFollow(null);
+        triggerCue(prev, false, 'osc');
+      }
+    },
+    onResetCue: () => {
+      if (cuesRef.current[0]) {
+        setFollow(null);
+        triggerCue(cuesRef.current[0], false, 'osc');
+      }
+    },
+    onStopPlayback: () => {
+      setFollow(null);
+      if (timeline.mode === 'playing') {
+        timeline.stop();
+        replaying.current = false;
+        wallClock.set(timeline.playhead(), false);
+      }
+      audioEngineRef.current?.stopAll();
+    },
+    onResumePlayback: () => {
+      if (audioEngineRef.current && !audioEngineRef.current.getStatus().playing) {
+        audioEngineRef.current.togglePlayPause();
+      }
+    },
+    onSetBlackout: (active) => {
+      previewRig();
+      setCueModified(true);
+      setShowState((s) => (s.blackout === active ? s : { ...s, blackout: active }));
+    },
+    onSetMaster: (value) => {
+      const clamped = Math.max(0, Math.min(1, value));
+      previewRig();
+      setCueModified(true);
+      setShowState((s) => ({ ...s, masterDimmer: clamped }));
+    },
+    onSetBump: (key, active) => {
+      setBump((b) => ({ ...b, [key]: active }));
+    },
+    onTempoTap: handleTapTempo,
+    onTempoSetBpm: (raw) => {
+      const folded = foldBpm(raw);
+      if (folded !== null) applyDeskBpm(folded);
+    },
+    onTempoHalf: handleHalfTime,
+    onTempoDouble: handleDoubleTime,
+    onChaseSeek: (takeMs, running, _resyncMusic) => {
+      const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+      setFollow(null);
+      replaying.current = running;
+      replayLook.current = showState;
+      engineRef.current?.releaseDirector(false);
+      previewRig();
+      timeline.chaseSeek(takeMs, running);
+      wallClock.set(Math.min(takeMs, endMs), running && takeMs < endMs, endMs);
+    },
+    onChaseAdvance: (takeMs) => {
+      replaying.current = true;
+      timeline.chaseAdvance(takeMs);
+    },
+    onChaseStop: () => {
+      replaying.current = false;
+      wallClock.set(wallClock.position(), false);
+      audioEngineRef.current?.stopAll();
+    },
+    onUpdateTakeMeta: (meta) => {
+      takeMetaExplicitRef.current = true;
+      timeline.setMetadata(meta);
+    },
+    onToast: showToast,
+  });
+  clockModeRef.current = showControl.clockMode;
+
+  // Send optional OSC state feedback whenever active cue, BPM, or clock mode changes.
+  useEffect(() => {
+    const activeCue = cues.find((c) => c.id === activeCueId);
+    showControl.sendFeedback({
+      cue: activeCue ? activeCue.name : '',
+      bpm: showState.bpm,
+      clock: showControl.clockMode,
+    });
+  }, [activeCueId, cues, showState.bpm, showControl.clockMode, showControl.sendFeedback]);
+
+  const tempoProps: TempoControlProps = useMemo(() => ({
+    canHalfTime: halfTimeBpm(showState.bpm) !== null,
+    canDoubleTime: doubleTimeBpm(showState.bpm) !== null,
+    onTapTempo: handleTapTempo,
+    onHalfTime: handleHalfTime,
+    onDoubleTime: handleDoubleTime,
+    beatGridStatus,
+    onNudgeGrid: handleNudgeGrid,
+    onSetDownbeat: handleSetDownbeat,
+    liveBpmStatus,
+    followLiveBpm,
+    onToggleFollowLiveBpm: handleToggleFollowLiveBpm,
+  }), [
+    showState.bpm,
+    handleTapTempo,
+    handleHalfTime,
+    handleDoubleTime,
+    beatGridStatus,
+    handleNudgeGrid,
+    handleSetDownbeat,
+    liveBpmStatus,
+    followLiveBpm,
+    handleToggleFollowLiveBpm,
+  ]);
 
   // Mount Three.js StageEngine + AudioEngine once
   useEffect(() => {
@@ -397,7 +665,7 @@ export const App: React.FC = () => {
               u2: new Uint8Array(engine.dmxUniverse2),
             });
           }
-          if (replaying.current || !directorArmed.current) return;
+          if (replaying.current || !directorArmed.current || !allows(clockModeRef.current, 'autoLD', 'auto_ld')) return;
           if (metrics.demo) {
             const position = metrics.demo;
             const tick = Math.floor(position.step / 2);
@@ -516,6 +784,9 @@ export const App: React.FC = () => {
         case 'KeyD':
           setBump((b) => ({ ...b, motorDrop: true }));
           break;
+        case 'KeyT':
+          handleTapTempo();
+          break;
         case 'KeyH':
           setCinemaMode((v) => !v);
           break;
@@ -575,7 +846,7 @@ export const App: React.FC = () => {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', releaseBumps);
     };
-  }, []);
+  }, [handleTapTempo]);
 
   const handleCamera = (cam: CameraPreset) => {
     previewRig();
@@ -635,12 +906,40 @@ export const App: React.FC = () => {
   const handleUploadAudio = async (file: File) => {
     const ae = audioEngineRef.current;
     if (!ae) return;
+    beatGridAbortRef.current?.abort();
+    beatGridAbortRef.current = null;
     try {
       const name = await ae.loadAudioFile(file);
       registerAsset('file', file);
       expectedMusic.current = { kind: 'file', name: file.name, playing: true };
       previewRig();
       showToast(`Loaded Track: ${name}`);
+      // Compute offline beat grid asynchronously with size/duration caps; cancel on track change.
+      const abort = new AbortController();
+      beatGridAbortRef.current = abort;
+      const uploadBpm = bpmRef.current;
+      const uploadedName = file.name;
+      setBeatGridStatus({ state: 'analyzing', trackName: name });
+      void analyzeFileBeatGrid(file, abort.signal).then((result) => {
+        if (abort.signal.aborted || beatGridAbortRef.current !== abort) return;
+        const currentMusic = audioEngineRef.current?.timelineMusic();
+        if (!currentMusic || currentMusic.kind !== 'file' || currentMusic.name !== uploadedName) return;
+        setBeatGridStatus(result);
+        if (result.state === 'ready') {
+          const grid = bpmRef.current === uploadBpm ? result.grid : { ...result.grid, bpm: bpmRef.current };
+          audioEngineRef.current?.setBeatGrid(grid);
+          // Only update desk BPM if the user hasn't manually tapped/edited BPM during analysis (M11),
+          // and skip marking the cue modified if BPM is already identical.
+          if (bpmRef.current === uploadBpm && result.grid.bpm !== bpmRef.current) {
+            applyDeskBpm(result.grid.bpm);
+          }
+          showToast(`Beat grid ready: ${result.grid.bpm} BPM`);
+        }
+      }).catch(() => {
+        if (!abort.signal.aborted && beatGridAbortRef.current === abort) {
+          setBeatGridStatus({ state: 'unavailable', reason: 'Beat grid analysis failed.' });
+        }
+      });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
       showToast('Could not play audio file');
@@ -709,6 +1008,10 @@ export const App: React.FC = () => {
   }, [rig, studioStage]);
 
   const toggleDirector = () => {
+    if (!allows(clockModeRef.current, 'autoLD', 'auto_ld')) {
+      showToast(`Auto-LD is disabled in ${clockModeRef.current} mode.`);
+      return;
+    }
     directorArmed.current = true; setFollow(null);
     previewRig();
     const next = !autoDirRef.current;
@@ -772,6 +1075,10 @@ export const App: React.FC = () => {
     });
     installStage(file.stage);
     installInterchange(file.interchange);
+    takeMetaExplicitRef.current = file.timeline?.frameRate !== undefined || file.timeline?.timecodeOffsetMs !== undefined;
+    showControl.syncFromShowTimeline(file.timeline);
+    beatGridAbortRef.current?.abort();
+    setBeatGridStatus({ state: 'idle' });
     wallClock.set(0, false);
     setFollow(null); directorArmed.current = false;
     audioEngineRef.current?.stopAll();
@@ -1014,6 +1321,7 @@ export const App: React.FC = () => {
         }}
         volume={volume}
         bpm={showState.bpm}
+        tempo={tempoProps}
         openingBar={demoOpeningBlack ? audioDiscrete.openingBar : undefined}
         blackout={showState.blackout}
         autoDirector={showState.autoDirector}
@@ -1021,6 +1329,8 @@ export const App: React.FC = () => {
         activeCamera={activeCamera}
         rigDrawerOpen={rigDrawerOpen}
         dmxDrawerOpen={dmxDrawerOpen}
+        showControlOpen={showControlOpen}
+        clockMode={showControl.clockMode}
         costModalOpen={costModalOpen}
         oneNightCostLabel={oneNightCostLabel}
         cinemaMode={cinemaMode}
@@ -1034,12 +1344,7 @@ export const App: React.FC = () => {
           setVolume(v);
           audioEngineRef.current?.setVolume(v);
         }}
-        onBpmChange={(nextBpm) => {
-          const clamped = Math.max(70, Math.min(180, nextBpm));
-          setCueModified(true);
-          setShowState((s) => ({ ...s, bpm: clamped }));
-          audioEngineRef.current?.setBpm(clamped);
-        }}
+        onBpmChange={(nextBpm) => applyDeskBpm(nextBpm)}
         onToggleAutoDirector={toggleDirector}
         onToggleAudioReactive={() => {
           setCueModified(true);
@@ -1048,12 +1353,25 @@ export const App: React.FC = () => {
         onSelectCamera={handleCamera}
         onToggleRigDrawer={() => {
           previewRig();
-          if (window.matchMedia('(max-width: 779px)').matches) setDmxDrawerOpen(false);
+          if (window.matchMedia('(max-width: 779px)').matches) {
+            setDmxDrawerOpen(false);
+            setShowControlOpen(false);
+          }
           setRigDrawerOpen((v) => !v);
         }}
         onToggleDmxDrawer={() => {
-          if (window.matchMedia('(max-width: 779px)').matches) setRigDrawerOpen(false);
+          setShowControlOpen(false);
+          if (window.matchMedia('(max-width: 779px)').matches) {
+            setRigDrawerOpen(false);
+          }
           setDmxDrawerOpen((v) => !v);
+        }}
+        onToggleShowControl={() => {
+          setDmxDrawerOpen(false);
+          if (window.matchMedia('(max-width: 779px)').matches) {
+            setRigDrawerOpen(false);
+          }
+          setShowControlOpen((v) => !v);
         }}
         onToggleCostModal={() => setCostModalOpen((v) => !v)}
         onToggleCinemaMode={() => setCinemaMode((v) => !v)}
@@ -1088,6 +1406,19 @@ export const App: React.FC = () => {
         onOpenOutput={() => {
           setCinemaMode(false);
           setDmxDrawerOpen(true);
+        }}
+      />
+
+      {/* Clock-ownership indicator when chasing external timecode or driven by external cue caller */}
+      <ClockBadge
+        clockMode={showControl.clockMode}
+        lockState={showControl.lockState}
+        tcStore={showControl.tcStore}
+        liveDmxActive={liveDmx.banner.active}
+        onReturnToMaster={() => showControl.setClockMode('master')}
+        onOpenShowControl={() => {
+          setCinemaMode(false);
+          setShowControlOpen(true);
         }}
       />
 
@@ -1135,6 +1466,17 @@ export const App: React.FC = () => {
             dmxStore={live.dmx}
             liveOutput={liveDmx}
             onClose={() => setDmxDrawerOpen(false)}
+          />
+        </ErrorBoundary>
+      )}
+
+      {/* Slide-Over Show Control & Sync Drawer */}
+      {!cinemaMode && (
+        <ErrorBoundary label="Show Control" onReset={() => setShowControlOpen(false)} onExportRig={() => downloadRig(rig)}>
+          <ShowControlDrawer
+            open={showControlOpen}
+            control={showControl}
+            onClose={() => setShowControlOpen(false)}
           />
         </ErrorBoundary>
       )}
@@ -1272,11 +1614,19 @@ export const App: React.FC = () => {
             playhead: () => timeline.playhead(),
             record: () => {
               if (!timeline.timeline?.events.length || window.confirm('Replace the recorded take in this session?')) {
-                timeline.record();
+                const stampMeta = takeMetaExplicitRef.current || showControl.clockMode === 'chase';
+                timeline.record(stampMeta ? {
+                  frameRate: showControl.settings.frameRate,
+                  timecodeOffsetMs: showControl.settings.timecodeOffsetMs,
+                } : undefined);
                 wallClock.set(0, true);
               }
             },
             play: () => {
+              if (!allows(clockModeRef.current, 'internal', 'take_play')) {
+                showToast(`Replay is disabled in ${clockModeRef.current} mode.`);
+                return;
+              }
               if (missing.length) showToast(`Playing with missing media. Relink ${missing.join(', ')} in Files.`);
               const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
               setFollow(null); replaying.current = true; replayLook.current = showState; replayScreen.current = NO_SCREEN; replayMusicClock.current = 0;
@@ -1284,6 +1634,10 @@ export const App: React.FC = () => {
               wallClock.set(0, true, endMs);
             },
             resume: () => {
+              if (!allows(clockModeRef.current, 'internal', 'take_play')) {
+                showToast(`Replay is disabled in ${clockModeRef.current} mode.`);
+                return;
+              }
               if (missing.length) showToast(`Playing with missing media. Relink ${missing.join(', ')} in Files.`);
               const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
               setFollow(null); replaying.current = true; replayLook.current = showState; replayMusicClock.current = 0;
@@ -1311,6 +1665,8 @@ export const App: React.FC = () => {
               wallClock.set(timeline.playhead(), false);
             },
           }}
+          clockMode={showControl.clockMode}
+          tempo={tempoProps}
           onSetBump={(key, active) => setBump((b) => ({ ...b, [key]: active }))}
         />
       )}

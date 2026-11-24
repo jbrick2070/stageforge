@@ -113,7 +113,15 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
     Module._load = origLoad;
   }
   assert.ok(exposedApi && typeof exposedApi.onRigCommand === 'function');
-  assert.deepEqual(Object.keys(exposedApi), ['onRigCommand', 'sendDmxFrame', 'dmxControl', 'onDmxStatus']);
+  assert.deepEqual(Object.keys(exposedApi), [
+    'onRigCommand',
+    'sendDmxFrame',
+    'dmxControl',
+    'onDmxStatus',
+    'showControl',
+    'onShowControlEvent',
+    'onShowControlStatus',
+  ]);
   const fire = ipcHandlers.get('stageforge:rig-command');
   const fireStatus = ipcHandlers.get('stageforge:dmx-status');
   assert.ok(typeof fire === 'function');
@@ -190,6 +198,31 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
   unsubBadStatus();
   unsubGoodStatus();
   assert.throws(() => exposedApi.onDmxStatus('nope'), TypeError);
+
+  // Show control whitelist & event/status isolation
+  await assert.rejects(() => exposedApi.showControl({ type: 'exec' }), TypeError);
+  await assert.rejects(() => exposedApi.showControl(null), TypeError);
+  await exposedApi.showControl({ type: 'getStatus' });
+  assert.equal(invokedMessages.at(-1)[0], 'stageforge:show-control');
+
+  const fireScEvent = ipcHandlers.get('stageforge:show-control-event');
+  const fireScStatus = ipcHandlers.get('stageforge:show-control-status');
+  const seenScEvents = [];
+  const unsubScBad = exposedApi.onShowControlEvent(() => { throw new Error('sc boom'); });
+  const unsubScGood = exposedApi.onShowControlEvent((ev) => seenScEvents.push(ev));
+  fireScEvent({}, { kind: 'bogus' });
+  fireScEvent({}, { source: 'osc', kind: 'trigger', command: 'go', at: 1 });
+  assert.equal(seenScEvents.length, 1);
+  unsubScBad();
+  unsubScGood();
+  assert.throws(() => exposedApi.onShowControlEvent('nope'), TypeError);
+
+  fireScStatus({}, { active: false });
+  const seenScStatus = [];
+  const unsubScSt = exposedApi.onShowControlStatus((st) => seenScStatus.push(st));
+  assert.equal(seenScStatus.length, 1);
+  unsubScSt();
+  assert.throws(() => exposedApi.onShowControlStatus('nope'), TypeError);
 });
 
 test('serial port helpers prioritize FTDI devices, cap at 8, and desktop/prepare.mjs copies every local main.cjs require', async () => {
@@ -234,6 +267,10 @@ test('serial port helpers prioritize FTDI devices, cap at 8, and desktop/prepare
   assert.ok(localRequires.includes('dmx-packets.cjs'));
   assert.ok(localRequires.includes('dmx-sender.cjs'));
   assert.ok(localRequires.includes('dmx-ipc.cjs'));
+  assert.ok(localRequires.includes('osc-packets.cjs'));
+  assert.ok(localRequires.includes('artnet-rx.cjs'));
+  assert.ok(localRequires.includes('show-control-service.cjs'));
+  assert.ok(localRequires.includes('show-control-ipc.cjs'));
   for (const mod of localRequires) {
     assert.ok(
       prepareSource.includes(`'${mod}'`),

@@ -1,10 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  AudioLines, Camera, ChevronDown, DollarSign, DraftingCompass, Eye, EyeOff, Layers, Mic, Pause,
+  AudioLines, Camera, ChevronDown, Clock, DollarSign, DraftingCompass, Eye, EyeOff, Layers, Mic, Pause,
   Play, Radio, RotateCcw, SlidersHorizontal, Sparkles, Upload, Wrench, FolderOpen,
 } from 'lucide-react';
 import { AudioMetrics, CameraPreset, MusicRef } from '../types/show';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
+import type { BeatGridStatus, LiveBpmStatus } from '../audio/tempoEngine';
+import type { ClockMode } from '../showControl/clockOwner';
+
+export interface TempoControlProps {
+  canHalfTime: boolean;
+  canDoubleTime: boolean;
+  onTapTempo: () => void;
+  onHalfTime: () => void;
+  onDoubleTime: () => void;
+  beatGridStatus: BeatGridStatus;
+  onNudgeGrid: (deltaMs: number) => void;
+  onSetDownbeat: () => void;
+  liveBpmStatus: LiveBpmStatus;
+  followLiveBpm: boolean;
+  onToggleFollowLiveBpm: () => void;
+}
 
 interface TopBarProps {
   fpsStore: LiveStore<number>;
@@ -16,6 +32,7 @@ interface TopBarProps {
   onSeekTrack: (seconds: number) => void;
   volume: number;
   bpm: number;
+  tempo: TempoControlProps;
   openingBar?: number;
   blackout: boolean;
   autoDirector: boolean;
@@ -23,6 +40,8 @@ interface TopBarProps {
   activeCamera: CameraPreset;
   rigDrawerOpen: boolean;
   dmxDrawerOpen: boolean;
+  showControlOpen: boolean;
+  clockMode: ClockMode;
   costModalOpen: boolean;
   oneNightCostLabel: string;
   cinemaMode: boolean;
@@ -39,6 +58,7 @@ interface TopBarProps {
   onSelectCamera: (cam: CameraPreset) => void;
   onToggleRigDrawer: () => void;
   onToggleDmxDrawer: () => void;
+  onToggleShowControl: () => void;
   onToggleCostModal: () => void;
   onToggleCinemaMode: () => void;
 }
@@ -58,11 +78,11 @@ function clockTime(seconds: number) {
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
-  fpsStore, fixtureCount, laserCount, audioStore, getLinkedMusic, getTrackDuration, onSeekTrack, volume, bpm, openingBar, blackout, autoDirector, audioReactive,
-  activeCamera, rigDrawerOpen, dmxDrawerOpen, costModalOpen, oneNightCostLabel,
+  fpsStore, fixtureCount, laserCount, audioStore, getLinkedMusic, getTrackDuration, onSeekTrack, volume, bpm, tempo, openingBar, blackout, autoDirector, audioReactive,
+  activeCamera, rigDrawerOpen, dmxDrawerOpen, showControlOpen, clockMode, costModalOpen, oneNightCostLabel,
   cinemaMode, onTogglePlay, onStartDemo, onDesignStage, onShowFiles, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
   onToggleAutoDirector, onToggleAudioReactive, onSelectCamera, onToggleRigDrawer,
-  onToggleDmxDrawer, onToggleCostModal, onToggleCinemaMode,
+  onToggleDmxDrawer, onToggleShowControl, onToggleCostModal, onToggleCinemaMode,
 }) => {
   const fps = useLive(fpsStore);
   const audio = useLive(audioStore);
@@ -171,6 +191,58 @@ export const TopBar: React.FC<TopBarProps> = ({
                 <output>{bpm} BPM</output>
                 <button aria-label="Increase tempo" onClick={() => onBpmChange(bpm + 2)}>+</button>
               </div>
+              <div className="flex items-center gap-1" role="group" aria-label="Tap and scale tempo">
+                <button type="button" className="transport-btn flex-1 justify-center" onClick={tempo.onTapTempo} title="Tap tempo (key T)">Tap</button>
+                <button
+                  type="button"
+                  className="transport-btn"
+                  aria-label="Half time"
+                  aria-disabled={!tempo.canHalfTime}
+                  title={tempo.canHalfTime ? 'Halve BPM' : 'Half time would fall below 70 BPM'}
+                  onClick={() => { if (tempo.canHalfTime) tempo.onHalfTime(); }}
+                >½×</button>
+                <button
+                  type="button"
+                  className="transport-btn"
+                  aria-label="Double time"
+                  aria-disabled={!tempo.canDoubleTime}
+                  title={tempo.canDoubleTime ? 'Double BPM' : 'Double time would exceed 180 BPM'}
+                  onClick={() => { if (tempo.canDoubleTime) tempo.onDoubleTime(); }}
+                >2×</button>
+              </div>
+              {tempo.beatGridStatus.state !== 'idle' && (
+                <div className="rounded border border-white/10 bg-black/40 p-1.5 space-y-1 text-[10px] font-mono-tech">
+                  <div className="flex items-center justify-between text-zinc-300">
+                    <span>Beat grid</span>
+                    <span className="text-cyan-300">
+                      {tempo.beatGridStatus.state === 'analyzing' && 'Analysing…'}
+                      {tempo.beatGridStatus.state === 'ready' && `${tempo.beatGridStatus.grid.bpm.toFixed(1)} BPM · ${tempo.beatGridStatus.grid.offsetMs.toFixed(0)} ms`}
+                      {tempo.beatGridStatus.state === 'too_long' && 'Too long'}
+                      {tempo.beatGridStatus.state === 'unavailable' && 'Unavailable'}
+                    </span>
+                  </div>
+                  {tempo.beatGridStatus.state === 'ready' && (
+                    <div className="flex items-center gap-1">
+                      <button type="button" className="px-1 py-0.5 rounded bg-white/10 hover:bg-white/20 text-zinc-200 cursor-pointer" onClick={() => tempo.onNudgeGrid(-50)}>−50</button>
+                      <button type="button" className="px-1 py-0.5 rounded bg-white/10 hover:bg-white/20 text-zinc-200 cursor-pointer" onClick={() => tempo.onNudgeGrid(-10)}>−10</button>
+                      <button type="button" className="px-1 py-0.5 rounded bg-white/10 hover:bg-white/20 text-zinc-200 cursor-pointer" onClick={() => tempo.onNudgeGrid(10)}>+10</button>
+                      <button type="button" className="px-1 py-0.5 rounded bg-white/10 hover:bg-white/20 text-zinc-200 cursor-pointer" onClick={() => tempo.onNudgeGrid(50)}>+50</button>
+                      <button type="button" className="ml-auto px-1.5 py-0.5 rounded bg-cyan-500/25 border border-cyan-400/50 text-cyan-200 cursor-pointer" onClick={tempo.onSetDownbeat}>Downbeat</button>
+                    </div>
+                  )}
+                </div>
+              )}
+              <button className="transport-btn" aria-pressed={tempo.followLiveBpm} onClick={tempo.onToggleFollowLiveBpm}>
+                <Clock /> Live BPM <strong>
+                  {tempo.liveBpmStatus.state === 'unavailable'
+                    ? 'N/A'
+                    : tempo.followLiveBpm
+                      ? (tempo.liveBpmStatus.state === 'locked'
+                        ? `${tempo.liveBpmStatus.candidateBpm.toFixed(0)}`
+                        : 'On')
+                      : 'Off'}
+                </strong>
+              </button>
               <button className="transport-btn" aria-pressed={audioReactive} onClick={onToggleAudioReactive}>
                 <AudioLines /> Beat sync <strong>{audioReactive ? 'On' : 'Off'}</strong>
               </button>
@@ -193,6 +265,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         <button className="transport-btn" aria-label="Rig builder" aria-expanded={rigDrawerOpen} onClick={onToggleRigDrawer}><Wrench /><span>Rig<span className="tool-name-detail"> builder</span></span></button>
         <button className="transport-btn" aria-label="DMX monitor" aria-expanded={dmxDrawerOpen} onClick={onToggleDmxDrawer}><Radio /><span>DMX</span></button>
         <button className="transport-btn" aria-label="Cost and crew" aria-expanded={costModalOpen} title={`Cost and crew · ${oneNightCostLabel}`} onClick={onToggleCostModal}><DollarSign /><span>Cost<span className="tool-name-detail"> &amp; crew</span></span></button>
+        <button className="transport-btn" aria-label="Show control" aria-expanded={showControlOpen} title={`Show control · ${clockMode}`} onClick={onToggleShowControl}><Clock /><span>Sync</span></button>
         <button className="transport-btn" aria-label="Cinema mode" title="Cinema mode (H)" onClick={onToggleCinemaMode}><EyeOff /></button>
       </nav>
     </header>

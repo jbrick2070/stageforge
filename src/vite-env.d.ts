@@ -63,6 +63,71 @@ type DmxControlCommandBridge =
       };
     };
 
+interface ShowControlConfigBridge {
+  oscRxEnabled: boolean;
+  oscPort: number;
+  oscAllowAllInterfaces: boolean;
+  oscTxEnabled: boolean;
+  oscTxHost: string;
+  oscTxPort: number;
+  artnetTcRxEnabled: boolean;
+  artnetTcTxEnabled: boolean;
+  artnetTcTxHost: string;
+}
+
+interface ShowControlStatusBridge {
+  active: boolean;
+  oscRxListening: boolean;
+  oscRxPort: number | null;
+  oscRxAddress: string | null;
+  oscTxEnabled: boolean;
+  oscTxHost: string;
+  oscTxPort: number;
+  artnetTcRxListening: boolean;
+  artnetTcRxPort: number | null;
+  artnetTcTxEnabled: boolean;
+  artnetTcTxHost: string;
+  oscRxCount: number;
+  oscDroppedCount: number;
+  artnetTcRxCount: number;
+  oscError: string | null;
+  artnetTcError: string | null;
+}
+
+type ShowControlEventBridge =
+  | {
+      source: 'osc' | 'msc';
+      kind: 'trigger';
+      command: 'go' | 'back' | 'stop' | 'resume' | 'reset' | 'blackout' | 'master' | 'bump' | 'tempo_tap' | 'tempo_bpm' | 'tempo_half' | 'tempo_double';
+      cue?: { index?: number; ref?: string };
+      bumpKey?: 'blinder' | 'strobe' | 'co2' | 'smoke' | 'laser' | 'motorDrop';
+      value?: number;
+      at: number;
+    }
+  | {
+      source: 'artnetTC' | 'mtc';
+      kind: 'timecode';
+      ms: number;
+      fps: 24 | 25 | 29.97 | 30;
+      hours?: number;
+      minutes?: number;
+      seconds?: number;
+      frames?: number;
+      locate?: boolean;
+      reverse?: boolean;
+      at: number;
+    };
+
+type ShowControlSendBridge =
+  | { kind: 'timecode'; ms: number; fps: 24 | 25 | 29.97 | 30 }
+  | { kind: 'feedback'; cue?: string; timecode?: string; bpm?: number; clock?: 'master' | 'chase' | 'caller' };
+
+type ShowControlCommandBridge =
+  | { type: 'getStatus' }
+  | { type: 'stop' }
+  | { type: 'configure'; config: ShowControlConfigBridge }
+  | { type: 'send'; payload: ShowControlSendBridge };
+
 interface Window {
   stageforgeDesktop?: {
     onRigCommand(listener: (command: 'open' | 'openBundle' | 'openMvr' | 'export' | 'show' | 'bundle' | 'dxf' | 'glb' | 'csv' | 'mvr', source?: string | Uint8Array) => void): () => void;
@@ -74,5 +139,12 @@ interface Window {
     dmxControl(command: Extract<DmxControlCommandBridge, { type: 'enable' }>): Promise<DmxStatusBridge>;
     dmxControl(command: DmxControlCommandBridge): Promise<unknown>;
     onDmxStatus(listener: (status: DmxStatusBridge) => void): () => void;
+    showControl(command: { type: 'getStatus' }): Promise<ShowControlStatusBridge>;
+    showControl(command: { type: 'stop' }): Promise<ShowControlStatusBridge>;
+    showControl(command: { type: 'configure'; config: ShowControlConfigBridge }): Promise<ShowControlStatusBridge>;
+    showControl(command: { type: 'send'; payload: ShowControlSendBridge }): Promise<boolean>;
+    showControl(command: ShowControlCommandBridge): Promise<unknown>;
+    onShowControlEvent(listener: (event: ShowControlEventBridge) => void): () => void;
+    onShowControlStatus(listener: (status: ShowControlStatusBridge) => void): () => void;
   };
 }
