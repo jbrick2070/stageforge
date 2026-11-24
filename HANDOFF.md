@@ -522,3 +522,59 @@ agy -i "Read HANDOFF.md and run Sprint 0, following its loop. Stop after the loc
 - **Leftovers / next up:**
   - Manual hardware & cross-tool checks (QLab, TouchOSC, Reaper MTC, grandMA3 onPC MSC/Art-Net TC, live room mic BPM) documented in `docs/show-control.md`.
   - Next up: Self-directed rounds — starting with **Realism backlog item 1** (Real equipment catalogue: split across rounds — catalogue data first, then models and textures, then lasers, per `HANDOFF.md`).
+
+### 2026-11-24 04:02 PST — Self-directed Round 1 (Realism backlog 1a): real equipment catalogue data (`03b0d13`)
+
+- **Consults & QA runs:**
+  - Opus 5.5 (`claude-opus-5-5`) available and consulted (`round-1-design.md` → `round-1-design-reply.md`) to rank the top five next improvements across phone usability, correctness, performance, accessibility, stage-design realism, open-standards roadmap (Sprint 4), and test gaps, and to design Realism item 1a (real equipment catalogue data) per `HANDOFF.md`'s priority rule.
+    - *Opus 5.5 top-5 ranking:* (1) Realism 1a real equipment catalogue data + DMX footprint & Data L9 optics fixes + accessible model picker + sourcing tests; (2) Realism 1b procedural 3D models & PBR textures + phone/WebP/KTX2 asset budget & load-time measurement; (3) Realism item 2 real laser modules + `.ild` reader + IEC 60825 guidance + Engine L7 photosensitivity/reduced-flash option; (4) Realism item 3 equipment inventory & rental list + lifting 2-universe limit & patch CSV mode column; (5) Realism item 4 rigging/power realism + Engine L1 per-frame Three.js allocation hoisting.
+  - Manufacturer datasheets & Open Fixture Library verified via web search on `2026-11-24`, with every unverified field explicitly flagged in both code (`unverified`) and `docs/equipment.md`.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) QA pass 1 on all Round 1 changes (0 Critical, 1 High, 7 Medium, 8 Low), followed by verification, targeted fixes, and regression tests.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) follow-up QA pass 2 on the Step-4 fixes (0 Critical, 0 High, 0 Medium, 2 Low); fixed Low #2 (`LiveDmxBadge` screen-reader text) and documented Low #1.
+- **What shipped:**
+  - **Curated real equipment catalogue (`src/data/equipmentCatalog.ts`, `docs/equipment.md`):**
+    - Added 30 touring models spanning beam, spot, profile, wash, followspot, LED PAR, LED batten, strobe, blinder, LED video panel (`ROE Visual Black Pearl BP2 V2`, `Carbon CB5`), hazer (`MDG ATMe`, `MDG theONE`, `Look Solutions Unique 2.1`), fogger (`Martin JEM ZR45`, `Look Solutions Viper NT`), CO2 jet (`MagicFX CO2Jet II`), and placeholder lasers (`KVANT Clubmax`, `KVANT Spectrum` until Realism item 2).
+    - Every entry carries verified manufacturer datasheet specs (weight kg, power W, IP rating, optics/panel specs, real DMX modes & channel counts, `body` family hint for Round 2 3D models), explicit `sources` IDs cited in `docs/equipment.md`, and explicit `unverified` field paths.
+    - Mapped every legacy `FixtureType`/`FloorFxType` in `LEGACY_DEFAULTS` while leaving all existing `RIG_TEMPLATES` and v1–v5 fixtures byte-identical.
+  - **Additive Show v6 format (`src/schemas/show-v6.schema.json`, `src/data/showFile.ts`, `src/data/rigImport.ts`, `vite.config.ts`, `docs/show-format.md`):**
+    - Added canonical `src/schemas/show-v6.schema.json` (SHA-256 pinned in `tests/show-file.test.mjs`, registered in `SHOW_SCHEMAS`, checked in `tests/desktop/electron-smoke.spec.mjs`) with optional `catalogId`, `dmxMode`, `dmxChannels` (plus `dependentRequired`) on `fixture`/`floorFx`, and optional `cabinetId` on `ledWall.cabinets`.
+    - v1–v5 schemas remain byte-for-byte untouched and hash-pinned; shows without v6 fields continue saving as v1–v5.
+    - `rigImport.ts` enforces `catalogId` cross-field rules, validates known-catalogue `type`/`dmxMode`/`led_panel` compatibility, preserves unknown forward-compatible `catalogId` values, and tolerates stored `dmxChannels` drift so saved show patches never break on future datasheet corrections (surfaced in Rig Builder with one-click `Re-patch?`).
+    - Added `pruneInterchangeFixtureSpecs` in `showFile.ts` (keeping `fast-xml-parser` lazy-loaded) so changing a group's model/mode clears stale imported MVR GDTF specs for that group.
+  - **Footprint-aware DMX patching, safe narrow writes & live-output warning (`src/data/dmxPatch.ts`, `src/engine/StageEngine.ts`, `src/components/DmxMonitorDrawer.tsx`, `src/components/DmxOutputSection.tsx`, `src/components/LiveDmxBadge.tsx`):**
+    - Added `groupFootprint()`, clone-safe `exclude` in `buildDmxPatch()`/`allocateDmx()`, non-merging `addPatchedUnits()` across different `catalogId`/`dmxMode`/`dmxChannels`, `repatchGroup()` (keeps address when fitting, relocates cleanly across U1–U2 without conflicts, rejects when full, clears stale `optics` on model switch), and `writeDmxChannels()` clamping moving-head, laser, and strobe DMX writes strictly to each unit's footprint so narrow modes (e.g., 1–6 ch LED PARs) never overwrite neighbours.
+    - Surfaced visible `"Simulated control layout, not the fixture's real channel map"` warnings in `DmxMonitorDrawer`, `DmxOutputSection` (before arming live output), and `LiveDmxBadge` (`Sim map` + screen-reader text).
+  - **Catalogue optics, Data L9 fixes & per-model production estimates (`src/data/fixtureOptics.ts`, `src/data/productionEstimator.ts`):**
+    - Derived `REFERENCE_OPTICS` directly from `EQUIPMENT_CATALOG`, added `catalogOptics()` (verified fields only) and `resolveOptics()` (verbatim pass-through for legacy groups, catalogue defaults with user overrides winning), fixed Data L9 (`{}` empty-object handling and finite gain bounds), and wired `StageEngine.ts` to `resolveOptics()`.
+    - Updated `calculateProductionEstimate()` to emit per-model rows using verified catalogue `weightKg` (→ lbs) and `powerW` (falling back to legacy allowances with `(est. weight/power)` labels when unverified/missing, and using verified LED panel cabinet specs when `cabinetId` is set) while keeping all legacy rigs and crew counts unchanged.
+  - **Accessible UI pickers (`src/components/EquipmentPicker.tsx`, `src/components/RigBuilderDrawer.tsx`, `src/components/LedCabinetEditor.tsx`, `src/components/FixtureOpticsEditor.tsx`, `src/App.tsx`):**
+    - Added keyboard-accessible, Escape/Tab-trapped `EquipmentPicker` (responsive bottom sheet on phones, modal popover on desktop) with category chips, search, DMX mode selector, and `?` unverified markers; added LED `Panel model` selector in `LedCabinetEditor` (reverting to `Custom` on manual physical/pixel edits); added `Reset to catalogue values` in `FixtureOpticsEditor`.
+  - **Tests (+7 unit tests, 137 → 144; +1 browser test, 41 → 42; desktop smoke checks v1–v6 schemas):**
+    - Added `tests/equipment-catalog.test.mjs` (catalogue schema/sourcing/`docs/equipment.md` integrity, `repatchGroup`, `resolveOptics`, estimator, `rigImport`, MVR spec pruning, and all QA regressions), extended `tests/show-file.test.mjs` (v6 hash pin, per-field v6 round-trips, template version invariance, v5/v7 rejections), extended `tests/desktop/electron-smoke.spec.mjs`, and added `tests/e2e/equipment-catalog.spec.mjs`.
+- **Gate results (final code):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**144/144**)
+  - `npm run build`: PASS (`dist/schemas/show-v1..v6.schema.json` emitted; `fast-xml-parser` stays lazy-loaded)
+  - `npm run desktop:win`: PASS (portable exe built; zero new runtime deps; SPDX check green)
+  - `npm run test:desktop`: PASS (**8/8**)
+  - `npx playwright test --workers=1`: PASS (**42/42**, 5.7 m)
+  - `git status --short`: clean
+- **QA findings verified and fixed:**
+  - *Pass 1 H1:* Added `writeDmxChannels()` clamping moving-head, laser, and strobe writes in `StageEngine.ts` strictly to each unit's `dmxWidth` (`groupFootprint`) and sliced channel labels in `DmxMonitorDrawer.tsx` (+narrow-footprint regression test).
+  - *Pass 1 M1:* Restored `totalCo2Count > 0 || totalSmokeCount > 0` in `productionEstimator.ts` so hazer-only legacy rigs keep identical labour estimates (+regression test).
+  - *Pass 1 M2 & L6:* Gated catalogue fixture weight/power in `productionEstimator.ts` on `!isFieldUnverified` with explicit `(est. weight, est. power)` labels, and kept overhead vs floor laser cost buckets distinct (+regression test).
+  - *Pass 1 M3 & L2:* Removed unverified `0.1°` lower bound from `claypaky-sharpy` (using verified `beamDeg: 3.8`), restricted `catalogOptics()` to verified optical fields, and raised `MAX_AERIAL_GAIN` to `1e9` (+all-catalogue sanity gain `< 1000` and legacy extreme regression tests).
+  - *Pass 1 M4:* Cleared stale per-model `optics` overrides in `withModelUpdate()` when `catalogId` changes while keeping them on same-model DMX mode switches (+regression test).
+  - *Pass 1 M5 & Pass 2 L2:* Added visible `Sim map` badge with `<span className="sr-only">` explanation in `LiveDmxBadge.tsx` and visible simulated-layout note in `DmxOutputSection.tsx`.
+  - *Pass 1 M6:* Added Tab / Shift+Tab focus trap to `EquipmentPicker.tsx` modal dialog (+Escape/focus-restore e2e check).
+  - *Pass 1 L1, L4, L8:* Made `exclude` matching in `buildDmxPatch()` clone-safe (+regression test), guarded `onModelChanged` against no-op re-applies, and added `dependentRequired` to `src/schemas/show-v6.schema.json`.
+- **QA findings rejected or deferred (with reasons):**
+  - *Pass 1 M7 (reject known `catalogId` + `dmxMode` when `dmxChannels` differs from catalogue):* Rejected per Opus 5.5 design — stored `dmxChannels` is authoritative so future datasheet corrections never silently break saved show patches; H1 eliminates narrow-footprint cross-talk, and Rig Builder surfaces drift with one-click `Re-patch?`.
+  - *Pass 1 L3 (CSV simulated-layout column/note) & L5 (per-row `est. cost` suffix) & L7 (OFL attribution in `THIRD_PARTY_NOTICES.txt`):* Deferred/rejected — preserving existing CSV schema (Mode column planned for item 3), `CostEstimatorModal` subtitle already notes illustrative budgets, and OFL MIT notice is recorded in `docs/equipment.md`.
+  - *Pass 2 L1 (`optics: {}` on legacy group has `zoomSlope = 0`):* Intentional Sprint 0 Data L9 fix (empty `{}` is unconfigured; `FixtureOpticsEditor` never emits `{}`).
+- **Design decisions:**
+  - Chose Option A for Show v6 (`catalogId`, `dmxMode`, stored `dmxChannels`, `cabinetId`) keeping `type` as the simulation/render class while keeping rich categories, `body` families, and verified/unverified metadata in `equipmentCatalog.ts` (per Opus 5.5 consult).
+  - Left `RIG_TEMPLATES` untouched in Round 1 so existing preset addresses, DMX/GLB/DXF/MVR tests, and v1/v2 save versions remain invariant until templates are re-patched in item 3.
+  - Zero new runtime dependencies added.
+- **Leftovers / next up:**
+  - Next up: **Realism backlog item 1b** (3D procedural models and PBR textures for every catalogue item, with phone/WebP/KTX2 asset size budget, instancing, lazy loading, and `docs/assets.md`).
