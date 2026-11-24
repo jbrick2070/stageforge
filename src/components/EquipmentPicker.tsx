@@ -15,7 +15,12 @@ import {
 } from '../data/equipmentCatalog';
 import { FIXTURE_CATALOG, FLOOR_FX_CATALOG } from '../data/presets';
 import { groupFootprint, type GroupModelUpdate } from '../data/dmxPatch';
-import type { FloorFxUnit, MountedFixtureGroup } from '../types/show';
+import {
+  DEFAULT_SHOP_STATE,
+  pickerStockAvailability,
+  type ShopStockState,
+} from '../data/shopStock';
+import type { FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show';
 import { EquipmentThumbnail } from './EquipmentThumbnail';
 
 type Group = MountedFixtureGroup | FloorFxUnit;
@@ -24,11 +29,18 @@ const GENERIC_EQUIPMENT = { ...FIXTURE_CATALOG, ...FLOOR_FX_CATALOG };
 
 interface EquipmentPickerProps {
   group: Group;
+  rig?: RigConfig;
+  shopStock?: ShopStockState;
   /** Return an error string to reject the selection and keep the picker open, or undefined on success. */
   onApply: (update: GroupModelUpdate) => string | undefined;
 }
 
-export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply }) => {
+export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({
+  group,
+  rig,
+  shopStock = DEFAULT_SHOP_STATE,
+  onApply,
+}) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<CatalogCategory | 'all'>('all');
@@ -281,37 +293,81 @@ export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply
 
             {/* Model list */}
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              <button
-                type="button"
-                onClick={applyGeneric}
-                className={`w-full text-left rounded-lg border px-2.5 py-1.5 transition cursor-pointer ${
-                  !group.catalogId
-                    ? 'bg-white/10 border-white/30 text-white'
-                    : 'bg-black/30 border-white/10 text-zinc-300 hover:border-white/25'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-[11px]">Generic ({legacySpec.modelName})</span>
-                  <span className="font-mono-tech text-[9px] text-zinc-400">{legacySpec.dmxFootprint} ch</span>
-                </div>
-                {defaultEntry && (
-                  <div className="text-[9px] text-zinc-400 font-mono-tech">
-                    Legacy simulation default · ≈ {catalogDisplayName(defaultEntry)}
-                  </div>
-                )}
-              </button>
+              {(() => {
+                const genericStockKey = LEGACY_DEFAULTS[group.type as HardwareType];
+                const genericAvail = rig
+                  ? pickerStockAvailability(rig, group, genericStockKey, shopStock)
+                  : null;
+                const genericBlocked = Boolean(genericAvail && !genericAvail.allowed);
+                const genericReasonId = genericBlocked ? `stock-reason-generic-${group.id}` : undefined;
+                return (
+                  <button
+                    type="button"
+                    aria-disabled={genericBlocked || undefined}
+                    aria-describedby={genericReasonId}
+                    onClick={() => {
+                      if (genericBlocked && genericAvail) {
+                        setError(
+                          `Not enough stock for generic ${group.type} (${genericAvail.inStock} in stock, ${Math.max(0, genericAvail.free ?? 0)} free, need ${genericAvail.needed}).`,
+                        );
+                        return;
+                      }
+                      applyGeneric();
+                    }}
+                    className={`w-full text-left rounded-lg border px-2.5 py-1.5 transition cursor-pointer ${
+                      genericBlocked
+                        ? 'bg-black/20 border-white/10 text-zinc-500 opacity-70'
+                        : !group.catalogId
+                          ? 'bg-white/10 border-white/30 text-white'
+                          : 'bg-black/30 border-white/10 text-zinc-300 hover:border-white/25'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-[11px]">Generic ({legacySpec.modelName})</span>
+                      <span className="font-mono-tech text-[9px] text-zinc-400">{legacySpec.dmxFootprint} ch</span>
+                    </div>
+                    {defaultEntry && (
+                      <div className="text-[9px] text-zinc-400 font-mono-tech">
+                        Legacy simulation default · ≈ {catalogDisplayName(defaultEntry)}
+                        {genericAvail && genericAvail.inStock !== null && (
+                          <span className={genericBlocked ? ' text-amber-300' : ' text-emerald-300'}>
+                            {' · '}
+                            {genericAvail.inStock} in stock · {Math.max(0, genericAvail.free ?? 0)} free
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {genericBlocked && genericAvail && (
+                      <div id={genericReasonId} className="text-[9px] font-mono-tech text-amber-300 mt-0.5">
+                        Needs {genericAvail.needed} units; only {Math.max(0, genericAvail.free ?? 0)} free in shop stock.
+                      </div>
+                    )}
+                  </button>
+                );
+              })()}
 
               {filtered.map((entry) => {
                 const isSelected = activeEntry?.id === entry.id;
                 const isCurrent = group.catalogId === entry.id;
                 const isDefault = LEGACY_DEFAULTS[group.type] === entry.id;
                 const badges = formatCatalogSpecBadges(entry, isSelected ? activeMode?.name : undefined);
+                const avail = rig ? pickerStockAvailability(rig, group, entry.id, shopStock) : null;
+                const blocked = Boolean(avail && !avail.allowed);
+                const reasonId = blocked ? `stock-reason-${group.id}-${entry.id}` : undefined;
                 return (
                   <button
                     key={entry.id}
                     type="button"
                     aria-pressed={isSelected}
+                    aria-disabled={blocked || undefined}
+                    aria-describedby={reasonId}
                     onClick={() => {
+                      if (blocked && avail) {
+                        setError(
+                          `Shop has ${avail.inStock} ${catalogDisplayName(entry)} (${Math.max(0, avail.free ?? 0)} free, need ${avail.needed}). Switch to Unlimited or allow a sub-rental.`,
+                        );
+                        return;
+                      }
                       setSelectedId(entry.id);
                       const modes = getSelectableModes(entry);
                       const keepCurrent = group.catalogId === entry.id && group.dmxMode && modes.some((m) => m.name === group.dmxMode);
@@ -323,9 +379,11 @@ export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply
                       setError('');
                     }}
                     className={`w-full text-left rounded-lg border px-2.5 py-1.5 transition cursor-pointer ${
-                      isSelected
-                        ? 'bg-cyan-500/20 border-cyan-400 text-white'
-                        : 'bg-black/40 border-white/10 text-zinc-200 hover:border-white/25'
+                      blocked
+                        ? 'bg-black/25 border-white/10 text-zinc-400 opacity-75'
+                        : isSelected
+                          ? 'bg-cyan-500/20 border-cyan-400 text-white'
+                          : 'bg-black/40 border-white/10 text-zinc-200 hover:border-white/25'
                     }`}
                   >
                     <div className="flex items-start gap-2">
@@ -364,6 +422,25 @@ export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply
                             <span className="text-amber-300">· placeholder</span>
                           )}
                         </div>
+                        {avail && avail.inStock !== null && (
+                          <div
+                            id={reasonId}
+                            className={`font-mono-tech text-[9px] mt-0.5 ${
+                              blocked
+                                ? 'text-amber-300'
+                                : avail.overStock
+                                  ? 'text-amber-200'
+                                  : 'text-emerald-300'
+                            }`}
+                          >
+                            {avail.inStock} in stock · {Math.max(0, avail.free ?? 0)} free
+                            {blocked
+                              ? ` (need ${avail.needed} — insufficient stock)`
+                              : avail.overStock
+                                ? ` (sub-rent +${avail.subRent})`
+                                : ''}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </button>

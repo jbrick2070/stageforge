@@ -6,6 +6,8 @@ import {
   getCatalogEntry,
 } from '../data/equipmentCatalog';
 import { initialLedCabinets, ledPlacement, requestedWallSize } from '../data/stageEquipment';
+import { computeLedCabinetDemand, getModelStock, type ShopStockState } from '../data/shopStock';
+import type { NativeStage } from '../data/showFile';
 import type { LedCabinets, RigConfig } from '../types/show';
 
 function CabinetField({ label, value, min, max, onChange }: {
@@ -29,8 +31,8 @@ function CabinetField({ label, value, min, max, onChange }: {
   </label>;
 }
 
-export function LedCabinetEditor({ rig, layout, onChange }: {
-  rig: RigConfig; layout: ReturnType<typeof ledPlacement>; onChange: (wall: RigConfig['ledWall']) => void;
+export function LedCabinetEditor({ rig, stage, layout, shopStock, onChange }: {
+  rig: RigConfig; stage?: NativeStage; layout: ReturnType<typeof ledPlacement>; shopStock?: ShopStockState; onChange: (wall: RigConfig['ledWall']) => void;
 }) {
   const panel = rig.ledWall.cabinets;
   const update = (cabinets: LedCabinets) => onChange({ ...rig.ledWall, cabinets, ...requestedWallSize(cabinets) });
@@ -119,6 +121,19 @@ export function LedCabinetEditor({ rig, layout, onChange }: {
     <p className="text-[10px] text-zinc-400">
       {layout.columns * layout.rows + 2 * wing.columns * wing.rows} cabinets installed · Main wall {Number(layout.width.toFixed(3))} × {Number(layout.height.toFixed(3))} m
     </p>
+    {(() => {
+      const demand = shopStock ? computeLedCabinetDemand(rig, stage) : null;
+      const inStock = demand && shopStock ? getModelStock(shopStock, demand.catalogId) : null;
+      const warning =
+        demand && inStock !== null && demand.cabinets > inStock
+          ? `Shop stock warning: Need ${demand.cabinets} · In stock ${inStock} · Sub-rent ${demand.cabinets - inStock} ${demand.model} cabinets.`
+          : '';
+      return (
+        <div role="status" aria-live="polite" className={warning ? 'text-[10px] font-mono-tech text-amber-200 bg-amber-950/60 border border-amber-400/40 rounded px-2 py-1' : 'sr-only'}>
+          {warning}
+        </div>
+      );
+    })()}
     {layout.scale < 1 && <p className="text-xs text-amber-200">Venue clearance limits the installed grid.</p>}
   </fieldset>;
 }

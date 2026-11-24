@@ -545,3 +545,49 @@ test('show control boots offline in Master mode, ignores OSC in Master, and trig
     await rm(scTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
+
+test('Gear & production Inventory loads under stageforge:// CSP, prints via window.print(), and exports equipment CSV', async () => {
+  await page.getByRole('button', { name: 'Gear, cost and crew', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Gear & production' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('tab', { name: /Inventory/ })).toHaveAttribute('aria-selected', 'true');
+
+  // Verify window.print() is invoked cleanly without opening any popup window.
+  await page.evaluate(() => {
+    window.__desktopPrintCalls = 0;
+    window.print = () => {
+      window.__desktopPrintCalls++;
+    };
+  });
+  await dialog.getByRole('button', { name: 'Print sheet' }).click();
+  expect(await page.evaluate(() => window.__desktopPrintCalls)).toBe(1);
+
+  // Verify .equipment.csv download passes main's will-download suffix whitelist and writes a BOM CSV.
+  const csvTarget = path.join(tmp, 'rig-inventory.equipment.csv');
+  await app.evaluate(({ session }, target) => {
+    const record = globalThis.__stageforgeTest.download = { state: 'waiting' };
+    const listener = (_event, item) => {
+      session.defaultSession.off('will-download', listener);
+      record.filename = item.getFilename();
+      record.options = item.getSaveDialogOptions();
+      item.setSavePath(target);
+      item.once('done', (_e, state) => { record.state = state; });
+    };
+    session.defaultSession.on('will-download', listener);
+  }, csvTarget);
+
+  await dialog.getByRole('button', { name: 'Export CSV' }).click();
+  await expect.poll(() => app.evaluate(() => globalThis.__stageforgeTest.download.state), { timeout: 15_000 }).toBe('completed');
+  const dl = await app.evaluate(() => globalThis.__stageforgeTest.download);
+  expect(dl.filename).toMatch(/\.equipment\.csv$/);
+  expect(dl.options.title).toBe('Export equipment list');
+
+  const csvBody = await readFile(csvTarget, 'utf8');
+  expect(csvBody.startsWith('\uFEFF')).toBe(true);
+  expect(csvBody).toContain('Category,Manufacturer,Model,Catalogue ID,DMX mode');
+  expect(csvBody).toContain('Total,');
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  expectNoProblems();
+});

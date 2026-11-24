@@ -7,10 +7,13 @@ import { ledPlacement } from './stageEquipment';
 import type { NativeStage } from './showFile';
 import { authoredWallFrames, authoredWallSurface, resolveStudioGeometry } from './studioGeometry';
 
-const KG_TO_LBS = 2.20462;
+export const KG_TO_LBS = 2.20462;
+
+export type CostItemKind = 'fixture' | 'truss' | 'motor' | 'led' | 'audio' | 'prop' | 'deck';
 
 export interface CostLineItem {
   category: 'Rigging & Motors' | 'Lighting' | 'Lasers' | 'LED Video' | 'Audio / Speakers' | 'Smoke & FX' | 'Stage & FOH' | 'Scenery (simulation allowance)';
+  kind?: CostItemKind;
   label: string;
   qty: string;
   buyCost: number;
@@ -46,7 +49,7 @@ export interface ProductionEstimate {
 
 type HardwareKind = FixtureType | FloorFxType;
 
-const HARDWARE_ALLOWANCE: Record<
+export const HARDWARE_ALLOWANCE: Record<
   HardwareKind,
   {
     category: CostLineItem['category'];
@@ -87,6 +90,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   const stageArea = rig.platforms ? rig.platforms.reduce((area, p) => area + p.width * p.depth, 0) : rig.stageWidth * rig.stageDepth;
   if (stageArea > 0) equipmentItems.push({
     category: 'Stage & FOH',
+    kind: 'deck',
     label: rig.platforms ? `Custom stage deck (${rig.platforms.length} modules)` :
       `${rig.venue.toUpperCase()} Stage Deck & Barricade (${rig.stageWidth}m × ${rig.stageDepth}m)`,
     qty: `${Math.round(stageArea)} m²`,
@@ -98,6 +102,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
 
   equipmentItems.push({
     category: 'Stage & FOH',
+    kind: 'deck',
     label: 'FOH Control (DMX Console + Laser Server + Audio Desk)',
     qty: '1 pkg',
     buyCost: 94000,
@@ -181,6 +186,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (totalTrussMeters > 0) {
     equipmentItems.push({
       category: 'Rigging & Motors',
+      kind: 'truss',
       label: 'Aluminum truss sections',
       qty: `${Math.round(totalTrussMeters)} m`,
       buyCost: Math.round(totalTrussMeters * 460),
@@ -193,6 +199,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (totalMotors > 0) {
     equipmentItems.push({
       category: 'Rigging & Motors',
+      kind: 'motor',
       label: 'Kinesys / CM Lodestar 1-Ton Kinetic Chain Motors',
       qty: `${totalMotors} hoists`,
       buyCost: totalMotors * 7800,
@@ -226,6 +233,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (legacyAllBeams > 0) {
     equipmentItems.push({
       category: 'Lighting',
+      kind: 'fixture',
       label: 'Sharpy X-Beam / MegaPointe Moving Heads',
       qty: `${legacyAllBeams} units`,
       buyCost: legacyAllBeams * 7100,
@@ -238,6 +246,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (legacyWashCount > 0) {
     equipmentItems.push({
       category: 'Lighting',
+      kind: 'fixture',
       label: 'MAC Aura Pro RGBW Moving Washes',
       qty: `${legacyWashCount} units`,
       buyCost: legacyWashCount * 5400,
@@ -250,6 +259,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (legacyStrobeCount > 0) {
     equipmentItems.push({
       category: 'Lighting',
+      kind: 'fixture',
       label: 'Atomic Pro JDC-1 Arena Strobe Bars',
       qty: `${legacyStrobeCount} units`,
       buyCost: legacyStrobeCount * 4900,
@@ -262,6 +272,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (legacyBlinderCount > 0) {
     equipmentItems.push({
       category: 'Lighting',
+      kind: 'fixture',
       label: 'Molefay 4-Lite Warm Audience Blinders',
       qty: `${legacyBlinderCount} units`,
       buyCost: legacyBlinderCount * 1450,
@@ -275,6 +286,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (legacyLaserCount > 0) {
     equipmentItems.push({
       category: 'Lasers',
+      kind: 'fixture',
       label: 'KVANT Clubmax 12W RGB Overhead Lasers',
       qty: `${legacyLaserCount} units`,
       buyCost: legacyLaserCount * 14500,
@@ -287,6 +299,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (legacyFloorLaserCount > 0) {
     equipmentItems.push({
       category: 'Lasers',
+      kind: 'fixture',
       label: 'KVANT Spectrum 25W Stage Deck Lasers',
       qty: `${legacyFloorLaserCount} units`,
       buyCost: legacyFloorLaserCount * 28000,
@@ -311,6 +324,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
     const label = estNotes.length ? `${baseLabel} (${estNotes.join(', ')})` : baseLabel;
     const row: CostLineItem = {
       category: allowance.category,
+      kind: 'fixture',
       label,
       qty: `${bucket.count} ${allowance.unitLabel}`,
       buyCost: bucket.count * allowance.buyCost,
@@ -348,6 +362,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
     const cabinetCount = surface.columns * surface.rows;
     equipmentItems.push({
       category: 'LED Video',
+      kind: 'led',
       label: `${panelPrefix}LED wall (authored placement)`,
       qty: surface.cabinets ? `${cabinetCount} cabinets · ${Number(area.toFixed(2))} m²` : `${Number(area.toFixed(2))} m²`,
       buyCost: Math.round(area * 3800),
@@ -362,6 +377,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
     const cabinetCount = wall.columns * wall.rows + 2 * wall.wing.columns * wall.wing.rows;
     equipmentItems.push({
       category: 'LED Video',
+      kind: 'led',
       label: `${panelPrefix}LED wall${rig.ledWall.curved ? ' (curved)' : ''}${wall.wing.width > 0 ? ' + IMAG wings' : ''}`,
       qty: rig.ledWall.cabinets ? `${cabinetCount} cabinets · ${Number(totalLedArea.toFixed(2))} m²` : `${Number(totalLedArea.toFixed(2))} m²`,
       buyCost: Math.round(totalLedArea * 3800),
@@ -375,6 +391,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (secondaryArea > 0) {
     equipmentItems.push({
       category: 'LED Video',
+      kind: 'led',
       label: `Secondary LED walls (${secondaryWalls.length})`,
       qty: `${Number(secondaryArea.toFixed(2))} m²`,
       buyCost: Math.round(secondaryArea * 3800),
@@ -394,6 +411,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
       const racks = hangs.length;
       equipmentItems.push({
         category: 'Audio / Speakers',
+        kind: 'audio',
         label: k2 ? `K2 flown speaker hangs (${racks} arrays)` : `Flown speaker hangs (${racks} arrays)`,
         qty: `${boxes} boxes + ${racks} ${racks === 1 ? 'rack' : 'racks'}`,
         buyCost: racks * 17000 + boxes * 14500,
@@ -406,6 +424,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
     const boxes = 2 * Math.max(4, Math.min(12, Math.round(rig.audioRig.boxesPerSide ?? 9)));
     equipmentItems.push({
       category: 'Audio / Speakers',
+      kind: 'audio',
       label: k2 ? 'K2 flown line arrays and amplifier racks (L/R)' : 'Flown line arrays and amplifier racks (L/R)',
       qty: `${boxes} boxes + 2 racks`,
       buyCost: 34000 + boxes * 14500,
@@ -417,6 +436,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (rig.audioRig.subWall && rig.audioRig.subCount > 0) {
     equipmentItems.push({
       category: 'Audio / Speakers',
+      kind: 'audio',
       label: k2 ? 'KS28 dual-18″ subwoofer wall' : 'Dual-18″ subwoofer wall',
       qty: `${rig.audioRig.subCount} subs`,
       buyCost: rig.audioRig.subCount * 7800,
@@ -430,6 +450,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (monitors > 0) {
     equipmentItems.push({
       category: 'Audio / Speakers',
+      kind: 'audio',
       label: k2 ? 'X12 coaxial floor monitors' : 'Coaxial floor monitors',
       qty: `${monitors} ${monitors === 1 ? 'wedge' : 'wedges'}`,
       buyCost: monitors * 2400,
@@ -445,6 +466,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
     const unit = scenicAllowance[kind];
     equipmentItems.push({
       category: 'Scenery (simulation allowance)',
+      kind: 'prop',
       label: PROP_CATALOG[kind].label,
       qty: `${qty} ${qty === 1 ? 'piece' : 'pieces'}`,
       buyCost: qty * unit.buyCost,
@@ -464,6 +486,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
     if (qty === 0) continue;
     equipmentItems.push({
       category: 'Scenery (simulation allowance)',
+      kind: 'prop',
       label,
       qty: `${qty} ${qty === 1 ? 'piece' : 'pieces'}`,
       buyCost: qty * unit.buyCost,
@@ -477,6 +500,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (legacyHazerCount > 0) {
     equipmentItems.push({
       category: 'Smoke & FX',
+      kind: 'fixture',
       label: 'MDG ATMe Touring Hazers + CO2 Fluid',
       qty: `${legacyHazerCount} units`,
       buyCost: legacyHazerCount * 7200,
@@ -489,6 +513,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (legacySmokeCount > 0) {
     equipmentItems.push({
       category: 'Smoke & FX',
+      kind: 'fixture',
       label: 'JEM ZR45 High-Output Smoke Machines',
       qty: `${legacySmokeCount} units`,
       buyCost: legacySmokeCount * 2100,
@@ -501,6 +526,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (legacyCo2Count > 0) {
     equipmentItems.push({
       category: 'Smoke & FX',
+      kind: 'fixture',
       label: 'MagicFX CO2Jet II + Liquid CO2 Dewar Tanks',
       qty: `${legacyCo2Count} jets`,
       buyCost: legacyCo2Count * 1450,

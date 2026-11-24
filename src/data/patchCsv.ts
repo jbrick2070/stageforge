@@ -1,4 +1,5 @@
 import { buildDmxPatch, DMX_CHANNELS } from './dmxPatch';
+import { formatCsv } from './csv';
 import type { RigConfig } from '../types/show';
 
 export function patchCsv(rig: RigConfig) {
@@ -13,9 +14,5 @@ export function patchCsv(rig: RigConfig) {
       }
     }
   }
-  const cell = (v: string | number) => {
-    const text = typeof v === 'string' && /^[=+@\-\t\r]/.test(v) ? "'" + v : String(v);
-    return '"' + text.replaceAll('"', '""') + '"';
-  };
-  return lines.map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
+  return formatCsv(lines, { quoteAll: true });
 }

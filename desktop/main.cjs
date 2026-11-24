@@ -25,6 +25,7 @@ const exportsBySuffix = [
   ['.dxf', 'Export CAD plan', [{ name: 'DXF drawing', extensions: ['dxf'] }]],
   ['.glb', 'Export 3D scene', [{ name: 'glTF binary', extensions: ['glb'] }]],
   ['.patch.csv', 'Export channel patch', [{ name: 'CSV table', extensions: ['csv'] }]],
+  ['.equipment.csv', 'Export equipment list', [{ name: 'CSV table', extensions: ['csv'] }]],
 ];
 
 protocol.registerSchemesAsPrivileged([{

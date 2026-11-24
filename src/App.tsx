@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StageEngine } from './engine/StageEngine';
 import { AudioEngine } from './audio/AudioEngine';
 import {
@@ -42,9 +42,12 @@ import { BottomConsole } from './components/BottomConsole';
 import { RigBuilderDrawer } from './components/RigBuilderDrawer';
 import { DmxMonitorDrawer, type DmxSnapshot } from './components/DmxMonitorDrawer';
 import { LiveDmxBadge } from './components/LiveDmxBadge';
-import { CostEstimatorModal } from './components/CostEstimatorModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { loadShopStockState, saveShopStockState, type ShopStockState } from './data/shopStock';
 import { useLiveDmxOutput } from './dmx/useLiveDmxOutput';
+
+const loadCostEstimatorModal = () => import('./components/CostEstimatorModal');
+const createLazyCostEstimatorModal = () => lazy(loadCostEstimatorModal);
 import { createLiveStore } from './state/liveTelemetry';
 import { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } from './data/presets';
 import { calculateProductionEstimate, formatUSD } from './data/productionEstimator';
@@ -161,6 +164,13 @@ export const App: React.FC = () => {
   const [dmxDrawerOpen, setDmxDrawerOpen] = useState(false);
   const [showControlOpen, setShowControlOpen] = useState(false);
   const [costModalOpen, setCostModalOpen] = useState(false);
+  const [costModalRetry, setCostModalRetry] = useState(0);
+  const CostEstimatorModal = useMemo(() => createLazyCostEstimatorModal(), [costModalRetry]);
+  const [shopStock, setShopStock] = useState<ShopStockState>(loadShopStockState);
+  const updateShopStock = useCallback((next: ShopStockState) => {
+    setShopStock(next);
+    saveShopStockState(next);
+  }, []);
   const [ildaClip, setIldaClip] = useState<IldaClip | null>(null);
   const [ildaMode, setIldaMode] = useState<IldaRenderMode>('both');
   const [ildaFps, setIldaFps] = useState(30);
@@ -1242,6 +1252,9 @@ export const App: React.FC = () => {
     } else if (action === 'dxf') {
       const { exportStageDxf } = await import('./data/stageDxf');
       downloadStageFile(rig.name, 'dxf', new Blob([exportStageDxf(rig, studioStage)], { type: 'application/dxf' }));
+    } else if (action === 'inventoryCsv') {
+      const { equipmentInventoryCsv } = await import('./data/equipmentInventory');
+      downloadStageFile(rig.name, 'equipment.csv', new Blob([equipmentInventoryCsv(rig, studioStage, shopStock)], { type: 'text/csv;charset=utf-8' }));
     } else {
       downloadStageFile(rig.name, 'patch.csv', new Blob([patchCsv(rig)], { type: 'text/csv;charset=utf-8' }));
     }
@@ -1496,6 +1509,9 @@ export const App: React.FC = () => {
             open={rigDrawerOpen}
             rig={rig}
             stage={studioStage}
+            shopStock={shopStock}
+            onChangeShopStock={updateShopStock}
+            onOpenInventory={() => setCostModalOpen(true)}
             onClose={() => setRigDrawerOpen(false)}
             onDesignStage={() => setDesignerRig(rig)}
             onOpenSavedDesign={savedDesign ? () => setDesignerRig(savedDesign) : undefined}
@@ -1566,12 +1582,28 @@ export const App: React.FC = () => {
           }} />
         </ErrorBoundary>
       )}
-      {costModalOpen && <CostEstimatorModal
-        rig={rig}
-        stage={studioStage}
-        onClose={() => setCostModalOpen(false)}
-        onDeployRig={() => showToast('Virtual Crew Load-In Approved ($0.00) — Show Live!')}
-      />}
+      {costModalOpen && (
+        <ErrorBoundary
+          label="Gear & Production"
+          onReset={() => {
+            setCostModalRetry((n) => n + 1);
+            setCostModalOpen(false);
+          }}
+          onExportRig={() => downloadRig(rig)}
+        >
+          <Suspense fallback={null}>
+            <CostEstimatorModal
+              rig={rig}
+              stage={studioStage}
+              shopStock={shopStock}
+              onChangeShopStock={updateShopStock}
+              onClose={() => setCostModalOpen(false)}
+              onDeployRig={() => showToast('Virtual Crew Load-In Approved ($0.00) — Show Live!')}
+              onNotify={showToast}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
 
       {/* Bottom FOH DMX Console & Laser Visuals Deck */}
       {!cinemaMode && (

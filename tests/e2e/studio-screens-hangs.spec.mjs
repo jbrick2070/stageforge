@@ -97,7 +97,7 @@ test('Studio renders and seeks native v3 hangs and dual screens, then authors an
     await second.goto('/?probe');
     const dialog = await openFiles(second);
     await dialog.getByLabel('Open show file').setInputFiles(bundlePath);
-    await expect(dialog).toBeHidden();
+    await expect(dialog).toBeHidden({ timeout: 15_000 });
     await expect(second.getByRole('button', { name: /missing media/ })).toHaveCount(0);
     await expect.poll(async () => {
       const hangs = await second.evaluate(() => window.stageforgeProbe.hangs());

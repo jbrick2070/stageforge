@@ -264,7 +264,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         </label>
         <button className="transport-btn" aria-label="Rig builder" aria-expanded={rigDrawerOpen} onClick={onToggleRigDrawer}><Wrench /><span>Rig<span className="tool-name-detail"> builder</span></span></button>
         <button className="transport-btn" aria-label="DMX monitor" aria-expanded={dmxDrawerOpen} onClick={onToggleDmxDrawer}><Radio /><span>DMX</span></button>
-        <button className="transport-btn" aria-label="Cost and crew" aria-expanded={costModalOpen} title={`Cost and crew · ${oneNightCostLabel}`} onClick={onToggleCostModal}><DollarSign /><span>Cost<span className="tool-name-detail"> &amp; crew</span></span></button>
+        <button className="transport-btn" aria-label="Gear, cost and crew" aria-expanded={costModalOpen} title={`Gear, inventory & cost · ${oneNightCostLabel}`} onClick={onToggleCostModal}><DollarSign /><span>Gear<span className="tool-name-detail"> &amp; cost</span></span></button>
         <button className="transport-btn" aria-label="Show control" aria-expanded={showControlOpen} title={`Show control · ${clockMode}`} onClick={onToggleShowControl}><Clock /><span>Sync</span></button>
         <button className="transport-btn" aria-label="Cinema mode" title="Cinema mode (H)" onClick={onToggleCinemaMode}><EyeOff /></button>
       </nav>

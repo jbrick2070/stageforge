@@ -9,6 +9,13 @@ import type { NativeStage } from '../data/showFile';
 import { isCustomMainWall } from '../data/studioGeometry';
 import { addPatchedUnits, allocateDmx, repatchGroup, type GroupModelUpdate } from '../data/dmxPatch';
 import { checkCatalogChannelDrift } from '../data/equipmentCatalog';
+import {
+  DEFAULT_SHOP_STATE,
+  formatStockBlockMessage,
+  shopProfileLabel,
+  stockViolations,
+  type ShopStockState,
+} from '../data/shopStock';
 import { downloadRig, MAX_RIG_JSON_BYTES, parseRigJson } from '../data/rigImport';
 import { GRID_HEIGHT, ledPlacement } from '../data/stageEquipment';
 import { normalizeDesign } from '../data/stageDesign';
@@ -39,6 +46,9 @@ interface RigBuilderDrawerProps {
   open: boolean;
   rig: RigConfig;
   stage?: NativeStage;
+  shopStock?: ShopStockState;
+  onChangeShopStock?: (next: ShopStockState) => void;
+  onOpenInventory?: () => void;
   onClose: () => void;
   onChangeRig: (next: RigConfig, replacing?: boolean) => void;
   onChangeStage: (next?: NativeStage) => void;
@@ -88,6 +98,9 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   open,
   rig,
   stage,
+  shopStock = DEFAULT_SHOP_STATE,
+  onChangeShopStock,
+  onOpenInventory,
   onClose,
   onChangeRig,
   onChangeStage,
@@ -107,6 +120,18 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   const gridHeight = GRID_HEIGHT[rig.venue];
   const wall = ledPlacement(rig);
 
+  const commitRigEdit = (next: RigConfig): string | undefined => {
+    const violations = stockViolations(rig, next, shopStock);
+    if (violations.length > 0) {
+      const message = formatStockBlockMessage(violations);
+      setPatchError(message);
+      return message;
+    }
+    setPatchError('');
+    onChangeRig(next);
+    return undefined;
+  };
+
   const updatePod = (podId: string, patch: Partial<TrussPodConfig>) => {
     onChangeRig({
       ...rig,
@@ -117,7 +142,6 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   const addTrussPod = (shape: TrussShape) => {
     const patch = allocateDmx(rig, 'beam', 6, 1);
     if (!patch) { setPatchError('No free DMX block for six beam fixtures.'); return; }
-    setPatchError('');
     const idx = rig.trussPods.length + 1;
     const newPod: TrussPodConfig = {
       id: crypto.randomUUID(),
@@ -142,10 +166,11 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
         },
       ],
     };
-    onChangeRig({ ...rig, trussPods: [...rig.trussPods, newPod] });
+    commitRigEdit({ ...rig, trussPods: [...rig.trussPods, newPod] });
   };
 
   const removePod = (podId: string) => {
+    setPatchError('');
     onChangeRig({ ...rig, trussPods: rig.trussPods.filter((p) => p.id !== podId) });
   };
 
@@ -168,8 +193,10 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     };
     const fixtures = addPatchedUnits(rig, pod.fixtures, group, existing);
     if (!fixtures) { setPatchError(`No free DMX block for ${count} × ${group.modelName}.`); return; }
-    setPatchError('');
-    updatePod(podId, { fixtures });
+    commitRigEdit({
+      ...rig,
+      trussPods: rig.trussPods.map((p) => (p.id === podId ? { ...p, fixtures } : p)),
+    });
   };
 
   const changePodFixtureModel = (podId: string, groupId: string, update: GroupModelUpdate): string | undefined => {
@@ -178,7 +205,16 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     if (!pod || !group) return 'Fixture group not found.';
     const res = repatchGroup(rig, group, update);
     if (!res.ok) return res.reason;
-    setPatchError('');
+    const nextRig: RigConfig = {
+      ...rig,
+      trussPods: rig.trussPods.map((p) =>
+        p.id === podId
+          ? { ...p, fixtures: p.fixtures.map((f) => (f.id === groupId ? res.group : f)) }
+          : p,
+      ),
+    };
+    const stockErr = commitRigEdit(nextRig);
+    if (stockErr) return stockErr;
     if (
       update.catalogId !== group.catalogId ||
       update.dmxMode !== group.dmxMode ||
@@ -186,7 +222,6 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     ) {
       onModelChanged?.(podId, groupId);
     }
-    updatePod(podId, { fixtures: pod.fixtures.map(f => (f.id === groupId ? res.group : f)) });
     if (res.moved) {
       onNotify?.(`Moved to U${res.group.dmxUniverse}.${String(res.group.dmxStartChannel).padStart(3, '0')} (${res.width} ch × ${res.group.count})`);
     }
@@ -215,8 +250,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     };
     const floorFx = addPatchedUnits(rig, rig.floorFx, group, existing);
     if (!floorFx) { setPatchError(`No free DMX block for ${count} × ${group.modelName}.`); return; }
-    setPatchError('');
-    onChangeRig({ ...rig, floorFx });
+    commitRigEdit({ ...rig, floorFx });
   };
 
   const changeFloorFxModel = (groupId: string, update: GroupModelUpdate): string | undefined => {
@@ -224,7 +258,12 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     if (!group) return 'Floor FX group not found.';
     const res = repatchGroup(rig, group, update);
     if (!res.ok) return res.reason;
-    setPatchError('');
+    const nextRig: RigConfig = {
+      ...rig,
+      floorFx: rig.floorFx.map((item) => (item.id === groupId ? res.group : item)),
+    };
+    const stockErr = commitRigEdit(nextRig);
+    if (stockErr) return stockErr;
     if (
       update.catalogId !== group.catalogId ||
       update.dmxMode !== group.dmxMode ||
@@ -232,7 +271,6 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     ) {
       onModelChanged?.(undefined, groupId);
     }
-    onChangeRig({ ...rig, floorFx: rig.floorFx.map(item => (item.id === groupId ? res.group : item)) });
     if (res.moved) {
       onNotify?.(`Moved to U${res.group.dmxUniverse}.${String(res.group.dmxStartChannel).padStart(3, '0')} (${res.width} ch × ${res.group.count})`);
     }
@@ -306,7 +344,38 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
         </div>
       </div>
 
-      {patchError && <p role="alert" className="px-3 py-1.5 text-xs text-amber-300">{patchError}</p>}
+      {shopStock.profileId !== 'unlimited' && (
+        <div className="px-3 py-1.5 bg-cyan-950/45 border-b border-cyan-400/25 flex items-center justify-between gap-2 text-[10px] font-mono-tech text-cyan-100">
+          <span className="truncate">
+            Shop: {shopProfileLabel(shopStock)}
+            {shopStock.allowOverStock ? ' (sub-rent allowed)' : ''}
+          </span>
+          <div className="flex items-center gap-1 shrink-0">
+            {onOpenInventory && (
+              <button
+                type="button"
+                onClick={onOpenInventory}
+                className="gear-touch-control rounded bg-white/10 hover:bg-white/20 px-2.5 sm:px-1.5 py-1 sm:py-0.5 text-[10px] sm:text-[9px] text-cyan-100 cursor-pointer"
+              >
+                Inventory
+              </button>
+            )}
+            {onChangeShopStock && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPatchError('');
+                  onChangeShopStock({ ...shopStock, profileId: 'unlimited' });
+                }}
+                className="gear-touch-control rounded bg-white/10 hover:bg-white/20 px-2.5 sm:px-1.5 py-1 sm:py-0.5 text-[10px] sm:text-[9px] text-zinc-200 cursor-pointer"
+              >
+                Unlimited
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {patchError && <p role="alert" className="px-3 py-1.5 text-xs text-amber-300 bg-amber-950/50 border-b border-amber-400/30">{patchError}</p>}
       {/* Scrollable Builder Sections */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3.5 text-xs">
         {importError && <p role="alert" className="text-rose-300">{importError}</p>}
@@ -400,7 +469,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
             />
           </div>
 
-          {rig.ledWall.enabled && <LedCabinetEditor rig={rig} layout={wall}
+          {rig.ledWall.enabled && <LedCabinetEditor rig={rig} stage={stage} layout={wall} shopStock={shopStock}
             onChange={ledWall => onChangeRig({ ...rig, ledWall })}/>}
           {rig.ledWall.enabled && !rig.ledWall.cabinets && wall.scale < 1 && (
             <p className="text-xs text-amber-200">
@@ -577,6 +646,8 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                       <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
                         <EquipmentPicker
                           group={fg}
+                          rig={rig}
+                          shopStock={shopStock}
                           onApply={(update) => changePodFixtureModel(pod.id, fg.id, update)}
                         />
                         <span className="font-mono-tech text-[9px] text-zinc-500 shrink-0">
@@ -672,6 +743,8 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                 <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
                   <EquipmentPicker
                     group={fx}
+                    rig={rig}
+                    shopStock={shopStock}
                     onApply={(update) => changeFloorFxModel(fx.id, update)}
                   />
                   <span className="font-mono-tech text-[9px] text-zinc-500 shrink-0">

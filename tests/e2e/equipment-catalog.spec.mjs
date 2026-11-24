@@ -42,6 +42,7 @@ test('select a real catalogue moving head, LED panel preset, verify DMX warning 
 
   // Verify Production Estimate lists the real model & ROE LED panel with matching equipment silhouettes.
   await page.getByRole('button', { name: 'Cost and crew' }).click();
+  await page.getByRole('tab', { name: 'Cost & crew' }).click();
   await expect(page.getByText('Robe MegaPointe', { exact: true })).toBeVisible();
   await expect(page.getByText(/ROE Visual Black Pearl BP2 V2/).first()).toBeVisible();
   await expect(page.locator('[data-equipment-family="moving-beam"]').first()).toBeVisible();

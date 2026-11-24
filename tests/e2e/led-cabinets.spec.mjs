@@ -20,6 +20,7 @@ test('an authored cabinet wall keeps its requested grid and exports each install
   await expect(page.getByText('Each wing · 6 × 6 cabinets · 96 × 48 px')).toBeVisible();
   await page.getByRole('button', { name: 'Close Rig Builder' }).click();
   await page.getByRole('button', { name: 'Cost and crew' }).click();
+  await page.getByRole('tab', { name: 'Cost & crew' }).click();
   await expect(page.getByText('128 cabinets · 32 m²')).toBeVisible();
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Show files' }).click();
