@@ -180,6 +180,45 @@ Get-Content "$qa\sprint-N-design.md" -Raw | claude -p --model claude-opus-5-5 --
 
 Opus 5.5 needs Claude Code 2.1.280 or newer. If the call fails with a version error, rerun the same command with `--model claude-sonnet-5-5` and say so in the Overnight log.
 
+### Sprint 5: instance the moving-head beam cones (designed by Claude Code, 2026-11-24)
+
+**Goal:** the 44 beam cones on the arena rig draw in one to three calls instead of 44, with no visible change. Claude Code wrote this design. Consult Opus 5.5 (design consult command) on details if you need to.
+
+**Today:** each moving head builds its own `CylinderGeometry` (identical per model) and its own `ShaderMaterial` from `VOLUMETRIC_BEAM_VERT/FRAG` in `src/engine/shaders.ts`.
+- Per unit, `StageEngine.ts` sets `uColor`, `uIntensity`, `uPrism` and `uSoftness`/`uSeed` every frame. `uLensOffset` is per model; `uHaze` and `uTime` are global.
+- Zoom is `beamMesh.scale` (x, 1, z), and the beam is hidden through `beamMesh.visible`.
+- The material is transparent with additive blending, so draw order does not matter. Confirm `blending`, `depthWrite` and `renderOrder` before relying on that.
+
+**Design:** extend `src/engine/renderBatcher.ts` with *shader proxies* rather than writing a second batcher.
+1. **Register an instanced variant per shader** with `registerShaderProxy({ match(material), key(material), createMaterial(source), attributes })`.
+   - `match` recognises the beam material: mark it with `userData.instancedVariant = 'volumetricBeam'` where it is created.
+   - `key` covers everything that must be equal to share a draw: `uLensOffset`, `blending`, `side`, `depthWrite`, `renderOrder`.
+   - `attributes` lists the per-instance values copied from each source's uniforms every frame: `uColor` (3), `uIntensity` (1), `uPrism` (1), `uSoftness` (1), `uSeed` (1).
+2. **Instanced shaders:** build them from the same GLSL strings, so the look cannot drift.
+   - Vertex: `#ifdef USE_INSTANCING` use `mat4 m = modelMatrix * instanceMatrix;` everywhere the shader uses `modelMatrix`, including the `modelMatrix[0]` and `[2]` basis.
+   - Pass the per-instance attributes to the fragment shader as `flat` varyings, and map uniform names to them with `#define uColor vInstColor` (and the rest) at the top of the fragment shader.
+   - Keep `uHaze` and `uTime` as shared uniforms, copied each frame from the first source.
+3. **Batching:** group sources by canonical geometry (content hash, as today) plus the proxy key.
+   - Hidden originals get a zero-scale instance, exactly like opaque batches, and the culling sphere is updated per frame the same way.
+   - Set `renderOrder`, `transparent` and `depthWrite` on the batch to match the sources.
+   - Release a source back to its own draw if its geometry or material changes, or its proxy key stops matching.
+4. **Leave alone:** lasers, ILDA, LED walls, haze and particles. They are few or are already single draws.
+
+**Tests:**
+- **Unit:** a fake proxy shader groups two sources, per-instance attributes follow uniform changes, a hidden source gets zero scale, a key change releases it, and the material copy is disposed on `clear()`.
+- **E2E:** extend `tests/e2e/render-budget.spec.mjs` so Arena Rock with batching is at most 140 draw calls (from 173), with at least 40 fewer than with beams unbatched.
+- **Pixel parity (the important one):** freeze time with `page.clock.install()` + `pauseAt`, advance exactly one frame with `page.clock.runFor(16)`, screenshot with batching on and off at the same frozen frame, and require the mean absolute pixel difference to be under 1%.
+- **Check by eye:** look at Arena Rock and Laser Tunnel and confirm beams look identical.
+
+**Done when:** the gate is green, draw calls are at most 140 on Arena Rock, pixel parity passes, and the Overnight log records before/after calls and fps (use the phone-like measurement: 4x CPU throttle, 390x844 viewport).
+
+### After Sprint 5
+
+Self-directed rounds continue with **Realism backlog items 5 to 8** (paperwork, console feel, fixture behaviour, haze/smoke/laser realism); items 1 to 4 are done. Keep VR (item 9) for later. The optional CPU win after that:
+- set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
+- call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
+- prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
+
 ## Backlog (in this order)
 
 ### Sprint 0: whole-codebase QA sweep

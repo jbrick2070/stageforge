@@ -13,7 +13,7 @@ Stop it early:  create the file  $env:TEMP\stageforge-overnight\STOP   (the curr
 Or close this window; then remove the guards with:  scripts\unguard-push.ps1
 #>
 param(
-  [int[]]$Sprints = @(0, 1, 2, 3),
+  [int[]]$Sprints = @(5),
   [double]$Hours = 10,   # 0 = no deadline
   [int]$FollowUps = 2,
   [switch]$DryRun
