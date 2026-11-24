@@ -41,7 +41,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7 and 8 (see "Designed Sprints 6–8" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8 and 9 (see "Designed Sprints 6–8" and Sprint 9 below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -214,7 +214,7 @@ Opus 5.5 needs Claude Code 2.1.280 or newer. If the call fails with a version er
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7 and 8 below, in that order, one per round, before Realism items 6 to 8.** Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8 and 9 below, in that order, one per round, before Realism items 6 to 8.** Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
@@ -347,6 +347,87 @@ These come from a code-grounded roadmap review. The goal is that a working progr
 - **Desktop smoke:** `openViewer` opens the viewer, and mutating menu items are disabled.
 
 **Done when:** the gate is green, the mutation-path audit table is in the Overnight log with every row gated and tested, and `docs/show-format.md` or a new `docs/viewer.md` explains viewer mode.
+
+### Sprint 9: audio-reactive mappings for fixtures and controls (designed by Claude Code, 2026-11-24)
+
+**Goal:** StageForge's engine *is* the virtual lighting controller. Prove, end to end, that live FFT/audio data drives the virtual fixtures and lasers through that engine: moving heads, washes, beams, blinders and strobes, LED walls, and laser projectors.
+- Besides the global "Beat sync", specific fixture groups and controls react to chosen audio features. Examples: kick → wash dimmer, hi-hats → beam strobe, bass → LED wall brightness, energy → beam zoom, a chosen FFT band range → laser rotation or speed.
+- The mappings are a show option, stored in the look, so cues can switch them.
+- The same modulated values reach real fixtures through live DMX.
+- **Priority:** the engine path and its proof (probe and tests) come first. The desk UI in step 4 is a thin editor on top: keep it minimal if time is short, but presets plus enable toggles must ship.
+
+**Today:**
+- `AudioEngine.getMetrics()` already gives `bass`, `mid`, `high`, `energy`, `beat`, `beatPulse`, `drop` and a 32-band `spectrum`, from a track or the live mic.
+- `StageEngine.updateScene` applies one fixed global reaction when `look.audioReactive` is true.
+- Live DMX frames come from the same engine frame (`setDmxFrameListener`).
+
+**Design:**
+1. **Data, additive.** Add an optional `look.audioMap?: { mappings: AudioMapping[] }`, capped at 16 mappings. `AudioMapping` is:
+
+   ```
+   { id, name, enabled,
+     source: 'bass' | 'mid' | 'high' | 'energy' | 'beat' | 'drop' | 'band',
+     bands?: [lo, hi]            // 0..31, for 'band'
+     target: { group: HeadGroup | 'wash' | 'beam' | 'blinder' | 'strobe' | 'ledWall' | 'laser' | 'haze', param },
+     amount,                     // -1..1; negative ducks
+     attackMs, releaseMs,        // envelope follower
+     threshold,                  // 0..1 gate
+     curve: 'linear' | 'square' | 'sqrt' }
+   ```
+
+   - `param` is one of `dimmer | zoom | colorMix | strobe | speed | tilt | brightness | rotation | spread`, validated per target.
+   - **Laser targets** (per projector or all) accept `intensity`, `speed`, `rotation`, `spread` and `strobe`. These are the parameters the laser engine already exposes in `look.laser`; see the safety rules in step 3.
+   - Existing `audioReactive` stays the **master enable** ("Beat sync"). With no mappings the behaviour is exactly as today, so v1 to v7 files render identically.
+   - Write **show v8** only when `audioMap` has mappings, following the v4 to v7 pattern. Add `src/schemas/show-v8.schema.json` and pin its LF hash, and update `docs/show-format.md`.
+2. **One pure module**, `src/engine/audioModulation.ts`: `modulateLook(look, metrics, followers, dt) → { look, followers }`.
+   - Followers are per-mapping envelope state, with attack/release and threshold gating; `band` sources average the chosen spectrum range.
+   - The result is the base look value plus `amount × envelope`, clamped to the parameter's range.
+   - Call it once per frame in `updateScene`, **before** both rendering and the DMX frame, so the 3D view and real fixtures always agree.
+   - Modulation is live-only and never baked into recorded takes or cue states, so seek and replay stay deterministic. During replay it reacts to whatever audio is playing.
+   - **Probe:** add `?probe` `audioModulation()`, returning the current envelope and modulated value for each mapping, and `fixtureParams(group)`, returning what the engine actually applied that frame. Tests assert against these, never against shader internals.
+3. **Safety, built in and tested:**
+   - Blackout and master dimmer always win.
+   - **Flash limiter:** strobe and blinder targets never exceed 3 full-intensity flashes per second (photosensitivity guidance), with a visible note when it engages.
+   - Laser targets can only scale intensity at or below the look's set level. They can never enable a laser, turn on audience scan, or override the laser-safety guards.
+   - Haze is limited to slow parameters (enforce a minimum attack/release).
+4. **Virtual controller UI**, a new "Audio" section in the `BottomConsole` show tab:
+   - the master Beat sync toggle and the source (track or mic);
+   - a live 32-band FFT meter where you drag to pick a band range;
+   - mapping rows: source, target, amount, attack/release and threshold, each with an enable toggle and its own live level meter;
+   - presets: "Kick → wash dimmer", "Hats → beam strobe", "Bass → LED wall", "Energy → beam zoom";
+   - "Store in cue" goes through the normal cue capture, because mappings live in the look.
+
+   Everything is keyboard-reachable and labelled for screen readers.
+5. **Remote control, optional, only if small:**
+   - OSC `/stageforge/audio/reactive` (0/1) and `/stageforge/audio/mapping/<id>/amount` (`f`), in `docs/show-control.md`;
+   - a gamepad button that toggles Beat sync.
+
+**Out:**
+- per-fixture (single-unit) mappings in this sprint: group level only;
+- external audio devices beyond the existing mic picker;
+- audio-to-cue auto-advance and "AI auto-lightshow".
+
+**Tests:**
+- **Unit, `tests/audio-modulation.test.mjs`:**
+  - attack/release timing, threshold gating, band averaging and curves;
+  - a negative amount ducks, and results clamp;
+  - blackout and master win;
+  - the flash limiter caps at 3/s;
+  - a laser mapping can't enable output or audience scan;
+  - with no mappings the output equals the input look.
+- **Show file:** v8 round trip; v1 to v7 files load and save unchanged; v8 written only when mappings exist; schema hash pin, with a CRLF copy hashing the same.
+- **E2E, `tests/e2e/audio-mappings.spec.mjs`:**
+  - load a generated test tone (a 2 Hz pulsed 60 Hz sine, written by the test) as the track;
+  - add "Kick → wash dimmer", "Hats → beam strobe" and "Band 8–14 → laser rotation";
+  - `fixtureParams()` shows the wash dimmer, beam strobe and laser rotation following the pulses, in phase with the tone;
+  - repeat with the mic source using a fake media stream (`--use-fake-device-for-media-stream` with the tone file);
+  - master off restores the static look;
+  - a cue storing the mapping recalls it;
+  - the mapping survives save and reopen;
+  - on desktop, or via the existing DMX loopback test on `127.0.0.1` only, the DMX channel values follow the same envelope.
+- **Performance:** with 16 mappings, frame time on the phone-like measurement (4x CPU throttle, 390x844) stays within 1 ms of no mappings. Log both numbers.
+
+**Done when:** the gate is green; with no mappings, behaviour and pixels are unchanged against a frozen-frame parity check like Sprint 5's; the safety tests pass; and the "Audio" section is documented in `docs/show-control.md`.
 
 ## Backlog (in this order)
 
