@@ -15,7 +15,6 @@ import {
 } from './audio/tempoEngine';
 import { CAMERAS, TopBar, type TempoControlProps } from './components/TopBar';
 import { ShowOverlay } from './components/ShowOverlay';
-import { ShowControlDrawer } from './components/ShowControlDrawer';
 import { ClockBadge } from './components/ClockBadge';
 import { allows, type ClockMode } from './showControl/clockOwner';
 import { useShowControl } from './showControl/useShowControl';
@@ -32,15 +31,12 @@ import type { IldaRenderMode } from './engine/ildaRenderer';
 import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
 import type { BundleAsset } from './data/showBundle';
 import { isCustomMainWall, MAX_WALL_CUE_MS, pruneNativeStage, removeSecondaryScreenEvent, upsertSecondaryScreenEvent, type SecondaryScreenEvent } from './data/studioGeometry';
-import { ShowFiles, type FileAction } from './components/ShowFiles';
-import { CueListEditor } from './components/CueListEditor';
+import type { FileAction } from './components/ShowFiles';
 import { useShowTimeline } from './input/useShowTimeline';
 import { useWallClock } from './input/useWallClock';
 import { patchCsv } from './data/patchCsv';
-import { StageDesigner } from './components/StageDesigner';
 import { BottomConsole } from './components/BottomConsole';
-import { RigBuilderDrawer } from './components/RigBuilderDrawer';
-import { DmxMonitorDrawer, type DmxSnapshot } from './components/DmxMonitorDrawer';
+import type { DmxSnapshot } from './components/DmxMonitorDrawer';
 import { LiveDmxBadge } from './components/LiveDmxBadge';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { loadShopStockState, saveShopStockState, type ShopStockState } from './data/shopStock';
@@ -48,7 +44,21 @@ import { useLiveDmxOutput } from './dmx/useLiveDmxOutput';
 
 const loadCostEstimatorModal = () => import('./components/CostEstimatorModal');
 const createLazyCostEstimatorModal = () => lazy(loadCostEstimatorModal);
+// Panels and drawers load right after first paint (see preloadPanels), keeping them out of the first
+// download. Their ErrorBoundaries also catch a chunk that fails to load.
+const ShowFiles = deferredComponent(() => import('./components/ShowFiles').then((m) => m.ShowFiles));
+const CueListEditor = deferredComponent(() => import('./components/CueListEditor').then((m) => m.CueListEditor));
+const StageDesigner = deferredComponent(() => import('./components/StageDesigner').then((m) => m.StageDesigner));
+const RigBuilderDrawer = deferredComponent(() => import('./components/RigBuilderDrawer').then((m) => m.RigBuilderDrawer));
+const DmxMonitorDrawer = deferredComponent(() => import('./components/DmxMonitorDrawer').then((m) => m.DmxMonitorDrawer));
+const ShowControlDrawer = deferredComponent(() => import('./components/ShowControlDrawer').then((m) => m.ShowControlDrawer));
+const preloadPanels = () => {
+  for (const panel of [RigBuilderDrawer, DmxMonitorDrawer, ShowControlDrawer, ShowFiles, CueListEditor, StageDesigner]) {
+    panel.preload().catch(() => { /* the panel's ErrorBoundary reports it when opened */ });
+  }
+};
 import { createLiveStore } from './state/liveTelemetry';
+import { deferredComponent } from './components/deferred';
 import { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } from './data/presets';
 import { calculateProductionEstimate, formatUSD } from './data/productionEstimator';
 import { applyDeskPatch } from './data/movingGroups';
@@ -166,6 +176,8 @@ export const App: React.FC = () => {
   const [costModalOpen, setCostModalOpen] = useState(false);
   const [costModalRetry, setCostModalRetry] = useState(0);
   const CostEstimatorModal = useMemo(() => createLazyCostEstimatorModal(), [costModalRetry]);
+  // Fetch the panels' code right after first paint, so they open instantly.
+  useEffect(preloadPanels, []);
   const [shopStock, setShopStock] = useState<ShopStockState>(loadShopStockState);
   const updateShopStock = useCallback((next: ShopStockState) => {
     setShopStock(next);
@@ -768,6 +780,7 @@ export const App: React.FC = () => {
       primaryScreen: () => engine.screenTransport(),
       hangs: () => engine.hangDiagnostics(),
       renderStats: () => engine.renderStats(),
+      setBatching: (enabled: boolean) => engine.setBatching(enabled),
       rebuildRig: () => engine.forceRebuildCurrentRig(),
     };
 
@@ -1457,9 +1470,9 @@ export const App: React.FC = () => {
       {missing.length > 0 && <button type="button" className="media-relink-alert" onClick={() => setFilesOpen(true)}>
         {missing.length} missing media {missing.length === 1 ? 'file' : 'files'} · Relink
       </button>}
-      {filesOpen && <ShowFiles name={rig.name} media={media} stage={studioStage} timeline={timeline.timeline} missing={missing} cueNames={new Map(cues.map(c => [c.id, c.name]))}
-        onOpen={openFile} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onError={showToast} onClose={() => setFilesOpen(false)}/>}
-      {cueEditor && <CueListEditor cues={cues} capture={() => ({ id: crypto.randomUUID(), name: 'New look',
+      {filesOpen && <ErrorBoundary label="Show files" onReset={() => setFilesOpen(false)} onExportRig={() => downloadRig(rig)}><ShowFiles name={rig.name} media={media} stage={studioStage} timeline={timeline.timeline} missing={missing} cueNames={new Map(cues.map(c => [c.id, c.name]))}
+        onOpen={openFile} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onError={showToast} onClose={() => setFilesOpen(false)}/></ErrorBoundary>}
+      {cueEditor && <ErrorBoundary label="Cue list editor" onReset={() => setCueEditor(false)} onExportRig={() => downloadRig(rig)}><CueListEditor cues={cues} capture={() => ({ id: crypto.randomUUID(), name: 'New look',
         tag: 'USER', accent: showState.primaryColor, state: structuredClone(showState), screen: cueScreen() })}
         onApply={next => {
           const index = next.findIndex(c => c.id === activeCueId);
@@ -1467,7 +1480,7 @@ export const App: React.FC = () => {
           if (index < 0 || !next[index + 1] || next[index].followSeconds !== cues[currentIndex]?.followSeconds) setFollow(null);
           setCues(next);
         }}
-        onClose={() => setCueEditor(false)}/>}
+        onClose={() => setCueEditor(false)}/></ErrorBoundary>}
       {toast && !demoOpeningBlack && (
         <div role="status" aria-live="polite" className="fixed top-16 left-1/2 -translate-x-1/2 z-50 glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
           {toast}

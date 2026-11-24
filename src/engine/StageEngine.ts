@@ -69,6 +69,7 @@ import { buildScenicPiece, ScenicPiece } from './scenicProps';
 import { SPEAKER_PROFILES } from '../data/speakerProfiles';
 import { PROP_CATALOG } from '../data/stageProps';
 import { exportStageGlb, nameFixtureUnit } from './stageGlb';
+import { RenderBatcher } from './renderBatcher';
 import { createMissingMediaSlate, WallPlayer, type SecondaryScreenState, type StageScreen } from './StageScreens';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS, demoFade } from '../data/demoLighting';
 
@@ -201,6 +202,8 @@ export class StageEngine {
 
   // Dynamic rig root so rebuilding templates is clean & leak-free
   private rigGroup = new THREE.Group();
+  /** Instances repeated opaque rig parts so each part type costs one draw call. */
+  private batcher?: RenderBatcher;
   private geometryLayout?: NativeStage['layout'];
   private geometryKey?: string;
   private geometrySource?: RigConfig;
@@ -342,10 +345,13 @@ export class StageEngine {
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.toneMappingExposure = 0.96;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // Count a whole frame (scene plus every bloom and output pass), not just the last pass.
+    this.renderer.info.autoReset = false;
     container.appendChild(this.renderer.domElement);
 
     // Scene & deep arena atmosphere
     this.scene = new THREE.Scene();
+    this.batcher = new RenderBatcher(this.scene);
     this.scene.background = this.backgroundColor.clone();
     this.scene.fog = new THREE.FogExp2(this.fogColor, 0.015);
 
@@ -493,15 +499,38 @@ export class StageEngine {
     this.composer.setSize(w, h);
   }
 
-  /** Read-only GPU/memory stats exposed via `?probe` for Playwright budget & leak assertions. */
+  /**
+   * Read-only GPU/memory stats exposed via `?probe` for Playwright budget & leak assertions.
+   * `calls` and `triangles` cover the whole last frame (scene, bloom and output passes).
+   */
   public renderStats() {
+    let objects = 0, meshes = 0, visibleMeshes = 0, autoUpdating = 0;
+    this.scene.traverse((node) => {
+      objects++;
+      if (node.matrixAutoUpdate) autoUpdating++;
+      if ((node as THREE.Mesh).isMesh) {
+        meshes++;
+        if (node.visible) visibleMeshes++;
+      }
+    });
     return {
       tier: this.renderTier,
       calls: this.renderer.info.render.calls,
       triangles: this.renderer.info.render.triangles,
       geometries: this.renderer.info.memory.geometries,
       textures: this.renderer.info.memory.textures,
+      programs: this.renderer.info.programs?.length ?? 0,
+      objects,
+      meshes,
+      visibleMeshes,
+      autoUpdating,
+      batching: this.batcher?.stats() ?? null,
     };
+  }
+
+  /** Turn draw-call batching off or on (probe and A/B checks). */
+  public setBatching(enabled: boolean) {
+    this.batcher?.setEnabled(enabled);
   }
 
   public getRenderTier(): RenderTier {
@@ -1057,6 +1086,7 @@ export class StageEngine {
       old.ledWall === rig.ledWall && old.trussPods === rig.trussPods && old.floorFx === rig.floorFx) return;
     this.beamPools?.dispose();
     this.detachIldaMeshes();
+    this.batcher?.clear();
     this.releaseGroup(this.rigGroup);
     this.modelCache.beginRebuild();
     try {
@@ -1526,6 +1556,7 @@ export class StageEngine {
     if ((old && old.venue !== rig.venue) || (this.activeView === 'foh' && this.fitFohOnResize) || this.activeView === 'pa_closeup') {
       this.setCameraPreset(this.activeView);
     }
+    this.batcher?.rebuild(this.rigGroup);
     } finally {
       this.modelCache.endRebuild();
     }
@@ -2060,6 +2091,7 @@ export class StageEngine {
       }
 
       const audio = this.audioGetter(dt);
+      this.renderer.info.reset();
       if (this.updateScene(dt, audio)) this.composer.render();
       else this.clearStage();
 
@@ -2632,6 +2664,7 @@ export class StageEngine {
     this.beamPools?.dispose();
     this.detachIldaMeshes();
     this.activeIldaClip = null;
+    this.batcher?.dispose();
     this.releaseGroup(this.rigGroup);
     this.laserShapeGeometries.forEach(geometry => geometry.dispose());
     this.laserShapeGeometries.clear();

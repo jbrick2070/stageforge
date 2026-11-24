@@ -42,4 +42,18 @@ export default defineConfig({
     port: 5173,
     host: '127.0.0.1',
   },
+  build: {
+    rolldownOptions: {
+      output: {
+        // three.js core and React change far less often than the app, so they get their own long-lived
+        // chunks that stay cached across deploys. three's examples (GLB exporter…) keep loading on demand.
+        codeSplitting: {
+          groups: [
+            { name: 'three', test: /[\\/]node_modules[\\/]three[\\/](build|src)[\\/]/, priority: 2 },
+            { name: 'react', test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 1 },
+          ],
+        },
+      },
+    },
+  },
 });

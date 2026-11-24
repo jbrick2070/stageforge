@@ -27,7 +27,9 @@ The user is asleep. `scripts/overnight.ps1` runs you directly on `main`, with ev
 
 ## Self-directed rounds
 
-### Fix first (found by the morning review on 2026-11-24)
+### Fixed: schema hash pins (found by the morning review on 2026-11-24, fixed in `23b9917`)
+
+*Done:* the pins now hash LF-normalised text, a CRLF copy is checked to give the same digest, and `.gitattributes` keeps schemas and fixtures LF. The original note is kept below for the record.
 
 **CI would fail on GitHub.** The Pages workflow runs `npm test` on a Linux (LF) checkout before it builds and deploys. `tests/show-file.test.mjs` pins SHA-256 hashes of the schema files, but the show-v1 to v3 pins were computed on this Windows machine's CRLF bytes, while the v4 to v6 pins are LF hashes. Verified: on an LF copy of `5cca549`, 176 of 177 unit tests pass and only the `show-v1.schema.json hash pin` assertion fails. Pushing as is would stop the deploy.
 
@@ -804,3 +806,30 @@ agy -i "Read HANDOFF.md and run Sprint 0, following its loop. Stop after the loc
 - **Leftovers / next up:**
   - Next up: **Realism backlog item 5** (Show paperwork: patch sheet, instrument schedule, channel hookup, power & load reports, and cue sheet as printable pages and CSV, consistent with MVR and DXF — reusing Round 5's `rigLoads` and `powerReport` unchanged).
 
+### 2026-11-24 morning: optimization sprint (Claude Code, Opus 5.5)
+
+The overnight runner was stopped after Round 5. Claude Code took over for one sprint.
+
+- **Deploy fix (`23b9917`):** the schema hash pins failed on GitHub's Linux checkout, which would have blocked the Pages deploy. They now hash LF-normalised text, and `.gitattributes` keeps schemas and fixtures LF. Verified with an LF export: 186/186 unit tests pass.
+- **Render stats measure whole frames:** `renderer.info` now accumulates per frame (scene plus bloom and output passes). The old probe reported only the last pass (always 1 call), so the existing 350-call budget in `equipment-catalog.spec.mjs` never checked anything. The arena rig actually drew 667 calls per frame on Arena Rock.
+- **Proxy instancing (`src/engine/renderBatcher.ts`):** repeated opaque parts are drawn as one InstancedMesh per part type.
+  - Covers yokes, housings, bezels, clamps, bases, hoists, subwoofers, wedges and line-array boxes, plus per-unit lamp lenses, strobe, blinder and laser apertures via `instanceColor`.
+  - Originals stay in the scene graph on a hidden layer, so animation, GLB export and FOH framing are unchanged.
+  - Geometry is matched by content, so separately built identical shapes still share a batch.
+  - Result on Arena Rock: **667 → 173 draw calls (−74%)**, 560 parts in 60 batches, and 160 instead of 404 GPU geometries.
+  - Phone-like run (4x CPU throttle, 390x844): **~89 → ~146 fps**, median frame 10.4 → 6.4 ms, p95 17.6 → 10.5 ms, worst 35 → 16 ms.
+- **Smaller first download:** Show Files, Cue Editor, Stage Designer, Rig Builder, DMX Monitor and Show Control load right after first paint through `src/components/deferred.tsx`, inside their ErrorBoundaries. It is not `React.lazy`: Suspense reveals loaded content on a timer that never fires while time is frozen (Playwright's clock), which broke `cue-stack.spec.mjs`.
+  - three.js core and React are long-lived vendor chunks that stay cached across deploys.
+  - Initial JS: 1,588 → 1,437 kB minified, 423 → 384 kB gzip.
+- **Tests:** `tests/render-batcher.test.mjs` (7 unit tests) and `tests/e2e/render-budget.spec.mjs` (batching cuts calls below 40% of unbatched and at most 250, triangles unchanged, no leaks across rebuilds).
+- **Checked by eye:** the arena on Arena Rock looks the same with batching on and off.
+- **Sonnet 5.5 review:** no Critical or High findings. Fixed:
+  - per-batch culling spheres;
+  - batching failures fall back to unbatched drawing;
+  - complete lamp settings, snapshotted and checked for every unit;
+  - runtime mirroring and draw-order changes release a part;
+  - only shareable geometry is hashed;
+  - Show Files and Cue Editor ErrorBoundaries and a load retry;
+  - a stable e2e budget test with a GLB export parity check.
+  Not done (latent; no current code uses them): mirroring `castShadow` and raycast `instanceId` onto batches.
+- **Leftovers:** the 44 moving-head beam cones (custom `ShaderMaterial`, transparent) are still one draw call each because their uniforms differ per unit; instancing them needs per-instance shader attributes. Static gear still updates its matrices every frame (`matrixAutoUpdate`), which is a smaller CPU cost.
