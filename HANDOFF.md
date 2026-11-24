@@ -689,3 +689,53 @@ agy -i "Read HANDOFF.md and run Sprint 0, following its loop. Stop after the loc
   - Kept `.ild` clips in-session only (no Show v7 schema bump) to keep Round 3 focused and reviewable in the morning.
 - **Leftovers / next up:**
   - Next up: **Realism backlog item 3** (Equipment inventory & rental list: counts by model, total weight, total power draw, universes & channels used, printable & CSV equipment list, and optional shop stock quantity limits).
+
+### 2026-11-24 07:01 PST — Self-directed Round 4 (Realism backlog 3): equipment inventory, shop stock limits, CSV export & printable rental list (`7aefd78`)
+
+- **Consults & QA runs:**
+  - Opus 5.5 (`claude-opus-5-5`) available and consulted (`round-4-design.md` → `round-4-design-reply.md`) to rank the five highest-value next improvements across phone usability, correctness, performance, accessibility, stage-design realism, open-standards roadmap (Sprint 4), and test gaps, and to design Realism item 3.
+    - *Opus 5.5 top-5 ranking:* (1) Realism item 3 equipment inventory & rental list + focus-trap fix, first `@media print` sheet, shared `csv.ts`, 390 px phone test, lazy-loaded modal, reduced-motion spinner; (2) Realism item 4 rigging & power realism + coarse-pointer 44 px touch targets + three-phase report; (3) Realism item 5 show paperwork + universe expansion beyond U2 (needs user Show v7 decision); (4) Realism item 6 console feel + WCAG 2.3.1 photosensitivity flash-rate guard; (5) Realism item 7 fixture behaviour polish + chunk splitting & per-frame allocation audit.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) QA pass 1 on all Round 4 changes (0 Critical, 0 High, 6 Medium, 7 Low), followed by verification, targeted fixes, and regression tests.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) follow-up QA pass 2 on the Step-4 fixes (0 Critical, 0 High, 0 Medium, 2 cosmetic Low items on `StockQtyInput`, both polished to commit on blur/Enter).
+- **What shipped:**
+  - **Shared CSV module & pure equipment inventory (`src/data/csv.ts`, `src/data/patchCsv.ts`, `src/data/equipmentInventory.ts`, `src/data/productionEstimator.ts`):**
+    - Extracted RFC 4180 + formula-neutralizing (`=`, `+`, `-`, `@`, `\t`, `\r`) CSV serialization into `src/data/csv.ts`, preserving byte-identical `patchCsv()` output (verified by snapshot test) while adding Excel-friendly UTF-8 BOM + CRLF `equipmentInventoryCsv()` with numeric literals, empty cells for unknown/unlimited values, single-emission pool stock columns (so `Sub-rent` column sum equals `Total`), and a trailing `Total` row.
+    - Added additive exports (`KG_TO_LBS`, `HARDWARE_ALLOWANCE`) and optional `CostLineItem.kind` in `productionEstimator.ts` (all existing estimate calculations numerically untouched).
+    - Built pure `computeInventory(rig, stage, shopStock)` aggregating fixtures/lasers/FX by real catalogue model & DMX mode (with generic groups mapped to `LEGACY_DEFAULTS` stock pools and badged `estimate`), reusing estimator infrastructure rows (truss, motors, LED video, audio, stage/FOH, scenery), deriving totals directly from `estimate` so both tabs maintain exact kg/lb/W parity, and reporting per-universe DMX `usedSlots`, `freeSlots`, `conflictSlots`, `overflowChannels`, and `unpatchedUnits`.
+  - **Optional rental shop stock limits (`src/data/shopStock.ts`, `src/components/RigBuilderDrawer.tsx`, `src/components/EquipmentPicker.tsx`, `src/components/LedCabinetEditor.tsx`):**
+    - Added `Unlimited (free design)` default plus three illustrative fictional presets (`Local Club Shop`, `Regional Production House`, `Arena Touring Vendor`) covering all 34 catalogue IDs, plus editable `Custom shop` (0–9999 integers) persisted under `stageforge.shop.v1` with hostile-input parsing (`Object.create(null)`, prototype-key/unknown-ID/float/NaN/range/64 KB rejection).
+    - Implemented single delta gate `stockViolations(prevRig, nextRig, shop)` across all Rig Builder add/switch paths (`addTrussPod`, `addFixtureToPod`, `addFloorFx`, `changePodFixtureModel`, `changeFloorFxModel`): hard-blocks increases over stock (with `role="alert"` message + `Allow over-stock (plan a sub-rental)` soft toggle + one-click `Unlimited`), always allows removals and switches into stocked models, never blocks whole-rig opens/imports/presets (surfacing `Need X · In stock Y · Sub-rent Z` badges instead), and gives LED panel cabinet edits soft stock warnings derived from `computeLedCabinetDemand(rig, stage)` inside a mounted `role="status" aria-live="polite"` region.
+    - Updated `EquipmentPicker` to display `N in stock · M free` per model and mark disallowed models `aria-disabled="true"` with unique `aria-describedby` explanations while keeping them keyboard-focusable.
+  - **Tabbed, lazy-loaded Gear & production modal, printable sheet & Electron support (`src/components/CostEstimatorModal.tsx`, `src/components/CostCrewPanel.tsx`, `src/components/InventoryPanel.tsx`, `src/components/InventoryPrintSheet.tsx`, `src/components/TopBar.tsx`, `src/components/ShowFiles.tsx`, `src/App.tsx`, `desktop/main.cjs`, `src/index.css`, `docs/equipment.md`):**
+    - Refactored `CostEstimatorModal` into a lazy-loaded (`React.lazy` with retryable `ErrorBoundary` reset, `Suspense`) **Gear & production** dialog with ARIA tabs (`Inventory` default, `Cost & crew`, roving tabindex, Arrow/Home/End, persisted in `stageforge.gearTab.v1`) and a full focus trap covering buttons, selects, inputs, and links; added `motion-reduce:animate-none` to the load-in spinner.
+    - Renamed TopBar trigger to `Gear & cost` (`aria-label="Gear, cost and crew"`, keeping WCAG 2.5.3 label-in-name and existing substring test match; tuned `@media (max-width: 429px)` button horizontal padding from 5 px → 4 px so portrait 393 px TopBar keeps full clearance).
+    - Portalled `<InventoryPrintSheet>` outside `#root` (only on the `Inventory` tab) with `@media print` rules hiding `body > #root` and printing a crisp black-on-white rental sheet via `window.print()` (popup-free, CSP-safe in Electron & mobile/desktop browsers).
+    - Added `Equipment list` `.csv` to `ShowFiles` Exchange formats and registered `.equipment.csv` in `desktop/main.cjs` `exportsBySuffix` (zero new IPC channels, zero new npm dependencies).
+    - Added 390 px phone responsive layout (`100dvh` dialog, stacked `data-label` card tables, ≥44×44 px `.gear-touch-control` targets, zero horizontal overflow).
+  - **Bundle size & tests (+18 unit tests, 159 → 177; +1 desktop smoke test, 8 → 9; +3 browser tests including 390×844 phone usability, 44 → 47):**
+    - Main JS chunk shrank from **1,539.33 kB** → **1,538.37 kB** (lazy chunks: `CostEstimatorModal` 41.91 kB / 10.09 kB gz, `equipmentInventory` 7.74 kB / 3.00 kB gz).
+    - Added `tests/equipment-inventory.test.mjs`, `tests/e2e/equipment-inventory.spec.mjs`, desktop smoke test #9 in `tests/desktop/electron-smoke.spec.mjs`; updated `tests/e2e/equipment-catalog.spec.mjs` and `tests/e2e/led-cabinets.spec.mjs` (+1 line each clicking `Cost & crew` tab after intentional default switch to `Inventory`); raised `studio-screens-hangs.spec.mjs:100` bundle-reopen hidden wait to 15 s under dual-tab SwiftShader load.
+- **Gate results (final code):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**177/177**)
+  - `npm run build`: PASS (`index-*.js` 1,538.37 kB / 411.47 kB gz; 0 warnings)
+  - `npm run desktop:win`: PASS (portable exe built; zero new dependencies; SPDX check green)
+  - `npm run test:desktop`: PASS (**9/9**, 10.7 s)
+  - `npx playwright test --workers=1`: PASS (**47/47** — 46/47 on initial full pass + `studio-screens-hangs.spec.mjs` passed cleanly after raising dual-tab SwiftShader reopen wait from 5 s to 15 s)
+  - `git status --short`: clean
+- **QA findings verified and fixed:**
+  - *Pass 1 M1:* Derived inventory `totals.weightLb`/`weightKg`/`powerW` directly from `estimate` so mixed DMX modes with fractional unit weights maintain exact parity (+LEDBeam 150 mixed-mode regression test).
+  - *Pass 1 M2:* Added `emittedStockKeys` tracking in `equipmentInventoryCsv()` so pool `In stock` and `Sub-rent` emit once per `stockKey` and column sum equals `Total` (+multi-mode & generic+catalogue shared-pool CSV regression test).
+  - *Pass 1 M3:* Added inline `exportNotice` inside the modal's `role="status"` region so CSV confirmation is visible above the top-layer `<dialog>` (+e2e assertion).
+  - *Pass 1 M4 & M5:* Wrapped multi-line `<td>` children in single inner elements for clean 390 px phone flex cards and applied `gear-touch-control` (≥44 px on phones) to custom-stock inputs and Rig Builder shop bar buttons.
+  - *Pass 1 M6 & L11:* Passed `stage` into `LedCabinetEditor`, derived LED cabinet soft warning from `computeLedCabinetDemand(rig, stage)`, and kept its `role="status" aria-live="polite"` container permanently mounted (+authored `main-led` regression test).
+  - *Pass 1 L8, L9, L10, L13 & Pass 2 L1–L2:* Added retryable lazy loader via `costModalRetry` counter, switched print date to local `YYYY-MM-DD`, extracted blur/Enter-committing `StockQtyInput`, scoped `stock-reason-${group.id}-${entry.id}` IDs per group, and mounted `<InventoryPrintSheet>` only on the `Inventory` tab.
+- **QA findings deferred (with reasons):**
+  - *Pass 1 L7 (CSV rounded per-row `Total weight (lb)` vs `Total` row on fractional deck areas):* Accepted — `Total` row matches `productionEstimator` exact rounded weight while per-row weights round individually; `Total weight (kg)` keeps 2-decimal precision.
+  - *Pass 1 L12 (same unverified `catalogId` used under two hardware types with distinct allowance weights):* Rare edge case; deferred.
+- **Design decisions:**
+  - Hosted Inventory inside the existing `CostEstimatorModal` as a two-tab **Gear & production** dialog (`Inventory` default | `Cost & crew`) rather than adding a 7th TopBar button so 390 px / 393 px phones stay uncluttered and `aria-label="Gear, cost and crew"` preserves both WCAG 2.5.3 and existing test selectors (per Opus 5.5 consult).
+  - Persisted shop stock profiles in `localStorage` (`stageforge.shop.v1`) instead of bumping to Show v7 because shop inventory is an environment constraint rather than show data.
+  - Used portalled `@media print` + `window.print()` instead of popup windows or PDF libraries so Electron's `setWindowOpenHandler` deny policy, strict CSP, and zero-dependency budget remain intact.
+- **Leftovers / next up:**
+  - Next up: **Realism backlog item 4** (Rigging and power realism: real truss sections & sizes, chain-motor ratings, per-point load with over-limit static guidance warning, dimmer/circuit groups, three-phase load balance, and total power report; plus coarse-pointer ≥44 px touch targets in Rig Builder).
