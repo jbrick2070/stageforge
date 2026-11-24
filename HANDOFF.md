@@ -7,26 +7,39 @@ You are the implementing agent for StageForge. Work sprint by sprint from the ba
 3. **QA** with Claude CLI on Sonnet 5.5, in read-only mode (below).
 4. **Verify and fix:** for each QA finding, check it against the code first. Fix the real ones, add a regression test for each, and write down why you rejected any false positive.
 5. **Re-run the gate.** If you changed more than about 50 lines in step 4, run one more QA pass on just those fixes.
-6. **Commit locally** with a descriptive message, then **report**. Include gate results, QA findings (fixed or rejected) and what's next. In an overnight run, append the report to the Overnight log at the bottom of this file and carry on with the next sprint.
+6. **Commit locally** with a descriptive message, then **report**. Include gate results, QA findings (fixed or rejected) and what's next. In an overnight run, append the report to the Overnight log at the bottom of this file, commit it, and let the runner start the next round.
 
 **Never push.** A push to `main` deploys GitHub Pages; only the user approves that, every time.
 
-## Overnight run (unattended)
+## Overnight run (unattended, full Turbo)
 
-The user is asleep. `scripts/overnight.ps1` runs you once per sprint, each in a fresh session, on a local branch `overnight/<date>`. Nobody can answer questions, so:
+The user is asleep. `scripts/overnight.ps1` runs you directly on `main`, with every tool allowed (all commands, builds, Playwright, Electron, Claude CLI, web), no sandbox and no approval pauses. Each round is one conversation: Sprint 0, 1, 2, 3, then self-directed rounds until morning. After your first turn the runner sends up to two short follow-up turns in the same conversation to check that the work is committed and the gate is green. Nobody can answer questions, so:
 
+- **Keep busy, and pick your own work.** Do the full sprint without cutting features. When the backlog runs out, choose the next improvement yourself (see Self-directed rounds below) rather than stopping.
 - **Decide and log.** Make reasonable calls yourself and record each decision, with its reason, in the Overnight log.
-- **Consult Opus on design.** Before implementing a sprint with real design choices (the v4 `interchange` block, the DMX sender and IPC architecture, clock ownership), and whenever you're stuck on architecture, ask Claude Opus 5.5 using the design consult command below. Opus advises; you decide.
-- **Never commit failing code.** If the gate still fails after three fix rounds, leave the work uncommitted, log what's failing, and end the session. The runner stashes unfinished work as `overnight sprint N unfinished` and starts the next sprint clean.
-- **Stay in scope.**
-  - Work only inside this repo.
-  - Don't install global tools, and don't connect to other machines.
-  - Never push, force or rewrite history, and don't switch branches.
-  - Network use is limited to `npm install` of permissive, pinned packages and the Claude CLI.
-- **Loopback only.** DMX, OSC and MIDI tests send only to `127.0.0.1`. Never send to a real network interface: this PC has a direct Ethernet link to another machine.
+- **Use Opus 5.5 freely for design and code.** Ask Claude Opus 5.5 (design consult command below) before any sprint with real design choices (the v4 `interchange` block, the DMX sender and IPC architecture, clock ownership), when you're stuck, and when you want a second pair of eyes on tricky code or a tricky patch. Opus replies with advice and code; you decide, apply and test it. `%TEMP%\stageforge-overnight\opus-status.txt` says whether Opus 5.5 works on this machine; if not, use Sonnet 5.5 and log it.
+- **Sonnet 5.5 QA on all code you change**, as the loop says.
+- **Never commit failing code.** If the gate still fails after three fix rounds, stash the unfinished work, log what's failing, and move on. The runner also stashes anything left uncommitted at the end of a round.
+- **Pushing is hard-blocked**, by a `pre-push` hook and a disabled `remote.origin.pushurl`. Antigravity's own `command(git push)` deny rule does not stop a push in this mode, so these git-level guards are what protect Pages. Never remove or bypass them (no `--no-verify`, no `git config` changes to `pushurl`, no pushing to a raw URL), and never rewrite history. The user reviews and pushes in the morning.
+- **Tests stay on this machine.** DMX, OSC and MIDI tests send only to `127.0.0.1`.
 - **Hardware steps:** anything needing hardware or a person (a cross-tool check, a real DMX node, a USB interface) becomes a checklist in the docs, not a blocker.
 - **Leave the PC tidy:** after each gate, stop any Vite, preview or Electron processes you started.
-- **Stop time:** don't start new work after 07:00. The runner also stops launching sprints then.
+
+## Self-directed rounds
+
+After Sprint 3, each round works like this:
+
+1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
+2. Cover these areas:
+   - usability on a phone via the GitHub Pages site (touch, small screens, load time);
+   - correctness and edge cases;
+   - performance;
+   - accessibility;
+   - realism of the stage design (real truss, fixture and rigging practice);
+   - the open-standards roadmap, including the Sprint 4 items;
+   - test gaps.
+3. Send it to Opus 5.5, pick the top item worth doing, and implement it end to end with the loop.
+4. Prefer improvements a user would notice. Keep changes small enough to review in the morning.
 
 ## Where things stand (2026-11-23)
 
@@ -223,11 +236,13 @@ Only if the user asks:
 
 ## Kickoff
 
-**Overnight**, unattended (Sprints 0–3, stopping at 07:00), from this folder:
+**Overnight**, unattended, from this folder (Sprints 0–3, then self-directed rounds for 10 hours; add `-Hours 0` for no deadline):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\overnight.ps1
 ```
+
+Stop early by creating `%TEMP%\stageforge-overnight\STOP`; the current round finishes first. If its window is closed mid-run, run `scripts\unguard-push.ps1` to remove the push guards.
 
 **One sprint**, interactively:
 
