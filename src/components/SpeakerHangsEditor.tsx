@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Plus, RotateCcw, Speaker, Trash2 } from 'lucide-react';
 import type { RigConfig } from '../types/show';
 import type { NativeStage } from '../data/showFile';
-import { defaultSpeakerHangs, MAX_STAGE_HANGS, NATIVE_RENDERED_HANGS, setAuthoredHangs, type SpeakerHang } from '../data/studioGeometry';
+import { defaultSpeakerHangs, MAX_STAGE_HANGS, setAuthoredHangs, type SpeakerHang } from '../data/studioGeometry';
 import { GRID_HEIGHT } from '../data/stageEquipment';
 
 function HangField({
@@ -143,9 +143,6 @@ export function SpeakerHangsEditor({
           <RotateCcw className="w-3 h-3" /> Reset L/R
         </button>
       </div>
-      {authored.length > NATIVE_RENDERED_HANGS && (
-        <p className="text-[10px] text-amber-300">The native desk draws the first {NATIVE_RENDERED_HANGS} hangs only.</p>
-      )}
       {selected ? (
         <>
           <div className="flex items-center gap-1.5">

@@ -712,7 +712,7 @@ export function createLineArray(side: -1 | 1, mats: SharedMaterials, boxCount = 
 export function createAuthoredLineArray(hang: SpeakerHang, mats: SharedMaterials, profile: SpeakerProfileId) {
   const group = new THREE.Group();
   group.position.set(hang.x, hang.y, hang.z);
-  // Match Godot's intrinsic Y-X-Z convention and positive-Z cabinet face.
+  // Intrinsic Y-X-Z rotation order (yaw, then tilt) with the cabinet face toward +Z, as v3 hangs are authored.
   group.rotation.set(THREE.MathUtils.degToRad(hang.tilt), THREE.MathUtils.degToRad(hang.yaw), 0, 'YXZ');
   group.userData = { kind: 'lineArray', model: SPEAKER_PROFILES[profile].array.label, cabinets: hang.count,
     yaw: hang.yaw, tilt: hang.tilt, splay: hang.splay };

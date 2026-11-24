@@ -44,7 +44,7 @@ const playable = (take?: ShowTimeline): take is ShowTimeline => !!take && (take.
 
 /**
  * `minDurationMs` reports the last secondary-wall cue so a new recording never
- * ends before cues the show already schedules (native-v0.1.0 rejects those).
+ * ends before cues the show already schedules (the v3 reader rejects those).
  */
 export function useShowTimeline(sample: () => DeskFrame, apply: (event: TimelineEvent, lateMs: number) => void, endReplay: () => void,
   minDurationMs: () => number = () => 0) {

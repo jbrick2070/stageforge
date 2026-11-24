@@ -21,7 +21,7 @@ Run `npm test` to check rig compatibility, deck surfaces and truss patching. To 
 
 ## Desktop apps
 
-The Godot native prototype runs the Split Rig show on Windows and macOS, including two independent video walls, a cue clock and a stage plan editor for truss, speaker arrays and props. [Build or use StageForge Native](native/README.md)
+The retired Godot prototype is preserved at the `native-v0.1.0` tag. Studio opens its v3 show files and `.stageforge.zip` bundles, including secondary walls, wall cues and aimed speaker hangs.
 
 The Electron editions bundle the renderer, fonts, fixtures and demo score. They run offline and keep their own saved stage. Show files and rig files open in both desktop apps and the browser.
 

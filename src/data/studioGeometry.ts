@@ -10,9 +10,7 @@ export type SecondaryScreenEvent = NativeStage['screenEvents'][number];
 
 export const MAX_STAGE_WALLS = 8;
 export const MAX_STAGE_HANGS = 128;
-/** native-v0.1.0 builds at most this many hangs; files may carry up to 128. */
-export const NATIVE_RENDERED_HANGS = 64;
-/** native-v0.1.0 clamps rendered walls to these sizes (stage.gd build_wall). */
+/** Rendered walls clamp to these sizes (inherited from the retired native-v0.1.0 prototype, so its v3 files look the same). */
 export const MAX_WALL_WIDTH = 40;
 export const MAX_WALL_HEIGHT = 25;
 
@@ -31,7 +29,7 @@ export interface WallFrame { id: string; label?: string; x: number; y: number; z
 
 /**
  * Resolve the physical frame of an authored wall. Secondary walls use the
- * native-v0.1.0 defaults (0, 2, -2, 3 × 2 m). A partially specified main-led
+ * v3 format defaults (0, 2, -2, 3 × 2 m). A partially specified main-led
  * inherits the remaining fields from the rig's stock LED placement.
  */
 export function resolveWallFrame(rig: RigConfig, wall: StageWall): WallFrame {
@@ -44,7 +42,7 @@ export function resolveWallFrame(rig: RigConfig, wall: StageWall): WallFrame {
     x: wall.x ?? (stock ? stock.x : 0),
     y: wall.y ?? (sized ? stock!.y : 2),
     z: wall.z ?? (stock ? stock.z : -2),
-    // Clamp like native-v0.1.0 build_wall so imported oversize walls render, plot and price alike.
+    // Clamp so imported oversize walls render, plot and price alike.
     width: clamp(wall.width ?? (sized ? stock!.width : 3), 0.2, MAX_WALL_WIDTH),
     height: clamp(wall.height ?? (sized ? stock!.height : 2), 0.2, MAX_WALL_HEIGHT),
     yaw: wall.yaw ?? 0,

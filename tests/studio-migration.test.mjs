@@ -223,7 +223,7 @@ test('wall cue authoring rejects unusable cues and keeps label edits from pinnin
   // A label-only main-led entry stays a stock wall (no geometry keys).
   stage = upsertStageWall(rig, stage, { id: 'main-led', label: 'Upstage' });
   assert.deepEqual(stage.walls.find(w => w.id === 'main-led'), { id: 'main-led', label: 'Upstage' });
-  // Wall sizes clamp to native-v0.1.0 render limits.
+  // Wall sizes clamp to the v3 render limits.
   const big = upsertStageWall(rig, stage, { id: 'side-led', width: 90, height: 60 }).walls.find(w => w.id === 'side-led');
   assert.deepEqual([big.width, big.height], [40, 25]);
 });
