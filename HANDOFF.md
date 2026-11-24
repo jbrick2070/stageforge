@@ -357,3 +357,58 @@ agy -i "Read HANDOFF.md and run Sprint 0, following its loop. Stop after the loc
   - *Desktop:* Electron fuses in `builder.cjs` (`runAsNode: false`, etc., Desktop L1), `render-process-gone` / `unresponsive` recovery handler (Desktop L4), `will-frame-navigate`/`will-redirect` (Desktop L5), Range-request header forwarding on `stageforge://` for `<video>` seeking (Desktop L7).
   - *Components/Tests:* same-name media asset collision warning (Components M7), `StageDesigner` frame-stable pan & pointer-capture loss recovery (Components L2–L4), `useShowGamepad` checkbox/radio focus exclusion (Components L6), component/hook unit tests (`useShowTimeline`, `useWallClock`, `AudioEngine`, `ErrorBoundary` React render, `will-download`/`readBoundedFile` main tests), replacing fixed sleeps in e2e specs with `expect.poll`.
   - *Next up:* Sprint 1 (Milestone 3 completion: show v4 additive `interchange` block, edge-case tests, passthrough test, cross-tool checklist).
+
+### 2026-11-24 00:58 PST — Sprint 1: finish Milestone 3 (`b4d799b`)
+
+- **Consults & QA runs:**
+  - Opus 5.5 (`claude-opus-5-5`) available and consulted on Show v4 `interchange` schema/bounds, XMLBuilder passthrough & XSD ordering, synthetic position bars, `restore()` UUID unification, GDTF `GeometryReference` + `<Break>` footprints, CIE xyY math, and `App.tsx` lifecycle.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) QA pass 1 on all Sprint 1 changes (2 High, 7 Medium, 5 Low), followed by verification, targeted fixes, and regression tests.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) follow-up QA pass 2 on the step-4 fixes (0 Critical/High, 2 Medium, 2 Low), all four fixed with regression tests.
+- **What shipped:**
+  - **Show v4 `interchange` block (additive):**
+    - Added canonical `src/schemas/show-v4.schema.json` (SHA-256 pinned in `tests/show-file.test.mjs`, registered in `vite.config.ts` `SHOW_SCHEMAS`, checked in `tests/desktop/electron-smoke.spec.mjs`). `stage` is optional and `interchange` is required in v4; `rig.trussPods.maxItems` raised to 256 in v4 to match `MAX_IMPORTED_TRUSSES`.
+    - Updated `src/data/showFile.ts` with `ShowInterchange`/`MvrInterchange`/`MvrPassthrough`/`MvrFixtureSpec`, `normalizeInterchange` (strips empty containers so v1–v3 stay emitted whenever `interchange` has no data), `parseInterchange`, and cheap quote-aware `checkInterchange` (8 MiB UTF-8 total passthrough cap, DTD/PI/control-char/provider-spoof rejection, no `fast-xml-parser` pulled into the main bundle).
+    - v1–v3 schemas and fixtures remain byte-for-byte untouched and pinned.
+  - **MVR UUID persistence & XML passthrough:**
+    - `src/interchange/mvr/xml.ts`: added `buildXmlFragment`, configurable `ParseXmlLimits`, widened `LISTS` for MVR/GDTF repeating elements.
+    - `src/interchange/mvr/exportMvr.ts`: added `resolveUuid`, `exportMvrDocument` (keeping `exportMvr` backwards-compatible), deterministic UUID persistence, synthetic position-bar skipping (`mvr.synthetic`), strict MVR 1.6 `FIXTURE_XSD_ORDER` sequencing for preserved `objectExtras`, `UserData`/`AUXData`/`sceneNodes` passthrough re-embedding, deterministic remapping of colliding passthrough UUIDs (preserving nested `GroupObject` subtrees), content-aware resource collision renaming (including `Symdef/ChildList/Geometry3D` and reserved StageForge generic GDTF names), generic fallback GDTF bundling for dangling passthrough `Fixture` refs, and `interchange` embedded in `MvrPayload`.
+    - `src/interchange/mvr/importMvr.ts`: added `readAddresses` (0-based MVR break → 1-based GDTF `DMXBreak`, sorted & deduped, capped at 64), canonical UUID capture (`uuids`), `synthetic` pod tracking + 256-pod cap with passthrough overflow, `fixtureSpecs`, `objectExtras` capture, intact unimported `GroupObject` & invalid-matrix subtree passthrough, 128 MiB asset-filtered in-session resource cache, and unified `resolveUuid` matching in `restore()`.
+    - `src/App.tsx`: added `interchangeRef` and `mvrResourcesRef` lifecycle (populated on MVR import/export and v4 show open; cleared on v1–v3 show open, raw rig JSON, preset/blank rig replace), toast surfacing of export notes, and non-destructive merge of emitted UUIDs with existing passthrough.
+  - **CIE xyY, DMX break 0 vs 1, multi-instance GDTF & reversed physical ranges:**
+    - Added `src/interchange/mvr/color.ts` (`parseCieXyY`, `cieXyYToSrgb` with equal-luminance hue-preserving gamut desaturation, `srgbToCieXyY`, `formatCieXyY`).
+    - Upgraded `src/interchange/mvr/gdtf.ts`: `GeometryReference` + `<Break>` resolution (flat, multi-break, and 2D nested arrays with cycle detection, cached per root geometry, backtracking `ancestors`, O(1)/O(log k) per-instance offset math, shared `opsRemaining` budget), per-break footprints (`breaks`, `totalSlots`, `DMXBreak` 1..64 & `Overwrite`), `ChannelFunction` parsing with `parseGdtfDmxValue`, reversed `PhysicalFrom > PhysicalTo` preservation + `physicalAt`, virtual `Offset="None"` support, and CIE xyY emitter parsing.
+  - **Docs & tests (+6 unit tests, 112 → 118; +v4/MVR round-trip assertions in e2e & desktop):**
+    - Updated `docs/show-format.md` for v4 and expanded `docs/mvr-exchange.md` with passthrough semantics and a step-by-step manual cross-tool verification checklist for BlenderDMX and grandMA3 onPC.
+    - Added unit tests for v4 schema/security, CIE xyY, DMX break 0 vs 1, multi-instance LED walls, reversed physical ranges, passthrough + move-one-fixture (both in-session and after v4 JSON reload), and all QA regressions; extended `tests/e2e/mvr-exchange.spec.mjs` and `tests/desktop/electron-smoke.spec.mjs`.
+- **Gate results (final code):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**118/118**)
+  - `npm run build`: PASS (`dist/schemas/show-v{1,2,3,4}.schema.json` emitted; `fast-xml-parser` stays lazy-loaded; 0 warnings)
+  - `npm run desktop:win`: PASS (portable exe built; SPDX notice check green)
+  - `npm run test:desktop`: PASS (**6/6**, 2.3 s)
+  - `npx playwright test --workers=1`: PASS (**39/39**, 5.4 m)
+  - `git status --short`: clean
+- **QA findings verified and fixed:**
+  - *Pass 1 H1:* Cached `GeometryReference` resolution per root geometry, switched `ancestors` to in-place backtracking, lowered `MAX_GEOMETRY_REFS` to 4096, and shared `opsRemaining` across modes & GDTF files (+16-deep DAG × 64-mode timing regression test).
+  - *Pass 1 H2:* Remapped colliding passthrough UUIDs instead of dropping `GroupObject`s, surfaced `exported.notes` in `App.tsx` toast, and preserved prior passthrough when updating `interchangeRef` (+regression test).
+  - *Pass 1 M3:* Preserved `item.invalid` nodes intact in `restore()` instead of rewriting their matrices (+regression test for invalid-matrix `Support` and moved-`Support` reporting).
+  - *Pass 1 M4:* Reported missing-resource fallback note for `fixtureSpecs` and bundled fallback generic GDTF for dangling passthrough `Fixture` refs (+regression test).
+  - *Pass 1 M5:* Capped in-session `resources` cache in `importMvr.ts` at 128 MiB and filtered to MVR/GDTF asset extensions with a note on overflow.
+  - *Pass 1 M6 (sub-risk):* Raised `mvrKey.maxLength` to 2048 in `show-v4.schema.json` so 256-char quote/backslash IDs escape and save cleanly (+regression test).
+  - *Pass 1 M7:* Added content-aware non-colliding rename in `bundleResource` (and reserved StageForge generic GDTF names) so foreign files never clobber or get clobbered by generated files (+regression test).
+  - *Pass 1 M8:* Replaced negative-channel clipping with equal-luminance hue-preserving gamut desaturation in `color.ts` (+regression test).
+  - *Pass 1 L2 & L3:* Added all-invalid `<Break>` test and quote-aware `openingTagSlice` in `showFile.ts` rejecting `<Data x=">" provider="StageForge"/>` and unbalanced fragments (+regression tests).
+  - *Pass 2 M1, M2, L1, L2:* Handled `Geometry3D` anywhere in passthrough trees (`Symdef/ChildList/Geometry3D`), made per-instance GDTF offset resolution O(1)/O(log k) via deduped sorted offsets, made remapped passthrough UUIDs deterministic per original UUID (independent of `usedUuids.size`), and reserved generic GDTF filenames in `bundleResource` (+`Symdef` bundling regression test).
+- **QA findings rejected or deferred (with reasons):**
+  - *Pass 1 M6 main claim (don't write v4 after MVR export on native shows):* Rejected — `docs/open-standards-roadmap.md` Milestone 3 step 4 explicitly requires UUIDs created on first export to be persisted in the v4 `interchange` block while shows without interchange keep saving as v1–v3.
+  - *Pass 1 M1 (`prop:${i}` / `hang:${i}` index keys):* Deferred — `NativeStage` v3 schema props/hangs have no `id` field and v3 schemas are hash-pinned; documented in `docs/mvr-exchange.md`.
+  - *Pass 1 M2 (`FixtureID`/`UnitNumber`/`CustomId` regeneration):* Deferred and documented in `docs/mvr-exchange.md`.
+  - *Pass 1 L1 (GDTF multi-break/emitter/physical curves driving live desk simulation):* Out of scope for Sprint 1; deferred to future realism/fixture-behaviour work.
+  - *Pass 1 L4 (interleaved sibling tag grouping & single-layer export) & L5 (CI XSD validator):* Accepted trade-off documented in `docs/mvr-exchange.md` / deferred to CI tooling.
+- **Design decisions:**
+  - Chose XMLBuilder-rebuilt fragment strings in `interchange.mvr.passthrough` over recursive JSON ASTs or raw XML diffs so JSON Schema stays flat (no unbounded recursion in `showFile.ts`) and `fast-xml-parser` stays lazy-loaded out of the main bundle (per Opus 5.5 consult).
+  - Kept `exportMvr()` returning `Uint8Array` alongside new `exportMvrDocument()` returning `{ bytes, interchange, notes }` for full backwards compatibility.
+  - Remapped colliding passthrough UUIDs deterministically rather than dropping whole `GroupObject` trees so third-party data is never silently lost.
+- **Leftovers / next up:**
+  - Manual cross-tool check with BlenderDMX and grandMA3 onPC (checklist in `docs/mvr-exchange.md`).
+  - Next up: Sprint 2 (Milestone 4, live DMX output: sACN E1.31 + Art-Net 4 in Electron main, validated IPC, safety/blackout/44 Hz cap/LIVE indicator, Web Serial Enttec Pro in browser, unit/loopback/desktop tests).
