@@ -41,7 +41,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Work Realism backlog items 1 to 8 first, in order, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7 and 8 (see "Designed Sprints 6–8" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -214,10 +214,139 @@ Opus 5.5 needs Claude Code 2.1.280 or newer. If the call fails with a version er
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog items 5 to 8** (paperwork, console feel, fixture behaviour, haze/smoke/laser realism); items 1 to 4 are done. Keep VR (item 9) for later. The optional CPU win after that:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7 and 8 below, in that order, one per round, before Realism items 6 to 8.** Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
+
+### Designed Sprints 6–8 (designed by Claude Code, 2026-11-24)
+
+These come from a code-grounded roadmap review. The goal is that a working programmer, master electrician or production manager uses StageForge *alongside* grandMA3, Vectorworks and Capture: reliable paperwork, safe MVR hand-off, and a read-only pitch view. **Minimise complexity:** no new dependencies, no show-format or bundle-format changes, and no schema changes. Every lossy or safety-adjacent output stays clearly labelled as an estimate. Consult Opus 5.5 on details, and run Sonnet 5.5 QA as the loop says.
+
+### Sprint 6: plan page, legend and title block for the paperwork book
+
+**Depends on Realism item 5** (`showPaperwork.ts`, `PaperworkPanel.tsx`, `PaperworkPrintSheet.tsx`). If that isn't committed yet, land it first.
+
+**Goal:** "Print full book" opens with a true-scale plan of the rig, then the five existing sheets. It prints from the browser or Electron to "Save as PDF" on A4 or Letter landscape. Everything is vector (inline SVG); there is no PDF library.
+
+**Design:**
+1. **Pure builder** `src/data/plotPlan.ts`: `buildPlotPlan(paperwork, rig, stage, { paper: 'a4' | 'letter' })`.
+   - **Positions:** take every fixture position, number and status from the `ShowPaperwork` units. Never recompute placement, so the plan, patch sheet, MVR and DXF cannot drift.
+   - **Outlines:** truss spans/paths and decks come from `resolveStudioGeometry`, LED walls from `authoredWallFrames`, PA hangs from the layout.
+   - **Symbols:** use `symbolForHardware` + `specToSvgPath` from `equipmentSymbols.ts`, the same symbols as the stage plan and DXF.
+   - **Scale:** choose the largest standard scale (1:25, 1:50, 1:75, 1:100, 1:150, 1:200, 1:250) at which the rig bounds, plus a 0.5 m margin, fit the printable area left of the title block.
+   - **Orientation:** the same as the DXF: upstage (world −Z) at the top of the page, audience at the bottom. Mark the bottom edge "DOWNSTAGE / AUDIENCE".
+2. **`PlotPlanPage`** renders first in the book, as an SVG whose viewBox is in metres and whose width and height are set in `mm` from the chosen scale, so 100% printing gives true scale.
+   - Add a scale bar (1, 5 and 10 m ticks) and a north/upstage arrow.
+   - Draw the fixture number inside or next to each symbol. In dense areas (labels closer than about 4 mm on paper), offset labels along the truss normal with a leader line. If that still collides, print the number only and add a note that pointing to the patch sheet.
+   - Outline `conflict`/`overflow` units in red, and carry the simulated-map notice exactly as the sheets do.
+3. **Legend:** one row per symbol and model (manufacturer + model, count, watts each), plus line styles for truss, deck edge, LED wall and PA hang. Counts must equal the inventory and instrument schedule.
+4. **Title block** (bottom right):
+   - show/rig name, venue, designer, revision letter, date, scale, "Sheet 1 of N";
+   - the disclaimer "Design guidance: not for construction. Verify all dimensions, loads and power on site."
+   - The text fields are edited in the Paperwork panel and stored in `localStorage` under `stageforge.titleBlock` (wrapped in try/catch). They are never written to show files.
+5. **Panel controls:** paper size (A4/Letter) and the title-block fields. The existing CSV exports stay as they are.
+
+**Out:** a CAD sheet editor, elevations or sections, cable routing, multi-sheet tiling of huge rigs (print at the scale that fits and note it), and anything presented as sign-off.
+
+**Tests:**
+- **Unit, `tests/plot-plan.test.mjs`:**
+  - the chosen scale fits the page for small, arena and festival rigs;
+  - every paperwork unit appears once with the same number, position and status;
+  - legend counts equal instrument-schedule counts;
+  - orientation: an upstage unit sits higher on the page than a downstage one;
+  - walls and hangs are drawn;
+  - a dense rig triggers the number-only fallback;
+  - a long rig name is truncated with an ellipsis, not clipped.
+- **E2E, `tests/e2e/plot-plan.spec.mjs`:**
+  - open Paperwork, `page.emulateMedia({ media: 'print' })`, and check the plan is the first page;
+  - the SVG width in mm matches `extent / scale`;
+  - `page.pdf({ format: 'A4', landscape: true })` succeeds, and every fixture's bounding box lies inside the page;
+  - on Arena Rock, five sampled fixture numbers match the patch-sheet addresses;
+  - Letter paper changes the page size.
+- **Desktop:** extend `tests/desktop/electron-smoke.spec.mjs` with a `printToPDF` of the book if the existing smoke pattern supports it; otherwise add a checklist item to `docs/paperwork.md`.
+
+**Done when:** the gate is green, a 10 m scale-bar tick measures 10 m ÷ scale on paper (asserted in mm), the plan matches the patch sheet, and `docs/paperwork.md` documents the plan page.
+
+### Sprint 7: MVR import preflight, with no silent losses
+
+**Goal:** importing a foreign MVR never silently moves, renumbers, repatches or genericises fixtures. The user sees what will change and confirms before the desk is replaced; Cancel leaves everything untouched.
+
+**Today:**
+- `importMvr()` in `src/interchange/mvr/importMvr.ts` returns `report.notes: string[]` (free text), and `App.tsx` (around the `importMvr(bytes)` call) applies the result at once.
+- Known losses: universes beyond two are repatched, extra breaks are dropped, console fixture numbers are lost, foreign placements and hierarchy are simplified, missing GDTFs become generic profiles, and resources are dropped above the in-session cache limit.
+
+**Design:**
+1. **Structured findings:** add `findings: MvrFinding[]` to `MvrImportReport`, where `MvrFinding` is `{ severity: 'info' | 'warn' | 'block', code, message, count, fixtureIds?: string[] }`. Keep `notes`, derived from the findings, so existing callers and tests still work. Give every lossy path in `importMvr.ts` a code, for example:
+   - `universe-repatched`, `break-dropped`, `fixture-number-lost`
+   - `transform-simplified`, `gdtf-missing`, `gdtf-unparsed`
+   - `resource-dropped`, `geometry-unsupported`, `unit-suspect`
+2. **Measure, don't guess**, for transforms. For each fixture, compare the source MVR world matrix (composed through the nested group/layer hierarchy) with the position and rotation StageForge reconstructs after `placeFixtures` on the imported rig.
+   - More than 0.05 m or 2° on any fixture: `warn`, with the count and the worst delta.
+   - More than 0.5 m on over 10% of fixtures: `block`.
+   - **`unit-suspect`:** a scene extent over 500 m or under 0.5 m means a likely feet/millimetre mix-up.
+3. **Preflight dialog** `src/components/MvrImportReport.tsx`:
+   - Parse first. `importMvr` must stay pure; add a test proving that parsing mutates nothing.
+   - Show counts (fixtures, trusses, screens, objects) and findings grouped by severity, each expandable to the affected fixture IDs.
+   - Buttons: **Import**, disabled while any `block` finding exists unless "Import anyway — the layout will differ" is ticked, and **Cancel**.
+   - The last import report stays viewable from Show files after import.
+4. **UUIDs:** keep foreign fixture UUIDs through import and in-session re-export, and test the StageForge → MVR → StageForge → MVR round trip keeps every UUID and fixture number.
+5. **No real third-party samples are available tonight.** Build synthetic MVRs inside the tests for each quirk:
+   - nested rotated groups, a feet-scaled document, three universes, multiple breaks;
+   - a missing GDTF, trailing NUL bytes in XML strings, an oversize resource.
+
+   Add a "Real-world qualification" checklist to `docs/mvr-exchange.md`. It lists the exports a licensed user should supply from grandMA3, Vectorworks and Capture (versions, export settings, and permission to redistribute) and what to compare.
+
+**Out:** merging external edits, more than two simulated universes, extra breaks in the model, binary resources in bundles, and any format change.
+
+**Tests:**
+- **Unit**, in `tests/mvr-interchange.test.mjs` and `tests/mvr-core.test.mjs`: one per finding code, the transform-delta measurement, `notes` back-compat, parse purity, and the UUID round trip.
+- **E2E**, in `tests/e2e/mvr-exchange.spec.mjs`:
+  - a clean StageForge round trip shows no warnings;
+  - a synthetic `block` file opens the dialog, and Cancel leaves the rig and saved design byte-identical;
+  - the accept-anyway path imports and the report stays viewable.
+
+**Done when:** the gate is green, every lossy branch in `importMvr.ts` emits a tested finding, and Cancel never mutates the desk.
+
+### Sprint 8: read-only pitch viewer
+
+**Goal:** a production manager or client opens a show or bundle and can orbit, switch cameras, run cues, pause and scrub. They cannot edit, save, autosave, or start any output (DMX, OSC, MIDI, timecode), and the desk's saved design is never touched.
+
+**Entry and exit:**
+- a `?view` URL flag, plus "Open in viewer…" in Show files;
+- on desktop, File → "Open in viewer…" through a new whitelisted `openViewer` command in `desktop/preload.cjs` and `desktop/main.cjs`;
+- **Exit viewer** returns to the desk exactly as it was.
+
+**Design:**
+1. **One capability object**, `src/viewer/capabilities.ts`: `{ edit, save, autosave, liveOutput, showControl, mutatingHotkeys, controllers }`. The editor has all of them true and the viewer all false, provided through a React context (`useCapabilities()`).
+2. **Gate the choke points, not each button.** That means:
+   - `applyRig`, `installStage`, design flush/autosave, `saveDocument`, and cue and stage editing;
+   - the global hotkey handler: allow only play/pause, go/back, camera presets and cinema;
+   - MIDI, OSC and gamepad controller input;
+   - `useLiveDmxOutput`, forced off with its UI hidden;
+   - `useShowControl`, forced off;
+   - mutating desktop menu commands: disabled in `main.cjs`, and ignored by the renderer while viewing.
+
+   Before coding, grep every `setRig`/`applyRig`/`installStage`/`localStorage.setItem` and other mutation call site and list them as a table in the Overnight log, each with its gate and test.
+3. **`PitchViewer.tsx`:**
+   - Show a minimal bar: show name, cue list with go/back/jump, the take scrubber, camera presets, cinema, and Exit viewer.
+   - Don't mount the rig builder, stage designer, cost modal or the editing tabs of the bottom console.
+   - Missing-media slates and session-only relink still work.
+4. **Loading:** the viewer parses into memory only, with no import-time persistence. Bundles keep their existing verify-before-apply path.
+
+**Out:** hosted share links, accounts, DRM, comments and collaboration.
+
+**Tests:**
+- **Unit, `tests/viewer.test.mjs`:** the capability sets, and the hotkey allow-list.
+- **E2E, `tests/e2e/pitch-viewer.spec.mjs`:**
+  - open the v3 fixture and a bundle via `?view`;
+  - play, pause, scrub and cue-jump all work;
+  - try edits through hotkeys, the plan, drag and the menus: the probe rig and the saved-design `localStorage` stay byte-identical;
+  - no DMX/OSC/MIDI transport starts;
+  - Exit restores the desk.
+- **Desktop smoke:** `openViewer` opens the viewer, and mutating menu items are disabled.
+
+**Done when:** the gate is green, the mutation-path audit table is in the Overnight log with every row gated and tested, and `docs/show-format.md` or a new `docs/viewer.md` explains viewer mode.
 
 ## Backlog (in this order)
 
