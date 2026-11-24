@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { X, Radio } from 'lucide-react';
 import { buildDmxPatch, DMX_CHANNELS } from '../data/dmxPatch';
-import { hasCatalogFixtures } from '../data/equipmentCatalog';
+import { getCatalogEntry, getCatalogMode, hasCatalogFixtures, type LaserChannelRole } from '../data/equipmentCatalog';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
 import { RigConfig } from '../types/show';
@@ -19,6 +19,28 @@ interface DmxMonitorDrawerProps {
   liveOutput: LiveDmxControllerApi;
   onClose: () => void;
 }
+
+const LASER_ROLE_LABELS: Record<LaserChannelRole, string> = {
+  unused: 'Reserved',
+  fb4Access16: 'FB4 Mode / Access',
+  fb4Mode39: 'FB4 Fixture Mode',
+  intensity: 'Master Dimmer',
+  pattern: 'Cue / Pattern',
+  sizeX: 'Size X',
+  sizeY: 'Size Y',
+  zoom: 'Zoom',
+  speed: 'Scan / Cue Speed',
+  rotation: 'Angle Z Rotation',
+  posX: 'Position X',
+  posY: 'Position Y',
+  beamCount: 'Visible Points',
+  strobe: 'Strobe / Blanking',
+  red: 'Red',
+  green: 'Green',
+  blue: 'Blue',
+  colorScroll: 'Color Scroll',
+  scanRate: 'Scan Rate',
+};
 
 export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   open,
@@ -38,9 +60,18 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
     if (!patch) return [];
     const names = Array.from({ length: 512 }, () => [] as string[]);
     for (const row of rows) {
+      const entry = getCatalogEntry(row.group.catalogId);
+      const resolvedMode = entry ? getCatalogMode(entry, row.group.dmxMode) : undefined;
+      const modeLayout = resolvedMode?.layout;
+      const isUnmappedLaser = Boolean(entry?.laser && resolvedMode && !resolvedMode.legacy && !modeLayout?.length);
       for (let address = Math.max(1, row.start); address <= Math.min(row.end, 512); address++) {
         const index = Math.floor((address - row.start) / row.width);
-        const channel = DMX_CHANNELS[row.group.type][(address - row.start) % row.width] ?? 'Reserved';
+        const offset = (address - row.start) % row.width;
+        const channel = modeLayout && offset < modeLayout.length
+          ? LASER_ROLE_LABELS[modeLayout[offset]]
+          : isUnmappedLaser
+            ? 'Unmapped (safe 0)'
+            : DMX_CHANNELS[row.group.type][offset] ?? 'Reserved';
         const disabled = patch.unitStart(row.group, index) ? '' : ' · output disabled';
         names[address - 1].push(`${row.group.modelName} #${index + 1} · ${channel}${disabled}`);
       }

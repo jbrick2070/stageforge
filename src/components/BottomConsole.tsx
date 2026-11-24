@@ -32,6 +32,12 @@ import { headLook } from '../data/movingGroups';
 import { COLOR_PALETTES } from '../data/presets';
 import { FOCUS_NUDGE_RANGE, focusMarks } from '../engine/focusAim';
 import { LaserProjectorControls } from './LaserProjectorControls';
+import { LaserSafetyChip, LaserSafetyPanel } from './LaserSafetyPanel';
+import { IldaLoader, type IldaControlProps } from './IldaLoader';
+import { evaluateLaserSafety } from '../data/laserSafety';
+import { evaluateLaserScan } from '../data/laserScan';
+import { getCatalogEntry } from '../data/equipmentCatalog';
+import { laserProjectors } from '../data/laserProjectors';
 import { SecondaryScreenCues } from './SecondaryScreenCues';
 import type { TempoControlProps } from './TopBar';
 import type { ClockMode } from '../showControl/clockOwner';
@@ -102,6 +108,7 @@ interface BottomConsoleProps {
   };
   clockMode: ClockMode;
   tempo: TempoControlProps;
+  ilda: Omit<IldaControlProps, 'allBeamOnly'>;
   onSetBump: (key: keyof BumpState, active: boolean) => void;
 }
 
@@ -273,7 +280,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   captureVideoPosition, onCaptureVideoPosition,
   onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onResetCue, onHold, follow,
   stage, mainScreen, missingMedia, onApplyWallCue, onRemoveWallCue, take,
-  clockMode, tempo,
+  clockMode, tempo, ilda,
   onSetBump,
 }) => {
   const [tab, setTab] = useState<ConsoleTab>('show');
@@ -307,6 +314,22 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   const wallsRunning = take.mode === 'recording' || (take.mode === 'playing' && take.timeMs < take.durationMs);
   const glances = screenGlances(stage, glanceMs, wallsRunning, mainScreen, missingMedia ?? []);
   const marks = useMemo(() => focusMarks(rig), [rig]);
+  const laserSafety = useMemo(
+    () => evaluateLaserSafety(rig, state.laser, { ildaClip: ilda.clip, bumpLaser: bump.laser }),
+    [rig, state.laser, ilda.clip, bump.laser],
+  );
+  const { allLasersBeamOnly, ildaFlickerWarning } = useMemo(() => {
+    const units = laserProjectors(rig);
+    const specs = units.map((u) => getCatalogEntry(u.catalogId)?.laser);
+    const allBeamOnly = units.length > 0 && specs.every((sp) => sp?.capability === 'beam');
+    let flickerWarning: string | null = null;
+    if (ilda.clip && units.length > 0) {
+      const peakPts = ilda.clip.frames.reduce((mx, f) => Math.max(mx, f.count), 1);
+      const slowestKpps = specs.reduce((mn, sp) => Math.min(mn, sp?.scanSpeedKpps ?? 30), Infinity);
+      flickerWarning = evaluateLaserScan(Number.isFinite(slowestKpps) ? slowestKpps : 30, peakPts).warning;
+    }
+    return { allLasersBeamOnly: allBeamOnly, ildaFlickerWarning: flickerWarning };
+  }, [rig, ilda.clip]);
   const [headTarget, setHeadTarget] = useState<'all' | HeadGroup>('all');
   const head = headTarget === 'all' ? state : headLook(state, headTarget);
   const focusMark = marks.find(m => m.id === head.focusMarkId);
@@ -744,16 +767,24 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
 
             {tab === 'laser' && (
               <div className="grid grid-cols-1 md:grid-cols-[1.25fr_1fr] gap-3">
-                {/* Laser Visuals Pattern Matrix (QuickShow / Beyond style!) */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="font-mono-tech text-[10px] tracking-widest text-emerald-400">
-                      LASER VISUALS ENGINE
-                    </span>
+                {/* IEC 60825 / ANSI Z136 Safety Guidance Panel — visible above the fold on phone & desktop */}
+                <div className="md:col-span-2">
+                  <LaserSafetyPanel summary={laserSafety} flickerWarning={ildaFlickerWarning} />
+                </div>
+
+                {/* Laser Visuals Pattern Matrix (QuickShow / Beyond style!) & ILDA Frame Loader */}
+                <div className="min-w-0 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
                     <div className="flex items-center gap-1.5">
+                      <span className="font-mono-tech text-[10px] tracking-widest text-emerald-400">
+                        LASER VISUALS ENGINE
+                      </span>
+                      <LaserSafetyChip summary={laserSafety} />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <button
                         onClick={() => onPatchLaser({ audienceScan: !state.laser.audienceScan })}
-                        className={`px-2 py-0.5 rounded text-[10px] font-mono-tech flex items-center gap-1 border cursor-pointer ${
+                        className={`min-h-[44px] sm:min-h-0 px-2 py-0.5 rounded text-[10px] font-mono-tech flex items-center gap-1 border cursor-pointer ${
                           state.laser.audienceScan
                             ? 'bg-amber-500/25 border-amber-400 text-amber-200'
                             : 'bg-white/5 border-white/10 text-zinc-400'
@@ -765,7 +796,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                       </button>
                       <button
                         onClick={() => onPatchLaser({ enabled: !state.laser.enabled })}
-                        className={`px-2.5 py-0.5 rounded text-[10px] font-mono-tech font-bold border cursor-pointer ${
+                        className={`min-h-[44px] sm:min-h-0 px-2.5 py-0.5 rounded text-[10px] font-mono-tech font-bold border cursor-pointer ${
                           state.laser.enabled
                             ? 'bg-emerald-500/30 border-emerald-400 text-emerald-200 shadow-[0_0_10px_rgba(16,185,129,0.35)]'
                             : 'bg-rose-500/20 border-rose-500/40 text-rose-300'
@@ -775,13 +806,17 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                       </button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-4 gap-1.5">
+                  <IldaLoader {...ilda} allBeamOnly={allLasersBeamOnly} />
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                     {LASER_PATTERNS.map((p) => (
                       <button
                         key={p.id}
-                        onClick={() => onPatchLaser({ pattern: p.id, enabled: true })}
-                        className={`p-1.5 rounded-lg border text-left transition cursor-pointer ${
-                          state.laser.pattern === p.id && state.laser.enabled
+                        onClick={() => {
+                          if (ilda.clip) ilda.onClear();
+                          onPatchLaser({ pattern: p.id, enabled: true });
+                        }}
+                        className={`min-h-[44px] sm:min-h-0 p-1.5 rounded-lg border text-left transition cursor-pointer ${
+                          state.laser.pattern === p.id && state.laser.enabled && !ilda.clip
                             ? 'bg-emerald-500/25 border-emerald-400 text-white shadow-[0_0_12px_rgba(16,185,129,0.28)]'
                             : 'bg-black/45 border-white/10 text-zinc-300 hover:border-white/25'
                         }`}

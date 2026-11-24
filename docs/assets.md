@@ -17,7 +17,8 @@ Every visual asset ships as MIT-licensed source code in this repository, generat
 | Hardware PBR tangent-space normal map | `src/engine/hardwareMaterials.ts` | 256×256 (high) / 128×128 (low) linear `CanvasTexture` | Derived from atlas height field (`0x5f2a8c1d`) | MIT (StageForge original) |
 | Stage marley deck albedo | `src/engine/hardwareMaterials.ts`, `src/engine/geometryBuilders.ts` | 512×512 (high) / 256×256 (low) sRGB `CanvasTexture` | Mulberry32 `0x71b3e905` | MIT (StageForge original) |
 | Speaker grille perforations & acoustic cloth | `src/engine/geometryBuilders.ts` | 128×128 sRGB `CanvasTexture` | Deterministic geometry loop | MIT (StageForge original) |
-| Procedural hardware 3D models (all 30 catalogue entries + 14 body families) | `src/engine/fixtureModels.ts` | Merged `BufferGeometry` per articulated sub-part + instanced LED cabinet backs | Deterministic procedural builders | MIT (StageForge original) |
+| Procedural hardware 3D models (all 34 catalogue entries + 14 body families) | `src/engine/fixtureModels.ts` | Merged `BufferGeometry` per articulated sub-part + instanced LED cabinet backs | Deterministic procedural builders | MIT (StageForge original) |
+| Built-in ILDA demo clips & GPU line buffers | `src/data/ilda.ts`, `src/engine/ildaRenderer.ts` | Big-endian IDTF Format 5 bytes + baked shared-attribute `LineSegments` | Deterministic math encoder | MIT (StageForge original) |
 | 2D plan & elevation silhouettes (SVG & DXF) | `src/data/equipmentSymbols.ts`, `src/components/EquipmentThumbnail.tsx` | Pure vector primitives (`rect`, `circle`, `poly`) in metres | Deterministic data table | MIT (StageForge original) |
 
 ---
@@ -61,5 +62,6 @@ StageForge selects a `RenderTier` (`'high'` vs `'low'`) once at `StageEngine` in
 
 - Reusable `BufferGeometry` parts are cached in `FixtureModelCache` per `(modelId, isFloor, tier)` and registered in `sharedResources`.
 - `StageEngine.releaseGroup()` skips disposing cached geometries and shared materials across `rebuildRig()` calls, while `beginRebuild()` / `endRebuild()` prunes any unused custom-sized LED cabinet back tiles so wall-size slider drags never leak GPU memory.
-- `StageEngine.dispose()` frees the entire `FixtureModelCache` and every unique texture in `SharedMaterials`.
+- `StageEngine.dispose()` frees the entire `FixtureModelCache`, any active `BakedIldaClip` (disposing all per-projector shared-attribute wrapper geometries together), and every unique texture in `SharedMaterials`.
+- Loaded ILDA clips cap total points at 200,000 (`high` tier) and 60,000 (`low` tier), bake once into shared `BufferAttribute`s (1 `LineSegments` draw call per projector), and update only `geometry.setDrawRange` during playback.
 - Every moving fixture builder anchors its `head` group origin strictly at `dir * pivotY` (`HEAD_PIVOT = 0.46 m` for legacy fixtures, catalogue-realistic `pivotY` for catalogue fixtures), preserving `focusAim.ts` and `beamAxes()` convergence.

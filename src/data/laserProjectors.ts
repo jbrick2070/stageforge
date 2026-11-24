@@ -23,6 +23,8 @@ export function laserProjectors(rig: RigConfig) {
     return {
       key: laserProjectorKey(podId, group.id, i + 1),
       label: `${location} · ${group.modelName} #${i + 1} · ${patchLabel}`,
+      catalogId: group.catalogId,
+      dmxMode: group.dmxMode,
     };
   }));
 }

@@ -7,6 +7,7 @@ import {
   formatCatalogSpecBadges,
   getCatalogEntry,
   getCatalogMode,
+  getSelectableModes,
   LEGACY_DEFAULTS,
   type CatalogCategory,
   type CatalogEntry,
@@ -53,13 +54,23 @@ export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply
       return (
         entry.manufacturer.toLowerCase().includes(q) ||
         entry.model.toLowerCase().includes(q) ||
+        (entry.aliases?.some((a) => a.toLowerCase().includes(q)) ?? false) ||
         CATALOG_CATEGORY_LABELS[entry.category].toLowerCase().includes(q)
       );
     });
   }, [compatible, categoryFilter, query]);
 
   const activeEntry: CatalogEntry | undefined = getCatalogEntry(selectedId) ?? compatible[0];
-  const activeMode = activeEntry ? getCatalogMode(activeEntry, selectedMode) ?? activeEntry.modes[0] : undefined;
+  const selectableModes = activeEntry ? getSelectableModes(activeEntry) : [];
+  const activeMode = activeEntry
+    ? selectableModes.find((m) => m.name === selectedMode) ?? selectableModes[0] ?? activeEntry.modes[0]
+    : undefined;
+  const usingLegacyMode = Boolean(
+    activeEntry &&
+      group.catalogId === activeEntry.id &&
+      group.dmxMode &&
+      getCatalogMode(activeEntry, group.dmxMode)?.legacy,
+  );
   const legacySpec = GENERIC_EQUIPMENT[group.type];
   const defaultEntry = getCatalogEntry(LEGACY_DEFAULTS[group.type]);
   const width = groupFootprint(group);
@@ -68,8 +79,15 @@ export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply
     if (!open) return;
     const initialId = group.catalogId && getCatalogEntry(group.catalogId) ? group.catalogId : LEGACY_DEFAULTS[group.type];
     const initialEntry = getCatalogEntry(initialId) ?? compatible[0];
+    const initialModes = initialEntry ? getSelectableModes(initialEntry) : [];
+    const currentIsSelectable = Boolean(
+      initialEntry &&
+        group.catalogId === initialEntry.id &&
+        group.dmxMode &&
+        initialModes.some((m) => m.name === group.dmxMode),
+    );
     setSelectedId(initialEntry?.id ?? '');
-    setSelectedMode(group.catalogId === initialEntry?.id && group.dmxMode ? group.dmxMode : initialEntry?.modes[0]?.name ?? '');
+    setSelectedMode(currentIsSelectable && group.dmxMode ? group.dmxMode : initialModes[0]?.name ?? initialEntry?.modes[0]?.name ?? '');
     setCategoryFilter('all');
     setQuery('');
     setError('');
@@ -295,10 +313,12 @@ export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply
                     aria-pressed={isSelected}
                     onClick={() => {
                       setSelectedId(entry.id);
+                      const modes = getSelectableModes(entry);
+                      const keepCurrent = group.catalogId === entry.id && group.dmxMode && modes.some((m) => m.name === group.dmxMode);
                       setSelectedMode(
-                        group.catalogId === entry.id && group.dmxMode
+                        keepCurrent && group.dmxMode
                           ? group.dmxMode
-                          : entry.modes[0]?.name ?? '',
+                          : modes[0]?.name ?? entry.modes[0]?.name ?? '',
                       );
                       setError('');
                     }}
@@ -358,6 +378,11 @@ export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply
             {/* Footer: DMX mode selector & Apply */}
             {activeEntry && activeMode && (
               <div className="px-3 py-2.5 bg-black/75 border-t border-white/10 space-y-2">
+                {usingLegacyMode && (
+                  <p className="text-[10px] font-mono-tech text-amber-300 bg-amber-950/50 border border-amber-400/40 rounded px-2 py-1">
+                    Using legacy mode ({group.dmxMode}). Apply below to upgrade to a real DMX mode.
+                  </p>
+                )}
                 <label className="block space-y-1">
                   <span className="font-mono-tech text-[9px] text-zinc-400 uppercase tracking-wider">
                     DMX Mode · {catalogDisplayName(activeEntry)}
@@ -369,9 +394,9 @@ export const EquipmentPicker: React.FC<EquipmentPickerProps> = ({ group, onApply
                       setSelectedMode(e.target.value);
                       setError('');
                     }}
-                    className="w-full rounded bg-zinc-900 border border-white/15 px-2 py-1 text-[11px] text-zinc-100"
+                    className="w-full min-h-[44px] sm:min-h-0 rounded bg-zinc-900 border border-white/15 px-2 py-1 text-[11px] text-zinc-100"
                   >
-                    {activeEntry.modes.map((m) => (
+                    {(selectableModes.length ? selectableModes : activeEntry.modes).map((m) => (
                       <option key={m.name} value={m.name}>
                         {m.name} ({m.channels} ch)
                       </option>

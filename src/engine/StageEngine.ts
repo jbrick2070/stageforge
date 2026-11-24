@@ -56,6 +56,11 @@ import { createAuthoredProp } from './authoredScenery';
 import { ledPlacement, monitorPositions, type LedSurface } from '../data/stageEquipment';
 import { AtmosphericParticles } from './ParticleSystem';
 import { laserGeometry } from './laserGeometry';
+import { BakedIldaClip, type IldaRenderMode } from './ildaRenderer';
+import type { IldaClip } from '../data/ilda';
+import { getCatalogEntry, getCatalogMode, type CatalogDmxMode, type CatalogLaserSpec } from '../data/equipmentCatalog';
+import { encodeLaserDmxChannels, ildaScanTangents, LASER_ILDA_ROLL_SCALE, LASER_SHEET_ROLL_SCALE, laserPitch, laserPowerPresence } from '../data/laserAim';
+import { flickerIntensityMultiplier, laserRefreshHz } from '../data/laserScan';
 import { DEFAULT_LASER_COLORS, DEFAULT_LASER_RESOLUTION, laserProjectorKey } from '../data/laserProjectors';
 import { BeamPools } from './beamPools';
 import { aerialGain, fixtureOptics, resolveOptics } from '../data/fixtureOptics';
@@ -103,6 +108,14 @@ interface LaserUnitInstance {
   coneMat: THREE.ShaderMaterial;
   innerConeMesh: THREE.Mesh;
   innerConeMat: THREE.ShaderMaterial;
+  ildaMesh?: THREE.LineSegments;
+  ildaMat?: THREE.LineBasicMaterial;
+  catalogId?: string;
+  dmxMode?: string;
+  laserSpec?: CatalogLaserSpec;
+  singleColor?: THREE.Color;
+  resolvedMode?: CatalogDmxMode;
+  dmxScratch: number[];
   dmxUniverse: 1 | 2;
   dmxStart: number;
   dmxWidth: number;
@@ -203,6 +216,29 @@ export class StageEngine {
   private laserUnits: LaserUnitInstance[] = [];
   private laserShapes = new Map<LaserResolution, ReturnType<typeof laserGeometry>>();
   private laserShapeGeometries = new Set<THREE.BufferGeometry>();
+  private activeIldaClip: IldaClip | null = null;
+  private bakedIlda: BakedIldaClip | null = null;
+  private ildaRenderMode: IldaRenderMode = 'both';
+  private ildaFps = 30;
+  private ildaPlayTime = 0;
+  private ildaDrawRangeScratch = { start: 0, count: 0 };
+  private laserDmxScratchValues = {
+    enabled: false,
+    intensity: 0,
+    patternIndex: 0,
+    spreadX: 0,
+    spreadY: 0,
+    speed: 0,
+    rotation: 0,
+    tilt: 0,
+    beamCount: 1,
+    strobe: 0,
+    colorR: 0,
+    colorG: 0,
+    colorB: 0,
+    colorModeIndex: 0 as 0 | 1 | 2,
+    scanRateNorm: 0,
+  };
   private strobes: StrobeInstance[] = [];
   private blinders: BlinderInstance[] = [];
   private atmosphereDmx: (DmxOutput & { type: 'hazer' | 'smoke' | 'co2' })[] = [];
@@ -466,6 +502,63 @@ export class StageEngine {
       geometries: this.renderer.info.memory.geometries,
       textures: this.renderer.info.memory.textures,
     };
+  }
+
+  public getRenderTier(): RenderTier {
+    return this.renderTier;
+  }
+
+  /** Load or clear an in-session ILDA (.ild) clip on all laser projectors in the rig. */
+  public setIldaClip(clip: IldaClip | null) {
+    this.detachIldaMeshes();
+    this.activeIldaClip = clip;
+    this.ildaPlayTime = 0;
+    if (clip) this.attachIldaToLaserUnits();
+  }
+
+  /** Configure ILDA playback render mode ('both' | 'beam' | 'graphic') and frame rate (fps). */
+  public setIldaSettings(mode: IldaRenderMode, fps: number) {
+    this.ildaRenderMode = mode;
+    this.ildaFps = Math.max(1, Math.min(120, Number.isFinite(fps) ? fps : 30));
+  }
+
+  private detachIldaMeshes() {
+    for (const l of this.laserUnits ?? []) {
+      if (l.ildaMesh) {
+        l.ildaMesh.removeFromParent();
+        l.ildaMesh = undefined;
+      }
+      if (l.ildaMat) {
+        l.ildaMat.dispose();
+        l.ildaMat = undefined;
+      }
+    }
+    this.bakedIlda?.dispose();
+    this.bakedIlda = null;
+  }
+
+  private attachIldaToLaserUnits() {
+    if (!this.activeIldaClip || this.laserUnits.length === 0) return;
+    const baked = new BakedIldaClip(this.activeIldaClip);
+    this.bakedIlda = baked;
+    for (const l of this.laserUnits) {
+      const singleColor = l.laserSpec?.colorType === 'single';
+      const geo = baked.createProjectorGeometry(singleColor);
+      const mat = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      });
+      const mesh = new THREE.LineSegments(geo, mat);
+      mesh.name = 'ILDA laser projection';
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      l.root.add(mesh);
+      l.ildaMesh = mesh;
+      l.ildaMat = mat;
+    }
   }
 
   /** Force a full rig teardown + rebuild (used by `?probe` leak tests). */
@@ -852,7 +945,11 @@ export class StageEngine {
     group.traverse(obj => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.geometry) return;
-      if (!this.laserShapeGeometries.has(mesh.geometry) && !sharedCache?.has(mesh.geometry)) {
+      if (
+        !this.laserShapeGeometries.has(mesh.geometry) &&
+        !sharedCache?.has(mesh.geometry) &&
+        !this.bakedIlda?.ownsGeometry(mesh.geometry)
+      ) {
         geometries.add(mesh.geometry);
       }
       for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
@@ -959,6 +1056,7 @@ export class StageEngine {
       old.stageDepth === rig.stageDepth && old.venue === rig.venue && old.audioRig === rig.audioRig &&
       old.ledWall === rig.ledWall && old.trussPods === rig.trussPods && old.floorFx === rig.floorFx) return;
     this.beamPools?.dispose();
+    this.detachIldaMeshes();
     this.releaseGroup(this.rigGroup);
     this.modelCache.beginRebuild();
     try {
@@ -1309,7 +1407,8 @@ export class StageEngine {
             fg.dmxUniverse,
             start,
             width,
-            fg.catalogId
+            fg.catalogId,
+            fg.dmxMode
           );
           const drop = (laser.root.userData.mountOffsetY as number | undefined) ?? 0.22;
           laser.root.position.copy(slot.pos).add(new THREE.Vector3(0, -drop, 0.12));
@@ -1382,7 +1481,8 @@ export class StageEngine {
             fx.dmxUniverse,
             start,
             width,
-            fx.catalogId
+            fx.catalogId,
+            fx.dmxMode
           );
           const halfH = (fl.root.userData.bodyHeight as number | undefined ?? 0.28) / 2 + 0.02;
           fl.root.position.set(px, py + halfH, pz);
@@ -1409,6 +1509,7 @@ export class StageEngine {
     }
 
     this.assignOpeningGroups(rig.stageWidth);
+    if (this.activeIldaClip) this.attachIldaToLaserUnits();
     this.particles.setEmitters(smokeEmitters, co2Emitters);
     this.beamPools = new BeamPools(this.movingFixtures.length, rig.stageWidth, rig.stageDepth, rig.stageHeight, rig.platforms);
     this.spillFluxGain = this.movingFixtures.reduce((total, fx) => total + fx.optics.fluxRatio, 0)
@@ -1650,9 +1751,18 @@ export class StageEngine {
     dmxUniverse: 1 | 2,
     dmxStart: number,
     dmxWidth: number,
-    catalogId?: string
+    catalogId?: string,
+    dmxMode?: string
   ): LaserUnitInstance {
+    const entry = getCatalogEntry(catalogId);
+    const laserSpec = entry?.laser;
+    const singleColor = laserSpec?.colorType === 'single'
+      ? new THREE.Color(laserSpec.singleColorHex ?? '#00ff3c')
+      : undefined;
+    const resolvedMode = entry ? getCatalogMode(entry, dmxMode) : undefined;
     const root = new THREE.Group();
+    // Apply pitch (X) in the projector's own forward plane after yaw (Y), matching laserSafety.ts.
+    root.rotation.order = 'YXZ';
     const parts = this.modelCache.getStatic(isFloor ? 'floor_laser' : 'laser', catalogId, isFloor);
     root.userData.bodyHeight = parts.spec.base.h;
     root.userData.mountOffsetY = parts.mountOffsetY;
@@ -1759,6 +1869,12 @@ export class StageEngine {
       coneMat,
       innerConeMesh,
       innerConeMat,
+      catalogId,
+      dmxMode,
+      laserSpec,
+      singleColor,
+      resolvedMode,
+      dmxScratch: [],
       dmxUniverse,
       dmxStart,
       dmxWidth,
@@ -1838,15 +1954,33 @@ export class StageEngine {
     return g;
   }
 
-  private laserColors(mode: LaserColorMode, primary: THREE.Color, accent: THREE.Color,
-    colorA: string | undefined, colorB: string | undefined, a: THREE.Color, b: THREE.Color) {
+  /**
+   * Allocation-free laser color resolution honoring single-color diode hardware constraints.
+   */
+  private applyLaserColors(
+    singleColor: THREE.Color | undefined,
+    mode: LaserColorMode,
+    primary: THREE.Color,
+    accent: THREE.Color,
+    colorA: string | undefined,
+    colorB: string | undefined,
+    a: THREE.Color,
+    b: THREE.Color,
+  ): 0 | 1 | 2 {
+    if (singleColor) {
+      a.copy(singleColor);
+      b.copy(singleColor);
+      return 0;
+    }
     switch (mode) {
       case 'custom':
+        a.set(colorA ?? DEFAULT_LASER_COLORS[0]);
+        b.copy(a);
+        return 0;
       case 'custom_dual':
         a.set(colorA ?? DEFAULT_LASER_COLORS[0]);
-        if (mode === 'custom') b.copy(a);
-        else b.set(colorB ?? DEFAULT_LASER_COLORS[1]);
-        return mode === 'custom' ? 0 : 1;
+        b.set(colorB ?? DEFAULT_LASER_COLORS[1]);
+        return 1;
       case 'primary': a.copy(primary); b.copy(primary); return 0;
       case 'dual': a.copy(primary); b.copy(accent); return 1;
       case 'rainbow': a.copy(primary); b.copy(accent); return 2;
@@ -2201,96 +2335,154 @@ export class StageEngine {
 
     this.beamPools?.finish();
 
-    // 3. Update Volumetric RGB Laser Projectors
+    // 3. Update Volumetric RGB / Single-Color Laser Projectors & ILDA Playback
     const laserEnabled = (s.laser.enabled || b.laser) && master > 0.01;
-    const laserInt = laserEnabled
+    const baseLaserInt = laserEnabled
       ? Math.min(1.5, (b.laser ? 1.0 : s.laser.intensity) * master * (1.0 + audioBoost * 0.38))
       : 0;
     const patIdx = PATTERN_INDEX[s.laser.pattern];
     const isConePattern = s.laser.pattern === 'tunnel' || s.laser.pattern === 'dual_cones';
+    const ildaActive = Boolean(this.bakedIlda && this.bakedIlda.frameRanges.length > 0);
+    if (ildaActive && laserEnabled) {
+      this.ildaPlayTime += dt;
+    }
+    const ildaFrameIdx = ildaActive
+      ? Math.floor(this.ildaPlayTime * this.ildaFps) % this.bakedIlda!.frameRanges.length
+      : 0;
 
+    let maxLaserInt = 0;
     for (const l of this.laserUnits) {
       const override = s.laser.projectors?.[l.key];
       const count = override?.beamCount ?? s.laser.beamCount;
-      const shapes = this.laserShape(override?.patternSegments ?? s.laser.patternSegments ?? DEFAULT_LASER_RESOLUTION);
-      l.sheetMesh.geometry = shapes.sheet;
-      l.coneMesh.geometry = shapes.cone;
-      l.innerConeMesh.geometry = shapes.cone;
-      l.sheetMesh.visible = laserEnabled && !isConePattern;
-      l.coneMesh.visible = laserEnabled && isConePattern;
-      l.innerConeMesh.visible = laserEnabled && s.laser.pattern === 'dual_cones' && count > 1;
+      const unitInt = Math.min(1.5, baseLaserInt * laserPowerPresence(l.laserSpec));
+      if (unitInt > maxLaserInt) maxLaserInt = unitInt;
 
-      // Laser pitch/tilt: audienceScan allows dipping into crowd, otherwise safely skims above crowd heads!
-      const basePitch = l.isFloor ? -0.18 : s.laser.audienceScan ? 0.14 : -0.02;
-      const userPitch = -s.laser.tilt * 0.34;
-      const animPitch =
-        s.laser.pattern === 'horizon'
-          ? Math.sin(t * (0.8 + s.laser.speed * 2.2) + l.index * 0.5) * 0.18
-          : 0;
-      l.root.rotation.x = basePitch + userPitch + animPitch;
+      // Single source of truth for laser pitch (shared with laserSafety.ts).
+      l.root.rotation.x = laserPitch(l.isFloor, s.laser, t, l.index);
 
-      // Subtle roll rotation on sheet patterns when rotation slider > 0
-      const rollAngle = isConePattern
-        ? 0
-        : s.laser.pattern === 'matrix'
-          ? (l.index % 2 === 0 ? 0.0 : Math.PI / 2) + t * s.laser.rotation * 0.65
-          : Math.sin(t * s.laser.rotation * 1.4 + l.index) * s.laser.rotation * 0.55;
-      l.sheetMesh.rotation.z = rollAngle;
-
-      // Update sheet uniforms
+      // Single-color diode constraints enforced in engine with zero per-frame allocations.
       const su = l.sheetMat.uniforms;
-      su.uColorMode.value = this.laserColors(override?.colorMode ?? s.laser.colorMode, primaryColor, accentColor,
-        override?.colorA ?? s.laser.colorA, override?.colorB ?? s.laser.colorB, su.uColorA.value, su.uColorB.value);
-      su.uIntensity.value = laserInt;
-      su.uHaze.value = s.atmo.hazeLevel;
-      su.uTime.value = t;
-      su.uPattern.value = patIdx;
-      su.uBeamCount.value = count;
-      su.uSpeed.value = s.laser.speed;
-      su.uSpreadX.value = s.laser.spreadX;
-      su.uSpreadY.value = s.laser.spreadY;
-      su.uStrobe.value = s.laser.strobe;
-      su.uAudioPulse.value = beatPulse;
+      const shaderColorMode = this.applyLaserColors(
+        l.singleColor,
+        override?.colorMode ?? s.laser.colorMode,
+        primaryColor,
+        accentColor,
+        override?.colorA ?? s.laser.colorA,
+        override?.colorB ?? s.laser.colorB,
+        su.uColorA.value,
+        su.uColorB.value,
+      );
+      su.uColorMode.value = shaderColorMode;
 
-      // Update cone / dual cone uniforms
-      for (const [cm, dirMult] of [
-        [l.coneMat, 1],
-        [l.innerConeMat, -1.45],
-      ] as const) {
-        const cu = cm.uniforms;
-        cu.uColorA.value.copy(dirMult < 0 ? su.uColorB.value : su.uColorA.value);
-        cu.uColorB.value.copy(dirMult < 0 ? su.uColorA.value : su.uColorB.value);
-        cu.uColorMode.value = su.uColorMode.value;
-        cu.uIntensity.value = laserInt;
-        cu.uHaze.value = s.atmo.hazeLevel;
-        cu.uTime.value = t;
-        cu.uBeamCount.value = s.laser.pattern === 'dual_cones'
-          ? (dirMult < 0 ? Math.floor(count / 2) : Math.ceil(count / 2)) : count;
-        cu.uSpeed.value = s.laser.speed;
-        cu.uSpreadX.value = s.laser.spreadX;
-        cu.uSpreadY.value = s.laser.spreadY;
-        cu.uRotation.value = s.laser.rotation * dirMult;
-        cu.uStrobe.value = s.laser.strobe;
-        cu.uAudioPulse.value = beatPulse;
+      if (ildaActive && this.bakedIlda && l.ildaMesh && l.ildaMat) {
+        // Hide procedural sheet/cone meshes while ILDA frame clip is active.
+        l.sheetMesh.visible = false;
+        l.coneMesh.visible = false;
+        l.innerConeMesh.visible = false;
+
+        const effectiveMode: IldaRenderMode =
+          l.laserSpec?.capability === 'beam' && this.ildaRenderMode === 'graphic'
+            ? 'beam'
+            : this.ildaRenderMode;
+        const dr = this.bakedIlda.drawRangeFor(ildaFrameIdx, effectiveMode, this.ildaDrawRangeScratch);
+        const frameRange = this.bakedIlda.frameRanges[ildaFrameIdx];
+        const refreshHz = laserRefreshHz(l.laserSpec?.scanSpeedKpps, frameRange.sourcePointCount);
+        const flicker = flickerIntensityMultiplier(refreshHz, t);
+
+        l.ildaMesh.geometry.setDrawRange(dr.start, dr.count);
+        const tangents = ildaScanTangents(l.laserSpec?.maxScanAngleDeg, s.laser.spreadX, s.laser.spreadY);
+        l.ildaMesh.scale.set(tangents.scaleX, tangents.scaleY, 1);
+        l.ildaMesh.rotation.z = s.laser.rotation * Math.sin(t * (0.4 + s.laser.speed * 1.4) + l.index) * LASER_ILDA_ROLL_SCALE;
+        l.ildaMesh.visible = laserEnabled && dr.count > 0;
+
+        const hazeGain = 0.35 + 0.65 * s.atmo.hazeLevel;
+        const ildaGain = Math.min(1.5, unitInt * flicker * hazeGain);
+        if (l.singleColor) {
+          l.ildaMat.color.copy(l.singleColor).multiplyScalar(ildaGain);
+        } else {
+          l.ildaMat.color.setRGB(ildaGain, ildaGain, ildaGain);
+        }
+        l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(unitInt * flicker * 2.6);
+      } else {
+        if (l.ildaMesh) l.ildaMesh.visible = false;
+        const shapes = this.laserShape(override?.patternSegments ?? s.laser.patternSegments ?? DEFAULT_LASER_RESOLUTION);
+        l.sheetMesh.geometry = shapes.sheet;
+        l.coneMesh.geometry = shapes.cone;
+        l.innerConeMesh.geometry = shapes.cone;
+        l.sheetMesh.visible = laserEnabled && !isConePattern;
+        l.coneMesh.visible = laserEnabled && isConePattern;
+        l.innerConeMesh.visible = laserEnabled && s.laser.pattern === 'dual_cones' && count > 1;
+
+        // Subtle roll rotation on sheet patterns when rotation slider > 0
+        const rollAngle = isConePattern
+          ? 0
+          : s.laser.pattern === 'matrix'
+            ? (l.index % 2 === 0 ? 0.0 : Math.PI / 2) + t * s.laser.rotation * 0.65
+            : Math.sin(t * s.laser.rotation * 1.4 + l.index) * s.laser.rotation * LASER_SHEET_ROLL_SCALE;
+        l.sheetMesh.rotation.z = rollAngle;
+
+        // Update sheet uniforms
+        su.uIntensity.value = unitInt;
+        su.uHaze.value = s.atmo.hazeLevel;
+        su.uTime.value = t;
+        su.uPattern.value = patIdx;
+        su.uBeamCount.value = count;
+        su.uSpeed.value = s.laser.speed;
+        su.uSpreadX.value = s.laser.spreadX;
+        su.uSpreadY.value = s.laser.spreadY;
+        su.uStrobe.value = s.laser.strobe;
+        su.uAudioPulse.value = beatPulse;
+
+        // Update cone / dual cone uniforms
+        for (const [cm, dirMult] of [
+          [l.coneMat, 1],
+          [l.innerConeMat, -1.45],
+        ] as const) {
+          const cu = cm.uniforms;
+          cu.uColorA.value.copy(dirMult < 0 ? su.uColorB.value : su.uColorA.value);
+          cu.uColorB.value.copy(dirMult < 0 ? su.uColorA.value : su.uColorB.value);
+          cu.uColorMode.value = su.uColorMode.value;
+          cu.uIntensity.value = unitInt;
+          cu.uHaze.value = s.atmo.hazeLevel;
+          cu.uTime.value = t;
+          cu.uBeamCount.value = s.laser.pattern === 'dual_cones'
+            ? (dirMult < 0 ? Math.floor(count / 2) : Math.ceil(count / 2)) : count;
+          cu.uSpeed.value = s.laser.speed;
+          cu.uSpreadX.value = s.laser.spreadX;
+          cu.uSpreadY.value = s.laser.spreadY;
+          cu.uRotation.value = s.laser.rotation * dirMult;
+          cu.uStrobe.value = s.laser.strobe;
+          cu.uAudioPulse.value = beatPulse;
+        }
+
+        l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(unitInt * 2.6);
       }
 
-      l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(laserInt * 2.6);
-
-      // Write Laser DMX Universe channels clamped strictly to l.dmxWidth
+      // Write Laser DMX Universe channels using unscaled baseLaserInt (never visual power presence),
+      // clamped strictly to l.dmxWidth.
       const uBuf = l.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
       if (l.dmxStart > 0) {
-        writeDmxChannels(uBuf, l.dmxStart, l.dmxWidth, [
-          Math.round(Math.min(1, laserInt) * 255),
-          patIdx * 32,
-          Math.round(s.laser.spreadX * 255),
-          Math.round(s.laser.spreadY * 255),
-          Math.round(s.laser.speed * 255),
-          Math.round(s.laser.rotation * 255),
-          Math.round((count / 32) * 255),
-          Math.round(s.laser.strobe * 255),
-        ]);
+        const dv = this.laserDmxScratchValues;
+        dv.enabled = laserEnabled;
+        dv.intensity = Math.min(1, baseLaserInt);
+        dv.patternIndex = patIdx;
+        dv.spreadX = s.laser.spreadX;
+        dv.spreadY = s.laser.spreadY;
+        dv.speed = s.laser.speed;
+        dv.rotation = s.laser.rotation;
+        dv.tilt = s.laser.tilt;
+        dv.beamCount = count;
+        dv.strobe = s.laser.strobe;
+        dv.colorR = su.uColorA.value.r;
+        dv.colorG = su.uColorA.value.g;
+        dv.colorB = su.uColorA.value.b;
+        dv.colorModeIndex = shaderColorMode;
+        dv.scanRateNorm = l.laserSpec ? Math.min(1, l.laserSpec.scanSpeedKpps / 40) : 0;
+        const dmxBytes = encodeLaserDmxChannels(l.resolvedMode, dv, l.dmxScratch);
+        writeDmxChannels(uBuf, l.dmxStart, l.dmxWidth, dmxBytes);
       }
     }
+    const laserInt = this.laserUnits.length ? maxLaserInt : baseLaserInt;
 
     // 4. Update Audience Blinders & LED Strobes
     const effBlinder = (b.blinder ? 1.0 : s.blinderLevel) * master;
@@ -2430,6 +2622,8 @@ export class StageEngine {
     this.resizeObserver?.disconnect();
     this.controls?.dispose();
     this.beamPools?.dispose();
+    this.detachIldaMeshes();
+    this.activeIldaClip = null;
     this.releaseGroup(this.rigGroup);
     this.laserShapeGeometries.forEach(geometry => geometry.dispose());
     this.laserShapeGeometries.clear();

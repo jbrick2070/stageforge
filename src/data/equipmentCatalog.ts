@@ -34,9 +34,34 @@ export type CatalogBodyFamily =
   | 'co2-jet'
   | 'laser-head';
 
+export type LaserChannelRole =
+  | 'unused'
+  | 'fb4Access16'
+  | 'fb4Mode39'
+  | 'intensity'
+  | 'pattern'
+  | 'sizeX'
+  | 'sizeY'
+  | 'zoom'
+  | 'speed'
+  | 'rotation'
+  | 'posX'
+  | 'posY'
+  | 'beamCount'
+  | 'strobe'
+  | 'red'
+  | 'green'
+  | 'blue'
+  | 'colorScroll'
+  | 'scanRate';
+
 export interface CatalogDmxMode {
   readonly name: string;
   readonly channels: number;
+  /** Hidden from EquipmentPicker for new selections; preserved so older v6 shows still load cleanly. */
+  readonly legacy?: true;
+  /** Optional channel role map (0-based index -> role) for laser DMX output; omitted uses simulator default. */
+  readonly layout?: readonly LaserChannelRole[];
 }
 
 export interface CatalogOpticsSpec {
@@ -54,23 +79,48 @@ export interface CatalogPanelSpec {
   readonly pixelsHigh: number;
 }
 
+export interface CatalogLaserSpec {
+  readonly colorType: 'rgb' | 'single';
+  /** Nominal wavelength in nm for single-color diode/DPSS lasers (e.g. 520 or 532). */
+  readonly wavelengthNm?: number;
+  /** Display hex color for single-color lasers (e.g. '#00ff3c'). */
+  readonly singleColorHex?: string;
+  /** Guaranteed optical output power at aperture in Watts. */
+  readonly opticalPowerW: number;
+  /** Galvo scanner speed in kpps @ published ILDA test angle (typically 8 deg). */
+  readonly scanSpeedKpps: number;
+  /** Maximum optical scan angle in degrees (full angle). */
+  readonly maxScanAngleDeg: number;
+  /** Full-angle beam divergence in milliradians (mrad). */
+  readonly divergenceMrad?: number;
+  /** IEC 60825-1 laser hazard class ('3B' <= 0.5 W, '4' > 0.5 W). */
+  readonly laserClass: '3B' | '4';
+  /** Beam-only vs beam + vector graphics capability. */
+  readonly capability: 'beam' | 'beam_graphic';
+  /** Supported physical/network control interfaces. */
+  readonly control: readonly ('dmx' | 'ilda' | 'fb4' | 'shownet')[];
+}
+
 export interface CatalogEntry {
   readonly id: string;
   readonly manufacturer: string;
   readonly model: string;
+  /** Optional historical/short aliases matched by EquipmentPicker search. */
+  readonly aliases?: readonly string[];
   readonly category: CatalogCategory;
   /** Compatible StageForge simulation/render types ([0] = default; empty for led_panel). */
   readonly renderTypes: readonly HardwareType[];
-  /** Body geometry family hint for Round 2 procedural 3D models. */
+  /** Body geometry family hint for procedural 3D models. */
   readonly body: CatalogBodyFamily;
   readonly weightKg?: number;
   readonly powerW?: number;
   readonly ipRating?: string;
   readonly optics?: CatalogOpticsSpec;
-  /** Published DMX modes ([0] = default; empty for led_panel). */
+  readonly laser?: CatalogLaserSpec;
+  /** Published DMX modes ([0] = default real mode; empty for led_panel). */
   readonly modes: readonly CatalogDmxMode[];
   readonly panel?: CatalogPanelSpec;
-  /** True for laser entries until Realism item 2 expands laser specifications and ILDA support. */
+  /** True only for placeholder entries awaiting datasheet verification. */
   readonly placeholder?: true;
   /** Citation IDs documented with URLs and verification dates in docs/equipment.md. */
   readonly sources: readonly string[];
@@ -96,6 +146,68 @@ export const CATALOG_CATEGORY_LABELS: Record<CatalogCategory, string> = {
   co2_jet: 'CO2 Jet',
   laser: 'Laser',
 };
+
+// Standard verified DMX channel role layouts for Pangolin FB4 & Laserworld ShowNET Pro.
+const FB4_16_LAYOUT: readonly LaserChannelRole[] = [
+  'fb4Access16', // Ch 1: DMX mode/access (235-255 = 16-ch mode, 0 = blackout)
+  'unused',      // Ch 2: Page index
+  'pattern',     // Ch 3: Cue index
+  'speed',       // Ch 4: Cue speed
+  'intensity',   // Ch 5: Master dimmer
+  'zoom',        // Ch 6: Zoom
+  'sizeX',       // Ch 7: Size X
+  'sizeY',       // Ch 8: Size Y
+  'rotation',    // Ch 9: Angle Z
+  'posX',        // Ch 10: Position X (128 = center)
+  'posY',        // Ch 11: Position Y (128 = center)
+  'beamCount',   // Ch 12: Visible points
+  'scanRate',    // Ch 13: Scan rate
+  'unused',      // Ch 14: Cue release
+  'colorScroll', // Ch 15: Color scroll
+  'unused',      // Ch 16: Reserved
+];
+
+const FB4_39_LAYOUT: readonly LaserChannelRole[] = [
+  'fb4Mode39',   // Ch 1: 251 = Playback mode, 0 = Blackout/Safe
+  'unused', 'unused', 'unused', 'unused', 'unused', 'unused',
+  'unused', 'unused', 'unused', 'unused', 'unused', 'unused', // Ch 2-13: Setup mode limits
+  'unused',      // Ch 14: Page index
+  'pattern',     // Ch 15: Cue index
+  'speed',       // Ch 16: Cue speed
+  'intensity',   // Ch 17: Dimmer
+  'zoom',        // Ch 18: Zoom MSB
+  'unused',      // Ch 19: Zoom LSB
+  'sizeX',       // Ch 20: Size X MSB
+  'unused',      // Ch 21: Size X LSB
+  'sizeY',       // Ch 22: Size Y MSB
+  'unused',      // Ch 23: Size Y LSB
+  'rotation',    // Ch 24: Angle Z MSB
+  'unused',      // Ch 25: Angle Z LSB
+  'unused', 'unused', // Ch 26-27: Continuous Z-rot speed
+  'posX',        // Ch 28: Pos X MSB
+  'unused',      // Ch 29: Pos X LSB
+  'posY',        // Ch 30: Pos Y MSB
+  'unused',      // Ch 31: Pos Y LSB
+  'unused', 'unused', 'unused', 'unused', 'unused', 'unused', 'unused', 'unused', // Ch 32-39
+];
+
+const SHOWNET_PRO_34_LAYOUT: readonly LaserChannelRole[] = [
+  'intensity',   // Ch 1: Intensity
+  'pattern',     // Ch 2: Pattern select
+  'sizeX',       // Ch 3: Size X / Zoom
+  'sizeY',       // Ch 4: Size Y
+  'rotation',    // Ch 5: Rotation
+  'posX',        // Ch 6: Position X
+  'posY',        // Ch 7: Position Y
+  'unused', 'unused', 'unused', 'unused', 'unused', 'unused', // Ch 8-13: Effects & Color mode
+  'red',         // Ch 14: Red
+  'green',       // Ch 15: Green
+  'blue',        // Ch 16: Blue
+  'strobe',      // Ch 17: Strobe
+  'scanRate',    // Ch 18: Scan speed
+  'unused', 'unused', 'unused', 'unused', 'unused', 'unused', 'unused', 'unused',
+  'unused', 'unused', 'unused', 'unused', 'unused', 'unused', 'unused', 'unused', // Ch 19-34
+];
 
 /**
  * Curated touring equipment catalogue grounded in manufacturer datasheets and Open Fixture Library.
@@ -626,38 +738,175 @@ export const EQUIPMENT_CATALOG = [
     unverified: ['modes[0].channels'],
   },
 
-  // ── Lasers (Placeholders until Realism Item 2) ──────────────────────────────
+  // ── Real Show Laser Systems (Class 3B & Class 4 across power tiers) ─────────
   {
-    id: 'kvant-clubmax',
-    manufacturer: 'KVANT',
-    model: 'Clubmax',
+    id: 'laserworld-cs-500g',
+    manufacturer: 'Laserworld',
+    model: 'CS-500G',
     category: 'laser',
     renderTypes: ['laser', 'floor_laser'],
     body: 'laser-head',
-    weightKg: 14.5,
-    powerW: 350,
+    weightKg: 5,
+    powerW: 50,
+    ipRating: 'IP20',
+    laser: {
+      colorType: 'single',
+      wavelengthNm: 532,
+      singleColorHex: '#00ff44',
+      opticalPowerW: 0.4,
+      scanSpeedKpps: 25,
+      maxScanAngleDeg: 40,
+      laserClass: '3B',
+      capability: 'beam',
+      control: ['dmx', 'ilda'],
+    },
     modes: [
-      { name: 'Placeholder DMX (18-Ch)', channels: 18 },
+      { name: '15-Ch DMX', channels: 15 },
+      { name: '12-Ch DMX', channels: 12 },
     ],
-    placeholder: true,
-    sources: [],
-    unverified: ['weightKg', 'powerW', 'modes[0].channels'],
+    sources: ['laserworld-cs-500g'],
+    unverified: ['weightKg', 'ipRating', 'laser.scanSpeedKpps'],
+  },
+  {
+    id: 'unity-raw-1-7',
+    manufacturer: 'Unity Lasers',
+    model: 'Raw 1.7',
+    category: 'laser',
+    renderTypes: ['laser', 'floor_laser'],
+    body: 'laser-head',
+    weightKg: 5.3,
+    powerW: 100,
+    ipRating: 'IP20',
+    laser: {
+      colorType: 'rgb',
+      opticalPowerW: 1.7,
+      scanSpeedKpps: 30,
+      maxScanAngleDeg: 45,
+      divergenceMrad: 1.1,
+      laserClass: '4',
+      capability: 'beam_graphic',
+      control: ['dmx', 'ilda'],
+    },
+    modes: [
+      { name: 'Normal (10-Ch)', channels: 10 },
+      { name: 'Expert (34-Ch)', channels: 34 },
+    ],
+    sources: ['unity-raw-1-7'],
+    unverified: ['ipRating'],
+  },
+  {
+    id: 'laserworld-ds-3000rgb',
+    manufacturer: 'Laserworld',
+    model: 'DS-3000RGB MK5',
+    aliases: ['DS-3000RGB'],
+    category: 'laser',
+    renderTypes: ['laser', 'floor_laser'],
+    body: 'laser-head',
+    weightKg: 5.5,
+    powerW: 80,
+    ipRating: 'IP4X',
+    laser: {
+      colorType: 'rgb',
+      opticalPowerW: 3,
+      scanSpeedKpps: 40,
+      maxScanAngleDeg: 40,
+      divergenceMrad: 1.0,
+      laserClass: '4',
+      capability: 'beam_graphic',
+      control: ['dmx', 'ilda', 'shownet'],
+    },
+    modes: [
+      { name: 'ShowNET DJ (19-Ch)', channels: 19 },
+      { name: 'ShowNET Pro (34-Ch)', channels: 34, layout: SHOWNET_PRO_34_LAYOUT },
+    ],
+    sources: ['laserworld-ds-3000rgb', 'laserworld-shownet'],
+    unverified: [],
+  },
+  {
+    id: 'kvant-clubmax',
+    manufacturer: 'KVANT',
+    model: 'Clubmax 6000 FB4',
+    aliases: ['Clubmax'],
+    category: 'laser',
+    renderTypes: ['laser', 'floor_laser'],
+    body: 'laser-head',
+    weightKg: 11.6,
+    powerW: 400,
+    ipRating: 'IP20',
+    laser: {
+      colorType: 'rgb',
+      opticalPowerW: 6,
+      scanSpeedKpps: 40,
+      maxScanAngleDeg: 60,
+      divergenceMrad: 1.0,
+      laserClass: '4',
+      capability: 'beam_graphic',
+      control: ['dmx', 'ilda', 'fb4'],
+    },
+    modes: [
+      { name: 'FB4 16-Ch (FB3 Profile)', channels: 16, layout: FB4_16_LAYOUT },
+      { name: 'FB4 39-Ch (Extended)', channels: 39, layout: FB4_39_LAYOUT },
+      { name: 'Placeholder DMX (18-Ch)', channels: 18, legacy: true },
+    ],
+    sources: ['kvant-clubmax-6000', 'pangolin-fb4-dmx'],
+    unverified: ['powerW', 'ipRating', 'modes[2].channels'],
+  },
+  {
+    id: 'laserworld-pl-10000rgb',
+    manufacturer: 'Laserworld',
+    model: 'PL-10.000RGB MK3',
+    aliases: ['PL-10000RGB'],
+    category: 'laser',
+    renderTypes: ['laser', 'floor_laser'],
+    body: 'laser-head',
+    weightKg: 14.6,
+    powerW: 350,
+    ipRating: 'IP54',
+    laser: {
+      colorType: 'rgb',
+      opticalPowerW: 10,
+      scanSpeedKpps: 40,
+      maxScanAngleDeg: 50,
+      divergenceMrad: 1.0,
+      laserClass: '4',
+      capability: 'beam_graphic',
+      control: ['dmx', 'ilda', 'shownet'],
+    },
+    modes: [
+      { name: 'ShowNET DJ (19-Ch)', channels: 19 },
+      { name: 'ShowNET Pro (34-Ch)', channels: 34, layout: SHOWNET_PRO_34_LAYOUT },
+    ],
+    sources: ['laserworld-pl-10000rgb', 'laserworld-shownet'],
+    unverified: [],
   },
   {
     id: 'kvant-spectrum',
     manufacturer: 'KVANT',
-    model: 'Spectrum',
+    model: 'Spectrum 30',
+    aliases: ['Spectrum', 'Spectrum 25'],
     category: 'laser',
     renderTypes: ['floor_laser', 'laser'],
     body: 'laser-head',
-    weightKg: 24.5,
-    powerW: 650,
+    weightKg: 36,
+    powerW: 900,
+    ipRating: 'IP65',
+    laser: {
+      colorType: 'rgb',
+      opticalPowerW: 30,
+      scanSpeedKpps: 30,
+      maxScanAngleDeg: 60,
+      divergenceMrad: 1.0,
+      laserClass: '4',
+      capability: 'beam_graphic',
+      control: ['dmx', 'ilda', 'fb4'],
+    },
     modes: [
-      { name: 'Placeholder DMX (18-Ch)', channels: 18 },
+      { name: 'FB4 16-Ch (FB3 Profile)', channels: 16, layout: FB4_16_LAYOUT },
+      { name: 'FB4 39-Ch (Extended)', channels: 39, layout: FB4_39_LAYOUT },
+      { name: 'Placeholder DMX (18-Ch)', channels: 18, legacy: true },
     ],
-    placeholder: true,
-    sources: [],
-    unverified: ['weightKg', 'powerW', 'modes[0].channels'],
+    sources: ['kvant-spectrum-30', 'pangolin-fb4-dmx'],
+    unverified: ['powerW', 'modes[2].channels'],
   },
 ] as const satisfies readonly CatalogEntry[];
 
@@ -689,6 +938,11 @@ export function getCatalogMode(entry: CatalogEntry, modeName?: string): CatalogD
   if (!entry.modes.length) return undefined;
   if (!modeName) return entry.modes[0];
   return entry.modes.find((m) => m.name === modeName);
+}
+
+/** Non-legacy DMX modes shown for new selections in EquipmentPicker. */
+export function getSelectableModes(entry: CatalogEntry): readonly CatalogDmxMode[] {
+  return entry.modes.filter((m) => !m.legacy);
 }
 
 export function catalogDisplayName(entry: Pick<CatalogEntry, 'manufacturer' | 'model'>): string {
@@ -756,6 +1010,26 @@ export function formatCatalogSpecBadges(entry: CatalogEntry, modeName?: string):
     badges.push({
       text: `${entry.optics.lumens.toLocaleString()} lm`,
       unverified: isFieldUnverified(entry, 'optics.lumens'),
+    });
+  }
+  if (entry.laser) {
+    const powerLabel = entry.laser.opticalPowerW < 1
+      ? `${Math.round(entry.laser.opticalPowerW * 1000)} mW`
+      : `${entry.laser.opticalPowerW} W`;
+    const colorLabel = entry.laser.colorType === 'single'
+      ? `${entry.laser.wavelengthNm ?? 520} nm`
+      : 'RGB';
+    badges.push({
+      text: `${powerLabel} ${colorLabel}`,
+      unverified: isFieldUnverified(entry, 'laser.opticalPowerW'),
+    });
+    badges.push({
+      text: `${entry.laser.scanSpeedKpps} kpps`,
+      unverified: isFieldUnverified(entry, 'laser.scanSpeedKpps'),
+    });
+    badges.push({
+      text: `Class ${entry.laser.laserClass}`,
+      unverified: false,
     });
   }
   if (entry.panel) {

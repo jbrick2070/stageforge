@@ -27,6 +27,8 @@ import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
 import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange } from './data/showFile';
 import { hasCatalogFixtures } from './data/equipmentCatalog';
+import { DEMO_ILDA_PRESETS, generateDemoIlda, ILDA_MAX_BYTES, parseIlda, type DemoIldaKind, type IldaClip } from './data/ilda';
+import type { IldaRenderMode } from './engine/ildaRenderer';
 import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
 import type { BundleAsset } from './data/showBundle';
 import { isCustomMainWall, MAX_WALL_CUE_MS, pruneNativeStage, removeSecondaryScreenEvent, upsertSecondaryScreenEvent, type SecondaryScreenEvent } from './data/studioGeometry';
@@ -159,6 +161,9 @@ export const App: React.FC = () => {
   const [dmxDrawerOpen, setDmxDrawerOpen] = useState(false);
   const [showControlOpen, setShowControlOpen] = useState(false);
   const [costModalOpen, setCostModalOpen] = useState(false);
+  const [ildaClip, setIldaClip] = useState<IldaClip | null>(null);
+  const [ildaMode, setIldaMode] = useState<IldaRenderMode>('both');
+  const [ildaFps, setIldaFps] = useState(30);
   const [beatGridStatus, setBeatGridStatus] = useState<BeatGridStatus>({ state: 'idle' });
   const [liveBpmStatus, setLiveBpmStatus] = useState<LiveBpmStatus>({ state: 'off' });
   const [followLiveBpm, setFollowLiveBpm] = useState(false);
@@ -217,6 +222,58 @@ export const App: React.FC = () => {
   }, []);
 
   const liveDmx = useLiveDmxOutput(engineRef, showToast);
+
+  useEffect(() => {
+    engineRef.current?.setIldaSettings(ildaMode, ildaFps);
+  }, [ildaMode, ildaFps]);
+
+  const applyLoadedIlda = useCallback((clip: IldaClip) => {
+    setIldaClip(clip);
+    engineRef.current?.setIldaClip(clip);
+    previewRig();
+    setShowState((s) => ({
+      ...s,
+      laser: {
+        ...s.laser,
+        enabled: true,
+        intensity: s.laser.intensity < 0.2 ? 0.9 : s.laser.intensity,
+      },
+    }));
+    const warnSuffix = clip.warnings.length ? ` (${clip.warnings[0]})` : '';
+    showToast(`Loaded ILDA: ${clip.name} (${clip.frames.length} frames)${warnSuffix}`);
+  }, [previewRig, showToast]);
+
+  const handleLoadDemoIlda = useCallback((kind: DemoIldaKind) => {
+    try {
+      const preset = DEMO_ILDA_PRESETS.find((p) => p.id === kind);
+      const bytes = generateDemoIlda(kind);
+      const tier = engineRef.current?.getRenderTier() ?? 'high';
+      const clip = parseIlda(bytes, { name: preset?.label ?? kind, tier });
+      applyLoadedIlda(clip);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not load demo ILDA clip.');
+    }
+  }, [applyLoadedIlda, showToast]);
+
+  const handleUploadIlda = useCallback(async (file: File) => {
+    try {
+      if (file.size > ILDA_MAX_BYTES) {
+        throw new Error(`ILDA file is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB; limit is ${ILDA_MAX_BYTES / (1024 * 1024)} MB).`);
+      }
+      const buffer = await file.arrayBuffer();
+      const tier = engineRef.current?.getRenderTier() ?? 'high';
+      const clip = parseIlda(buffer, { name: file.name, tier });
+      applyLoadedIlda(clip);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not parse ILDA file.');
+    }
+  }, [applyLoadedIlda, showToast]);
+
+  const handleClearIlda = useCallback(() => {
+    setIldaClip(null);
+    engineRef.current?.setIldaClip(null);
+    showToast('Unloaded ILDA clip (back to procedural laser patterns).');
+  }, [showToast]);
 
   // Revoke after a grace period so a renderer still holding the old URL can swap first.
   const releaseUrl = (url: string) => {
@@ -1675,6 +1732,16 @@ export const App: React.FC = () => {
           }}
           clockMode={showControl.clockMode}
           tempo={tempoProps}
+          ilda={{
+            clip: ildaClip,
+            mode: ildaMode,
+            fps: ildaFps,
+            onLoadDemo: handleLoadDemoIlda,
+            onUploadFile: (file) => { void handleUploadIlda(file); },
+            onClear: handleClearIlda,
+            onChangeMode: setIldaMode,
+            onChangeFps: setIldaFps,
+          }}
           onSetBump={(key, active) => setBump((b) => ({ ...b, [key]: active }))}
         />
       )}

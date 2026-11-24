@@ -1,6 +1,6 @@
 # Equipment catalogue and sources
 
-StageForge ships a curated catalogue of touring lighting, LED video panel, atmospheric and placeholder laser equipment in [`src/data/equipmentCatalog.ts`](../src/data/equipmentCatalog.ts). Procedural 3D models, deterministic PBR hardware textures, plan/DXF symbols, and mobile/desktop rendering budgets are documented in [`docs/assets.md`](assets.md).
+StageForge ships a curated catalogue of touring lighting, LED video panel, atmospheric and show laser equipment in [`src/data/equipmentCatalog.ts`](../src/data/equipmentCatalog.ts). Procedural 3D models, deterministic PBR hardware textures, plan/DXF symbols, and mobile/desktop rendering budgets are documented in [`docs/assets.md`](assets.md).
 
 ## Sourcing policy
 
@@ -49,8 +49,12 @@ Selected DMX mode names and channel counts cross-checked against Open Fixture Li
 | `martin-jem-zr45` | Martin JEM ZR45 | Fogger | 17.7 kg | 2100 W | — | — | 1 ch | `martin-jem-zr45` | — |
 | `look-solutions-viper-nt` | Look Solutions Viper NT | Fogger | 8.3 kg | 1300 W | — | — | 2 ch | `look-solutions-viper-nt`, `ofl-look-solutions-viper-nt` | — |
 | `magicfx-co2jet-ii` | MagicFX CO2Jet II | CO2 Jet | 4.29 kg | 20 W | — | Switched power (external DMX switchpack) | 1? ch | `magicfx-co2jet-ii` | `modes[0].channels` |
-| `kvant-clubmax` | KVANT Clubmax *(placeholder)* | Laser | 14.5 kg? | 350 W? | — | Placeholder until laser module pass | 18? ch | — | `weightKg`, `powerW`, `modes[0].channels` |
-| `kvant-spectrum` | KVANT Spectrum *(placeholder)* | Laser | 24.5 kg? | 650 W? | — | Placeholder until laser module pass | 18? ch | — | `weightKg`, `powerW`, `modes[0].channels` |
+| `laserworld-cs-500g` | Laserworld CS-500G | Laser | 5 kg? | 50 W | IP20? | 400 mW 532 nm green · 25 kpps? · 40° · Class 3B · Beam | 15, 12 ch | `laserworld-cs-500g` | `weightKg`, `ipRating`, `laser.scanSpeedKpps` |
+| `unity-raw-1-7` | Unity Lasers Raw 1.7 | Laser | 5.3 kg | 100 W | IP20? | 1.7 W RGB · 30 kpps · 45° · 1.1 mrad · Class 4 · Beam+Graphic | 10, 34 ch | `unity-raw-1-7` | `ipRating` |
+| `laserworld-ds-3000rgb` | Laserworld DS-3000RGB MK5 | Laser | 5.5 kg | 80 W | IP4X | 3 W RGB · 40 kpps · 40° · 1.0 mrad · Class 4 · Beam+Graphic | 19, 34 ch (ShowNET) | `laserworld-ds-3000rgb`, `laserworld-shownet` | — |
+| `kvant-clubmax` | KVANT Clubmax 6000 FB4 | Laser | 11.6 kg | 400 W? | IP20? | 6 W RGB · 40 kpps · 60° · 1.0 mrad · Class 4 · Beam+Graphic | 16, 39 ch (FB4) *(+legacy 18? ch)* | `kvant-clubmax-6000`, `pangolin-fb4-dmx` | `powerW`, `ipRating`, `modes[2].channels` |
+| `laserworld-pl-10000rgb` | Laserworld PL-10.000RGB MK3 | Laser | 14.6 kg | 350 W | IP54 | 10 W RGB · 40 kpps · 50° · 1.0 mrad · Class 4 · Beam+Graphic | 19, 34 ch (ShowNET) | `laserworld-pl-10000rgb`, `laserworld-shownet` | — |
+| `kvant-spectrum` | KVANT Spectrum 30 | Laser | 36 kg | 900 W? | IP65 | 30 W RGB · 30 kpps · 60° · 1.0 mrad · Class 4 · Beam+Graphic | 16, 39 ch (FB4) *(+legacy 18? ch)* | `kvant-spectrum-30`, `pangolin-fb4-dmx` | `powerW`, `modes[2].channels` |
 
 ---
 
@@ -62,13 +66,13 @@ Saved v1–v5 shows and stock presets without a `catalogId` continue using their
 |---|---|---|---|
 | `beam` | Sharpy X-Beam 350 *(illustrative)* | 16 ch | `claypaky-sharpy` (Claypaky Sharpy) |
 | `wash` | MAC Aura Pro RGBW *(illustrative)* | 12 ch | `martin-mac-aura-xb` (Martin MAC Aura XB) |
-| `laser` | KVANT Clubmax 12W *(placeholder)* | 18 ch | `kvant-clubmax` (KVANT Clubmax) |
+| `laser` | KVANT Clubmax 12W *(illustrative)* | 18 ch | `kvant-clubmax` (KVANT Clubmax 6000 FB4) |
 | `strobe` | Atomic Pro JDC-1 *(illustrative)* | 8 ch | `glp-jdc1` (GLP JDC1) |
 | `blinder` | Molefay 4-Lite Warm *(illustrative)* | 4 ch | `mole-richardson-molefay-4lite` (Mole-Richardson 4-Light Molefay) |
 | `hazer` | MDG ATMe Touring Hazer | 3 ch | `mdg-atme` (MDG ATMe) |
 | `smoke` | JEM ZR45 Smoke Machine | 2 ch | `martin-jem-zr45` (Martin JEM ZR45) |
 | `co2` | MagicFX CO2Jet II | 2 ch | `magicfx-co2jet-ii` (MagicFX CO2Jet II) |
-| `floor_laser` | KVANT Spectrum 25W *(placeholder)* | 18 ch | `kvant-spectrum` (KVANT Spectrum) |
+| `floor_laser` | KVANT Spectrum 25W *(illustrative)* | 18 ch | `kvant-spectrum` (KVANT Spectrum 30) |
 | `floor_beam` | MegaPointe Floor Beam *(illustrative)* | 16 ch | `robe-megapointe` (Robe MegaPointe) |
 
 ---
@@ -107,3 +111,20 @@ Saved v1–v5 shows and stock presets without a `catalogId` continue using their
 - `look-solutions-viper-nt`: Look Solutions Viper NT specification — https://www.looksolutions.com/en/products/fog-machines/viper-nt (checked 2026-11-24)
 - `ofl-look-solutions-viper-nt`: Open Fixture Library, Look Solutions Viper NT — https://open-fixture-library.org/look-solutions/viper-nt (checked 2026-11-24)
 - `magicfx-co2jet-ii`: MagicFX CO2Jet II product specification — https://www.magicfx.com/en/products/co2jet-ii (checked 2026-11-24; direct power switched via external DMX switchpack)
+- `laserworld-cs-500g`: Laserworld CS-500G Club Series technical data — https://www.laserworld.com/en/laserworld-cs/laserworld-cs-500g.html (checked 2026-11-24; chassis weight varies across generations and scan speed is rated @ 4° rather than 8°, both flagged `unverified`)
+- `unity-raw-1-7`: Unity Lasers Raw 1.7 product specification & operational manual — https://unitylasers.com/products/raw-1-7 (checked 2026-11-24)
+- `laserworld-ds-3000rgb`: Laserworld DS-3000RGB MK5 technical data — https://www.laserworld.com/en/laserworld-ds/laserworld-ds-3000rgb-mk5.html (checked 2026-11-24)
+- `laserworld-pl-10000rgb`: Laserworld PL-10.000RGB MK3 technical data — https://www.laserworld.com/en/laserworld-pl/laserworld-pl-10000rgb-mk3.html (checked 2026-11-24)
+- `laserworld-shownet`: Laserworld ShowNET DMX modes (DJ 19-Ch & Professional 34-Ch) — https://www.laserworld.com/en/shownet (checked 2026-11-24)
+- `kvant-clubmax-6000`: KVANT Clubmax 6000 FB4 specification — https://www.kvantlasers.sk/products/clubmax-6000 (checked 2026-11-24; 350 VA–400 W range flagged `unverified`)
+- `kvant-spectrum-30`: KVANT Spectrum 30 specification — https://www.kvantlasers.sk/products/spectrum-30 (checked 2026-11-24; 900 VA apparent power flagged `unverified`)
+- `pangolin-fb4-dmx`: Pangolin FB4 DMX-512 profile documentation (16-Ch FB3 profile & 39-Ch FB4 profile) — https://wiki.pangolin.com/doku.php?id=fb4:dmx (checked 2026-11-24)
+
+---
+
+## Laser Safety Guidance & ILDA (.ild) Support
+
+- **Standards referenced (by name only):** IEC 60825-1 (optical power classes: Class 3B ≤ 500 mW, Class 4 > 500 mW), IEC 60825-3 (laser display safety), ANSI Z136.1 / FDA laser show variance practice.
+- **Commonly cited separation design values:** StageForge flags beams entering the audience zone (`z > stageDepth / 2`) below **3.0 m** vertical clearance above the audience floor (`y = 0`) and notes **2.5 m** lateral separation as commonly cited design values. Stationary/collapsed beams and explicit `CROWD SCAN ON` also raise a `Danger` indicator.
+- **Disclaimer:** All laser safety indicators in StageForge are **design guidance only, not regulatory certification or Laser Safety Officer (LSO) sign-off.** Real-world laser shows require on-site MPE measurements, hardware scan-failure interlocks, E-stop circuits, and applicable national/local variances.
+- **ILDA (.ild) reader (`src/data/ilda.ts`):** Implements IDTF Revision 011 Formats 0, 1, 2 (palette), 4, and 5 (including the standard 64-color default palette and BGR true-color byte order) with strict untrusted-input caps: 8 MB max file size, 2,000 frames, 4,000 points/frame, 200,000 total points on desktop (`high` tier) and 60,000 on phones (`low` tier). Loaded `.ild` clips are in-session only (`Not saved with show`).

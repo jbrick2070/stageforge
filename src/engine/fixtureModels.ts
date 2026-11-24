@@ -352,15 +352,51 @@ export const MODEL_SPECS: Readonly<Record<string, ModelSpec>> = {
     head: { kind: 'box', len: 0.32, dia: 0.09 },
   },
 
-  // ── Lasers ──────────────────────────────────────────────────────────────────
+  // ── Lasers (distinct chassis proportions across Class 3B -> 30 W arena tiers) ──
+  'laserworld-cs-500g': {
+    id: 'laserworld-cs-500g',
+    family: 'laser-head',
+    envelope: { w: 0.24, h: 0.14, d: 0.24 },
+    pivotY: 0,
+    motion: 'fixed',
+    base: { w: 0.23, h: 0.13, d: 0.24 },
+    head: { kind: 'box', len: 0.24, dia: 0.13, fins: false },
+  },
+  'unity-raw-1-7': {
+    id: 'unity-raw-1-7',
+    family: 'laser-head',
+    envelope: { w: 0.26, h: 0.16, d: 0.28 },
+    pivotY: 0,
+    motion: 'fixed',
+    base: { w: 0.25, h: 0.15, d: 0.27 },
+    head: { kind: 'box', len: 0.27, dia: 0.15, fins: false },
+  },
+  'laserworld-ds-3000rgb': {
+    id: 'laserworld-ds-3000rgb',
+    family: 'laser-head',
+    envelope: { w: 0.22, h: 0.15, d: 0.23 },
+    pivotY: 0,
+    motion: 'fixed',
+    base: { w: 0.21, h: 0.145, d: 0.22 },
+    head: { kind: 'box', len: 0.22, dia: 0.145, fins: false },
+  },
   'kvant-clubmax': {
     id: 'kvant-clubmax',
     family: 'laser-head',
-    envelope: { w: 0.40, h: 0.26, d: 0.48 },
+    envelope: { w: 0.36, h: 0.18, d: 0.28 },
     pivotY: 0,
     motion: 'fixed',
-    base: { w: 0.40, h: 0.24, d: 0.48, handles: 'side' },
-    head: { kind: 'box', len: 0.48, dia: 0.24, fins: true },
+    base: { w: 0.36, h: 0.17, d: 0.26, handles: 'side' },
+    head: { kind: 'box', len: 0.26, dia: 0.17, fins: false },
+  },
+  'laserworld-pl-10000rgb': {
+    id: 'laserworld-pl-10000rgb',
+    family: 'laser-head',
+    envelope: { w: 0.35, h: 0.22, d: 0.36 },
+    pivotY: 0,
+    motion: 'fixed',
+    base: { w: 0.35, h: 0.21, d: 0.34, handles: 'side' },
+    head: { kind: 'box', len: 0.34, dia: 0.21, fins: true },
   },
   'kvant-spectrum': {
     id: 'kvant-spectrum',
@@ -835,9 +871,17 @@ export function buildStaticModelParts(
       const h = spec.base.h;
       const d = spec.base.d;
       bodyParts.push(boxPart(w, h, d, HardwareAtlasBand.PowderCoat, 0, 0, 0));
-      // Side extruded heat-sink fins
-      for (const side of [-1, 1]) {
-        bodyParts.push(boxPart(0.022, h * 0.78, d * 0.84, HardwareAtlasBand.HeatSinkFins, side * (w / 2 + 0.010), 0, 0));
+      // Side extruded heat-sink fins on high-power (>= 10 W) lasers
+      if (spec.head.fins) {
+        for (const side of [-1, 1]) {
+          bodyParts.push(boxPart(0.022, h * 0.78, d * 0.84, HardwareAtlasBand.HeatSinkFins, side * (w / 2 + 0.010), 0, 0));
+        }
+      }
+      // Touring carry handles on heavier (>= 20 W) chassis
+      if (spec.base.handles === 'dual-touring') {
+        for (const side of [-1, 1]) {
+          bodyParts.push(boxPart(0.024, 0.036, d * 0.36, HardwareAtlasBand.Rubber, side * (w / 2 + 0.026), h * 0.14, 0));
+        }
       }
       // Front optical bezel + IEC laser hazard stripe
       bodyParts.push(boxPart(w * 0.92, h * 0.84, 0.025, HardwareAtlasBand.AnodizedMetal, 0, 0, d / 2 + 0.010));
@@ -866,8 +910,10 @@ export function buildStaticModelParts(
           }
         }
       }
-      glassParts.push(boxPart(0.18, 0.072, 0.016, HardwareAtlasBand.AnodizedMetal, 0, 0, d / 2 + 0.024));
-      lenses.push({ kind: 'rect', x: 0, y: 0, z: d / 2 + 0.034, w: 0.15, h: 0.052 });
+      const apW = Math.min(0.18, w * 0.58);
+      const apH = Math.min(0.072, h * 0.42);
+      glassParts.push(boxPart(apW, apH, 0.016, HardwareAtlasBand.AnodizedMetal, 0, 0, d / 2 + 0.024));
+      lenses.push({ kind: 'rect', x: 0, y: 0, z: d / 2 + 0.034, w: apW * 0.84, h: apH * 0.72 });
       break;
     }
 

@@ -454,9 +454,10 @@ test('QA regressions: narrow DMX write clamp (H1), hazer-only legacy estimate (M
   assert.equal(sharpyRow.label, 'Claypaky Sharpy (est. power)');
   assert.equal(sharpyRow.weightLbs, Math.round(2 * 19 * 2.20462)); // weightKg verified
   assert.equal(sharpyRow.watts, 2 * 520); // powerW unverified -> legacy beam allowance
-  const laserRows = unvEst.equipmentItems.filter((i) => i.label.startsWith('KVANT Clubmax'));
+  const laserRows = unvEst.equipmentItems.filter((i) => i.label.startsWith('KVANT Clubmax 6000 FB4'));
   assert.equal(laserRows.length, 2, 'overhead laser and floor_laser keep distinct cost allowances (L6)');
-  assert.ok(laserRows.every((r) => r.label === 'KVANT Clubmax (est. weight, est. power)'));
+  assert.ok(laserRows.every((r) => r.label === 'KVANT Clubmax 6000 FB4 (est. power)'));
+  assert.ok(laserRows.every((r) => r.weightLbs === Math.round(11.6 * 2.20462)));
   assert.deepEqual(laserRows.map((r) => r.buyCost).sort((a, b) => a - b), [14500, 28000]);
 
   // M4: switching catalogId clears stale per-model optics overrides; switching mode on same catalogId keeps them.

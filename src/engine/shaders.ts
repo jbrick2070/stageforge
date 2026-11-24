@@ -1,3 +1,17 @@
+import {
+  LASER_CONE_SPREAD_BASE,
+  LASER_CONE_SPREAD_SCALE,
+  LASER_SHEET_FAR_HALF_WIDTH_M,
+  LASER_SHEET_HEIGHT_BASE,
+  LASER_SHEET_HEIGHT_SCALE,
+  LASER_SHEET_WIDTH_BASE,
+  LASER_SHEET_WIDTH_SCALE,
+  LASER_STARBURST_Y_BASE,
+  LASER_STARBURST_Y_SCALE,
+} from '../data/laserAim';
+
+const glslFloat = (n: number) => (Number.isInteger(n) ? `${n}.0` : String(n));
+
 // Shared world-space haze keeps adjacent fixtures in the same moving air.
 const AIR_GLSL = /* glsl */ `
   float hashAir(vec2 p) {
@@ -139,8 +153,8 @@ export const LASER_SHEET_VERT = /* glsl */ `
     float t = uTime * (0.45 + uSpeed * 2.6);
     float reach = uv.y;
     float x = uv.x * 2.0 - 1.0;
-    float width = 0.35 + uSpreadX * 1.50;
-    float height = 0.10 + uSpreadY * 4.2;
+    float width = ${glslFloat(LASER_SHEET_WIDTH_BASE)} + uSpreadX * ${glslFloat(LASER_SHEET_WIDTH_SCALE)};
+    float height = ${glslFloat(LASER_SHEET_HEIGHT_BASE)} + uSpreadY * ${glslFloat(LASER_SHEET_HEIGHT_SCALE)};
     vec3 pos = position;
     pos.x *= width;
     // StageEngine supplies a fan in XZ with its aperture at +0.31 Z.
@@ -157,8 +171,8 @@ export const LASER_SHEET_VERT = /* glsl */ `
     } else if (uPattern < 5.5) {
       float angle = uv.x * 6.2831853 + t * 0.32 + uSeed;
       float radius = 0.60 + 0.36 * cos(5.0 * angle - t * 0.55);
-      pos.x = width * (0.07 + reach * 11.0) * cos(angle) * radius;
-      pos.y = (0.05 + reach * (2.3 + uSpreadY * 6.8)) * sin(angle) * radius;
+      pos.x = width * (0.07 + reach * ${glslFloat(LASER_SHEET_FAR_HALF_WIDTH_M)}) * cos(angle) * radius;
+      pos.y = (0.05 + reach * (${glslFloat(LASER_STARBURST_Y_BASE)} + uSpreadY * ${glslFloat(LASER_STARBURST_Y_SCALE)})) * sin(angle) * radius;
     } else {
       pos.y += reach * height * sin(t * 0.86 + uSeed) * 0.15;
     }
@@ -216,7 +230,7 @@ export const LASER_CONE_VERT = /* glsl */ `
     float t = uTime * (0.45 + uSpeed * 2.6);
     float reach = 1.0 - uv.y;
     float morph = 1.0 + reach * (0.09 * sin(4.0 * angle + t + uSeed) + 0.08 * uAudioPulse);
-    pos.xy *= vec2(0.35 + uSpreadX * 1.30, 0.35 + uSpreadY * 1.30) * morph;
+    pos.xy *= vec2(${glslFloat(LASER_CONE_SPREAD_BASE)} + uSpreadX * ${glslFloat(LASER_CONE_SPREAD_SCALE)}, ${glslFloat(LASER_CONE_SPREAD_BASE)} + uSpreadY * ${glslFloat(LASER_CONE_SPREAD_SCALE)}) * morph;
     vec4 world = modelMatrix * vec4(pos, 1.0);
     vWorld = world.xyz;
     gl_Position = projectionMatrix * viewMatrix * world;
