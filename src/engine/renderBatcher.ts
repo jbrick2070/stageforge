@@ -27,6 +27,28 @@ import * as THREE from 'three';
 /** Layer for batched originals; cameras render layer 0 only. */
 export const BATCH_HIDDEN_LAYER = 31;
 
+export interface ShaderProxyAttribute {
+  /** Attribute name bound in the instanced GLSL vertex shader. */
+  name: string;
+  itemSize: 1 | 2 | 3 | 4;
+  /** Copy per-instance values from an original mesh's material into `out[offset..offset+itemSize)`. */
+  write(material: THREE.Material, out: Float32Array, offset: number): void;
+}
+
+export interface ShaderProxy {
+  readonly name: string;
+  match(material: THREE.Material, mesh: THREE.Mesh): boolean;
+  /** State key that must match across a batch; re-checked per frame to release restyled sources. */
+  key(material: THREE.Material, mesh: THREE.Mesh): string;
+  /** Create the instanced material owned and disposed by the batcher. */
+  createMaterial(source: THREE.Material): THREE.Material;
+  readonly attributes: readonly ShaderProxyAttribute[];
+  /** Uniform names copied each frame from the first shown source onto the batch material. */
+  readonly sharedUniforms?: readonly string[];
+}
+
+const PROXY_SCRATCH = new Float32Array(4);
+
 const LIT_MATERIALS = new Set([
   'MeshStandardMaterial', 'MeshPhysicalMaterial', 'MeshLambertMaterial', 'MeshPhongMaterial',
   'MeshToonMaterial', 'MeshMatcapMaterial',
@@ -50,6 +72,14 @@ const LAMP_KEYS = [
 
 type LampSettings = Record<(typeof LAMP_KEYS)[number], unknown>;
 
+interface ProxyBatchState {
+  proxy: ShaderProxy;
+  key: string;
+  ownedGeometry: THREE.BufferGeometry;
+  attributes: THREE.InstancedBufferAttribute[];
+  dirty: boolean[];
+}
+
 interface Batch {
   mesh: THREE.InstancedMesh;
   sources: THREE.Mesh[];
@@ -58,6 +88,8 @@ interface Batch {
   released: boolean[];
   /** Lamp batches own a white copy of the material, take colour per instance, and check settings per frame. */
   lampSettings: LampSettings | null;
+  /** Shader-proxy batches own a cloned geometry (for per-instance attributes) and an instanced material copy. */
+  proxyState: ProxyBatchState | null;
   /** Bounding sphere of the shared geometry, in its own space. */
   localSphere: THREE.Sphere;
 }
@@ -66,6 +98,7 @@ export interface BatcherStats {
   batches: number;
   instances: number;
   released: number;
+  proxied: number;
 }
 
 const isLamp = (material: THREE.Material): material is THREE.MeshBasicMaterial => material.type === 'MeshBasicMaterial';
@@ -194,8 +227,10 @@ export class RenderBatcher {
   /** Batches live here, outside the rig, so exports and framing never see them. */
   readonly group = new THREE.Group();
   private batches: Batch[] = [];
+  private proxies: ShaderProxy[] = [];
   private root: THREE.Object3D | null = null;
   private enabled = true;
+  private proxiesEnabled = true;
   private previousHook: THREE.Scene['onBeforeRender'];
 
   constructor(private scene: THREE.Scene, private minGroup = 2) {
@@ -208,6 +243,26 @@ export class RenderBatcher {
       this.previousHook.apply(scene, args);
       this.sync();
     };
+  }
+
+  /** Register an instanced shader proxy (e.g. volumetric beam cones). Rebuilds if a root is active. */
+  registerShaderProxy(proxy: ShaderProxy) {
+    if (!this.proxies.includes(proxy)) this.proxies.push(proxy);
+    if (this.root && this.enabled && this.proxiesEnabled) this.rebuild(this.root);
+  }
+
+  /** Toggle shader-proxy batching independently of opaque/lamp batching. */
+  setProxiesEnabled(enabled: boolean) {
+    this.setMode(this.enabled, enabled);
+  }
+
+  /** Set batching and shader-proxy flags together without rebuilding twice. */
+  setMode(enabled: boolean, proxies = this.proxiesEnabled) {
+    if (enabled === this.enabled && proxies === this.proxiesEnabled) return;
+    this.enabled = enabled;
+    this.proxiesEnabled = proxies;
+    if (!enabled) this.clear();
+    else if (this.root) this.rebuild(this.root);
   }
 
   /** Batch every eligible repeated part under `root` (call after the rig is built). Never throws. */
@@ -224,18 +279,61 @@ export class RenderBatcher {
     }
   }
 
+  private proxyFor(node: THREE.Object3D): { proxy: ShaderProxy; index: number } | null {
+    if (!this.proxiesEnabled || this.proxies.length === 0) return null;
+    const mesh = node as THREE.Mesh;
+    if (!mesh.isMesh || (mesh as THREE.InstancedMesh).isInstancedMesh || (mesh as THREE.SkinnedMesh).isSkinnedMesh) return null;
+    if (mesh.userData.noBatch || mesh.layers.mask !== DEFAULT_LAYER_MASK) return null;
+    const material = mesh.material;
+    if (!material || Array.isArray(material) || !material.visible) return null;
+    const geometry = mesh.geometry;
+    if (!geometry || !geometry.getAttribute('position') || Object.keys(geometry.morphAttributes ?? {}).length) return null;
+    for (let index = 0; index < this.proxies.length; index++) {
+      const proxy = this.proxies[index];
+      if (proxy.match(material, mesh)) return { proxy, index };
+    }
+    return null;
+  }
+
   private build(root: THREE.Object3D) {
     root.updateWorldMatrix(true, true);
     const ids = new WeakMap<object, number>();
 
     // Candidates with their material key; mirrored parts flip winding, which a shared instanced draw
     // cannot do per instance, so they keep their own draw.
-    const candidates: Array<{ mesh: THREE.Mesh; materialKey: string; lamp: LampSettings | null }> = [];
+    const candidates: Array<{
+      mesh: THREE.Mesh;
+      materialKey: string;
+      lamp: LampSettings | null;
+      proxy: ShaderProxy | null;
+      proxyKey: string | null;
+    }> = [];
     root.traverse((node) => {
+      const matchedProxy = this.proxyFor(node);
+      if (matchedProxy) {
+        const mesh = node as THREE.Mesh;
+        if (mesh.matrixWorld.determinant() < 0) return;
+        const material = mesh.material as THREE.Material;
+        const proxyKey = matchedProxy.proxy.key(material, mesh);
+        candidates.push({
+          mesh,
+          lamp: null,
+          proxy: matchedProxy.proxy,
+          proxyKey,
+          materialKey: `proxy:${matchedProxy.index}:${proxyKey}`,
+        });
+        return;
+      }
       if (!isBatchable(node) || node.matrixWorld.determinant() < 0) return;
       const material = node.material as THREE.Material;
       const lamp = isLamp(material) ? snapshotLamp(material) : null;
-      candidates.push({ mesh: node, lamp, materialKey: lamp ? `lamp:${lampKey(lamp, ids)}` : material.uuid });
+      candidates.push({
+        mesh: node,
+        lamp,
+        proxy: null,
+        proxyKey: null,
+        materialKey: lamp ? `lamp:${lampKey(lamp, ids)}` : material.uuid,
+      });
     });
 
     // Only geometries that could share a batch (same material key and rough shape) are hashed.
@@ -261,26 +359,68 @@ export class RenderBatcher {
       return found;
     };
 
-    const groups = new Map<string, { geometry: THREE.BufferGeometry; sources: THREE.Mesh[]; lamp: LampSettings | null }>();
-    for (const { mesh, materialKey, lamp } of candidates) {
+    const groups = new Map<string, {
+      geometry: THREE.BufferGeometry;
+      sources: THREE.Mesh[];
+      lamp: LampSettings | null;
+      proxy: ShaderProxy | null;
+      proxyKey: string | null;
+    }>();
+    for (const { mesh, materialKey, lamp, proxy, proxyKey } of candidates) {
       if ((roughCounts.get(`${materialKey}|${roughShape(mesh.geometry)}`) ?? 0) < this.minGroup) continue;
       const geometry = canonicalOf(mesh.geometry);
       const key = `${geometry.uuid}|${materialKey}`;
       const entry = groups.get(key);
       if (entry) entry.sources.push(mesh);
-      else groups.set(key, { geometry, sources: [mesh], lamp });
+      else groups.set(key, { geometry, sources: [mesh], lamp, proxy, proxyKey });
     }
 
-    for (const { geometry, sources, lamp } of groups.values()) {
+    for (const { geometry, sources, lamp, proxy, proxyKey } of groups.values()) {
       if (sources.length < this.minGroup) continue;
-      let material = sources[0].material as THREE.Material;
-      if (lamp) {
-        material = material.clone();
-        (material as THREE.MeshBasicMaterial).color.setRGB(1, 1, 1);
-      }
       if (!geometry.boundingSphere) geometry.computeBoundingSphere();
-      const mesh = new THREE.InstancedMesh(geometry, material, sources.length);
-      mesh.name = `Batch: ${sources[0].name || sources[0].geometry.type}`;
+
+      let material = sources[0].material as THREE.Material;
+      let batchGeometry = geometry;
+      let proxyState: ProxyBatchState | null = null;
+      let ownedMaterial: THREE.Material | null = null;
+      let ownedGeometry: THREE.BufferGeometry | null = null;
+
+      let mesh: THREE.InstancedMesh;
+      try {
+        if (proxy) {
+          // Create the material before cloning geometry so an exception in createMaterial leaks nothing.
+          material = proxy.createMaterial(sources[0].material as THREE.Material);
+          ownedMaterial = material;
+          ownedGeometry = geometry.clone();
+          const attributes: THREE.InstancedBufferAttribute[] = [];
+          for (const spec of proxy.attributes) {
+            const instAttr = new THREE.InstancedBufferAttribute(new Float32Array(sources.length * spec.itemSize), spec.itemSize);
+            instAttr.setUsage(THREE.DynamicDrawUsage);
+            ownedGeometry.setAttribute(spec.name, instAttr);
+            attributes.push(instAttr);
+          }
+          batchGeometry = ownedGeometry;
+          proxyState = {
+            proxy,
+            key: proxyKey!,
+            ownedGeometry,
+            attributes,
+            dirty: attributes.map(() => false),
+          };
+        } else if (lamp) {
+          material = material.clone();
+          ownedMaterial = material;
+          (material as THREE.MeshBasicMaterial).color.setRGB(1, 1, 1);
+        }
+
+        mesh = new THREE.InstancedMesh(batchGeometry, material, sources.length);
+      } catch (error) {
+        ownedGeometry?.dispose();
+        ownedMaterial?.dispose();
+        throw error;
+      }
+      mesh.name = proxy ? `Batch: ${proxy.name}` : `Batch: ${sources[0].name || sources[0].geometry.type}`;
+      mesh.renderOrder = sources[0].renderOrder;
       mesh.userData.renderBatch = true;
       mesh.matrixAutoUpdate = false;
       mesh.boundingSphere = new THREE.Sphere();
@@ -291,7 +431,7 @@ export class RenderBatcher {
       }
       for (const source of sources) source.layers.set(BATCH_HIDDEN_LAYER);
       this.batches.push({
-        mesh, sources, lampSettings: lamp,
+        mesh, sources, lampSettings: lamp, proxyState,
         localSphere: geometry.boundingSphere!.clone(),
         geometries: sources.map((source) => source.geometry),
         materials: sources.map((source) => source.material as THREE.Material),
@@ -303,28 +443,38 @@ export class RenderBatcher {
   }
 
   /**
-   * Copy each original's world matrix (zero scale while hidden or detached) and, for lamps, its colour,
-   * and fit the batch's culling sphere around the instances that are shown.
+   * Copy each original's world matrix (zero scale while hidden or detached), lamp colour or
+   * shader-proxy attributes, and fit the batch's culling sphere around the instances that are shown.
    */
   sync() {
     const root = this.root;
     for (const batch of this.batches) {
-      const { mesh, sources, released, geometries, materials, lampSettings, localSphere } = batch;
+      const { mesh, sources, released, geometries, materials, lampSettings, proxyState, localSphere } = batch;
       const matrices = mesh.instanceMatrix.array as Float32Array;
       const colors = mesh.instanceColor?.array as Float32Array | undefined;
       const { x: cx, y: cy, z: cz } = localSphere.center;
       let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity, reach = 0;
       let matricesChanged = false, colorsChanged = false, anyShown = false;
+      let firstShown: THREE.Material | null = null;
       for (let i = 0; i < sources.length; i++) {
         const source = sources[i];
         const material = source.material as THREE.Material;
-        if (!released[i] && (source.geometry !== geometries[i] || material !== materials[i]
-          || source.layers.mask !== HIDDEN_MASK || source.renderOrder !== 0 || material.transparent
-          || source.matrixWorld.determinant() < 0
-          || (lampSettings !== null && !lampMatches(material, lampSettings)))) {
-          // Something restyled, reordered or mirrored this part: draw it normally from now on.
-          released[i] = true;
-          if (source.layers.mask === HIDDEN_MASK) source.layers.set(0);
+        if (!released[i]) {
+          const invalid = proxyState
+            ? (source.geometry !== geometries[i] || material !== materials[i]
+              || source.layers.mask !== HIDDEN_MASK
+              || source.matrixWorld.determinant() < 0
+              || !proxyState.proxy.match(material, source)
+              || proxyState.proxy.key(material, source) !== proxyState.key)
+            : (source.geometry !== geometries[i] || material !== materials[i]
+              || source.layers.mask !== HIDDEN_MASK || source.renderOrder !== 0 || material.transparent
+              || source.matrixWorld.determinant() < 0
+              || (lampSettings !== null && !lampMatches(material, lampSettings)));
+          if (invalid) {
+            // Something restyled, reordered or mirrored this part: draw it normally from now on.
+            released[i] = true;
+            if (source.layers.mask === HIDDEN_MASK) source.layers.set(0);
+          }
         }
         let shown = !released[i] && material.visible;
         let node: THREE.Object3D | null = source;
@@ -345,6 +495,7 @@ export class RenderBatcher {
         }
         if (!shown) continue;
         anyShown = true;
+        if (!firstShown) firstShown = material;
         const x = e[0] * cx + e[4] * cy + e[8] * cz + e[12];
         const y = e[1] * cx + e[5] * cy + e[9] * cz + e[13];
         const z = e[2] * cx + e[6] * cy + e[10] * cz + e[14];
@@ -363,6 +514,22 @@ export class RenderBatcher {
             colorsChanged = true;
           }
         }
+        if (proxyState) {
+          const specs = proxyState.proxy.attributes;
+          for (let a = 0; a < specs.length; a++) {
+            const spec = specs[a];
+            const buf = proxyState.attributes[a].array as Float32Array;
+            spec.write(material, PROXY_SCRATCH, 0);
+            const base = i * spec.itemSize;
+            for (let k = 0; k < spec.itemSize; k++) {
+              const value = Math.fround(PROXY_SCRATCH[k]);
+              if (buf[base + k] !== value) {
+                buf[base + k] = value;
+                proxyState.dirty[a] = true;
+              }
+            }
+          }
+        }
       }
       // Cull the batch as a whole: skip it when nothing is shown, else bound every shown instance.
       mesh.visible = anyShown;
@@ -370,39 +537,68 @@ export class RenderBatcher {
         mesh.boundingSphere.center.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
         mesh.boundingSphere.radius = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2 + reach;
       }
+      if (anyShown && firstShown && proxyState?.proxy.sharedUniforms?.length) {
+        const srcUniforms = (firstShown as THREE.ShaderMaterial).uniforms;
+        const dstUniforms = (mesh.material as THREE.ShaderMaterial).uniforms;
+        if (srcUniforms && dstUniforms) {
+          for (const name of proxyState.proxy.sharedUniforms) {
+            const srcVal = srcUniforms[name]?.value;
+            const dstUniform = dstUniforms[name];
+            if (!dstUniform || srcVal === undefined) continue;
+            if (dstUniform.value && typeof dstUniform.value === 'object'
+              && typeof (dstUniform.value as { copy?: unknown }).copy === 'function') {
+              (dstUniform.value as { copy(v: unknown): void }).copy(srcVal);
+            } else {
+              dstUniform.value = srcVal;
+            }
+          }
+        }
+      }
       if (matricesChanged) mesh.instanceMatrix.needsUpdate = true;
       if (colorsChanged && mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      if (proxyState) {
+        for (let a = 0; a < proxyState.attributes.length; a++) {
+          if (proxyState.dirty[a]) {
+            proxyState.attributes[a].needsUpdate = true;
+            proxyState.dirty[a] = false;
+          }
+        }
+      }
     }
   }
 
-  /** Return every original to normal rendering and free instance buffers and lamp material copies. */
+  /** Return every original to normal rendering and free instance buffers, proxy geometries and material copies. */
   clear() {
-    for (const { mesh, sources, released, lampSettings } of this.batches) {
+    for (const { mesh, sources, released, lampSettings, proxyState } of this.batches) {
       sources.forEach((source, i) => {
         if (!released[i] && source.layers.mask === HIDDEN_MASK) source.layers.set(0);
       });
       mesh.removeFromParent();
       mesh.dispose();
-      if (lampSettings) (mesh.material as THREE.Material).dispose();
+      if (proxyState) {
+        proxyState.ownedGeometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+      } else if (lampSettings) {
+        (mesh.material as THREE.Material).dispose();
+      }
     }
     this.batches = [];
   }
 
   /** Turn batching off (originals render one by one) or back on for the last root. */
   setEnabled(enabled: boolean) {
-    if (enabled === this.enabled) return;
-    this.enabled = enabled;
-    if (!enabled) this.clear();
-    else if (this.root) this.rebuild(this.root);
+    this.setMode(enabled, this.proxiesEnabled);
   }
 
   stats(): BatcherStats {
-    let instances = 0, released = 0;
+    let instances = 0, released = 0, proxied = 0;
     for (const batch of this.batches) {
+      const batchReleased = batch.released.filter(Boolean).length;
       instances += batch.sources.length;
-      released += batch.released.filter(Boolean).length;
+      released += batchReleased;
+      if (batch.proxyState) proxied += batch.sources.length - batchReleased;
     }
-    return { batches: this.batches.length, instances, released };
+    return { batches: this.batches.length, instances, released, proxied };
   }
 
   dispose() {

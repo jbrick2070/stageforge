@@ -70,6 +70,7 @@ import { SPEAKER_PROFILES } from '../data/speakerProfiles';
 import { PROP_CATALOG } from '../data/stageProps';
 import { exportStageGlb, nameFixtureUnit } from './stageGlb';
 import { RenderBatcher } from './renderBatcher';
+import { VOLUMETRIC_BEAM_VARIANT, volumetricBeamProxy } from './beamProxy';
 import { createMissingMediaSlate, WallPlayer, type SecondaryScreenState, type StageScreen } from './StageScreens';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS, demoFade } from '../data/demoLighting';
 
@@ -352,6 +353,7 @@ export class StageEngine {
     // Scene & deep arena atmosphere
     this.scene = new THREE.Scene();
     this.batcher = new RenderBatcher(this.scene);
+    this.batcher.registerShaderProxy(volumetricBeamProxy);
     this.scene.background = this.backgroundColor.clone();
     this.scene.fog = new THREE.FogExp2(this.fogColor, 0.015);
 
@@ -529,8 +531,31 @@ export class StageEngine {
   }
 
   /** Turn draw-call batching off or on (probe and A/B checks). */
-  public setBatching(enabled: boolean) {
-    this.batcher?.setEnabled(enabled);
+  public setBatching(enabled: boolean, options?: { proxies?: boolean }) {
+    this.batcher?.setMode(enabled, options?.proxies ?? true);
+  }
+
+  /** Render the current scene state without advancing simulation time and capture the canvas PNG (probe only). */
+  public redrawAndCapture(options?: { hideBeams?: boolean }): string {
+    if (this.standby) throw new Error('redrawAndCapture called while StageEngine is in standby');
+    const savedVisibility = options?.hideBeams
+      ? this.movingFixtures.map((fx) => {
+        const prev = fx.beamMesh.visible;
+        fx.beamMesh.visible = false;
+        return prev;
+      })
+      : null;
+    try {
+      this.renderer.info.reset();
+      this.composer.render(0);
+      return this.renderer.domElement.toDataURL('image/png');
+    } finally {
+      if (savedVisibility) {
+        this.movingFixtures.forEach((fx, i) => {
+          fx.beamMesh.visible = savedVisibility[i];
+        });
+      }
+    }
   }
 
   public getRenderTier(): RenderTier {
@@ -1741,6 +1766,7 @@ export class StageEngine {
         uSeed: { value: index * 0.731 },
       },
     });
+    beamMat.userData.instancedVariant = VOLUMETRIC_BEAM_VARIANT;
 
     const beamMesh = new THREE.Mesh(beamGeo, beamMat);
     beamMesh.userData.lensOffsetY = parts.lensOffsetY;

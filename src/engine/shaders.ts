@@ -37,6 +37,12 @@ const AIR_GLSL = /* glsl */ `
 
 export const VOLUMETRIC_BEAM_VERT = /* glsl */ `
   uniform float uLensOffset;
+#ifdef INSTANCED_BEAM
+  attribute vec3 instColor;
+  attribute vec4 instParams;
+  flat varying vec3 vInstColor;
+  flat varying vec4 vInstParams;
+#endif
   varying vec2 vUv;
   varying vec3 vWorld;
   varying vec3 vRadial;
@@ -45,14 +51,21 @@ export const VOLUMETRIC_BEAM_VERT = /* glsl */ `
 
   void main() {
     vUv = uv;
-    vec4 world = modelMatrix * vec4(position, 1.0);
+#ifdef INSTANCED_BEAM
+    mat4 m = modelMatrix * instanceMatrix;
+    vInstColor = instColor;
+    vInstParams = instParams;
+#else
+    mat4 m = modelMatrix;
+#endif
+    vec4 world = m * vec4(position, 1.0);
     vWorld = world.xyz;
-    vRadial = normalize(mat3(modelMatrix) * vec3(normal.x, 0.0, normal.z));
-    vAxis = normalize(mat3(modelMatrix) * vec3(0.0, sign(position.y), 0.0));
-    vec3 lens = (modelMatrix * vec4(0.0, sign(position.y) * uLensOffset, 0.0, 1.0)).xyz;
+    vRadial = normalize(mat3(m) * vec3(normal.x, 0.0, normal.z));
+    vAxis = normalize(mat3(m) * vec3(0.0, sign(position.y), 0.0));
+    vec3 lens = (m * vec4(0.0, sign(position.y) * uLensOffset, 0.0, 1.0)).xyz;
     vec3 across = cross(vAxis, cameraPosition - lens);
     across /= max(length(across), 0.0001);
-    vec2 basis = vec2(dot(across, normalize(modelMatrix[0].xyz)), dot(across, normalize(modelMatrix[2].xyz)));
+    vec2 basis = vec2(dot(across, normalize(m[0].xyz)), dot(across, normalize(m[2].xyz)));
     float azimuth = dot(basis, basis) > 0.0001 ? atan(basis.y, basis.x) : 0.0;
     vCrossAndAzimuth = vec4(across, azimuth);
     gl_Position = projectionMatrix * viewMatrix * world;
@@ -60,8 +73,19 @@ export const VOLUMETRIC_BEAM_VERT = /* glsl */ `
 `;
 
 export const VOLUMETRIC_BEAM_FRAG = /* glsl */ `
+#ifdef INSTANCED_BEAM
+  flat varying vec3 vInstColor;
+  flat varying vec4 vInstParams;
+  uniform float uHaze, uTime;
+  #define uColor vInstColor
+  #define uIntensity vInstParams.x
+  #define uPrism vInstParams.y
+  #define uSoftness vInstParams.z
+  #define uSeed vInstParams.w
+#else
   uniform vec3 uColor;
   uniform float uIntensity, uHaze, uTime, uPrism, uSoftness, uSeed;
+#endif
   varying vec2 vUv;
   varying vec3 vWorld;
   varying vec3 vRadial;

@@ -780,7 +780,8 @@ export const App: React.FC = () => {
       primaryScreen: () => engine.screenTransport(),
       hangs: () => engine.hangDiagnostics(),
       renderStats: () => engine.renderStats(),
-      setBatching: (enabled: boolean) => engine.setBatching(enabled),
+      setBatching: (enabled: boolean, options?: { proxies?: boolean }) => engine.setBatching(enabled, options),
+      redrawAndCapture: (options?: { hideBeams?: boolean }) => engine.redrawAndCapture(options),
       rebuildRig: () => engine.forceRebuildCurrentRig(),
     };
 
