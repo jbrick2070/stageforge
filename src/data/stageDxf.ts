@@ -4,7 +4,7 @@ import type { FixtureType, FloorFxType, PlanPoint, RigConfig, StagePropKind, Tru
 import { buildDmxPatch } from './dmxPatch';
 import { getPlatforms, podWorldPoint, stageSurfaceHeight } from './stageDesign';
 import { PROP_CATALOG } from './stageProps';
-import { trussMounts } from './trussMounts';
+import { placeFixtures } from './fixturePlacement';
 import type { NativeStage } from './showFile';
 import { authoredWallFrames, resolveStudioGeometry } from './studioGeometry';
 
@@ -137,22 +137,10 @@ export function exportStageDxf(sourceRig: RigConfig, stage?: NativeStage): strin
       labelAt = first;
     }
     label(pod.name,{x:labelAt.x,z:labelAt.z-0.24},pod.baseY);
-    const hung = pod.fixtures.flatMap(group => Array.from({ length: group.count }, (_, i) =>
-      ({ group, i, fraction: (i+0.5)/group.count }))).sort((a,b) => a.fraction-b.fraction);
-    const slots = trussMounts(pod.shape,pod.width,pod.path,hung.length);
-    hung.forEach(({group,i},n) => {
-      const mount = slots[Math.floor((n+0.5)*slots.length/hung.length)];
-      if (!mount) return;
-      // Projectors on rings and paths face downstage regardless of truss bearing.
-      const frontFacing = group.type === 'laser' && (pod.shape === 'circle' || pod.shape === 'path');
-      fixture(group,i,podWorldPoint(pod,mount),pod.baseY+mount.y,frontFacing ? 0 : pod.rotationY+mount.rotY);
-    });
   }
-  for (const group of rig.floorFx) {
-    for (let i=0;i<group.count;i++) {
-      const p = {x:group.x+(group.count===1 ? 0 : group.spread*(i/(group.count-1)-0.5)),z:group.z};
-      fixture(group,i,p,stageSurfaceHeight(rig,p.x,p.z),0);
-    }
+  // Shared with the MVR export and StageEngine's mount distribution.
+  for (const unit of placeFixtures(rig)) {
+    fixture(unit.group,unit.index,{x:unit.position.x,z:unit.position.z},unit.position.y,unit.yaw);
   }
   for (const prop of rig.props ?? []) {
     const name = 'PROP_' + prop.kind.toUpperCase();

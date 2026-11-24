@@ -45,6 +45,7 @@ import {
 import { FocusMark, HEAD_OFFSET, YOKE_OFFSET, PAN_LIMIT, TILT_LIMIT, aimAngles, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
 import { headLook } from '../data/movingGroups';
 import { buildDmxPatch } from '../data/dmxPatch';
+import { mountSlotIndex } from '../data/fixturePlacement';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import type { NativeStage } from '../data/showFile';
 import { authoredWallSurface, isCustomMainWall, resolveStudioGeometry, resolveWallFrame } from '../data/studioGeometry';
@@ -1194,8 +1195,8 @@ export class StageEngine {
         fg, i, fraction: (i + 0.5) / fg.count,
       }))).sort((a, b) => a.fraction - b.fraction);
       hung.forEach(({ fg, i }, position) => {
-        const slotIdx = Math.min(built.mountSlots.length - 1,
-          Math.floor((position + 0.5) / hung.length * built.mountSlots.length));
+        // Shared with fixturePlacement (CAD and MVR exports) so every output picks the same slot.
+        const slotIdx = mountSlotIndex(position, hung.length, built.mountSlots.length);
         const slot = built.mountSlots[slotIdx];
         if (!slot) return;
 

@@ -1,0 +1,84 @@
+import type { FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show';
+import { buildDmxPatch } from './dmxPatch';
+import { podWorldPoint, stageSurfaceHeight } from './stageDesign';
+import { trussMounts } from './trussMounts';
+
+/** One installed fixture unit with its world placement and patch address. */
+export interface FixturePlacement {
+  group: MountedFixtureGroup | FloorFxUnit;
+  /** Unit index within its group. */
+  index: number;
+  /** Truss pod the unit hangs on, or undefined for a floor unit. */
+  podId?: string;
+  /** World position in metres (Y up, +Z toward the audience). */
+  position: { x: number; y: number; z: number };
+  /** Rotation about +Y in radians, as StageEngine sets it (pod rotation plus mount bearing). */
+  yaw: number;
+  floor: boolean;
+  universe: 1 | 2;
+  /** First DMX channel of this unit within its universe. */
+  address: number;
+  /** DMX footprint in channels. */
+  footprint: number;
+  /** False when the unit's channels fall outside the universe or collide with another group. */
+  patched: boolean;
+}
+
+/**
+ * Mount slot for the n-th of `units` hung units across `slots` slots. This is StageEngine's exact
+ * expression (same operation order, so the same floating-point result); keep the two in step.
+ */
+export function mountSlotIndex(n: number, units: number, slots: number): number {
+  return Math.min(slots - 1, Math.floor((n + 0.5) / units * slots));
+}
+
+/**
+ * Where every fixture unit of a rig sits, using the same mount distribution StageEngine and the
+ * CAD export use: hung units interleave across a pod's mount slots in DMX order; floor units
+ * spread evenly across their row on the deck surface.
+ */
+export function placeFixtures(rig: RigConfig): FixturePlacement[] {
+  const patch = buildDmxPatch(rig);
+  const width = new Map(patch.rows.map((row) => [row.group, row.width]));
+  const out: FixturePlacement[] = [];
+  const unit = (group: FixturePlacement['group'], index: number) => {
+    const footprint = width.get(group)!;
+    return {
+      universe: group.dmxUniverse,
+      address: group.dmxStartChannel + index * footprint,
+      footprint,
+      patched: patch.unitStart(group, index) !== 0,
+    };
+  };
+  for (const pod of rig.trussPods) {
+    const hung = pod.fixtures
+      .flatMap((group) => Array.from({ length: group.count }, (_, i) => ({ group, i, fraction: (i + 0.5) / group.count })))
+      .sort((a, b) => a.fraction - b.fraction);
+    const slots = trussMounts(pod.shape, pod.width, pod.path, hung.length);
+    hung.forEach(({ group, i }, n) => {
+      const mount = slots[mountSlotIndex(n, hung.length, slots.length)];
+      if (!mount) return;
+      const at = podWorldPoint(pod, mount);
+      // Projectors on rings and paths face downstage regardless of truss bearing.
+      const frontFacing = group.type === 'laser' && (pod.shape === 'circle' || pod.shape === 'path');
+      out.push({
+        group, index: i, podId: pod.id, floor: false,
+        position: { x: at.x, y: pod.baseY + mount.y, z: at.z },
+        yaw: frontFacing ? 0 : pod.rotationY + mount.rotY,
+        ...unit(group, i),
+      });
+    });
+  }
+  for (const group of rig.floorFx) {
+    for (let i = 0; i < group.count; i++) {
+      const x = group.x + (group.count === 1 ? 0 : group.spread * (i / (group.count - 1) - 0.5));
+      out.push({
+        group, index: i, floor: true,
+        position: { x, y: stageSurfaceHeight(rig, x, group.z), z: group.z },
+        yaw: 0,
+        ...unit(group, i),
+      });
+    }
+  }
+  return out;
+}

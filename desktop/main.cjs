@@ -9,9 +9,10 @@ const isMac = process.platform === 'darwin';
 const rigFilters = [{ name: 'StageForge rig', extensions: ['json'] }];
 const showFilters = [{ name: 'StageForge show JSON', extensions: ['json'] }];
 const bundleFilters = [{ name: 'StageForge show bundle', extensions: ['zip'] }];
-const openFilters = [{ name: 'StageForge shows, bundles and rigs', extensions: ['json','zip'] }];
+const openFilters = [{ name: 'StageForge shows, bundles, rigs and MVR scenes', extensions: ['json','zip','mvr'] }];
 const exportsBySuffix = [
   ['.stageforge.zip', 'Save show bundle', bundleFilters],
+  ['.mvr', 'Export MVR scene', [{ name: 'MVR scene (DIN SPEC 15801)', extensions: ['mvr'] }]],
   ['.stageforge.show.json', 'Save show', showFilters],
   ['.stageforge.json', 'Export rig', rigFilters],
   ['.dxf', 'Export CAD plan', [{ name: 'DXF drawing', extensions: ['dxf'] }]],
@@ -85,11 +86,12 @@ async function runRigCommand(command) {
     if (canceled || !filePaths.length) return;
     try {
       const filename = filePaths[0];
-      if (filename.toLowerCase().endsWith('.zip')) {
+      const lower = filename.toLowerCase();
+      if (lower.endsWith('.zip') || lower.endsWith('.mvr')) {
         if ((await stat(filename)).size > 512 * 1024 * 1024) throw new Error('This show exceeds the 512 MiB in-memory bundle limit.');
         // Structured clone delivers a Uint8Array to the preload; no extra ArrayBuffer copy.
         source = new Uint8Array(await readFile(filename));
-        command = 'openBundle';
+        command = lower.endsWith('.mvr') ? 'openMvr' : 'openBundle';
       } else source = await readFile(filename, 'utf8');
     } catch (error) {
       dialog.showErrorBox('Could not open file', error.message);
@@ -136,6 +138,7 @@ app.whenReady().then(() => {
       { label: 'Save show bundle…', click: () => runRigCommand('bundle') },
       { label: 'Export rig…', accelerator: 'CmdOrCtrl+Shift+S', click: () => runRigCommand('export') },
       { label: 'Export', submenu: [
+        { label: 'MVR scene for consoles and visualizers…', click: () => runRigCommand('mvr') },
         { label: 'CAD plan (DXF)…', click: () => runRigCommand('dxf') },
         { label: '3D scene (GLB)…', click: () => runRigCommand('glb') },
         { label: 'DMX channel patch (CSV)…', click: () => runRigCommand('csv') },

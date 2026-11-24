@@ -8,9 +8,10 @@ const isBuffer = value => Object.prototype.toString.call(value) === '[object Arr
 
 ipcRenderer.on('stageforge:rig-command', (_event, command, rawSource) => {
   // Hand the renderer a Uint8Array: contextBridge copies typed arrays reliably.
-  const source = command === 'openBundle' && isBuffer(rawSource) ? new Uint8Array(rawSource) : rawSource;
-  const opening = (command === 'open' && typeof source === 'string') || (command === 'openBundle' && isBytes(source));
-  if (!opening && !['export', 'show', 'bundle', 'dxf', 'glb', 'csv'].includes(command)) return;
+  const binary = command === 'openBundle' || command === 'openMvr';
+  const source = binary && isBuffer(rawSource) ? new Uint8Array(rawSource) : rawSource;
+  const opening = (command === 'open' && typeof source === 'string') || (binary && isBytes(source));
+  if (!opening && !['export', 'show', 'bundle', 'dxf', 'glb', 'csv', 'mvr'].includes(command)) return;
   const args = opening ? [command, source] : [command];
   if (!listeners.size) pending = args;
   else for (const listener of listeners) listener(...args);

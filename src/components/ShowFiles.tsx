@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import type { NativeStage, ShowMedia, ShowTimeline, TimelineEvent } from '../data/showFile';
 import { timecode } from '../data/transportGlance';
 
-export type FileAction = 'show' | 'bundle' | 'rig' | 'dxf' | 'glb' | 'csv';
+export type FileAction = 'show' | 'bundle' | 'rig' | 'dxf' | 'glb' | 'csv' | 'mvr';
 export { timecode };
 
 function describe(event: TimelineEvent, cueNames: Map<string, string>) {
@@ -71,7 +71,7 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, onO
       <button disabled={busy} onClick={() => picker.current?.click()}>Open show or rig…</button>
       <button disabled={busy} onClick={() => void job(() => onSave('show'))}>Save show JSON</button>
       <button disabled={busy} onClick={() => void job(() => onSave('bundle'))}>Save show bundle</button>
-      <input type="file" hidden ref={picker} accept=".json,.zip,application/json,application/zip" aria-label="Open show file"
+      <input type="file" hidden ref={picker} accept=".json,.zip,.mvr,application/json,application/zip" aria-label="Open show file"
         onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void job(async () => { await onOpen(f); onClose(); }); }}/>
     </div>
     <p>The show bundle includes the rig, cues and linked media for offline playback.</p>
@@ -98,7 +98,7 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, onO
         <button disabled={(page + 1) * 30 >= actions.length} onClick={() => setPage(page + 1)}>Next actions</button></div>}
     </details>}
     <h3>Exchange formats</h3>
-    <div className="file-formats">{([['dxf','CAD plan','DXF'],['glb','3D scene','GLB'],['csv','DMX channel patch','CSV'],['rig','Rig only','JSON']] as const).map(([kind, label, extension]) =>
+    <div className="file-formats">{([['mvr','Rig for consoles and visualizers','MVR'],['dxf','CAD plan','DXF'],['glb','3D scene','GLB'],['csv','DMX channel patch','CSV'],['rig','Rig only','JSON']] as const).map(([kind, label, extension]) =>
       <button key={kind} disabled={busy} onClick={() => void job(() => onSave(kind))}>{label} <small>{extension}</small></button>)}</div>
     <p role="status">{busy ? 'Preparing file…' : note}</p>
   </DeskDialog>;

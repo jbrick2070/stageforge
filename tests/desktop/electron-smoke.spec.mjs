@@ -46,7 +46,15 @@ async function writeBundle(target) {
 async function clickFileMenu(prefix) {
   await app.evaluate(({ Menu }, prefix) => {
     const file = Menu.getApplicationMenu().items.find(item => item.label === 'File');
-    const item = file?.submenu.items.find(entry => entry.label.startsWith(prefix));
+    // Search nested submenus too (File → Export → …).
+    const find = items => {
+      for (const entry of items ?? []) {
+        if (entry.label?.startsWith(prefix)) return entry;
+        const nested = find(entry.submenu?.items);
+        if (nested) return nested;
+      }
+    };
+    const item = find(file?.submenu.items);
     if (!item) throw new Error('No File menu item starting with ' + prefix);
     item.click();
   }, prefix);
@@ -209,7 +217,7 @@ test('File → Open with a .stageforge.show.json sends the text over IPC and loa
   ]);
   const options = await app.evaluate(() => globalThis.__stageforgeTest.openOptions.at(-1));
   expect(options).toMatchObject({ title: 'Open show or rig', properties: ['openFile'] });
-  expect(options.filters[0].extensions).toEqual(['json', 'zip']);
+  expect(options.filters[0].extensions).toEqual(['json', 'zip', 'mvr']);
   await expectShowLoaded({ missing: 3 });
   expectNoProblems();
 });
@@ -282,5 +290,33 @@ test('File → Save show as… writes the show JSON through the desktop download
   expect(show).toMatchObject({ format: 'stageforge-show', version: 3, activeCueId: fixture.activeCueId });
   expect(show.rig.name).toBe(SHOW_NAME);
   expect(show.stage).toEqual(fixture.stage);
+  expectNoProblems();
+});
+
+test('File → Export → MVR scene writes a conforming .mvr that reopens through File → Open as a Uint8Array', async () => {
+  const target = path.join(tmp, 'rig-scene.mvr');
+  const saved = await saveThroughMenu('MVR scene', target);
+  expect(saved.filename).toMatch(/\.mvr$/);
+  expect(saved.options.title).toBe('Export MVR scene');
+  expect(saved.options.filters).toEqual([{ name: 'MVR scene (DIN SPEC 15801)', extensions: ['mvr'] }]);
+  const bytes = new Uint8Array(await readFile(target));
+  const entries = unzipSync(bytes);
+  const names = Object.keys(entries);
+  expect(names).toContain('GeneralSceneDescription.xml');
+  expect(names.every(name => !name.includes('/'))).toBe(true);
+  expect(names.some(name => name.endsWith('.gdtf'))).toBe(true);
+  const scene = strFromU8(entries['GeneralSceneDescription.xml']);
+  expect(scene).toContain('verMajor="1" verMinor="6"');
+  expect(scene).toContain('<Fixture ');
+
+  await watchRendererCommands();
+  await openThroughMenu(target);
+  const options = await app.evaluate(() => globalThis.__stageforgeTest.openOptions.at(-1));
+  expect(options.filters[0].extensions).toEqual(['json', 'zip', 'mvr']);
+  await expect.poll(received).toContainEqual(expect.objectContaining({
+    command: 'openMvr', type: '[object Uint8Array]', mainWorldUint8Array: true, length: bytes.length,
+  }));
+  await expect.poll(async () => (await received()).find(r => r.command === 'openMvr')?.sha256).toBe(sha256(bytes));
+  await expect(page.getByText(new RegExp(`Opened ${SHOW_NAME} from MVR`))).toBeVisible();
   expectNoProblems();
 });

@@ -32,6 +32,8 @@ No open-source stage editor is worth embedding: the closest entertainment tools 
 
 ## Milestone 3: MVR + GDTF interchange (first integration)
 
+**Status:** the first slice has shipped: export, lossless StageForge round trips, truss-move merges by UUID, foreign-file import and desktop File-menu support, with scenes that validate against the official XSDs. See [MVR exchange](mvr-exchange.md). Still open from the plan below: the v4 `interchange` block (persisted UUIDs and preserved foreign XML), full manufacturer-GDTF channel simulation, and the cross-tool checks with BlenderDMX and grandMA3.
+
 Goal: export a StageForge show's rig to `.mvr` and import `.mvr` rigs from other tools, round-tripping positions, orientation and DMX patch, in the web app and the sandboxed desktop renderer with no CSP or IPC changes.
 
 ### What StageForge already has

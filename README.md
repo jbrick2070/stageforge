@@ -38,6 +38,7 @@ Open **Files** next to **Design stage**. Choose the format for the next person w
 | File | Contents |
 | --- | --- |
 | `.stageforge.show.json` | Editable show, rig, ordered cues, lighting and effect parameters, focus targets, camera and volume, timestamped take, music and screen-media references |
+| `.mvr` | MVR 1.6 rig with GDTF 1.2 profiles for grandMA3, Vectorworks, Capture, Unreal Engine and BlenderDMX; opens back in StageForge losslessly ([MVR exchange](docs/mvr-exchange.md)) |
 | `.dxf` | Layered CAD plan in metres, including elevations, truss paths and fixture symbols |
 | `.glb` | Self-contained static 3D stage for glTF 2.0 tools, including Blender and Unreal Engine |
 | `.patch.csv` | Simulated DMX addresses and channel functions, one row per channel per fixture |

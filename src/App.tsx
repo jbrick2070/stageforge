@@ -743,8 +743,29 @@ export const App: React.FC = () => {
     const bundle = await openShowBundle(bytes);
     openDocument(JSON.stringify(bundle.show), bundle.files);
   };
+  // MVR (DIN SPEC 15801) rigs from StageForge or other tools. A StageForge export restores
+  // exactly; other files become trusses, fixtures, screens and props, with notes on what changed.
+  const openMvrBytes = async (bytes: Uint8Array) => {
+    const { importMvr } = await import('./interchange/mvr/importMvr');
+    const { rig: next, stage, report } = importMvr(bytes);
+    installStage(stage);
+    wallClock.set(0, false);
+    timeline.stop();
+    applyRig(normalizeDesign(next), true); previewRig();
+    const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+    // Keep the toast readable: a hostile or huge file can produce long names and many notes.
+    const notes = report.notes.join(' ');
+    const brief = notes.length > 240 ? `${[...notes].slice(0, 239).join('').trimEnd()}…` : notes;
+    showToast(`Opened ${next.name} from MVR · ${count(report.fixtures, 'fixture', 'fixtures')} · ${count(report.trusses, 'truss', 'trusses')}${brief ? ' · ' + brief : ''}`);
+  };
   const openFile = async (file: File) => {
-    if (!file.name.toLowerCase().endsWith('.zip')) return openDocument(await file.text());
+    const lower = file.name.toLowerCase();
+    if (lower.endsWith('.mvr')) {
+      const { MAX_ARCHIVE_BYTES } = await import('./interchange/mvr/archive');
+      if (file.size > MAX_ARCHIVE_BYTES) throw new Error('This MVR file exceeds the 512 MiB limit.');
+      return openMvrBytes(new Uint8Array(await file.arrayBuffer()));
+    }
+    if (!lower.endsWith('.zip')) return openDocument(await file.text());
     const { MAX_BUNDLE_BYTES } = await import('./data/showBundle');
     if (file.size > MAX_BUNDLE_BYTES) throw new Error('This show exceeds the 512 MiB in-memory bundle limit.');
     await openBundleBytes(new Uint8Array(await file.arrayBuffer()));
@@ -764,6 +785,10 @@ export const App: React.FC = () => {
     } else if (action === 'glb') {
       if (!engineRef.current) throw new Error('The 3D stage is still loading.');
       downloadStageFile(rig.name, 'glb', await engineRef.current.exportCurrentStageGlb());
+    } else if (action === 'mvr') {
+      const [{ exportMvr }, { version }] = await Promise.all([import('./interchange/mvr/exportMvr'), import('../package.json')]);
+      const bytes = exportMvr(rig, nativeStage.current, version);
+      downloadStageFile(rig.name, 'mvr', new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'application/octet-stream' }));
     } else if (action === 'dxf') {
       const { exportStageDxf } = await import('./data/stageDxf');
       downloadStageFile(rig.name, 'dxf', new Blob([exportStageDxf(rig, studioStage)], { type: 'application/dxf' }));
@@ -811,18 +836,19 @@ export const App: React.FC = () => {
     if (count) wallClock.refresh();
     return count ? `Relinked ${count} media reference${count === 1 ? '' : 's'}.` : 'Choose media with the filenames listed in this show.';
   };
-  const fileCommand = React.useEffectEvent(async (command: 'open' | 'openBundle' | 'export' | FileAction, source?: string | Uint8Array) => {
+  const fileCommand = React.useEffectEvent(async (command: 'open' | 'openBundle' | 'openMvr' | 'export' | FileAction, source?: string | Uint8Array) => {
     if (designerRig) {
       window.alert('Apply or cancel the open stage plan before opening or exporting a rig.');
       return;
     }
-    if (command !== 'open' && command !== 'openBundle') {
+    if (command !== 'open' && command !== 'openBundle' && command !== 'openMvr') {
       void saveDocument(command === 'export' ? 'rig' : command).catch(e => window.alert(e.message));
       return;
     }
     if (source === undefined) return;
     try {
-      if (command === 'openBundle' && typeof source !== 'string') await openBundleBytes(source);
+      if (command === 'openMvr' && typeof source !== 'string') await openMvrBytes(source);
+      else if (command === 'openBundle' && typeof source !== 'string') await openBundleBytes(source);
       else if (typeof source === 'string') openDocument(source);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'Could not open this StageForge rig.');

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@tarikjabiri/dxf": "2.10.1",
+    "fast-xml-parser": "5.12.1",
     "fflate": "0.8.3",
     "lucide-react": "^1.77.0",
     "react": "^19.3.1",
