@@ -27,7 +27,7 @@ The user is asleep. `scripts/overnight.ps1` runs you directly on `main`, with ev
 
 ## Self-directed rounds
 
-After Sprint 3, each round works like this. **Work the Realism backlog below first, one item per round, before anything else.** The user wants people to feel like they are running a real show.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 8 first, in order, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -247,6 +247,14 @@ Goal: people should feel like they are running a real rig, with real equipment, 
 - Cite each source in `docs/equipment.md` and mark any value you could not verify as `unverified`.
 
 1. **Real equipment catalogue.** Replace generic fixtures with a catalogue of real, well-known models across categories: spot, beam, wash and profile moving heads, LED PARs and battens, strobes, blinders, followspots, LED screens and panels, hazers and foggers, CO2 jets. Each entry carries manufacturer, model, weight, power, optics and its real DMX modes. Keep the existing generic fixtures working so v1–v3 shows still load, and map old types to catalogue defaults.
+
+   **Models and textures for every catalogue item.** Each entry gets a real-looking 3D model and materials, so a rig looks like real gear:
+   - correct proportions and details (yoke and head, lens, fins, handles, clamps, rigging points, connectors, LED panel grids, speaker grilles);
+   - finished materials (anodised and painted metal, black powder-coat, rubber, glass lenses) with PBR textures where they help.
+   - Build models procedurally in three.js or use glTF assets that are CC0 or otherwise permissively licensed.
+   - Textures must be CC0 (for example ambientCG or Poly Haven) or generated in code. Record every asset's source and licence in `docs/assets.md`, and check CC-BY attribution rules before using anything that isn't CC0.
+   - Stay light for the web and phones: compressed textures (KTX2 or WebP), shared materials, instancing for repeated gear, lazy loading, and a size budget noted in the docs.
+   - Show the same models in the 3D view, the plan symbols, GLB export and the inventory panel.
 2. **Real laser modules.** Add real laser products across power classes, with:
    - colour (single, RGB), power in watts, scan speed in kpps, and beam and graphic modes;
    - the common DMX laser modes;
@@ -269,7 +277,7 @@ Goal: people should feel like they are running a real rig, with real equipment, 
    - **Beam occlusion:** soft depth clipping against trusses, screens and decks.
    - **Lasers:** a point-based scan model with kpps limits, corner brightening, blanking, beam divergence and scatter in haze, fed by `.ild` frames from item 2.
    - **GPU tiers:** an auto-quality setting (pixel ratio, ray steps, particle counts) so it stays smooth on a phone. Keep WebGL; a WebGPU path is optional and flagged off.
-9. **Quest VR audience mode (WebXR).** Let people stand in the audience with a Meta Quest.
+9. **LATER, do not start tonight: Quest VR audience mode (WebXR).** The user wants real equipment, inventory and textures first; VR comes after items 1–8. Let people stand in the audience with a Meta Quest.
    - **Approach:** use three.js's built-in WebXR support (MIT), feature-detected, so desktop and phones are unaffected. The GitHub Pages site is HTTPS, so it works in Quest Browser with no install.
    - **Entry:** an "Enter VR" button, shown only when `immersive-vr` is supported.
    - **Rendering:** the Quest is a mobile GPU, so the VR path skips the EffectComposer bloom (use cheap emissive and additive glow instead), enables fixed foveation, and caps haze, particle and laser quality through the item 8 tiers. Aim for a steady 72 fps.
