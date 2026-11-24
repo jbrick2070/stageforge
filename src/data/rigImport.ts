@@ -1,4 +1,5 @@
 import { VENUE_TYPES, type RigConfig } from '../types/show';
+import { CATALOG_ID_PATTERN, getCatalogEntry, getCatalogMode, type HardwareType } from './equipmentCatalog';
 import { MAX_ANGLE, MAX_LUMENS, MIN_ANGLE } from './fixtureOptics';
 import { FIXTURE_CATALOG, FLOOR_FX_CATALOG } from './presets';
 import { SPEAKER_PROFILES } from './speakerProfiles';
@@ -60,12 +61,41 @@ function checkList(value: unknown, path: string, checkItem: (entry: Fields, path
   });
 }
 
+const catalogIdCheck: Check = (value) =>
+  typeof value === 'string' && value.length <= 64 && CATALOG_ID_PATTERN.test(value);
+const dmxModeCheck: Check = (value) =>
+  typeof value === 'string' && value.length <= 128 && value.trim().length > 0 && [...value].length <= 64 && !/[\u0000-\u001f\u007f]/.test(value);
+
 const equipment = {
   modelName: text,
+  catalogId: optional(catalogIdCheck),
+  dmxMode: optional(dmxModeCheck),
+  dmxChannels: optional(integer(1, 512)),
   count: integer(1, 512),
   dmxUniverse: integer(1, 2),
   dmxStartChannel: integer(1, 512),
 };
+
+function checkCatalogMetadata(item: Fields, path: string) {
+  const catalogId = item.catalogId as string | undefined;
+  const dmxMode = item.dmxMode as string | undefined;
+  const dmxChannels = item.dmxChannels as number | undefined;
+  if (catalogId !== undefined) {
+    if (dmxMode === undefined || dmxChannels === undefined) {
+      throw new Error(`${path} with catalogId must also specify dmxMode and dmxChannels.`);
+    }
+    const entry = getCatalogEntry(catalogId);
+    if (entry) {
+      if (!(entry.renderTypes as readonly HardwareType[]).includes(item.type as HardwareType)) {
+        throw new Error(`${path}.catalogId (${catalogId}) is not compatible with fixture type "${String(item.type)}".`);
+      }
+      if (!getCatalogMode(entry, dmxMode)) {
+        throw new Error(`${path}.dmxMode ("${dmxMode}") is not a valid DMX mode for ${entry.manufacturer} ${entry.model}.`);
+      }
+    }
+    // Unknown catalogId values and differing dmxChannels counts are preserved for forward compatibility.
+  }
+}
 
 function checkOptics(item: Fields, path: string) {
   if (item.optics === undefined) return;
@@ -117,10 +147,18 @@ function checkRig(value: unknown): asserts value is RigConfig {
   });
   if (value.ledWall.cabinets !== undefined) {
     checkFields(value.ledWall.cabinets, 'ledWall.cabinets', {
+      cabinetId: optional(catalogIdCheck),
       columns: integer(1, 256), rows: integer(1, 256),
       widthMm: integer(50, 2000), heightMm: integer(50, 2000),
       pixelsWide: integer(1, 4096), pixelsHigh: integer(1, 4096),
     });
+    const cabId = (value.ledWall.cabinets as Fields).cabinetId as string | undefined;
+    if (cabId !== undefined) {
+      const panelEntry = getCatalogEntry(cabId);
+      if (panelEntry && panelEntry.category !== 'led_panel') {
+        throw new Error(`ledWall.cabinets.cabinetId (${cabId}) is not an LED panel entry.`);
+      }
+    }
   }
   checkFields(value.audioRig, 'audioRig', {
     lineArrays: bool,
@@ -163,6 +201,7 @@ function checkRig(value: unknown): asserts value is RigConfig {
     }
     checkList(pod.fixtures, `${path}.fixtures`, (fixture, fixturePath) => {
       checkFields(fixture, fixturePath, { ...equipment, type: catalogKey(FIXTURE_CATALOG) });
+      checkCatalogMetadata(fixture, fixturePath);
       checkOptics(fixture, fixturePath);
       fixtureCount += Number(fixture.count);
     }, 1024);
@@ -175,6 +214,7 @@ function checkRig(value: unknown): asserts value is RigConfig {
       z: coord,
       spread: (v) => number(v) && v >= 0 && v <= MAX_DIM,
     });
+    checkCatalogMetadata(unit, path);
     checkOptics(unit, path);
     fixtureCount += Number(unit.count);
   }, 1024);

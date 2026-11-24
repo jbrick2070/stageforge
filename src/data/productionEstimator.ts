@@ -1,9 +1,12 @@
-import type { RigConfig, StagePropKind } from '../types/show';
+import type { FixtureType, FloorFxType, RigConfig, StagePropKind } from '../types/show';
+import { catalogDisplayName, getCatalogEntry, isFieldUnverified } from './equipmentCatalog';
 import { PROP_CATALOG } from './stageProps';
 import { pathLength } from './stageDesign';
 import { ledPlacement } from './stageEquipment';
 import type { NativeStage } from './showFile';
 import { authoredWallFrames, authoredWallSurface, resolveStudioGeometry } from './studioGeometry';
+
+const KG_TO_LBS = 2.20462;
 
 export interface CostLineItem {
   category: 'Rigging & Motors' | 'Lighting' | 'Lasers' | 'LED Video' | 'Audio / Speakers' | 'Smoke & FX' | 'Stage & FOH' | 'Scenery (simulation allowance)';
@@ -37,6 +40,31 @@ export interface ProductionEstimate {
   totalCrewHeadcount: number;
   loadInHours: number;
 }
+
+type HardwareKind = FixtureType | FloorFxType;
+
+const HARDWARE_ALLOWANCE: Record<
+  HardwareKind,
+  {
+    category: CostLineItem['category'];
+    unitLabel: string;
+    buyCost: number;
+    rentalCost: number;
+    weightLbs: number;
+    watts: number;
+  }
+> = {
+  beam: { category: 'Lighting', unitLabel: 'units', buyCost: 7100, rentalCost: 195, weightLbs: 44, watts: 520 },
+  floor_beam: { category: 'Lighting', unitLabel: 'units', buyCost: 7100, rentalCost: 195, weightLbs: 44, watts: 520 },
+  wash: { category: 'Lighting', unitLabel: 'units', buyCost: 5400, rentalCost: 145, weightLbs: 28, watts: 400 },
+  strobe: { category: 'Lighting', unitLabel: 'units', buyCost: 4900, rentalCost: 135, weightLbs: 26, watts: 1200 },
+  blinder: { category: 'Lighting', unitLabel: 'units', buyCost: 1450, rentalCost: 48, weightLbs: 24, watts: 2600 },
+  laser: { category: 'Lasers', unitLabel: 'units', buyCost: 14500, rentalCost: 560, weightLbs: 32, watts: 350 },
+  floor_laser: { category: 'Lasers', unitLabel: 'units', buyCost: 28000, rentalCost: 950, weightLbs: 54, watts: 650 },
+  hazer: { category: 'Smoke & FX', unitLabel: 'units', buyCost: 7200, rentalCost: 240, weightLbs: 79, watts: 1400 },
+  smoke: { category: 'Smoke & FX', unitLabel: 'units', buyCost: 2100, rentalCost: 75, weightLbs: 48, watts: 2000 },
+  co2: { category: 'Smoke & FX', unitLabel: 'jets', buyCost: 1450, rentalCost: 180, weightLbs: 95, watts: 80 },
+};
 
 // These per-piece allowances represent the touring package, including a blower
 // for air-filled scenic pieces. A visual scale change leaves the package count intact.
@@ -78,11 +106,47 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   // 2. Trusses & Kinetic Chain Hoist Motors
   let totalTrussMeters = 0;
   let totalMotors = 0;
-  let beamCount = 0;
-  let washCount = 0;
-  let laserCount = 0;
-  let strobeCount = 0;
-  let blinderCount = 0;
+  // Totals across BOTH legacy and catalogue groups (drive crew, LSO and SFX counts).
+  let totalBeamCount = 0;
+  let totalWashCount = 0;
+  let totalLaserCount = 0;
+  let totalStrobeCount = 0;
+  let totalBlinderCount = 0;
+  let totalFloorLaserCount = 0;
+  let totalFloorBeamCount = 0;
+  let totalCo2Count = 0;
+  let totalSmokeCount = 0;
+  let totalHazerCount = 0;
+
+  // Legacy-only counts (groups without catalogId keep exact legacy per-type rows).
+  let legacyBeamCount = 0;
+  let legacyWashCount = 0;
+  let legacyLaserCount = 0;
+  let legacyStrobeCount = 0;
+  let legacyBlinderCount = 0;
+  let legacyFloorLaserCount = 0;
+  let legacyFloorBeamCount = 0;
+  let legacyCo2Count = 0;
+  let legacySmokeCount = 0;
+  let legacyHazerCount = 0;
+
+  interface CatalogBucket {
+    catalogId: string;
+    modelName: string;
+    type: HardwareKind;
+    count: number;
+  }
+  const catalogBuckets = new Map<string, CatalogBucket>();
+  const addCatalogUnit = (catalogId: string, modelName: string, type: HardwareKind, count: number) => {
+    const entry = getCatalogEntry(catalogId);
+    const allowance = HARDWARE_ALLOWANCE[type];
+    const key = entry
+      ? `${catalogId}::${allowance.category}::${allowance.buyCost}::${allowance.rentalCost}`
+      : `unknown:${catalogId}::${type}::${modelName}`;
+    const existing = catalogBuckets.get(key);
+    if (existing) existing.count += count;
+    else catalogBuckets.set(key, { catalogId, modelName, type, count });
+  };
 
   for (const pod of rig.trussPods) {
     const path = pod.shape === 'path' ? pod.path : undefined;
@@ -93,11 +157,21 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
     if (pod.motorized) totalMotors += anchors;
 
     for (const fg of pod.fixtures) {
-      if (fg.type === 'beam') beamCount += fg.count;
-      else if (fg.type === 'wash') washCount += fg.count;
-      else if (fg.type === 'laser') laserCount += fg.count;
-      else if (fg.type === 'strobe') strobeCount += fg.count;
-      else if (fg.type === 'blinder') blinderCount += fg.count;
+      if (fg.type === 'beam') totalBeamCount += fg.count;
+      else if (fg.type === 'wash') totalWashCount += fg.count;
+      else if (fg.type === 'laser') totalLaserCount += fg.count;
+      else if (fg.type === 'strobe') totalStrobeCount += fg.count;
+      else if (fg.type === 'blinder') totalBlinderCount += fg.count;
+
+      if (fg.catalogId) {
+        addCatalogUnit(fg.catalogId, fg.modelName, fg.type, fg.count);
+      } else {
+        if (fg.type === 'beam') legacyBeamCount += fg.count;
+        else if (fg.type === 'wash') legacyWashCount += fg.count;
+        else if (fg.type === 'laser') legacyLaserCount += fg.count;
+        else if (fg.type === 'strobe') legacyStrobeCount += fg.count;
+        else if (fg.type === 'blinder') legacyBlinderCount += fg.count;
+      }
     }
   }
 
@@ -126,91 +200,132 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   }
 
   // 3. Overhead & Floor Lighting + Lasers + Smoke/CO2
-  let floorLaserCount = 0;
-  let floorBeamCount = 0;
-  let co2Count = 0;
-  let smokeCount = 0;
-  let hazerCount = 0;
-
   for (const fx of rig.floorFx) {
-    if (fx.type === 'floor_laser') floorLaserCount += fx.count;
-    else if (fx.type === 'floor_beam') floorBeamCount += fx.count;
-    else if (fx.type === 'co2') co2Count += fx.count;
-    else if (fx.type === 'smoke') smokeCount += fx.count;
-    else if (fx.type === 'hazer') hazerCount += fx.count;
+    if (fx.type === 'floor_laser') totalFloorLaserCount += fx.count;
+    else if (fx.type === 'floor_beam') totalFloorBeamCount += fx.count;
+    else if (fx.type === 'co2') totalCo2Count += fx.count;
+    else if (fx.type === 'smoke') totalSmokeCount += fx.count;
+    else if (fx.type === 'hazer') totalHazerCount += fx.count;
+
+    if (fx.catalogId) {
+      addCatalogUnit(fx.catalogId, fx.modelName, fx.type, fx.count);
+    } else {
+      if (fx.type === 'floor_laser') legacyFloorLaserCount += fx.count;
+      else if (fx.type === 'floor_beam') legacyFloorBeamCount += fx.count;
+      else if (fx.type === 'co2') legacyCo2Count += fx.count;
+      else if (fx.type === 'smoke') legacySmokeCount += fx.count;
+      else if (fx.type === 'hazer') legacyHazerCount += fx.count;
+    }
   }
 
-  const allBeams = beamCount + floorBeamCount;
-  if (allBeams > 0) {
+  // Legacy generic rows (unchanged for rigs without catalogId)
+  const legacyAllBeams = legacyBeamCount + legacyFloorBeamCount;
+  if (legacyAllBeams > 0) {
     equipmentItems.push({
       category: 'Lighting',
       label: 'Sharpy X-Beam / MegaPointe Moving Heads',
-      qty: `${allBeams} units`,
-      buyCost: allBeams * 7100,
-      rentalCost: allBeams * 195,
-      weightLbs: allBeams * 44,
-      watts: allBeams * 520,
+      qty: `${legacyAllBeams} units`,
+      buyCost: legacyAllBeams * 7100,
+      rentalCost: legacyAllBeams * 195,
+      weightLbs: legacyAllBeams * 44,
+      watts: legacyAllBeams * 520,
     });
   }
-  if (washCount > 0) {
+  if (legacyWashCount > 0) {
     equipmentItems.push({
       category: 'Lighting',
       label: 'MAC Aura Pro RGBW Moving Washes',
-      qty: `${washCount} units`,
-      buyCost: washCount * 5400,
-      rentalCost: washCount * 145,
-      weightLbs: washCount * 28,
-      watts: washCount * 400,
+      qty: `${legacyWashCount} units`,
+      buyCost: legacyWashCount * 5400,
+      rentalCost: legacyWashCount * 145,
+      weightLbs: legacyWashCount * 28,
+      watts: legacyWashCount * 400,
     });
   }
-  if (strobeCount > 0) {
+  if (legacyStrobeCount > 0) {
     equipmentItems.push({
       category: 'Lighting',
       label: 'Atomic Pro JDC-1 Arena Strobe Bars',
-      qty: `${strobeCount} units`,
-      buyCost: strobeCount * 4900,
-      rentalCost: strobeCount * 135,
-      weightLbs: strobeCount * 26,
-      watts: strobeCount * 1200,
+      qty: `${legacyStrobeCount} units`,
+      buyCost: legacyStrobeCount * 4900,
+      rentalCost: legacyStrobeCount * 135,
+      weightLbs: legacyStrobeCount * 26,
+      watts: legacyStrobeCount * 1200,
     });
   }
-  if (blinderCount > 0) {
+  if (legacyBlinderCount > 0) {
     equipmentItems.push({
       category: 'Lighting',
       label: 'Molefay 4-Lite Warm Audience Blinders',
-      qty: `${blinderCount} units`,
-      buyCost: blinderCount * 1450,
-      rentalCost: blinderCount * 48,
-      weightLbs: blinderCount * 24,
-      watts: blinderCount * 2600,
+      qty: `${legacyBlinderCount} units`,
+      buyCost: legacyBlinderCount * 1450,
+      rentalCost: legacyBlinderCount * 48,
+      weightLbs: legacyBlinderCount * 24,
+      watts: legacyBlinderCount * 2600,
     });
   }
 
-  if (laserCount > 0) {
+  if (legacyLaserCount > 0) {
     equipmentItems.push({
       category: 'Lasers',
       label: 'KVANT Clubmax 12W RGB Overhead Lasers',
-      qty: `${laserCount} units`,
-      buyCost: laserCount * 14500,
-      rentalCost: laserCount * 560,
-      weightLbs: laserCount * 32,
-      watts: laserCount * 350,
+      qty: `${legacyLaserCount} units`,
+      buyCost: legacyLaserCount * 14500,
+      rentalCost: legacyLaserCount * 560,
+      weightLbs: legacyLaserCount * 32,
+      watts: legacyLaserCount * 350,
     });
   }
-  if (floorLaserCount > 0) {
+  if (legacyFloorLaserCount > 0) {
     equipmentItems.push({
       category: 'Lasers',
       label: 'KVANT Spectrum 25W Stage Deck Lasers',
-      qty: `${floorLaserCount} units`,
-      buyCost: floorLaserCount * 28000,
-      rentalCost: floorLaserCount * 950,
-      weightLbs: floorLaserCount * 54,
-      watts: floorLaserCount * 650,
+      qty: `${legacyFloorLaserCount} units`,
+      buyCost: legacyFloorLaserCount * 28000,
+      rentalCost: legacyFloorLaserCount * 950,
+      weightLbs: legacyFloorLaserCount * 54,
+      watts: legacyFloorLaserCount * 650,
     });
+  }
+
+  // Catalogue model rows (grouped by model; uses verified catalogue weightKg and powerW when available)
+  const fxCatalogRows: CostLineItem[] = [];
+  for (const bucket of catalogBuckets.values()) {
+    const allowance = HARDWARE_ALLOWANCE[bucket.type];
+    const entry = getCatalogEntry(bucket.catalogId);
+    const hasWeight = Boolean(entry && entry.weightKg !== undefined && !isFieldUnverified(entry, 'weightKg'));
+    const hasPower = Boolean(entry && entry.powerW !== undefined && !isFieldUnverified(entry, 'powerW'));
+    const estNotes: string[] = [];
+    if (!hasWeight) estNotes.push('est. weight');
+    if (!hasPower) estNotes.push('est. power');
+    const baseLabel = entry ? catalogDisplayName(entry) : bucket.modelName;
+    const label = estNotes.length ? `${baseLabel} (${estNotes.join(', ')})` : baseLabel;
+    const row: CostLineItem = {
+      category: allowance.category,
+      label,
+      qty: `${bucket.count} ${allowance.unitLabel}`,
+      buyCost: bucket.count * allowance.buyCost,
+      rentalCost: bucket.count * allowance.rentalCost,
+      weightLbs: Math.round(bucket.count * (hasWeight ? entry!.weightKg! * KG_TO_LBS : allowance.weightLbs)),
+      watts: Math.round(bucket.count * (hasPower ? entry!.powerW! : allowance.watts)),
+    };
+    if (allowance.category === 'Smoke & FX') fxCatalogRows.push(row);
+    else equipmentItems.push(row);
   }
 
   // 4. Giant LED Video Wall + IMAG Side Wings + Authored Secondary Walls
   // A custom main-led replaces the stock wall and its wings (StageEngine builds one panel).
+  const panelEntry = getCatalogEntry(rig.ledWall.cabinets?.cabinetId);
+  const usePanelSpecs = Boolean(
+    panelEntry &&
+      panelEntry.category === 'led_panel' &&
+      panelEntry.weightKg !== undefined &&
+      panelEntry.powerW !== undefined &&
+      !isFieldUnverified(panelEntry, 'weightKg') &&
+      !isFieldUnverified(panelEntry, 'powerW'),
+  );
+  const panelPrefix = panelEntry && panelEntry.category === 'led_panel' ? `${catalogDisplayName(panelEntry)} ` : '';
+
   const frames = authoredWallFrames(rig, stage);
   const customMain = frames.find(frame => frame.id === 'main-led');
   const wall = rig.ledWall.enabled && !customMain ? ledPlacement(rig) : undefined;
@@ -219,26 +334,27 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   if (customMain) {
     const surface = authoredWallSurface(rig, customMain);
     const area = customMain.width * customMain.height;
+    const cabinetCount = surface.columns * surface.rows;
     equipmentItems.push({
       category: 'LED Video',
-      label: 'LED wall (authored placement)',
-      qty: surface.cabinets ? `${surface.columns * surface.rows} cabinets · ${Number(area.toFixed(2))} m²` : `${Number(area.toFixed(2))} m²`,
+      label: `${panelPrefix}LED wall (authored placement)`,
+      qty: surface.cabinets ? `${cabinetCount} cabinets · ${Number(area.toFixed(2))} m²` : `${Number(area.toFixed(2))} m²`,
       buyCost: Math.round(area * 3800),
       rentalCost: Math.round(area * 185),
-      weightLbs: Math.round(area * 62),
-      watts: Math.round(area * 580),
+      weightLbs: surface.cabinets && usePanelSpecs ? Math.round(cabinetCount * panelEntry!.weightKg! * KG_TO_LBS) : Math.round(area * 62),
+      watts: surface.cabinets && usePanelSpecs ? Math.round(cabinetCount * panelEntry!.powerW!) : Math.round(area * 580),
     });
   } else if (wall && wall.height > 0) {
     const totalLedArea = wall.width * wall.height + 2 * wall.wing.width * wall.wing.height;
     const cabinetCount = wall.columns * wall.rows + 2 * wall.wing.columns * wall.wing.rows;
     equipmentItems.push({
       category: 'LED Video',
-      label: `LED wall${rig.ledWall.curved ? ' (curved)' : ''}${wall.wing.width > 0 ? ' + IMAG wings' : ''}`,
+      label: `${panelPrefix}LED wall${rig.ledWall.curved ? ' (curved)' : ''}${wall.wing.width > 0 ? ' + IMAG wings' : ''}`,
       qty: rig.ledWall.cabinets ? `${cabinetCount} cabinets · ${Number(totalLedArea.toFixed(2))} m²` : `${Number(totalLedArea.toFixed(2))} m²`,
       buyCost: Math.round(totalLedArea * 3800),
       rentalCost: Math.round(totalLedArea * 185),
-      weightLbs: Math.round(totalLedArea * 62),
-      watts: Math.round(totalLedArea * 580),
+      weightLbs: rig.ledWall.cabinets && usePanelSpecs ? Math.round(cabinetCount * panelEntry!.weightKg! * KG_TO_LBS) : Math.round(totalLedArea * 62),
+      watts: rig.ledWall.cabinets && usePanelSpecs ? Math.round(cabinetCount * panelEntry!.powerW!) : Math.round(totalLedArea * 580),
     });
   }
   if (secondaryArea > 0) {
@@ -342,39 +458,40 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   }
 
   // 6. Smoke, Hazers & CO2 Cryo
-  if (hazerCount > 0) {
+  if (legacyHazerCount > 0) {
     equipmentItems.push({
       category: 'Smoke & FX',
       label: 'MDG ATMe Touring Hazers + CO2 Fluid',
-      qty: `${hazerCount} units`,
-      buyCost: hazerCount * 7200,
-      rentalCost: hazerCount * 240,
-      weightLbs: hazerCount * 79,
-      watts: hazerCount * 1400,
+      qty: `${legacyHazerCount} units`,
+      buyCost: legacyHazerCount * 7200,
+      rentalCost: legacyHazerCount * 240,
+      weightLbs: legacyHazerCount * 79,
+      watts: legacyHazerCount * 1400,
     });
   }
-  if (smokeCount > 0) {
+  if (legacySmokeCount > 0) {
     equipmentItems.push({
       category: 'Smoke & FX',
       label: 'JEM ZR45 High-Output Smoke Machines',
-      qty: `${smokeCount} units`,
-      buyCost: smokeCount * 2100,
-      rentalCost: smokeCount * 75,
-      weightLbs: smokeCount * 48,
-      watts: smokeCount * 2000,
+      qty: `${legacySmokeCount} units`,
+      buyCost: legacySmokeCount * 2100,
+      rentalCost: legacySmokeCount * 75,
+      weightLbs: legacySmokeCount * 48,
+      watts: legacySmokeCount * 2000,
     });
   }
-  if (co2Count > 0) {
+  if (legacyCo2Count > 0) {
     equipmentItems.push({
       category: 'Smoke & FX',
       label: 'MagicFX CO2Jet II + Liquid CO2 Dewar Tanks',
-      qty: `${co2Count} jets`,
-      buyCost: co2Count * 1450,
-      rentalCost: co2Count * 180,
-      weightLbs: co2Count * 95,
-      watts: co2Count * 80,
+      qty: `${legacyCo2Count} jets`,
+      buyCost: legacyCo2Count * 1450,
+      rentalCost: legacyCo2Count * 180,
+      weightLbs: legacyCo2Count * 95,
+      watts: legacyCo2Count * 80,
     });
   }
+  equipmentItems.push(...fxCatalogRows);
 
   // Totals for Equipment
   const totalBuyCost = equipmentItems.reduce((a, b) => a + b.buyCost, 0);
@@ -383,8 +500,8 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
   const totalWatts = equipmentItems.reduce((a, b) => a + b.watts, 0);
 
   // 7. Real-World Union Crew & Labor Estimate (Load-In + Show Call + Load-Out)
-  const totalFixtures = allBeams + washCount + strobeCount + blinderCount;
-  const totalLasers = laserCount + floorLaserCount;
+  const totalFixtures = totalBeamCount + totalFloorBeamCount + totalWashCount + totalStrobeCount + totalBlinderCount;
+  const totalLasers = totalLaserCount + totalFloorLaserCount;
   const shiftHours = rig.venue === 'festival' ? 16 : rig.venue === 'arena' ? 14 : rig.venue === 'club' ? 8 : 10;
 
   const paPoints = hangs !== undefined ? hangs.length * 2 : (rig.audioRig.lineArrays ? 4 : 0);
@@ -446,7 +563,7 @@ export function calculateProductionEstimate(sourceRig: RigConfig, stage?: Native
     });
   }
 
-  if (co2Count > 0 || smokeCount > 0) {
+  if (totalCo2Count > 0 || totalSmokeCount > 0) {
     laborItems.push({
       role: 'SFX / Cryo & Atmospheric Tech',
       crewCount: 1,

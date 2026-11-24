@@ -1,4 +1,10 @@
 import { useEffect, useState } from 'react';
+import {
+  catalogDisplayName,
+  catalogLedPanels,
+  formatCatalogSpecBadges,
+  getCatalogEntry,
+} from '../data/equipmentCatalog';
 import { initialLedCabinets, ledPlacement, requestedWallSize } from '../data/stageEquipment';
 import type { LedCabinets, RigConfig } from '../types/show';
 
@@ -31,12 +37,71 @@ export function LedCabinetEditor({ rig, layout, onChange }: {
   if (!panel) return <button type="button" className="rounded border border-white/15 py-1 px-2"
     onClick={() => update(initialLedCabinets(rig.ledWall))}>Build from LED cabinets</button>;
 
-  const field = (key: keyof LedCabinets, label: string, min: number, max: number) =>
+  const panels = catalogLedPanels();
+  const activeEntry = getCatalogEntry(panel.cabinetId);
+  const selectPanel = (id: string) => {
+    if (!id) {
+      const { cabinetId: _dropped, ...custom } = panel;
+      update(custom);
+      return;
+    }
+    const entry = getCatalogEntry(id);
+    if (!entry?.panel) return;
+    update({
+      ...panel,
+      cabinetId: entry.id,
+      widthMm: entry.panel.widthMm,
+      heightMm: entry.panel.heightMm,
+      pixelsWide: entry.panel.pixelsWide,
+      pixelsHigh: entry.panel.pixelsHigh,
+    });
+  };
+
+  const field = (key: keyof Omit<LedCabinets, 'cabinetId'>, label: string, min: number, max: number) =>
     <CabinetField label={label} min={min} max={max} value={panel[key]}
-      onChange={value => update({ ...panel, [key]: value })} />;
+      onChange={value => {
+        if (key === 'columns' || key === 'rows') {
+          update({ ...panel, [key]: value });
+        } else {
+          // Manual physical/pixel edits switch the cabinet back to Custom so cabinetId stays truthful.
+          const { cabinetId: _dropped, ...custom } = panel;
+          update({ ...custom, [key]: value });
+        }
+      }} />;
   const { wing } = layout;
+  const badges = activeEntry ? formatCatalogSpecBadges(activeEntry) : [];
   return <fieldset className="rounded border border-white/15 p-2 space-y-1.5">
     <legend className="px-1 text-xs text-zinc-200">LED cabinets</legend>
+    <label className="grid gap-0.5 text-[10px] text-zinc-300">
+      Panel model
+      <select
+        aria-label="Panel model"
+        value={activeEntry ? activeEntry.id : panel.cabinetId ? '__saved__' : ''}
+        onChange={e => selectPanel(e.target.value)}
+        className="w-full rounded border border-white/15 bg-zinc-900 px-1.5 py-1 text-zinc-100"
+      >
+        <option value="">Custom</option>
+        {panels.map(entry => (
+          <option key={entry.id} value={entry.id}>
+            {catalogDisplayName(entry)} · {entry.panel!.pitchMm} mm ({entry.panel!.widthMm}×{entry.panel!.heightMm} mm)
+          </option>
+        ))}
+        {panel.cabinetId && !activeEntry && (
+          <option value="__saved__">Saved panel ({panel.cabinetId})</option>
+        )}
+      </select>
+    </label>
+    {activeEntry && (
+      <p className="font-mono-tech text-[9px] text-zinc-400">
+        {badges.map((b, i) => (
+          <span key={i}>
+            {i > 0 && ' · '}
+            {b.text}
+            {b.unverified && <span className="text-amber-300" aria-label="unverified" title="Unverified specification">?</span>}
+          </span>
+        ))}
+      </p>
+    )}
     <div className="grid grid-cols-2 gap-2">
       {field('columns', 'Requested columns', 1, 256)}
       {field('rows', 'Requested rows', 1, 256)}

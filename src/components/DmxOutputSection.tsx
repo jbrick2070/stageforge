@@ -5,9 +5,10 @@ import { formatArtNetAddress, parseTargetList, type DmxOutputMode } from '../dmx
 
 interface DmxOutputSectionProps {
   output: LiveDmxControllerApi;
+  hasCatalogFixtures?: boolean;
 }
 
-export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output }) => {
+export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output, hasCatalogFixtures }) => {
   const [expanded, setExpanded] = useState(false);
   const [armed, setArmed] = useState(false);
 
@@ -95,6 +96,11 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output }) =>
 
       {expanded && (
         <div className="px-3 pb-2.5 pt-1 space-y-2 font-mono-tech text-[10px] border-t border-white/5 max-h-[300px] overflow-y-auto">
+          {hasCatalogFixtures && (
+            <p role="note" className="rounded border border-cyan-400/40 bg-cyan-950/40 px-2 py-1 text-[9px] text-cyan-100">
+              Simulated control layout, not the fixture&apos;s real channel map.
+            </p>
+          )}
           {/* Protocol / transport selector */}
           <div className="flex gap-1" role="group" aria-label="Output transport">
             {([

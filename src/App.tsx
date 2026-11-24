@@ -25,7 +25,8 @@ import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
-import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, referencedFiles, type NativeStage, type ShowInterchange } from './data/showFile';
+import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange } from './data/showFile';
+import { hasCatalogFixtures } from './data/equipmentCatalog';
 import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
 import type { BundleAsset } from './data/showBundle';
 import { isCustomMainWall, MAX_WALL_CUE_MS, pruneNativeStage, removeSecondaryScreenEvent, upsertSecondaryScreenEvent, type SecondaryScreenEvent } from './data/studioGeometry';
@@ -1402,6 +1403,7 @@ export const App: React.FC = () => {
       <LiveDmxBadge
         banner={liveDmx.banner}
         busy={liveDmx.busy}
+        hasCatalogFixtures={hasCatalogFixtures(rig)}
         onStop={() => void liveDmx.disable()}
         onOpenOutput={() => {
           setCinemaMode(false);
@@ -1438,6 +1440,10 @@ export const App: React.FC = () => {
             onClose={() => setRigDrawerOpen(false)}
             onDesignStage={() => setDesignerRig(rig)}
             onOpenSavedDesign={savedDesign ? () => setDesignerRig(savedDesign) : undefined}
+            onNotify={showToast}
+            onModelChanged={(podId, groupId) => {
+              interchangeRef.current = pruneInterchangeFixtureSpecs(interchangeRef.current, podId, groupId);
+            }}
             onChangeRig={(next, replacing) => {
               if (replacing && !confirmDiscardStage()) return;
               if (replacing) {

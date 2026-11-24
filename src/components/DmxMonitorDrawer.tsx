@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { X, Radio } from 'lucide-react';
 import { buildDmxPatch, DMX_CHANNELS } from '../data/dmxPatch';
+import { hasCatalogFixtures } from '../data/equipmentCatalog';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
 import { RigConfig } from '../types/show';
@@ -48,6 +49,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   }, [patch, rows]);
   if (!open) return null;
   const invalid = rows.some(row => row.conflicts.length > 0 || row.end > 512);
+  const catalogPatched = hasCatalogFixtures(rig);
 
   const data = universe === 1 ? dmx.u1 : dmx.u2;
 
@@ -72,7 +74,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
         </button>
       </div>
 
-      <DmxOutputSection output={liveOutput} />
+      <DmxOutputSection output={liveOutput} hasCatalogFixtures={catalogPatched} />
 
       <div className="flex items-center justify-between px-3 py-1.5 bg-black/40 border-b border-white/10">
         <div className="flex gap-1">
@@ -118,6 +120,11 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
       </div>
 
       {invalid && <p role="status" className="px-3 py-1 text-[10px] text-amber-300">Patch conflict or overflow. Affected fixtures have no DMX output. See Patch for addresses.</p>}
+      {catalogPatched && (
+        <p role="note" className="px-3 py-1 text-[10px] text-cyan-200/90 bg-cyan-950/40 border-b border-white/10">
+          Simulated control layout, not the fixture&apos;s real channel map.
+        </p>
+      )}
       {view === 'grid' && (
         <div className="flex gap-1 px-3 py-1.5 border-b border-white/10" aria-label="DMX channel banks">
           {[0, 1, 2, 3].map(n => (
@@ -164,15 +171,22 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
                 <summary className="cursor-pointer">
                   <span className="font-semibold text-white">{group.modelName} ×{group.count}</span>
                   <span className="ml-2 text-cyan-300">U{universe}.{String(start).padStart(3, '0')}–{String(end).padStart(3, '0')}</span>
-                  <span className="block text-zinc-400">{location} · {width} channels per fixture</span>
+                  <span className="block text-zinc-400">
+                    {location} · {width} channels per fixture{group.dmxMode ? ` (${group.dmxMode})` : ''}
+                  </span>
                   {conflicts.length > 0 && <span className="block text-amber-300">Overlapping channels {formatRanges(conflicts)}</span>}
                   {end > 512 && <span className="block text-amber-300">Outside universe from channel {Math.max(513, start)}</span>}
                 </summary>
                 <p className="pt-1 text-zinc-300">
-                  {DMX_CHANNELS[group.type].map((name, i) => `${i + 1} ${name}`).join(' · ')}
+                  {DMX_CHANNELS[group.type].slice(0, width).map((name, i) => `${i + 1} ${name}`).join(' · ')}
                   {width > DMX_CHANNELS[group.type].length &&
                     ` · ${DMX_CHANNELS[group.type].length + 1}${width > DMX_CHANNELS[group.type].length + 1 ? `–${width}` : ''} Reserved`}
                 </p>
+                {group.catalogId && (
+                  <p className="pt-1 text-[9px] text-cyan-300/85">
+                    Simulated control layout, not the fixture&apos;s real channel map.
+                  </p>
+                )}
               </details>
             ))}
           </div>

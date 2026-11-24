@@ -44,7 +44,7 @@ import {
 } from './geometryBuilders';
 import { FocusMark, HEAD_OFFSET, YOKE_OFFSET, PAN_LIMIT, TILT_LIMIT, aimAngles, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
 import { headLook } from '../data/movingGroups';
-import { buildDmxPatch } from '../data/dmxPatch';
+import { buildDmxPatch, groupFootprint, writeDmxChannels } from '../data/dmxPatch';
 import { floorUnitX, hungUnits, mountSlotIndex } from '../data/fixturePlacement';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import type { NativeStage } from '../data/showFile';
@@ -55,7 +55,7 @@ import { AtmosphericParticles } from './ParticleSystem';
 import { laserGeometry } from './laserGeometry';
 import { DEFAULT_LASER_COLORS, DEFAULT_LASER_RESOLUTION, laserProjectorKey } from '../data/laserProjectors';
 import { BeamPools } from './beamPools';
-import { aerialGain, fixtureOptics } from '../data/fixtureOptics';
+import { aerialGain, fixtureOptics, resolveOptics } from '../data/fixtureOptics';
 import { fitAuthoredFoh, LED_DISPLAY_MATERIAL_NAME } from './fohFraming';
 import { buildScenicPiece, ScenicPiece } from './scenicProps';
 import { SPEAKER_PROFILES } from '../data/speakerProfiles';
@@ -83,6 +83,7 @@ interface MovingFixtureInstance {
   currentTilt: number;
   dmxUniverse: 1 | 2;
   dmxStart: number;
+  dmxWidth: number;
 }
 
 interface LaserUnitInstance {
@@ -99,11 +100,13 @@ interface LaserUnitInstance {
   innerConeMat: THREE.ShaderMaterial;
   dmxUniverse: 1 | 2;
   dmxStart: number;
+  dmxWidth: number;
 }
 
 interface DmxOutput {
   buffer: Uint8Array;
   start: number;
+  width?: number;
 }
 
 interface StrobeInstance extends DmxOutput {
@@ -1208,6 +1211,7 @@ export class StageEngine {
         if (!slot) return;
 
         const start = patch.unitStart(fg, i);
+        const width = groupFootprint(fg);
         const buffer = fg.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
         if (fg.type === 'beam' || fg.type === 'wash') {
           const lateral = slot.pos.x * Math.cos(pod.rotationY) + slot.pos.z * Math.sin(pod.rotationY);
@@ -1218,7 +1222,8 @@ export class StageEngine {
             lateral / Math.max(2, pod.width / 2),
             fg.dmxUniverse,
             start,
-            fg.optics
+            width,
+            resolveOptics(fg)
           );
           inst.root.position.copy(slot.pos);
           inst.root.rotation.y = slot.rotY;
@@ -1230,7 +1235,8 @@ export class StageEngine {
             laserProjectorKey(pod.id, fg.id, i + 1), globalLaserIndex++,
             false,
             fg.dmxUniverse,
-            start
+            start,
+            width
           );
           laser.root.position.copy(slot.pos).add(new THREE.Vector3(0, -0.1, 0.12));
           laser.root.rotation.y = pod.shape === 'circle' || pod.shape === 'path' ? -pod.rotationY : slot.rotY;
@@ -1242,7 +1248,7 @@ export class StageEngine {
           st.mesh.rotation.y = slot.rotY;
           st.mesh.translateY(0.04).translateZ(0.24);
           podGroup.add(nameFixtureUnit(st.mesh, fg, i, start));
-          this.strobes.push({ lensMat: st.lensMat, index: st.index, buffer, start });
+          this.strobes.push({ lensMat: st.lensMat, index: st.index, buffer, start, width });
         } else if (fg.type === 'blinder') {
           const bl = this.createBlinderBank();
           bl.group.position.copy(slot.pos);
@@ -1275,6 +1281,7 @@ export class StageEngine {
         const py = stageSurfaceHeight(rig, px, pz);
 
         const start = patch.unitStart(fx, i);
+        const width = groupFootprint(fx);
         if (start && (fx.type === 'co2' || fx.type === 'smoke' || fx.type === 'hazer')) {
           this.atmosphereDmx.push({ type: fx.type, start, buffer: fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2 });
         }
@@ -1297,7 +1304,8 @@ export class StageEngine {
             laserProjectorKey(null, fx.id, i + 1), globalLaserIndex++,
             true,
             fx.dmxUniverse,
-            start
+            start,
+            width
           );
           fl.root.position.set(px, py + 0.22, pz);
           this.rigGroup.add(nameFixtureUnit(fl.root, fx, i, start));
@@ -1310,7 +1318,8 @@ export class StageEngine {
             px / Math.max(2, rig.stageWidth / 2),
             fx.dmxUniverse,
             start,
-            fx.optics
+            width,
+            resolveOptics(fx)
           );
           fb.root.position.set(px, py + 0.08, pz);
           this.rigGroup.add(nameFixtureUnit(fb.root, fx, i, start));
@@ -1392,6 +1401,7 @@ export class StageEngine {
     fanPosition: number,
     dmxUniverse: 1 | 2,
     dmxStart: number,
+    dmxWidth: number,
     profile?: FixtureOptics
   ): MovingFixtureInstance {
     const root = new THREE.Group();
@@ -1498,6 +1508,7 @@ export class StageEngine {
       currentTilt: 0,
       dmxUniverse,
       dmxStart,
+      dmxWidth,
     };
   }
 
@@ -1517,7 +1528,8 @@ export class StageEngine {
     index: number,
     isFloor: boolean,
     dmxUniverse: 1 | 2,
-    dmxStart: number
+    dmxStart: number,
+    dmxWidth: number
   ): LaserUnitInstance {
     const root = new THREE.Group();
 
@@ -1615,6 +1627,7 @@ export class StageEngine {
       innerConeMat,
       dmxUniverse,
       dmxStart,
+      dmxWidth,
     };
   }
 
@@ -2000,17 +2013,19 @@ export class StageEngine {
       fx.lensMat.color.copy(tempCol).multiplyScalar(finalInt * fx.optics.fluxRatio * 2.6);
 
       // Invalid or conflicting fixture footprints have start 0 and make no writes.
+      // Clamp writes strictly to fx.dmxWidth so narrow catalogue modes (e.g. 1–6 ch PARs) never overwrite neighbours.
       const uBuf = fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
-      const ch = fx.dmxStart - 1;
-      if (ch >= 0) {
-        uBuf[ch + 0] = axisDmx(fx.currentPan, PAN_LIMIT);
-        uBuf[ch + 1] = axisDmx(fx.currentTilt, TILT_LIMIT);
-        uBuf[ch + 2] = Math.round(THREE.MathUtils.clamp(finalInt * 255, 0, 255));
-        uBuf[ch + 3] = Math.round(tempCol.r * 255);
-        uBuf[ch + 4] = Math.round(tempCol.g * 255);
-        uBuf[ch + 5] = Math.round(tempCol.b * 255);
-        uBuf[ch + 6] = Math.round(s.beamZoom * 255);
-        uBuf[ch + 7] = Math.round(effectiveStrobe * 255);
+      if (fx.dmxStart > 0) {
+        writeDmxChannels(uBuf, fx.dmxStart, fx.dmxWidth, [
+          axisDmx(fx.currentPan, PAN_LIMIT),
+          axisDmx(fx.currentTilt, TILT_LIMIT),
+          Math.round(THREE.MathUtils.clamp(finalInt * 255, 0, 255)),
+          Math.round(tempCol.r * 255),
+          Math.round(tempCol.g * 255),
+          Math.round(tempCol.b * 255),
+          Math.round(s.beamZoom * 255),
+          Math.round(effectiveStrobe * 255),
+        ]);
       }
     }
 
@@ -2091,18 +2106,19 @@ export class StageEngine {
 
       l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(laserInt * 2.6);
 
-      // Write Laser DMX Universe channels
+      // Write Laser DMX Universe channels clamped strictly to l.dmxWidth
       const uBuf = l.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
-      const ch = l.dmxStart - 1;
-      if (ch >= 0) {
-        uBuf[ch + 0] = Math.round(Math.min(1, laserInt) * 255);
-        uBuf[ch + 1] = patIdx * 32;
-        uBuf[ch + 2] = Math.round(s.laser.spreadX * 255);
-        uBuf[ch + 3] = Math.round(s.laser.spreadY * 255);
-        uBuf[ch + 4] = Math.round(s.laser.speed * 255);
-        uBuf[ch + 5] = Math.round(s.laser.rotation * 255);
-        uBuf[ch + 6] = Math.round((count / 32) * 255);
-        uBuf[ch + 7] = Math.round(s.laser.strobe * 255);
+      if (l.dmxStart > 0) {
+        writeDmxChannels(uBuf, l.dmxStart, l.dmxWidth, [
+          Math.round(Math.min(1, laserInt) * 255),
+          patIdx * 32,
+          Math.round(s.laser.spreadX * 255),
+          Math.round(s.laser.spreadY * 255),
+          Math.round(s.laser.speed * 255),
+          Math.round(s.laser.rotation * 255),
+          Math.round((count / 32) * 255),
+          Math.round(s.laser.strobe * 255),
+        ]);
       }
     }
 
@@ -2123,8 +2139,10 @@ export class StageEngine {
           : 0;
     for (const st of this.strobes) {
       if (st.start) {
-        st.buffer[st.start - 1] = Math.round(255 * strobeBarBright / 3.8);
-        st.buffer[st.start] = Math.round(255 * effectiveStrobe);
+        writeDmxChannels(st.buffer, st.start, st.width ?? 2, [
+          Math.round(255 * strobeBarBright / 3.8),
+          Math.round(255 * effectiveStrobe),
+        ]);
       }
       st.lensMat.color
         .copy(strobeFlashOn ? new THREE.Color(0xffffff) : primaryColor)

@@ -8,7 +8,9 @@ Version 3 adds a required `stage` object for editable trusses, speaker hangs, sc
 
 Version 4 adds a required `interchange` block (with optional `stage`) for persistent MVR object UUIDs, synthetic position-bar markers, original manufacturer GDTF references and bounded XML passthrough fragments (up to 8 MiB UTF-8 total) from imported MVR scenes. The writer selects v4 only when `interchange` has data; shows without `interchange` continue to save as v1, v2 or v3, and v1–v3 files remain loadable unchanged. [Version 4 schema](../src/schemas/show-v4.schema.json)
 
-Version 5 is an additive superset (both `stage` and `interchange` optional) that adds optional SMPTE timecode metadata on `timeline`: `frameRate` (`24`, `25`, `29.97` drop-frame, or `30`) and `timecodeOffsetMs` (`0..86399999`, e.g. `3600000` for `01:00:00:00`). The writer selects v5 only when `timeline.frameRate` or `timeline.timecodeOffsetMs` is present; all five schemas ship with the web reader for offline validation. [Version 5 schema](../src/schemas/show-v5.schema.json)
+Version 5 is an additive superset (both `stage` and `interchange` optional) that adds optional SMPTE timecode metadata on `timeline`: `frameRate` (`24`, `25`, `29.97` drop-frame, or `30`) and `timecodeOffsetMs` (`0..86399999`, e.g. `3600000` for `01:00:00:00`). The writer selects v5 only when `timeline.frameRate` or `timeline.timecodeOffsetMs` is present. [Version 5 schema](../src/schemas/show-v5.schema.json)
+
+Version 6 is an additive superset that adds optional equipment catalogue metadata on overhead fixtures and floor effects (`catalogId`, `dmxMode`, `dmxChannels`) and LED cabinet presets (`ledWall.cabinets.cabinetId`). Whenever `catalogId` is set on a fixture or floor-FX group, both `dmxMode` and `dmxChannels` are also required so DMX address layout remains deterministic even if catalogue data changes later. The writer selects v6 only when at least one v6 catalogue field is present; all six schemas ship with the web reader for offline validation. [Version 6 schema](../src/schemas/show-v6.schema.json) · [Equipment catalogue](equipment.md)
 
 ## Opening the examples
 
@@ -20,11 +22,11 @@ Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay tak
 
 | Field | Meaning |
 | --- | --- |
-| `$schema` | The public schema URL ending in `show-v1.schema.json`, `show-v2.schema.json`, `show-v3.schema.json`, `show-v4.schema.json` or `show-v5.schema.json`, matching the version. |
-| `format`, `version` | The string `"stageforge-show"` and the integer `1`, `2`, `3`, `4` or `5`. |
-| `stage` | Required in v3, optional in v4 and v5. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
-| `interchange` | Required in v4, optional in v5. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
-| `rig` | Stage dimensions and venue, optional platforms and scenic props, trusses with their fixtures, floor effects, sound system and LED wall. Positions and lengths use metres. |
+| `$schema` | The public schema URL ending in `show-v1.schema.json`, `show-v2.schema.json`, `show-v3.schema.json`, `show-v4.schema.json`, `show-v5.schema.json` or `show-v6.schema.json`, matching the version. |
+| `format`, `version` | The string `"stageforge-show"` and the integer `1`, `2`, `3`, `4`, `5` or `6`. |
+| `stage` | Required in v3, optional in v4–v6. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
+| `interchange` | Required in v4, optional in v5–v6. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
+| `rig` | Stage dimensions and venue, optional platforms and scenic props, trusses with their fixtures, floor effects, sound system and LED wall (in v6, fixture/floorFx groups may carry `catalogId`/`dmxMode`/`dmxChannels`, and `ledWall.cabinets` may carry `cabinetId`). Positions and lengths use metres. |
 | `cues` | Array in playback order. Each cue has a unique `id`, a display `name`, `tag`, hex `accent` and a partial desk `state`. Optional `screen` sets the main-wall media. |
 | `look`, `activeCueId` | Complete current desk settings and the current cue ID, or `null`. Desk changes made after calling a cue belong in `look`. |
 | `controls` | Optional named camera preset and music volume from zero to one. |

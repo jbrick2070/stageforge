@@ -184,7 +184,7 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
   expect(existsSync(path.join(appDir, 'dmx-packets.cjs'))).toBe(true);
   expect(existsSync(path.join(appDir, 'dmx-sender.cjs'))).toBe(true);
   expect(existsSync(path.join(appDir, 'dmx-ipc.cjs'))).toBe(true);
-  for (const v of [1, 2, 3, 4]) {
+  for (const v of [1, 2, 3, 4, 5, 6]) {
     expect(existsSync(path.join(appDir, 'renderer', 'schemas', `show-v${v}.schema.json`))).toBe(true);
   }
   expect(await app.evaluate(({ app }) => app.getPath('userData'))).toBe(path.join(tmp, 'profile'));

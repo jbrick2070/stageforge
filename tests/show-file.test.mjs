@@ -11,7 +11,7 @@ const compiler = await createServer({
   appType: 'custom', optimizeDeps: { noDiscovery: true },
 });
 after(() => compiler.close());
-const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL, V6_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
 const { RIG_TEMPLATES, INITIAL_SHOW_STATE, SHOW_CUES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { cueLook, differsFromCue } = await compiler.ssrLoadModule('/src/data/cueLook.ts');
 const { frameDelta } = await compiler.ssrLoadModule('/src/input/useShowTimeline.ts');
@@ -223,6 +223,7 @@ test('frozen v1, v2 and v3 show fixtures load cleanly and published schema hashe
     3: '0dee980fe57afb46a842318b092a567e600dbdb2a5b272a3e8bf47460c789c11',
     4: 'd114ce279e9de66b26fc9010c9e8ca8b7c260956c03a73a3813b8171b8996d49',
     5: '9cbf644005c09bd1ec92be20aad348fe0f8a7377134ae05c9e5826bdf5b0350f',
+    6: '6db46f168be983490fb5f226ad375df55881800304a872471583c3719e9ba2e2',
   };
   for (const [ver, hash] of Object.entries(expectedHashes)) {
     const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));
@@ -355,4 +356,95 @@ test('show v5 timeline frame-rate and timecodeOffsetMs are additive, work with/w
   assert.throws(() => parse(badOffset), isReadableError);
   // v1-v4 reject frameRate on timeline.
   assert.throws(() => parse({ ...savedV5, version: 4, $schema: V4_SCHEMA_URL, interchange }), isReadableError);
+});
+
+test('show v6 catalogue fields are additive, round-trip each field independently, and keep stock templates at v1/v2', () => {
+  // Stock templates without catalogue fields never drift to v6.
+  for (const [key, rig] of Object.entries(RIG_TEMPLATES)) {
+    const saved = makeShowFile(rig, SHOW_CUES, INITIAL_SHOW_STATE, SHOW_CUES[0].id);
+    assert.ok(saved.version <= 2, `${key} stays at version <= 2 (got ${saved.version})`);
+  }
+
+  // 1. Overhead fixture with catalogId + dmxMode + dmxChannels.
+  const withFixtureCat = structuredClone(example);
+  Object.assign(withFixtureCat.rig.trussPods[0].fixtures[0], {
+    modelName: 'Claypaky Sharpy',
+    catalogId: 'claypaky-sharpy',
+    dmxMode: 'Standard',
+    dmxChannels: 16,
+  });
+  const savedOverhead = write(withFixtureCat);
+  assert.equal(savedOverhead.version, 6);
+  assert.equal(savedOverhead.$schema, V6_SCHEMA_URL);
+  assert.deepEqual(parse(savedOverhead), savedOverhead);
+  assert.equal(parse(savedOverhead).rig.trussPods[0].fixtures[0].catalogId, 'claypaky-sharpy');
+
+  // 2. Floor FX with catalogId + dmxMode + dmxChannels only.
+  const withFloorCat = structuredClone(example);
+  withFloorCat.rig.floorFx = [
+    {
+      id: 'fx-hazer-cat',
+      type: 'hazer',
+      modelName: 'MDG ATMe',
+      catalogId: 'mdg-atme',
+      dmxMode: '3-Ch DMX/RDM',
+      dmxChannels: 3,
+      count: 1,
+      x: 0,
+      z: -2,
+      spread: 0,
+      dmxUniverse: 2,
+      dmxStartChannel: 1,
+    },
+  ];
+  const savedFloor = write(withFloorCat);
+  assert.equal(savedFloor.version, 6);
+  assert.equal(parse(savedFloor).rig.floorFx[0].catalogId, 'mdg-atme');
+
+  // 3. Standalone dmxChannels (without catalogId) also upgrades cleanly to v6 and round-trips.
+  const withChannelsOnly = structuredClone(example);
+  withChannelsOnly.rig.trussPods[0].fixtures[0].dmxChannels = 20;
+  const savedChOnly = write(withChannelsOnly);
+  assert.equal(savedChOnly.version, 6);
+  assert.equal(parse(savedChOnly).rig.trussPods[0].fixtures[0].dmxChannels, 20);
+
+  // 4. LED cabinetId alone upgrades cleanly to v6 and round-trips (no silent field drop!).
+  const withCabId = structuredClone(example);
+  withCabId.rig.ledWall.cabinets = {
+    cabinetId: 'roe-bp2-v2',
+    columns: 6,
+    rows: 4,
+    widthMm: 500,
+    heightMm: 500,
+    pixelsWide: 176,
+    pixelsHigh: 176,
+  };
+  const savedCab = write(withCabId);
+  assert.equal(savedCab.version, 6);
+  assert.equal(parse(savedCab).rig.ledWall.cabinets.cabinetId, 'roe-bp2-v2');
+
+  // 5. Removing v6 fields drops cleanly back to v1/v2.
+  const stripped = structuredClone(savedOverhead);
+  delete stripped.rig.trussPods[0].fixtures[0].catalogId;
+  delete stripped.rig.trussPods[0].fixtures[0].dmxMode;
+  delete stripped.rig.trussPods[0].fixtures[0].dmxChannels;
+  assert.equal(write(stripped).version, 1);
+
+  // 6. v5 rejects v6 fields with a readable Error.
+  assert.throws(
+    () => parse({ ...savedOverhead, version: 5, $schema: V5_SCHEMA_URL }),
+    isReadableError,
+    'v5 rejects catalogId on fixture',
+  );
+  assert.throws(
+    () => parse({ ...savedCab, version: 5, $schema: V5_SCHEMA_URL }),
+    isReadableError,
+    'v5 rejects cabinetId on ledWall.cabinets',
+  );
+  // 7. Unknown future version fails with a readable Error.
+  assert.throws(
+    () => parse({ ...savedOverhead, version: 7 }),
+    isReadableError,
+    'unsupported version 7 fails cleanly',
+  );
 });

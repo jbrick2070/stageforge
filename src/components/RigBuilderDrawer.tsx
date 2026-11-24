@@ -2,11 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ScenicBuilder } from './ScenicBuilder';
 import { LedCabinetEditor } from './LedCabinetEditor';
 import { FixtureOpticsEditor } from './FixtureOpticsEditor';
+import { EquipmentPicker } from './EquipmentPicker';
 import { SpeakerHangsEditor } from './SpeakerHangsEditor';
 import { ScreenWallsEditor } from './ScreenWallsEditor';
 import type { NativeStage } from '../data/showFile';
 import { isCustomMainWall } from '../data/studioGeometry';
-import { addPatchedUnits, allocateDmx } from '../data/dmxPatch';
+import { addPatchedUnits, allocateDmx, repatchGroup, type GroupModelUpdate } from '../data/dmxPatch';
+import { checkCatalogChannelDrift } from '../data/equipmentCatalog';
 import { downloadRig, MAX_RIG_JSON_BYTES, parseRigJson } from '../data/rigImport';
 import { GRID_HEIGHT, ledPlacement } from '../data/stageEquipment';
 import { normalizeDesign } from '../data/stageDesign';
@@ -42,6 +44,8 @@ interface RigBuilderDrawerProps {
   onChangeStage: (next?: NativeStage) => void;
   onDesignStage: () => void;
   onOpenSavedDesign?: () => void;
+  onNotify?: (message: string) => void;
+  onModelChanged?: (podId: string | undefined, groupId: string) => void;
 }
 
 function TrussDimension({ label, value, low, high, minimum, increment, onChange }: {
@@ -89,6 +93,8 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   onChangeStage,
   onDesignStage,
   onOpenSavedDesign,
+  onNotify,
+  onModelChanged,
 }) => {
   const importRef = useRef<HTMLInputElement>(null);
   const importRequest = useRef(0);
@@ -146,15 +152,45 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   const addFixtureToPod = (podId: string, type: FixtureType, groupId?: string) => {
     const pod = rig.trussPods.find(p => p.id === podId);
     if (!pod) return;
-    const existing = pod.fixtures.find(f => groupId ? f.id === groupId : f.type === type);
+    const existing = pod.fixtures.find(f => (groupId ? f.id === groupId : f.type === type && !f.catalogId));
     const count = groupId ? 1 : existing || type === 'laser' ? 2 : 4;
-    const group = { id: crypto.randomUUID(), type, modelName: existing?.modelName ?? FIXTURE_CATALOG[type].modelName,
+    const group = {
+      id: crypto.randomUUID(),
+      type,
+      modelName: existing?.modelName ?? FIXTURE_CATALOG[type].modelName,
+      ...(existing?.catalogId !== undefined ? { catalogId: existing.catalogId } : {}),
+      ...(existing?.dmxMode !== undefined ? { dmxMode: existing.dmxMode } : {}),
+      ...(existing?.dmxChannels !== undefined ? { dmxChannels: existing.dmxChannels } : {}),
       optics: existing?.optics,
-      count, dmxUniverse: type === 'laser' ? 2 as const : 1 as const, dmxStartChannel: 1 };
+      count,
+      dmxUniverse: existing?.dmxUniverse ?? (type === 'laser' ? 2 as const : 1 as const),
+      dmxStartChannel: 1,
+    };
     const fixtures = addPatchedUnits(rig, pod.fixtures, group, existing);
     if (!fixtures) { setPatchError(`No free DMX block for ${count} × ${group.modelName}.`); return; }
     setPatchError('');
     updatePod(podId, { fixtures });
+  };
+
+  const changePodFixtureModel = (podId: string, groupId: string, update: GroupModelUpdate): string | undefined => {
+    const pod = rig.trussPods.find(p => p.id === podId);
+    const group = pod?.fixtures.find(f => f.id === groupId);
+    if (!pod || !group) return 'Fixture group not found.';
+    const res = repatchGroup(rig, group, update);
+    if (!res.ok) return res.reason;
+    setPatchError('');
+    if (
+      update.catalogId !== group.catalogId ||
+      update.dmxMode !== group.dmxMode ||
+      update.dmxChannels !== group.dmxChannels
+    ) {
+      onModelChanged?.(podId, groupId);
+    }
+    updatePod(podId, { fixtures: pod.fixtures.map(f => (f.id === groupId ? res.group : f)) });
+    if (res.moved) {
+      onNotify?.(`Moved to U${res.group.dmxUniverse}.${String(res.group.dmxStartChannel).padStart(3, '0')} (${res.width} ch × ${res.group.count})`);
+    }
+    return undefined;
   };
 
   const removeFixture = (pod: TrussPodConfig, groupId: string) => {
@@ -163,15 +199,44 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   };
 
   const addFloorFx = (type: FloorFxType, groupId?: string) => {
-    const existing = rig.floorFx.find(f => groupId ? f.id === groupId : f.type === type);
+    const existing = rig.floorFx.find(f => (groupId ? f.id === groupId : f.type === type && !f.catalogId));
     const count = groupId ? 1 : existing || type === 'hazer' ? 2 : 4;
-    const group = { x: 0, z: type === 'co2' ? 4.8 : type === 'floor_beam' ? -3 : 2.2, spread: 14,
-      modelName: FLOOR_FX_CATALOG[type].modelName, dmxUniverse: 2 as const, dmxStartChannel: 1, ...existing,
-      id: crypto.randomUUID(), type, count };
+    const group = {
+      x: 0,
+      z: type === 'co2' ? 4.8 : type === 'floor_beam' ? -3 : 2.2,
+      spread: 14,
+      modelName: FLOOR_FX_CATALOG[type].modelName,
+      dmxUniverse: 2 as const,
+      dmxStartChannel: 1,
+      ...existing,
+      id: crypto.randomUUID(),
+      type,
+      count,
+    };
     const floorFx = addPatchedUnits(rig, rig.floorFx, group, existing);
     if (!floorFx) { setPatchError(`No free DMX block for ${count} × ${group.modelName}.`); return; }
     setPatchError('');
     onChangeRig({ ...rig, floorFx });
+  };
+
+  const changeFloorFxModel = (groupId: string, update: GroupModelUpdate): string | undefined => {
+    const group = rig.floorFx.find(f => f.id === groupId);
+    if (!group) return 'Floor FX group not found.';
+    const res = repatchGroup(rig, group, update);
+    if (!res.ok) return res.reason;
+    setPatchError('');
+    if (
+      update.catalogId !== group.catalogId ||
+      update.dmxMode !== group.dmxMode ||
+      update.dmxChannels !== group.dmxChannels
+    ) {
+      onModelChanged?.(undefined, groupId);
+    }
+    onChangeRig({ ...rig, floorFx: rig.floorFx.map(item => (item.id === groupId ? res.group : item)) });
+    if (res.moved) {
+      onNotify?.(`Moved to U${res.group.dmxUniverse}.${String(res.group.dmxStartChannel).padStart(3, '0')} (${res.width} ch × ${res.group.count})`);
+    }
+    return undefined;
   };
 
   const importJson = async (file: File) => {
@@ -502,20 +567,26 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
 
                 {/* Mounted Fixtures List */}
                 <div className="space-y-1">
-                  {pod.fixtures.map((fg) => (
+                  {pod.fixtures.map((fg) => {
+                    const drift = checkCatalogChannelDrift(fg);
+                    return (
                     <React.Fragment key={fg.id}>
                     <div
-                      className="flex items-center justify-between bg-white/5 rounded px-2 py-1 text-[10px]"
+                      className="flex items-center justify-between gap-1.5 bg-white/5 rounded px-2 py-1 text-[10px]"
                     >
-                      <div>
-                        <span className="text-zinc-200 font-medium">{fg.modelName}</span>
-                        <span className="font-mono-tech text-[9px] text-zinc-500 ml-1.5">
+                      <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
+                        <EquipmentPicker
+                          group={fg}
+                          onApply={(update) => changePodFixtureModel(pod.id, fg.id, update)}
+                        />
+                        <span className="font-mono-tech text-[9px] text-zinc-500 shrink-0">
                           U{fg.dmxUniverse}.{String(fg.dmxStartChannel).padStart(3, '0')}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1.5 font-mono-tech">
+                      <div className="flex items-center gap-1.5 font-mono-tech shrink-0">
                         <button
                           onClick={() => removeFixture(pod, fg.id)}
+                          aria-label={`Remove one ${fg.modelName}`}
                           className="w-4 h-4 rounded bg-black/60 hover:bg-white/15 cursor-pointer"
                         >
                           -
@@ -523,16 +594,38 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                         <span className="text-cyan-300 w-4 text-center">{fg.count}</span>
                         <button
                           onClick={() => addFixtureToPod(pod.id, fg.type, fg.id)}
+                          aria-label={`Add one ${fg.modelName}`}
                           className="w-4 h-4 rounded bg-black/60 hover:bg-white/15 cursor-pointer"
                         >
                           +
                         </button>
                       </div>
                     </div>
-                    {(fg.type === 'beam' || fg.type === 'wash') && <FixtureOpticsEditor kind={fg.type} settings={fg.optics}
+                    {drift && (
+                      <div className="flex items-center justify-between gap-2 rounded bg-amber-950/50 border border-amber-400/40 px-2 py-1 text-[10px] text-amber-200">
+                        <span>Catalogue now says {drift.expectedChannels} ch (saved {drift.actualChannels} ch).</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const err = changePodFixtureModel(pod.id, fg.id, {
+                              modelName: fg.modelName,
+                              catalogId: fg.catalogId,
+                              dmxMode: fg.dmxMode,
+                              dmxChannels: drift.expectedChannels,
+                            });
+                            if (err) setPatchError(err);
+                          }}
+                          className="rounded bg-amber-500/25 hover:bg-amber-500/40 px-1.5 py-0.5 font-mono-tech text-[9px] text-amber-100 cursor-pointer shrink-0"
+                        >
+                          Re-patch?
+                        </button>
+                      </div>
+                    )}
+                    {(fg.type === 'beam' || fg.type === 'wash') && <FixtureOpticsEditor kind={fg.type} catalogId={fg.catalogId} settings={fg.optics}
                       onChange={optics => updatePod(pod.id, { fixtures: pod.fixtures.map(item => item.id === fg.id ? { ...item, optics } : item) })}/>}
                     </React.Fragment>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {/* Add Fixture Buttons */}
@@ -569,13 +662,23 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
             ))}
           </div>
           <div className="space-y-1">
-            {rig.floorFx.map((fx) => (
+            {rig.floorFx.map((fx) => {
+              const drift = checkCatalogChannelDrift(fx);
+              return (
               <React.Fragment key={fx.id}>
               <div
-                className="flex items-center justify-between bg-white/5 rounded px-2 py-1 text-[10px]"
+                className="flex items-center justify-between gap-1.5 bg-white/5 rounded px-2 py-1 text-[10px]"
               >
-                <span className="text-zinc-200">{fx.modelName}</span>
-                <div className="flex items-center gap-1.5 font-mono-tech">
+                <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
+                  <EquipmentPicker
+                    group={fx}
+                    onApply={(update) => changeFloorFxModel(fx.id, update)}
+                  />
+                  <span className="font-mono-tech text-[9px] text-zinc-500 shrink-0">
+                    U{fx.dmxUniverse}.{String(fx.dmxStartChannel).padStart(3, '0')}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 font-mono-tech shrink-0">
                   <button
                     onClick={() =>
                       onChangeRig({
@@ -585,6 +688,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                           .filter((item) => item.count > 0),
                       })
                     }
+                    aria-label={`Remove one ${fx.modelName}`}
                     className="w-4 h-4 rounded bg-black/60 hover:bg-white/15 cursor-pointer"
                   >
                     -
@@ -592,16 +696,38 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                   <span className="text-sky-300 w-4 text-center">{fx.count}</span>
                   <button
                     onClick={() => addFloorFx(fx.type, fx.id)}
+                    aria-label={`Add one ${fx.modelName}`}
                     className="w-4 h-4 rounded bg-black/60 hover:bg-white/15 cursor-pointer"
                   >
                     +
                   </button>
                 </div>
               </div>
-              {fx.type === 'floor_beam' && <FixtureOpticsEditor kind="beam" settings={fx.optics}
+              {drift && (
+                <div className="flex items-center justify-between gap-2 rounded bg-amber-950/50 border border-amber-400/40 px-2 py-1 text-[10px] text-amber-200">
+                  <span>Catalogue now says {drift.expectedChannels} ch (saved {drift.actualChannels} ch).</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const err = changeFloorFxModel(fx.id, {
+                        modelName: fx.modelName,
+                        catalogId: fx.catalogId,
+                        dmxMode: fx.dmxMode,
+                        dmxChannels: drift.expectedChannels,
+                      });
+                      if (err) setPatchError(err);
+                    }}
+                    className="rounded bg-amber-500/25 hover:bg-amber-500/40 px-1.5 py-0.5 font-mono-tech text-[9px] text-amber-100 cursor-pointer shrink-0"
+                  >
+                    Re-patch?
+                  </button>
+                </div>
+              )}
+              {fx.type === 'floor_beam' && <FixtureOpticsEditor kind="beam" catalogId={fx.catalogId} settings={fx.optics}
                 onChange={optics => onChangeRig({ ...rig, floorFx: rig.floorFx.map(item => item.id === fx.id ? { ...item, optics } : item) })}/>}
               </React.Fragment>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

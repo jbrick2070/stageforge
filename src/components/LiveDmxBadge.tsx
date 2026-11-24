@@ -5,6 +5,7 @@ import type { LiveDmxBannerState } from '../dmx/liveDmx';
 interface LiveDmxBadgeProps {
   banner: LiveDmxBannerState;
   busy: boolean;
+  hasCatalogFixtures?: boolean;
   onStop: () => void;
   onOpenOutput: () => void;
 }
@@ -16,10 +17,15 @@ interface LiveDmxBadgeProps {
 export const LiveDmxBadge: React.FC<LiveDmxBadgeProps> = ({
   banner,
   busy,
+  hasCatalogFixtures,
   onStop,
   onOpenOutput,
 }) => {
   if (!banner.active) return null;
+  const baseTitle = banner.error ? `Output degraded: ${banner.error}` : 'Open output settings';
+  const tooltip = hasCatalogFixtures
+    ? `${baseTitle} · Simulated control layout, not the fixture's real channel map`
+    : baseTitle;
 
   return (
     <div
@@ -36,7 +42,7 @@ export const LiveDmxBadge: React.FC<LiveDmxBadgeProps> = ({
       <button
         type="button"
         onClick={onOpenOutput}
-        title={banner.error ? `Output degraded: ${banner.error}` : 'Open output settings'}
+        title={tooltip}
         className="flex items-center gap-2 text-left cursor-pointer"
       >
         <span
@@ -47,6 +53,12 @@ export const LiveDmxBadge: React.FC<LiveDmxBadgeProps> = ({
         />
         <span className="font-bold tracking-wider">{banner.label}</span>
         {banner.detail && <span className="text-[10px] opacity-85">{banner.detail}</span>}
+        {hasCatalogFixtures && (
+          <span className="rounded border border-cyan-300/50 bg-cyan-950/70 px-1.5 py-0.5 text-[9px] text-cyan-100">
+            <span aria-hidden="true">Sim map</span>
+            <span className="sr-only"> (Simulated control layout, not the fixture&apos;s real channel map)</span>
+          </span>
+        )}
         {banner.degraded && <AlertTriangle className="w-3.5 h-3.5 text-amber-300" aria-hidden="true" />}
       </button>
       <button

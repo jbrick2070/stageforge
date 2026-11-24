@@ -112,6 +112,9 @@ export interface MountedFixtureGroup {
   id: string;
   type: FixtureType;
   modelName: string;
+  catalogId?: string;
+  dmxMode?: string;
+  dmxChannels?: number;
   optics?: FixtureOptics;
   count: number;
   dmxUniverse: 1 | 2;
@@ -138,6 +141,9 @@ export interface FloorFxUnit {
   id: string;
   type: FloorFxType;
   modelName: string;
+  catalogId?: string;
+  dmxMode?: string;
+  dmxChannels?: number;
   optics?: FixtureOptics;
   count: number;
   x: number;
@@ -160,6 +166,7 @@ export interface StageProp {
 }
 
 export interface LedCabinets {
+  cabinetId?: string;
   columns: number;
   rows: number;
   widthMm: number;
