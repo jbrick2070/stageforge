@@ -42,7 +42,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11, 14, 14b and the graphics Sprints 15 to 21 in that order (see "Designed Sprints 6–8" and Sprints 9 to 14 and "Graphics Sprints 15 to 21" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11, 14, 14b, the graphics Sprints 15 to 21 and then Sprint 22 (WebXR audience mode) in that order (see "Designed Sprints 6–8" and Sprints 9 to 14 and "Graphics Sprints 15 to 21" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Item 9 (VR) is now designed Sprint 22: do not start it before Sprints 15 to 21 are done.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -231,7 +231,7 @@ Get-Content "$qa\sprint-N-design.md" -Raw | codex exec -m gpt-6-astra -s read-on
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14, then Sprint 14b (catalogue expansion), then the graphics Sprints 15 to 21, in that order (13 before 12, 12 before 11, 14 and 14b before 15), one per round, before Realism items 6 and 7. Realism item 8 is superseded by Sprints 15, 20 and 21.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14, then Sprint 14b (catalogue expansion), then the graphics Sprints 15 to 21, then Sprint 22 (WebXR audience mode), in that order (13 before 12, 12 before 11, 14 and 14b before 15, 15 and 21 before 22), one per round, before Realism items 6 and 7. Realism item 8 is superseded by Sprints 15, 20 and 21.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. VR (item 9) is now Sprint 22, the last in that list. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
@@ -773,6 +773,43 @@ Extend `BakedIldaClip` processing with bounded dwell and corner weights that res
 
 **Done when:** the gate is green; the new entries are in the catalogue with citations and honest `unverified` lists; the spot-check results are in the Overnight log; and `docs/equipment.md` is updated.
 
+### Sprint 22: WebXR audience mode, built and tested without a headset (designed by Claude Code, 2026-11-24)
+
+**Run this after Sprint 21 and before Realism items 6 and 7.** It replaces Realism item 9. It depends on Sprint 15 (the probe, the bloom bypass and the tiers), Sprint 12 (the pre-flight gate and hazard zones) and Sprint 21 (laser ribbons), so do not start it before those are done. Budget two or three rounds: (a) session plumbing and rendering, (b) viewpoints, comfort and the menu, (c) safety, tests and docs.
+
+**Why:** the owner is deciding whether to buy a headset and wants to see StageForge in VR working before spending money. So this sprint must be useful and testable with no headset, and it must say honestly what only a headset can show. Nobody on this team has a headset tonight. Do not claim comfort, frame rate or legibility that was not measured on real hardware.
+
+**Rules:**
+- Three.js's built-in WebXR only (`renderer.xr`). No new runtime dependency, no other engine, no native OpenXR app, no AR or passthrough, no hand tracking, no multiplayer, and no change to the show-file or bundle format. VR preferences stay on the device and are never serialized.
+- Zero cost when not in VR. Feature-detect, load the VR code lazily with `import()`, and allocate nothing until the user presses Enter VR. Report the `dist` first-load size before and after.
+- Enter VR is shown only when `navigator.xr?.isSessionSupported('immersive-vr')` resolves true. The Electron desktop build is not expected to expose it: confirm that, and keep the button hidden there.
+- The whole feature sits behind a renderer flag, default off until the emulated tests pass, like the graphics sprints. Record measured costs.
+- Consult Codex before starting (see "Design consult (Codex, read-only)"). Time-boxed.
+
+**Do:**
+1. **Session plumbing.** Enable `renderer.xr`, use the `local-floor` reference space, set foveation and the framebuffer scale. Today `StageEngine.startLoop` runs its own `requestAnimationFrame` loop and draws through the EffectComposer. In a session: cancel that loop, switch to `renderer.setAnimationLoop`, draw with `renderer.render(scene, camera)` directly (the composer does not support XR, so there is no bloom; use the emissive and additive glow the low tier already has), and disable OrbitControls. On `sessionend`, restore the rAF loop, camera, controls, pixel ratio and composer exactly. `requestSession` must be called inside the user's click: show the warning dialog first and let its confirm button call `requestSession`. Handle a denied request, missing features and a system-menu exit with a clear message and no stuck state. Entering and leaving ten times must not leak: check `renderer.info.memory`, event listeners and the number of active loops.
+2. **Stereo correctness.** Audit every place that caches camera data once per frame in a custom uniform or a CPU variable: the beam proxies in `beamProxy.ts` and `renderBatcher.ts`, the LED wall view direction from Sprint 17 if it landed, billboarded particles, crowd and scenery LOD, and the laser ribbons from Sprint 21. In XR the two eyes have different poses, so those must use three's per-eye built-ins (`cameraPosition`, `viewMatrix`) or be evaluated per eye. List what you checked and what you changed in the Overnight log. **Near-eye safety:** fade beams and laser ribbons as they approach the head (start about 1 m away, gone by about 0.3 m) so a beam through the viewer's face is not a white-out.
+3. **Scale and quality.** Scene units are metres. Standing eye height is about 1.6 m above the floor and seated about 1.2 m, as a seated or standing option. Reuse the Sprint 15 tiers: on a standalone headset use the low tier's scenery, particle and laser caps (the Quest Browser user agent contains "OculusBrowser", which is a heuristic only), with a "PC link" choice in the VR menu for the high tier. Set explicit draw-call, triangle and texture-memory ceilings for the VR path, derived from the Sprint 15 probe numbers on the arena rig, and enforce them in a test. Label them conservative estimates until someone measures on a headset.
+4. **Viewpoints.** Teleport to audience seats taken from the venue definitions (floor, mezzanine, balcony and FOH, plus a stage-front position), with a fade-to-black blink, the right eye height for each seat, and a "reset view" action. Reuse `src/engine/fohFraming.ts` for the FOH seat. Comfort: snap turn (30 degrees by default), no smooth locomotion by default, and an optional vignette.
+5. **Interaction.** A controller pointer (ray and reticle) and an in-scene wrist or floating menu drawn on a canvas texture, because DOM overlays do not appear in an immersive-vr session. Menu: cue Go and Back on the existing cue stack, haze level, play or mute the demo track, the flash limit, the seat list, quality, and Exit VR. The button map goes in `docs/vr.md`. The menu must not contain anything that arms output, opens the AI bridge or opens files.
+6. **Safety.**
+   - Before the first Enter VR on each page load, show a plain warning: flashing lights and moving beams can affect people with photosensitivity or motion sickness, and they should stop if unwell. Remember the acknowledgement for that page session only.
+   - Never start flashing on entry. VR starts with the existing flash limit (the 3 per second guard in the engine and `audioModulation.ts`) forced on. Lifting it is an explicit menu choice made after the warning, and the menu shows its state.
+   - **Live output:** Enter VR is disabled while live DMX output is armed ("live output is armed, disarm it first"), and arming is unavailable while a VR session is open. A person in a headset cannot see the real room. Arming stays human-only and stays at the desk.
+   - **Lasers:** the VR view puts the viewer inside the hazard zones that Sprint 12 draws. Show the existing simulation-only laser note on entry, and keep the pre-flight status visible in the menu.
+   - When `session.visibilityState` is not `visible`, stop spending on optional effects.
+7. **Tests, with no headset.**
+   - Unit tests: seat and eye-height maths, teleport, snap turn, the near-eye fade curve, menu hit-testing, preference storage (always in try/catch), the warning-gate state machine, and the live-output gate.
+   - Playwright with an emulated WebXR runtime. Prefer Meta's `iwer` (Immersive Web Emulation Runtime) as a test-only devDependency if its licence is permissive and it works with Playwright's Chromium: check both before adopting it. Otherwise write a minimal fake `navigator.xr` under `tests/support/`. Cover: the button is hidden without XR and shown with it, the warning appears before entry, session start and end restore the engine, ten enter and exit cycles show no growth in the memory counters, teleport, snap turn, menu actions, refusal while live output is armed, and the desktop build hides the button.
+   - A render-budget check inside the emulated session for draw calls and triangles only. Do not publish emulator frame times as headset performance.
+   - Non-VR parity: the existing render-budget and reference-image tests pass unchanged.
+8. **Docs.** `docs/vr.md`: how to enter VR (the HTTPS Pages URL in Quest Browser, or a PC link with a Chromium browser), the controller map, the comfort options, what is emulator-tested and what is not, and a numbered **on-headset checklist for the owner**: first impression and scale, the strobe warning appears first, comfort over ten minutes, frame-rate feel, text legibility, each seat, menu reach, the laser note, exit and re-enter, and demo track sync. Add one line to the README.
+9. Pass the gate, run Sonnet QA on the changed code and tests, and commit locally.
+
+**Out:** hand tracking, AR or passthrough, multiplayer, spatial audio, store packaging, a native app, other projects, show-format changes, pushing.
+
+**Done when:** the gate is green; Enter VR works end to end in the emulated runtime and leaves the non-VR path untouched; the safety gates are tested; `docs/vr.md` has the on-headset checklist; and the Overnight log states plainly that nothing was verified on a real headset.
+
 ## Backlog (in this order)
 
 ### Sprint 0: whole-codebase QA sweep
@@ -884,7 +921,7 @@ Goal: people should feel like they are running a real rig, with real equipment, 
    - **Beam occlusion:** soft depth clipping against trusses, screens and decks.
    - **Lasers:** a point-based scan model with kpps limits, corner brightening, blanking, beam divergence and scatter in haze, fed by `.ild` frames from item 2.
    - **GPU tiers:** an auto-quality setting (pixel ratio, ray steps, particle counts) so it stays smooth on a phone. Keep WebGL; a WebGPU path is optional and flagged off.
-9. **LATER, do not start tonight: Quest VR audience mode (WebXR).** The user wants real equipment, inventory and textures first; VR comes after items 1–8. Let people stand in the audience with a Meta Quest.
+9. **(SUPERSEDED by designed Sprint 22, which has the current design: see "Sprint 22: WebXR audience mode".) Quest VR audience mode (WebXR).** The user wants real equipment, inventory and textures first; VR comes after items 1–8. Let people stand in the audience with a Meta Quest.
    - **Approach:** use three.js's built-in WebXR support (MIT), feature-detected, so desktop and phones are unaffected. The GitHub Pages site is HTTPS, so it works in Quest Browser with no install.
    - **Entry:** an "Enter VR" button, shown only when `immersive-vr` is supported.
    - **Rendering:** the Quest is a mobile GPU, so the VR path skips the EffectComposer bloom (use cheap emissive and additive glow instead), enables fixed foveation, and caps haze, particle and laser quality through the item 8 tiers. Aim for a steady 72 fps.
