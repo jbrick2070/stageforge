@@ -127,6 +127,14 @@ npm run test:desktop
 npx playwright test --workers=1
 ```
 
+**Faster gate: use the Mac mini in parallel.** The browser tests are the slowest part, and the owner's Mac mini runs them much faster than this PC's software rendering. After you commit, start this in the background:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\stageforge-overnight\mac-gate.ps1"
+```
+
+It sends the current commit of `main` to the Mac, runs `tsc`, the unit tests, the build and `npx playwright test --workers=1` there at low priority, waits, and prints the result. Meanwhile run the parts that only work on this PC (`npm run desktop:win` and `npm run test:desktop`) here at the same time. Exit code 0 (`MAC-GATE: PASSED`) counts as passing `tsc`, the unit tests, the build and Playwright for that commit. Exit code 1 is a failure: it prints the failing tests, so fix them and commit again. Exit code 2 means the Mac was unreachable or too slow: run those commands locally as above. The Mac retries a failed browser test once and reports any test that only passed on the retry as flaky. A failure after the retry is real until you prove otherwise. If a test fails on the Mac but passes when you run it alone here on the same commit, record its name in the Overnight log as a suspected flaky test and make the test wait on state instead of on fixed timeouts or frame counts. Do not just raise a timeout or delete an assertion. A failure that only happens on the Mac is still a failure to investigate, not to ignore. Do not use the Mac for anything else.
+
 ```powershell
 git status --short
 ```
