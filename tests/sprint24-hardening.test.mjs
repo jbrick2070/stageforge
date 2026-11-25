@@ -737,14 +737,29 @@ test('Sprint 24 (Codex SF-M1): live TOCTOU pre-flight staleness and runtime haza
   assert.equal(crowdScanReport.overallStatus, 'blocked');
   assert.equal(crowdScanReport.canArm, false);
 
-  // Verify App.tsx wires `overallStatus === 'blocked' || preflightReport.stale` while `liveDmx.isLive` to `emergencyStopOnFault`.
+  // Codex qa-04 R2: Revoking a single warning acknowledgement while live keeps stale=false and overallStatus='warnings',
+  // yet flips `canArm` to `false` immediately so `!preflightReport.canArm` shuts down live output!
+  const firstAckedRowId = Object.keys(acks.acknowledgedRows)[0];
+  assert.ok(firstAckedRowId, 'club_stage must have at least one acknowledged warning row');
+  const revokedRows = { ...acks.acknowledgedRows };
+  delete revokedRows[firstAckedRowId];
+  const revokedReport = preflight.evaluatePreflight({
+    rig: baseRig,
+    cues: presets.SHOW_CUES,
+    showState: cueGoState,
+    dmxSettings,
+    acks: { ...acks, acknowledgedRows: revokedRows },
+  });
+  assert.equal(revokedReport.stale, false);
+  assert.equal(revokedReport.overallStatus, 'warnings');
+  assert.equal(revokedReport.canArm, false, 'revoking a warning ack must flip canArm to false');
+
+  // Verify App.tsx gates live output on `!preflightReport.canArm` (and `!rep.canArm`) AND stops output synchronously
+  // in `openDocument` BEFORE `engineRef.current?.setShowState(look)` (Codex qa-04 R1 & R2).
   const appSrc = await fs.readFile(path.join(repoRoot, 'src/App.tsx'), 'utf8');
-  assert.match(
-    appSrc,
-    /if\s*\(\s*preflightReport\.overallStatus\s*===\s*'blocked'\s*\|\|\s*preflightReport\.stale\s*\)\s*\{[\s\S]{0,400}?clearAllBumps\(\);[\s\S]{0,160}?emergencyStopOnFault/,
-  );
-  assert.match(
-    appSrc,
-    /if\s*\(\s*rep\s*&&\s*\(\s*rep\.overallStatus\s*===\s*'blocked'\s*\|\|\s*rep\.stale\s*\)\s*\)\s*\{[\s\S]{0,400}?emergencyStopOnFault/,
-  );
+  assert.match(appSrc, /if\s*\(\s*!preflightReport\.canArm\s*\)\s*\{[\s\S]{0,400}?clearAllBumps\(\);[\s\S]{0,160}?emergencyStopOnFault/);
+  assert.match(appSrc, /if\s*\(\s*rep\s*&&\s*!rep\.canArm\s*\)\s*\{[\s\S]{0,400}?emergencyStopOnFault/);
+  const stopIdx = appSrc.indexOf("stopLiveOutputBeforeStructuralChange('Opened a show file");
+  const setShowIdx = appSrc.indexOf('engineRef.current?.setShowState(look)', stopIdx);
+  assert.ok(stopIdx > 0 && setShowIdx > stopIdx, 'openDocument must synchronously stop live output BEFORE setting imported look on StageEngine');
 });

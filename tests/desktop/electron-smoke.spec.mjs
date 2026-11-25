@@ -426,14 +426,22 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
     await dmxPage.waitForTimeout(1000);
     expect(packets.length).toBe(0);
 
-    // 2. Patch a verified catalogue personality (ETC ColorSource PAR, U1 433..462) onto MAC Aura Pro RGBW so Universe 1
-    //    has an implemented physical personality alongside generic non-catalogue fixtures (U1 1..432, which MUST stay 0 per SF-H1).
+    // 2. Patch verified catalogue personalities onto MAC Aura Pro RGBW (ETC ColorSource PAR, U1 433..462) and
+    //    Molefay 4-Lite Warm (CHAUVET STRIKE 4, U1 129..144) so Universe 1 has implemented physical personalities
+    //    alongside generic non-catalogue fixtures (U1 1..128 and 145..432, which MUST stay 0 per SF-H1).
     await dmxPage.getByRole('button', { name: 'Rig builder', exact: true }).click();
     await dmxPage.getByRole('button', { name: /Choose equipment model for MAC Aura Pro RGBW/ }).first().click();
     const eqPicker = dmxPage.getByRole('dialog', { name: /Equipment catalogue for/ });
     await expect(eqPicker).toBeVisible();
     await eqPicker.getByRole('searchbox', { name: 'Search equipment catalogue' }).fill('ColorSource PAR');
     await eqPicker.getByRole('button', { name: /ETC ColorSource PAR/ }).click();
+    await eqPicker.getByRole('button', { name: 'Apply model' }).click();
+    await expect(eqPicker).toBeHidden();
+
+    await dmxPage.getByRole('button', { name: /Choose equipment model for Molefay 4-Lite Warm/ }).first().click();
+    await expect(eqPicker).toBeVisible();
+    await eqPicker.getByRole('searchbox', { name: 'Search equipment catalogue' }).fill('STRIKE 4');
+    await eqPicker.getByRole('button', { name: /CHAUVET STRIKE 4/ }).click();
     await eqPicker.getByRole('button', { name: 'Apply model' }).click();
     await expect(eqPicker).toBeHidden();
     await dmxPage.getByRole('button', { name: 'Close Rig Builder' }).click();
@@ -564,10 +572,11 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
         }
         await pfCtx.getByRole('button', { name: 'Done', exact: true }).click();
       }
+      const countBeforeStep5 = packets.length;
       await dmxPage.getByTestId('dmx-output-arm').click();
       await dmxPage.getByTestId('dmx-output-go-live').click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
-      await expect.poll(() => packets.length > afterDisableCount + 2, { timeout: 5000 }).toBe(true);
+      await expect.poll(() => packets.length > countBeforeStep5 + 2, { timeout: 5000 }).toBe(true);
 
       const beforeCtxLoss = packets.length;
       await dmxPage.evaluate(() => {
@@ -618,6 +627,79 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       await dmxPage.getByRole('button', { name: 'Close Rig Builder' }).click();
       await dmxPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
 
+      // 4e. Sprint 24 (Codex qa-04 R2): Revoking a pre-flight warning acknowledgement while live DMX is active MUST
+      //     immediately stop physical output (3 blackout frames + 3 Stream_Terminated), NOT merely disarm!
+      if ((await dmxPage.getByTestId('dmx-advanced-details').getAttribute('open')) === null) {
+        await dmxPage.getByTestId('dmx-advanced-summary').click();
+      }
+      await dmxPage.getByTestId('dmx-open-preflight').click();
+      const pfRevoke = dmxPage.getByTestId('preflight-panel');
+      await pfRevoke.getByTestId('preflight-run-check').click();
+      const ackRevoke = pfRevoke.locator('input[type="checkbox"][data-testid^="preflight-ack-"]');
+      for (let i = 0; i < (await ackRevoke.count()); i++) {
+        if (!(await ackRevoke.nth(i).isChecked())) await ackRevoke.nth(i).check();
+      }
+      const lasRevoke = pfRevoke.locator('input[type="checkbox"][data-testid^="preflight-laser-inhibit-"]');
+      for (let i = 0; i < (await lasRevoke.count()); i++) {
+        if (!(await lasRevoke.nth(i).isChecked())) await lasRevoke.nth(i).check();
+      }
+      await pfRevoke.getByRole('button', { name: 'Done', exact: true }).click();
+      await dmxPage.getByTestId('dmx-output-arm').click();
+      await dmxPage.getByTestId('dmx-output-go-live').click();
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
+      const beforeRevoke = packets.length;
+      await dmxPage.getByTestId('dmx-open-preflight').click();
+      await expect(pfRevoke).toBeVisible();
+      await ackRevoke.first().uncheck();
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
+      await expect(dmxPage.getByTestId('live-dmx-stopped-badge')).toContainText('Output stopped:');
+      await expect.poll(() => {
+        const tail = packets.slice(beforeRevoke).filter((p) => p.universe === 1);
+        const termIdx = tail.findIndex((p) => (p.options & SACN_OPT_STREAM_TERMINATED) !== 0);
+        return termIdx >= 3 && tail.slice(termIdx).length >= 3;
+      }, { timeout: 5000 }).toBe(true);
+      await ackRevoke.first().check();
+      await pfRevoke.getByRole('button', { name: 'Done', exact: true }).click();
+      await dmxPage.getByTestId('live-dmx-stopped-dismiss').click();
+
+      // 4f. Sprint 24 (Codex qa-04 R1): Opening a show file while live DMX is active MUST synchronously detach StageEngine's
+      //     frame listener BEFORE applying the imported look (`blinderLevel: 1`), so zero Strike 4 bytes (U1 129..144) escape!
+      await dmxPage.getByTestId('dmx-output-arm').click();
+      await dmxPage.getByTestId('dmx-output-go-live').click();
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
+      const countAtImportLive = packets.length;
+      await expect.poll(() => packets.length > countAtImportLive + 2, { timeout: 5000 }).toBe(true);
+
+      const rawLegacyShow = JSON.parse(await readFile(path.join(root, 'tests/fixtures/legacy-v1.stageforge.show.json'), 'utf8'));
+      rawLegacyShow.rig.venue = 'club';
+      rawLegacyShow.look.blackout = false;
+      rawLegacyShow.look.masterDimmer = 1;
+      rawLegacyShow.look.blinderLevel = 1;
+      rawLegacyShow.look.atmo = { ...rawLegacyShow.look.atmo, smokeOutput: 1, hazeLevel: 1 };
+
+      const beforeOpenDoc = packets.length;
+      await dmxPage.getByRole('button', { name: 'Show files', exact: true }).click();
+      const showFilesDialog = dmxPage.getByRole('dialog', { name: 'Show files' });
+      await expect(showFilesDialog).toBeVisible();
+      await showFilesDialog.getByLabel('Open show file').setInputFiles({
+        name: 'HotBlinderImport.stageforge.show.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(JSON.stringify(rawLegacyShow), 'utf8'),
+      });
+      await expect(showFilesDialog).toBeHidden();
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
+      await expect(dmxPage.getByTestId('live-dmx-stopped-badge')).toContainText('Output stopped:');
+      await expect.poll(() => {
+        const tail = packets.slice(beforeOpenDoc).filter((p) => p.universe === 1);
+        const termIdx = tail.findIndex((p) => (p.options & SACN_OPT_STREAM_TERMINATED) !== 0);
+        return termIdx >= 3 && tail.slice(termIdx).length >= 3;
+      }, { timeout: 5000 }).toBe(true);
+      // Verify zero Strike 4 blinder bytes (0-based 128..143) escaped onto Universe 1 during show open!
+      for (const p of packets.slice(beforeOpenDoc).filter((pkt) => pkt.universe === 1)) {
+        expect(p.slots.slice(128, 144).every((v) => v === 0)).toBe(true);
+      }
+      await dmxPage.getByTestId('live-dmx-stopped-dismiss').click();
+
       // 5. Re-enable and forcibly crash the renderer: main process MUST still send blackout + terminate.
       // (Re-expand Advanced first; step 4 triggered a cue which may make pre-flight stale, so refresh if needed.)
       if ((await dmxPage.getByTestId('dmx-advanced-details').getAttribute('open')) === null) {
@@ -637,10 +719,11 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
         }
         await pf2.getByRole('button', { name: 'Done', exact: true }).click();
       }
+      const countBeforeCrashArm = packets.length;
       await dmxPage.getByTestId('dmx-output-arm').click();
       await dmxPage.getByTestId('dmx-output-go-live').click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
-      await expect.poll(() => packets.length > afterDisableCount + 2, { timeout: 5000 }).toBe(true);
+      await expect.poll(() => packets.length > countBeforeCrashArm + 2, { timeout: 5000 }).toBe(true);
 
       const beforeCrash = packets.length;
       await dmxApp.evaluate(({ BrowserWindow }) => {

@@ -289,6 +289,7 @@ export const App: React.FC = () => {
   const deskSnapshotRef = useRef<DeskSessionSnapshot | null>(null);
 
   const [savedDesign, setSavedDesign] = useState(readSavedDesign);
+  const stopLiveOutputSyncRef = useRef<(reason: string) => void>(() => {});
   const nativeStage = useRef<NativeStage | undefined>(undefined);
   const interchangeRef = useRef<ShowInterchange | undefined>(undefined);
   const mvrResourcesRef = useRef<Map<string, Uint8Array> | undefined>(undefined);
@@ -299,6 +300,11 @@ export const App: React.FC = () => {
   };
   const installStage = (stage?: NativeStage) => {
     if (!capabilitiesRef.current.edit) return;
+    const prevGeo = JSON.stringify({ walls: nativeStage.current?.walls ?? null, layout: nativeStage.current?.layout ?? null });
+    const nextGeo = JSON.stringify({ walls: stage?.walls ?? null, layout: stage?.layout ?? null });
+    if (prevGeo !== nextGeo) {
+      stopLiveOutputSyncRef.current('Stage layout changed while live output was active — re-run pre-flight.');
+    }
     setStageDirect(stage);
   };
   const installInterchange = (interchange?: ShowInterchange, resources?: Map<string, Uint8Array>) => {
@@ -560,6 +566,24 @@ export const App: React.FC = () => {
   const liveDmxRef = useRef(liveDmx);
   liveDmxRef.current = liveDmx;
 
+  // Synchronous fail-closed barrier (Codex qa-04 R1): detach StageEngine's DMX frame listener and initiate
+  // emergency blackout/shutdown BEFORE any document/rig/stage/MVR/ILDA/cue/ack mutation touches StageEngine.
+  const stopLiveOutputBeforeStructuralChange = useCallback(
+    (reason: string) => {
+      const dmx = liveDmxRef.current;
+      if (dmx.isLive) {
+        setLiveSafetyViolation(reason);
+        clearAllBumps();
+        engineRef.current?.setDmxFrameListener(undefined);
+        void dmx.emergencyStopOnFault(`Output stopped: ${reason}`);
+      } else if (dmx.armed) {
+        dmx.disarm();
+      }
+    },
+    [clearAllBumps],
+  );
+  stopLiveOutputSyncRef.current = stopLiveOutputBeforeStructuralChange;
+
   // Memoize heavy static rigging/power reports on rig + stage layout only so console faders never recompute them.
   const preflightLoads = useMemo(() => evaluateRigLoads(rig, studioStage, { applyD8Derate: true }), [rig, studioStage]);
   const preflightPower = useMemo(() => computePowerReport(rig, studioStage), [rig, studioStage]);
@@ -660,9 +684,9 @@ export const App: React.FC = () => {
       }
       if (liveDmxRef.current.isLive) {
         const rep = preflightRef.current;
-        if (rep && (rep.overallStatus === 'blocked' || rep.stale)) {
+        if (rep && !rep.canArm) {
           const reason =
-            rep.blockingReasons[0] ?? 'Pre-flight safety check became failing or stale while live output was active.';
+            rep.blockingReasons[0] ?? 'Pre-flight safety check is no longer eligible while live output is active.';
           setLiveSafetyViolation(reason);
           clearAllBumps();
           void liveDmxRef.current.emergencyStopOnFault(`Output stopped: ${reason}`);
@@ -678,17 +702,18 @@ export const App: React.FC = () => {
     };
   }, [clearAllBumps, live.measure, liveDmx.isLive, measureOptions]);
 
-  // Fail-closed live TOCTOU enforcement (SF-M1): if any rig/patch/power/cue/ILDA/routing edit makes pre-flight
-  // stale or blocked (including activating audienceScan) while output is live, immediately blackout, stop, and disarm.
+  // Fail-closed live TOCTOU enforcement (SF-M1 & qa-04 R2): if `!preflightReport.canArm` becomes true for ANY reason
+  // while output is live (stale revision, hard block, revoked warning ack, un-inhibited laser, audienceScan),
+  // immediately blackout, stop, and disarm.
   useEffect(() => {
     if (!liveDmx.isLive) {
       setLiveSafetyViolation(null);
       return;
     }
-    if (preflightReport.overallStatus === 'blocked' || preflightReport.stale) {
+    if (!preflightReport.canArm) {
       const reason =
         preflightReport.blockingReasons[0] ??
-        'Pre-flight safety check became failing or stale while live output was active.';
+        'Pre-flight safety check is no longer eligible while live output is active.';
       setLiveSafetyViolation(reason);
       clearAllBumps();
       void liveDmxRef.current.emergencyStopOnFault(`Output stopped: ${reason}`);
@@ -729,28 +754,37 @@ export const App: React.FC = () => {
   }, []);
 
   const handleToggleRowAck = useCallback((row: PreflightRow, checked: boolean) => {
+    if (!checked) {
+      stopLiveOutputBeforeStructuralChange('Pre-flight warning acknowledgement was revoked while live output was active.');
+    }
     setPreflightAcks((prev) => {
       const nextRows = { ...prev.acknowledgedRows };
       if (checked) nextRows[row.id] = row.rowFingerprint;
       else delete nextRows[row.id];
       return { ...prev, acknowledgedRows: nextRows };
     });
-  }, []);
+  }, [stopLiveOutputBeforeStructuralChange]);
 
   const handleToggleLaserAck = useCallback((projectorKey: string, checked: boolean) => {
     const row = preflightRef.current?.rows.find((r) => r.isLaser && r.projectorKey === projectorKey);
     if (!row) return;
+    if (!checked) {
+      stopLiveOutputBeforeStructuralChange('Laser pre-flight acknowledgement was revoked while live output was active.');
+    }
     setPreflightAcks((prev) => {
       const nextLasers = { ...prev.acknowledgedLasers };
       if (checked) nextLasers[projectorKey] = row.rowFingerprint;
       else delete nextLasers[projectorKey];
       return { ...prev, acknowledgedLasers: nextLasers };
     });
-  }, []);
+  }, [stopLiveOutputBeforeStructuralChange]);
 
   const handleToggleLaserInhibit = useCallback((projectorKey: string, inhibited: boolean) => {
     const rev = preflightRef.current?.configRevision;
     if (!rev) return;
+    if (!inhibited) {
+      stopLiveOutputBeforeStructuralChange('Laser physical DMX inhibit was removed while live output was active.');
+    }
     setPreflightAcks((prev) => {
       const nextInhibited = { ...prev.inhibitedLasers };
       const nextAcked = { ...prev.acknowledgedLasers };
@@ -762,7 +796,7 @@ export const App: React.FC = () => {
       }
       return { ...prev, inhibitedLasers: nextInhibited, acknowledgedLasers: nextAcked };
     });
-  }, []);
+  }, [stopLiveOutputBeforeStructuralChange]);
 
   useEffect(() => {
     engineRef.current?.setIldaSettings(ildaMode, ildaFps);
@@ -770,6 +804,7 @@ export const App: React.FC = () => {
 
   const applyLoadedIlda = useCallback((clip: IldaClip) => {
     if (!capabilitiesRef.current.edit) return;
+    stopLiveOutputBeforeStructuralChange('ILDA laser clip changed while live output was active — re-run pre-flight.');
     setIldaClip(clip);
     engineRef.current?.setIldaClip(clip);
     previewRig();
@@ -817,10 +852,11 @@ export const App: React.FC = () => {
 
   const handleClearIlda = useCallback(() => {
     if (!capabilitiesRef.current.edit) return;
+    stopLiveOutputBeforeStructuralChange('ILDA laser clip changed while live output was active — re-run pre-flight.');
     setIldaClip(null);
     engineRef.current?.setIldaClip(null);
     showToast('Unloaded ILDA clip (back to procedural laser patterns).');
-  }, [showToast]);
+  }, [showToast, stopLiveOutputBeforeStructuralChange]);
 
   // Revoke after a grace period so a renderer still holding the old URL can swap first.
   const releaseUrl = (url: string, urlSet = mediaUrls.current) => {
@@ -2055,6 +2091,7 @@ export const App: React.FC = () => {
 
   const handleSaveCue = (cueId: string) => {
     if (!capabilitiesRef.current.edit) return;
+    stopLiveOutputBeforeStructuralChange('Cue list changed while live output was active — re-run pre-flight.');
     previewRig();
     setCues((prev) =>
       prev.map((c) =>
@@ -2124,6 +2161,7 @@ export const App: React.FC = () => {
   };
   const applyRig = useCallback((next: RigConfig, saveNow = false) => {
     if (!capabilitiesRef.current.edit) return;
+    stopLiveOutputBeforeStructuralChange('Rig or patch changed while live output was active — re-run pre-flight.');
     // Loading a preset leaves storage alone, but the first edit to one becomes the saved design,
     // as long as that doesn't replace a design already saved in the single slot.
     if (next.schemaVersion !== 1 && !savedDesign && !isPristinePreset(next)) next = { ...next, schemaVersion: 1 };
@@ -2134,7 +2172,7 @@ export const App: React.FC = () => {
     window.clearTimeout(saveTimer.current);
     if (saveNow) flushDesign();
     else saveTimer.current = window.setTimeout(flushDesign, 250);
-  }, [savedDesign, flushDesign]);
+  }, [savedDesign, flushDesign, stopLiveOutputBeforeStructuralChange]);
 
   // Always-fresh ref mirror for snapshot fields so async viewer entry never captures stale render-closure state (H1).
   const deskLiveStateRef = useRef({
@@ -2496,6 +2534,7 @@ export const App: React.FC = () => {
     try { object = JSON.parse(json); } catch { throw new Error('Choose a valid StageForge JSON file.'); }
     if (!object || typeof object !== 'object' || !('format' in object)) {
       const next = normalizeDesign(parseRigJson(json));
+      stopLiveOutputBeforeStructuralChange('Opened a new rig while live output was active — re-run pre-flight.');
       setPendingMvr(null);
       aiBridgeRef.current?.notifyDocumentChanged();
       installStage();
@@ -2511,6 +2550,7 @@ export const App: React.FC = () => {
     const referenced = referencedFiles(file.media, file.cues, file.timeline, file.stage);
     const wall = file.media?.screen ?? NO_SCREEN;
 
+    stopLiveOutputBeforeStructuralChange('Opened a show file while live output was active — re-run pre-flight.');
     setPendingMvr(null);
     aiBridgeRef.current?.notifyDocumentChanged();
     pruneAssets(referenced);
@@ -2574,6 +2614,7 @@ export const App: React.FC = () => {
       return;
     }
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
+    stopLiveOutputBeforeStructuralChange('Imported an MVR scene while live output was active — re-run pre-flight.');
     setPendingMvr(null);
     aiBridgeRef.current?.notifyDocumentChanged();
     const { rig: next, stage, interchange, resources, report } = pending.result;
@@ -3482,6 +3523,7 @@ export const App: React.FC = () => {
         tag: 'USER', accent: showState.primaryColor, state: structuredClone(showState), screen: cueScreen() })}
         onApply={next => {
           if (!capabilitiesRef.current.edit) return;
+          stopLiveOutputBeforeStructuralChange('Cue list changed while live output was active — re-run pre-flight.');
           const index = next.findIndex(c => c.id === activeCueId);
           if (index < 0) { setActiveCueId(null); setCueModified(false); }
           if (index < 0 || !next[index + 1] || next[index].followSeconds !== cues[currentIndex]?.followSeconds) setFollow(null);
