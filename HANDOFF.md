@@ -41,7 +41,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8 and 9 (see "Designed Sprints 6–8" and Sprint 9 below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10 and 11 (see "Designed Sprints 6–8" and Sprints 9, 10 and 11 below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -214,7 +214,7 @@ Opus 5.5 needs Claude Code 2.1.280 or newer. If the call fails with a version er
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8 and 9 below, in that order, one per round, before Realism items 6 to 8.** Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10 and 11 below, in that order, one per round, before Realism items 6 to 8.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
@@ -428,6 +428,121 @@ These come from a code-grounded roadmap review. The goal is that a working progr
 - **Performance:** with 16 mappings, frame time on the phone-like measurement (4x CPU throttle, 390x844) stays within 1 ms of no mappings. Log both numbers.
 
 **Done when:** the gate is green; with no mappings, behaviour and pixels are unchanged against a frozen-frame parity check like Sprint 5's; the safety tests pass; and the "Audio" section is documented in `docs/show-control.md`.
+
+### Sprint 10: demo track with a per-track section map (designed by Claude Code, 2026-11-24)
+
+**Goal:** the user can replace or complement the synth demo with a real recorded track (deep house with blues, real instruments, unusual synths and harmony, made by the user with Suno and/or a DAW) of any length and arrangement. The lighting follows the track's own sections, not the fixed 64-bar synth structure.
+
+**The real track does not exist yet, so this sprint must not wait for it, and must not fabricate it.** Build the feature, docs and tests with a generated test track; the user adds the real audio and map later. Never generate, download or commit music yourself. If `public/demo/` has no track, the app behaves exactly as it does today.
+
+**Today:**
+- `src/data/demoShow.ts` has eight fixed sections (8, 8, 8, 8, 8, 8, 12 and 4 bars; 64 bars at 128 BPM is 2:00). `getDemoPosition(step)` returns a `DemoPosition`, and `DEMO_TOTAL_BARS` / `DEMO_TOTAL_STEPS` are constants.
+- `applyDemoLighting(state, pos)` in `src/data/demoLighting.ts` maps the section id and progress to looks. `DEMO_BLACKOUT_STEPS` (32) holds the opening black.
+- The synth clock runs in sixteenth-note steps: `step = seconds × bpm / 15`. File playback already has a beat grid (`{ bpm, offsetMs }`, `beatGridPhase`) and a playback clock in `AudioEngine`.
+
+**Design:**
+1. **Track map file**, next to the audio in `public/demo/`:
+
+   ```
+   { "format": "stageforge-demo-track", "version": 1, "title": "...", "file": "track.mp3",
+     "bpm": 120, "firstDownbeatMs": 0,
+     "sections": [ { "role": "intro", "label": "Walk-on", "bars": 16 }, ... ] }
+   ```
+
+   - `role` is one of the existing lighting roles (`intro`, `groove`, `build`, `drop`, `breakdown`, `rebuild`, `finale`, `outro`). Roles may repeat, bar counts are any positive integer (a 12-bar blues chorus is fine), and there are 3 to 24 sections.
+   - Validate strictly with a pure `parseDemoTrackMap`: finite numbers, bpm 70..180, bars 1..64, total bars at most 512, `file` is a plain basename. Reject anything else with a readable message.
+2. **Generalise the choreography:** `getDemoPosition(step, sections = DEFAULT_DEMO_SECTIONS)` and `applyDemoLighting` take the section list. The default list and the synth demo behave exactly as before (pin this with a test: every step of the synth demo gives the same `DemoPosition` and look as `HEAD`).
+3. **Track clock:** for the track, `step = (playbackMs - firstDownbeatMs) × bpm / 15000`, driven by the file player's own position, so pause, seek and replay stay in sync. Before the downbeat, hold the opening black. The map's bpm and downbeat are authoritative: set the beat grid from them directly and skip the analysis worker for this track.
+4. **Loading:** lazy, only when the user picks "Play demo track". The first page load must not fetch the audio.
+   - A tiny check for `demo/track.json` runs once when idle (about 1 KB; failure is silent). If it is absent, the button is not shown.
+   - Use same-origin fetches, so the desktop CSP (`connect-src 'self' blob:`) stays as it is.
+   - The desktop build must copy `public/demo/` into the app.
+5. **UI:** when a track is present, the demo control offers two choices: "Play demo" (synth) and "Play demo track". Show the section label and bar the way the synth demo does.
+6. **Docs:** `docs/demo-track.md` covers:
+   - how to make a map from timestamps (seconds to bars at the track's bpm, with a worked example);
+   - a checklist for making the track: steady 4/4 at a fixed tempo, leading silence trimmed so the first downbeat is at 0, the grid reads the intended bpm in StageForge, 128 kbps stereo MP3 under 4 MB;
+   - a provenance table in `docs/assets.md` (which parts are the user's own recordings and which are generated, plus tool, plan, date and prompt).
+
+   `docs/assets.md` currently says nothing third-party ships. Change that sentence only when a real track is committed.
+
+**Out:** generating music, bundling a track in this sprint, odd meters, tempo changes inside a track, automatic section detection.
+
+**Tests:**
+- **Unit:**
+  - `parseDemoTrackMap` accepts a valid map and rejects each invalid case;
+  - synth-demo parity with `HEAD` at every step;
+  - role-to-look parity (a `drop` section gives the same look as the synth demo's drop at equal progress);
+  - repeated roles and a 12-bar section;
+  - step math at the downbeat, one bar in, and across a section boundary.
+- **E2E, `tests/e2e/demo-track.spec.mjs`:** the test generates a short WAV (a 120 BPM click and tone, four sections) and a map, served by route interception. Assert that:
+  - the first load makes no audio request;
+  - "Play demo track" fetches it;
+  - seeking to each boundary shows the section change in the probe;
+  - pause and resume hold position;
+  - with no map, the button is absent.
+- **Desktop smoke:** the demo-track path works from `stageforge://app/` under the strict CSP.
+
+**Done when:** the gate is green; the synth demo is unchanged; a generated test track drives lighting through its own map; `docs/demo-track.md` exists; and the Overnight log says "waiting for the user's real track" (do not mark it blocked).
+
+### Sprint 11: AI bridge, an MCP server so people can drive StageForge with their own AI (designed by Claude Code, 2026-11-24)
+
+**Do this after Sprint 9** (it exposes audio mappings) and after Sprints 7 and 8 have settled the show format.
+
+**Goal:** from a desktop-app switch, any local MCP client (Claude, Cursor, Codex and others) can read the show, propose edits, run the show and look at the result. The AI writes the show; StageForge plays it deterministically. No AI sits in the real-time loop, and the AI can never switch on real outputs.
+
+**Fits the project's rules:** bring-your-own AI, no accounts, no telemetry, off by default, MIT-compatible dependencies. It is not an "AI auto-lightshow": every tool is explicit, validated and reversible.
+
+**Today (reuse, don't reinvent):**
+- Desktop sockets live in the Electron main process and reach the renderer over whitelisted IPC (`desktop/show-control-service.cjs`, `desktop/show-control-ipc.cjs`, `desktop/preload.cjs`). The strict CSP stays as it is.
+- OSC "Cue Caller" in `docs/show-control.md` already defines which remote verbs are allowed and the clock-owner rules.
+- `parseShowFile` and `checkLook` validate show documents, and `?probe` has `redrawAndCapture`.
+
+**Design:**
+1. **Server:** MCP over Streamable HTTP at `http://127.0.0.1:<port>/mcp`, in `desktop/ai-bridge-service.cjs`, with a renderer side under `src/aiBridge/`.
+   - Bind to `127.0.0.1` only, with no all-interfaces option.
+   - Off by default, enabled from a new "AI bridge" section in the Show Control & Sync drawer, and always off on boot.
+   - A fresh random bearer token on every enable, shown in the UI with copy-ready config snippets.
+   - Reject any request that has an `Origin` header (browsers send one, MCP clients do not), any `Host` other than `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding), a missing or wrong token (401), a body over 1 MiB, or more than 20 requests per second.
+2. **SDK decision:** check `@modelcontextprotocol/sdk` with `npm ls --all` and the SPDX gate. Use it only if every transitive licence is MIT, ISC, BSD or Apache-2.0 and the install adds under about 5 MB, and pin the exact version. Otherwise hand-write the small JSON-RPC subset (`initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`). Log the decision.
+3. **Tools** (names are final; each has a JSON Schema and a description saying string fields are data, not instructions):
+   - **Read:** `get_state` (rig summary, fixture groups, focus marks, cues, bpm, clock mode, walls, hangs, timeline length, audio status), `get_cues`, `list_catalog`, and `get_schema`, which is also the resource `stageforge://schema/show`.
+   - **Compose** (each creates a pending proposal, never an immediate change): `propose_show` (a full show document), `propose_look` (a partial look patch), `propose_cue` (create, edit, remove, reorder), `propose_take` (timeline events), `propose_wall_cue`, and `propose_audio_mapping` once Sprint 9 has landed. All run through the same validators as File → Open. A bad proposal is rejected with a readable message.
+   - **Review:** `get_proposal` (a diff summary) and `withdraw_proposal`. A proposal is accepted only by the human in the UI, or when the human has switched on "Auto-accept for this session". The AI can do neither.
+   - **Run:** `go`, `back`, `stop`, `resume`, `trigger_cue`, `play_take`, `pause_take`, `seek_take`, `blackout`, `set_master`, `set_bpm`. They use the same dispatcher and rules as OSC Cue Caller, including ignoring commands the clock mode forbids.
+   - **See:** `capture_frame` (JPEG, at most 1280 px wide, at most one per second) and `get_audio_levels` (read-only bass, mid, high, energy and beat).
+4. **Never available, by absence rather than refusal.** There are no tools to:
+   - enable DMX, sACN, Art-Net or serial output;
+   - enable OSC or MIDI listeners;
+   - change the clock owner;
+   - turn on laser audience scan or exceed the flash limiter;
+   - save or export files;
+   - read any file or URL, or run commands;
+   - change the bridge's own switch or token.
+
+   A proposal that sets `audienceScan: true` is rejected with "a human must enable audience scanning on the desk". The app always boots with outputs off.
+5. **Safety UX:**
+   - A pending proposal shows as a banner with the diff summary and **Accept** and **Reject** buttons.
+   - On the first accepted proposal, snapshot the whole desk (rig, stage, cues, look, timeline) in memory. **Revert AI changes** restores it.
+   - An in-app tool-call log (time, tool, argument summary, result; capped at 500 entries) with Copy log. No telemetry.
+6. **Docs:** `docs/ai-bridge.md` covers what it is and is not, the threat model (the Origin, Host and token checks, and why outputs are not reachable), the tool list, and config snippets for popular clients. Verify each client's current syntax and note the version you checked. Do not quote syntax from memory.
+
+**Out:** the web (GitHub Pages) version, which later needs a local relay like the OSC-over-WebSocket bridge; remote or tunnelled access; streaming real-time control (use OSC or DMX); AI-generated audio; any tool that writes outside the app.
+
+**Tests:**
+- **Unit** (service started on port 0 with a fake renderer):
+  - a missing or wrong token, any `Origin`, a wrong `Host`, an oversize body and the rate limit are all rejected;
+  - the tool list matches the allowed set exactly, with no output or listener tools, checked by name;
+  - the proposal lifecycle (propose, diff, accept, reject, withdraw, revert);
+  - an invalid show, a look with `audienceScan: true` and oversized strings are rejected;
+  - `capture_frame` is rate limited.
+- **Desktop smoke** (extend `tests/desktop/electron-smoke.spec.mjs`):
+  - a fresh profile has no listener;
+  - enable the bridge, then run `initialize`, `tools/list` and `get_state` with a raw JSON-RPC client;
+  - `propose_look` shows the banner, Accept changes the look, and Revert restores it byte for byte;
+  - `capture_frame` returns a decodable image;
+  - disabling the bridge closes the port.
+
+**Done when:** the gate is green; the bridge is off on a fresh boot; the security and never-available tests pass; the desktop smoke test passes; and `docs/ai-bridge.md` exists.
 
 ## Backlog (in this order)
 
