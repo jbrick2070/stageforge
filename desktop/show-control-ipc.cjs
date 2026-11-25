@@ -8,6 +8,7 @@ const { isAuthorizedDmxSender } = require('./dmx-ipc.cjs');
 
 function createShowControlIpcHandlers(getService, options = {}) {
   const isRestricted = typeof options.isRestricted === 'function' ? options.isRestricted : () => false;
+  const interlock = options.interlock || null;
 
   async function onControl(event, command) {
     const svc = getService();
@@ -73,6 +74,8 @@ function createShowControlIpcHandlers(getService, options = {}) {
       }
       case 'send': {
         if (restricted) return false;
+        // Suspend outgoing OSC feedback and Art-Net timecode TX while AI bridge holds authority.
+        if (interlock && interlock.isBridgeHoldingAuthority()) return false;
         if (keys.length !== 2 || !command.payload || typeof command.payload !== 'object') {
           throw new Error('Invalid show control send command.');
         }

@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build as viteBuild } from 'vite';
 
 const ALLOWED_LICENSES = new Set(['MIT', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', '0BSD', 'Apache-2.0']);
 
@@ -158,11 +159,37 @@ async function main() {
     copyFile(path.join(source, 'show-control-service.cjs'), path.join(app, 'show-control-service.cjs')),
     copyFile(path.join(source, 'show-control-ipc.cjs'), path.join(app, 'show-control-ipc.cjs')),
     copyFile(path.join(source, 'viewer-ipc.cjs'), path.join(app, 'viewer-ipc.cjs')),
+    copyFile(path.join(source, 'output-interlock.cjs'), path.join(app, 'output-interlock.cjs')),
+    copyFile(path.join(source, 'ai-bridge-tools.cjs'), path.join(app, 'ai-bridge-tools.cjs')),
+    copyFile(path.join(source, 'ai-bridge-service.cjs'), path.join(app, 'ai-bridge-service.cjs')),
+    copyFile(path.join(source, 'ai-bridge-ipc.cjs'), path.join(app, 'ai-bridge-ipc.cjs')),
+    copyFile(path.join(root, 'src', 'schemas', 'show-v8.schema.json'), path.join(app, 'show-v8.schema.json')),
     copyFile(path.join(source, 'preload.cjs'), path.join(app, 'preload.cjs')),
     copyFile(path.join(source, 'resources', 'icon.png'), path.join(app, 'icon.png')),
     copyFile(path.join(root, 'LICENSE'), path.join(app, 'LICENSE')),
     thirdPartyNotices(root).then((text) => writeFile(path.join(app, 'THIRD_PARTY_NOTICES.txt'), text)),
   ]);
+  await viteBuild({
+    configFile: false,
+    logLevel: 'warn',
+    ssr: {
+      target: 'node',
+      noExternal: true,
+    },
+    build: {
+      ssr: path.join(source, 'mcp-sdk-entry.mjs'),
+      outDir: app,
+      emptyOutDir: false,
+      copyPublicDir: false,
+      minify: false,
+      rolldownOptions: {
+        output: {
+          format: 'cjs',
+          entryFileNames: 'mcp-sdk.cjs',
+        },
+      },
+    },
+  });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

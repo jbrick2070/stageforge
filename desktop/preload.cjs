@@ -4,9 +4,12 @@ const listeners = new Set();
 const dmxStatusListeners = new Set();
 const showControlEventListeners = new Set();
 const showControlStatusListeners = new Set();
+const aiBridgeStatusListeners = new Set();
+const aiBridgeRequestListeners = new Set();
 let pending;
 let latestDmxStatus;
 let latestShowControlStatus;
+let latestAiBridgeStatus;
 
 // Realm-independent checks: IPC values are created in the preload's isolated world.
 const isBytes = value => ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Uint8Array]';
@@ -14,6 +17,9 @@ const isBuffer = value => Object.prototype.toString.call(value) === '[object Arr
 const isUniverse = value => value === 1 || value === 2;
 const DMX_CONTROL_TYPES = new Set(['listInterfaces', 'getStatus', 'enable', 'disable', 'discover']);
 const SHOW_CONTROL_TYPES = new Set(['getStatus', 'configure', 'stop', 'send']);
+const AI_BRIDGE_CONTROL_TYPES = new Set(['getStatus', 'enable', 'disable', 'quiesced']);
+const OUTPUT_CLAIM_TYPES = new Set(['claim', 'release']);
+const OUTPUT_CLAIM_KINDS = new Set(['armed', 'serial']);
 
 function deliver(listener, args) {
   try {
@@ -55,6 +61,18 @@ ipcRenderer.on('stageforge:show-control-status', (_event, status) => {
   if (!status || typeof status !== 'object') return;
   latestShowControlStatus = status;
   for (const listener of [...showControlStatusListeners]) deliver(listener, [status]);
+});
+
+ipcRenderer.on('stageforge:ai-bridge-status', (_event, status) => {
+  if (!status || typeof status !== 'object') return;
+  latestAiBridgeStatus = status;
+  for (const listener of [...aiBridgeStatusListeners]) deliver(listener, [status]);
+});
+
+ipcRenderer.on('stageforge:ai-bridge-request', (_event, request) => {
+  if (!request || typeof request !== 'object') return;
+  if (typeof request.requestId !== 'string' || typeof request.tool !== 'string') return;
+  for (const listener of [...aiBridgeRequestListeners]) deliver(listener, [request]);
 });
 
 contextBridge.exposeInMainWorld('stageforgeDesktop', {
@@ -111,5 +129,40 @@ contextBridge.exposeInMainWorld('stageforgeDesktop', {
       return Promise.reject(new TypeError('Expected a boolean viewer mode flag'));
     }
     return ipcRenderer.invoke('stageforge:viewer-mode', active);
+  },
+  aiBridgeControl(command) {
+    if (!command || typeof command !== 'object' || Array.isArray(command) || !AI_BRIDGE_CONTROL_TYPES.has(command.type)) {
+      return Promise.reject(new TypeError('Expected a valid AI bridge control command'));
+    }
+    return ipcRenderer.invoke('stageforge:ai-bridge-control', command);
+  },
+  onAiBridgeStatus(listener) {
+    if (typeof listener !== 'function') throw new TypeError('Expected an AI bridge status listener');
+    aiBridgeStatusListeners.add(listener);
+    if (latestAiBridgeStatus) deliver(listener, [latestAiBridgeStatus]);
+    return () => aiBridgeStatusListeners.delete(listener);
+  },
+  onAiBridgeRequest(listener) {
+    if (typeof listener !== 'function') throw new TypeError('Expected an AI bridge request listener');
+    aiBridgeRequestListeners.add(listener);
+    return () => aiBridgeRequestListeners.delete(listener);
+  },
+  replyAiBridgeRequest(reply) {
+    if (!reply || typeof reply !== 'object' || Array.isArray(reply) || typeof reply.requestId !== 'string') {
+      return Promise.reject(new TypeError('Expected a valid AI bridge reply'));
+    }
+    return ipcRenderer.invoke('stageforge:ai-bridge-reply', reply);
+  },
+  outputClaim(command) {
+    if (
+      !command ||
+      typeof command !== 'object' ||
+      Array.isArray(command) ||
+      !OUTPUT_CLAIM_TYPES.has(command.type) ||
+      !OUTPUT_CLAIM_KINDS.has(command.kind)
+    ) {
+      return Promise.reject(new TypeError('Expected a valid output claim command'));
+    }
+    return ipcRenderer.invoke('stageforge:output-claim', command);
   },
 });

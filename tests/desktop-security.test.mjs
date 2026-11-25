@@ -153,6 +153,11 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
     'onShowControlEvent',
     'onShowControlStatus',
     'setViewerMode',
+    'aiBridgeControl',
+    'onAiBridgeStatus',
+    'onAiBridgeRequest',
+    'replyAiBridgeRequest',
+    'outputClaim',
   ]);
   const fire = ipcHandlers.get('stageforge:rig-command');
   const fireStatus = ipcHandlers.get('stageforge:dmx-status');
@@ -274,6 +279,39 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
   assert.deepEqual(invokedMessages.at(-1), ['stageforge:viewer-mode', true]);
   await exposedApi.setViewerMode(false);
   assert.deepEqual(invokedMessages.at(-1), ['stageforge:viewer-mode', false]);
+
+  // AI bridge & output claim IPC whitelists.
+  await assert.rejects(() => exposedApi.aiBridgeControl({ type: 'exec' }), TypeError);
+  await assert.rejects(() => exposedApi.aiBridgeControl(null), TypeError);
+  await exposedApi.aiBridgeControl({ type: 'getStatus' });
+  assert.equal(invokedMessages.at(-1)[0], 'stageforge:ai-bridge-control');
+
+  await assert.rejects(() => exposedApi.replyAiBridgeRequest(null), TypeError);
+  await assert.rejects(() => exposedApi.replyAiBridgeRequest({ ok: true }), TypeError);
+  await exposedApi.replyAiBridgeRequest({ requestId: 'r1', bridgeGeneration: 1, ok: true, result: {} });
+  assert.equal(invokedMessages.at(-1)[0], 'stageforge:ai-bridge-reply');
+
+  await assert.rejects(() => exposedApi.outputClaim({ type: 'claim', kind: 'laser' }), TypeError);
+  await assert.rejects(() => exposedApi.outputClaim({ type: 'other', kind: 'armed' }), TypeError);
+  await exposedApi.outputClaim({ type: 'claim', kind: 'armed' });
+  assert.deepEqual(invokedMessages.at(-1), ['stageforge:output-claim', { type: 'claim', kind: 'armed' }]);
+
+  const fireAiStatus = ipcHandlers.get('stageforge:ai-bridge-status');
+  const fireAiReq = ipcHandlers.get('stageforge:ai-bridge-request');
+  fireAiStatus({}, { enabled: false, state: 'off' });
+  const seenAiStatus = [];
+  const unsubAiSt = exposedApi.onAiBridgeStatus((s) => seenAiStatus.push(s));
+  assert.equal(seenAiStatus.length, 1);
+  unsubAiSt();
+  assert.throws(() => exposedApi.onAiBridgeStatus('nope'), TypeError);
+
+  const seenAiReqs = [];
+  const unsubAiReq = exposedApi.onAiBridgeRequest((r) => seenAiReqs.push(r));
+  fireAiReq({}, { bogus: true });
+  fireAiReq({}, { requestId: 'req-1', tool: 'get_state', arguments: {} });
+  assert.equal(seenAiReqs.length, 1);
+  unsubAiReq();
+  assert.throws(() => exposedApi.onAiBridgeRequest('nope'), TypeError);
 });
 
 test('serial port helpers prioritize FTDI devices, cap at 8, and desktop/prepare.mjs copies every local main.cjs require', async () => {

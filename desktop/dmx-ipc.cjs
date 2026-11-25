@@ -22,6 +22,7 @@ function isExactUint8Array512(value) {
 
 function createDmxIpcHandlers(getDmx, options = {}) {
   const isRestricted = typeof options.isRestricted === 'function' ? options.isRestricted : () => false;
+  const interlock = options.interlock || null;
 
   function onFrame(event, universe, data) {
     const dmx = getDmx();
@@ -88,18 +89,34 @@ function createDmxIpcHandlers(getDmx, options = {}) {
         if (dmx.active && dmx.ownerId !== null && dmx.ownerId !== event.sender.id) {
           throw new Error('Live DMX output is already active in another StageForge window.');
         }
-        const status = await dmx.enable(command.config, event.sender.id);
-        // Re-verify the owning renderer is still alive, on an app page, and not restricted after the async bind.
-        if (event.sender.isDestroyed() || !isAppPage(event.sender.getURL())) {
-          await dmx.shutdown('owner-gone');
-          throw new Error('Renderer closed or navigated before DMX output started.');
+        if (interlock) {
+          const check = interlock.tryBeginDmxEnable(event.sender.id, {
+            requireArmedClaim: Boolean(options.requireArmedClaim),
+          });
+          if (!check.ok) {
+            throw new Error(check.reason);
+          }
         }
-        if (isRestricted(event.sender.id)) {
-          await dmx.shutdown('viewer-mode');
-          throw new Error('DMX output is disabled in pitch viewer mode.');
+        try {
+          const status = await dmx.enable(command.config, event.sender.id);
+          // Re-verify the owning renderer is still alive, on an app page, and not restricted after the async bind.
+          if (event.sender.isDestroyed() || !isAppPage(event.sender.getURL())) {
+            await dmx.shutdown('owner-gone');
+            throw new Error('Renderer closed or navigated before DMX output started.');
+          }
+          if (isRestricted(event.sender.id)) {
+            await dmx.shutdown('viewer-mode');
+            throw new Error('DMX output is disabled in pitch viewer mode.');
+          }
+          if (interlock && interlock.isBridgeHoldingAuthority()) {
+            await dmx.shutdown('ai-bridge-active');
+            throw new Error('Disable the AI bridge before enabling live DMX output.');
+          }
+          try { event.sender.setBackgroundThrottling(false); } catch { /* ignore */ }
+          return status;
+        } finally {
+          if (interlock) interlock.finishDmxEnableAttempt();
         }
-        try { event.sender.setBackgroundThrottling(false); } catch { /* ignore */ }
-        return status;
       }
       default:
         throw new Error(`Unknown DMX control command "${String(command.type)}".`);

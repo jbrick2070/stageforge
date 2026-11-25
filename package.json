@@ -16,6 +16,7 @@
     "desktop:mac": "npm run desktop:prepare && electron-builder --config desktop/builder.cjs --mac zip --arm64 --publish never"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@tarikjabiri/dxf": "2.10.1",
     "fast-xml-parser": "5.12.1",
     "fflate": "0.8.3",

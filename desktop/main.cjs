@@ -8,6 +8,9 @@ const { createDmxIpcHandlers } = require('./dmx-ipc.cjs');
 const { createShowControlService } = require('./show-control-service.cjs');
 const { createShowControlIpcHandlers } = require('./show-control-ipc.cjs');
 const { createViewerModeTracker, createViewerIpcHandler } = require('./viewer-ipc.cjs');
+const { createOutputInterlock } = require('./output-interlock.cjs');
+const { createAiBridgeService } = require('./ai-bridge-service.cjs');
+const { createAiBridgeIpcHandlers } = require('./ai-bridge-ipc.cjs');
 
 const startUrl = 'stageforge://app/';
 const rendererRoot = path.join(__dirname, 'renderer');
@@ -67,6 +70,8 @@ function resolveTestPorts() {
 let dmx = null;
 let artnetRx = null;
 let showControl = null;
+let outputInterlock = null;
+let aiBridge = null;
 let quittingAfterShutdown = false;
 const viewerTracker = createViewerModeTracker();
 // Serial device grants live only in memory for this session (never persisted across launches).
@@ -110,15 +115,19 @@ function createWindow() {
     if (details && details.isMainFrame && !details.isSameDocument) {
       viewerTracker.clearWindow(wcId);
       syncMenuForWindow();
+      if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
       if (dmx && dmx.ownerId === wcId) void dmx.shutdown('navigation');
       if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
+      if (aiBridge && aiBridge.ownerId === wcId) void aiBridge.disable('navigation', { skipQuiesceWait: true });
     }
   });
   wc.on('render-process-gone', () => {
     viewerTracker.clearWindow(wcId);
     syncMenuForWindow();
+    if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
     if (dmx && dmx.ownerId === wcId) void dmx.shutdown('renderer-crash');
     if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
+    if (aiBridge && aiBridge.ownerId === wcId) void aiBridge.disable('renderer-crash', { skipQuiesceWait: true });
   });
   win.on('unresponsive', () => {
     if (dmx && dmx.ownerId === wcId && dmx.active) void dmx.shutdown('heartbeat-timeout');
@@ -126,18 +135,23 @@ function createWindow() {
   wc.on('destroyed', () => {
     viewerTracker.clearWindow(wcId);
     syncMenuForWindow();
+    if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
     if (dmx && dmx.ownerId === wcId) void dmx.shutdown('window-destroyed');
     if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
+    if (aiBridge && aiBridge.ownerId === wcId) void aiBridge.disable('window-destroyed', { skipQuiesceWait: true });
   });
   win.on('closed', () => {
     viewerTracker.clearWindow(wcId);
     syncMenuForWindow();
+    if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
     if (dmx && dmx.ownerId === wcId) void dmx.shutdown('window-closed');
     if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
+    if (aiBridge && aiBridge.ownerId === wcId) void aiBridge.disable('window-closed', { skipQuiesceWait: true });
   });
   win.on('session-end', () => {
     if (dmx && dmx.active) void dmx.shutdown('session-end');
     if (showControl && showControl.active) void showControl.shutdown();
+    if (aiBridge && aiBridge.active) void aiBridge.disable('session-end', { skipQuiesceWait: true });
   });
   wc.setWindowOpenHandler(({ url }) => {
     // The rig drawer links to the speaker manufacturer's product specifications,
@@ -231,18 +245,34 @@ async function runRigCommand(command) {
 
 function registerDmxIpc() {
   const isRestricted = (wcId) => viewerTracker.isViewerWindow(wcId);
-  const { onFrame, onHeartbeat, onControl } = createDmxIpcHandlers(() => dmx, { isRestricted });
+  const { onFrame, onHeartbeat, onControl } = createDmxIpcHandlers(() => dmx, {
+    isRestricted,
+    interlock: outputInterlock,
+  });
   ipcMain.on('stageforge:dmx-frame', onFrame);
   ipcMain.on('stageforge:dmx-heartbeat', onHeartbeat);
   ipcMain.handle('stageforge:dmx-control', onControl);
-  const { onControl: onShowControl } = createShowControlIpcHandlers(() => showControl, { isRestricted });
+  const { onControl: onShowControl } = createShowControlIpcHandlers(() => showControl, {
+    isRestricted,
+    interlock: outputInterlock,
+  });
   ipcMain.handle('stageforge:show-control', onShowControl);
+  const { onControl: onAiBridgeControl, onReply: onAiBridgeReply, onOutputClaim } = createAiBridgeIpcHandlers(
+    () => aiBridge,
+    () => outputInterlock,
+    { isRestricted },
+  );
+  ipcMain.handle('stageforge:ai-bridge-control', onAiBridgeControl);
+  ipcMain.handle('stageforge:ai-bridge-reply', onAiBridgeReply);
+  ipcMain.handle('stageforge:output-claim', onOutputClaim);
   const onSetViewerMode = createViewerIpcHandler({
     tracker: viewerTracker,
     onEnterViewer: async (wcId) => {
+      if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
       const shutdowns = [];
       if (dmx && dmx.ownerId === wcId) shutdowns.push(dmx.shutdown('viewer-mode'));
       if (showControl && showControl.ownerId === wcId) shutdowns.push(showControl.shutdown());
+      if (aiBridge && aiBridge.ownerId === wcId) shutdowns.push(aiBridge.disable('viewer-mode'));
       if (shutdowns.length) await Promise.all(shutdowns);
     },
     onStateChanged: () => {
@@ -266,13 +296,14 @@ if (!hasLock) {
 
   app.on('before-quit', (event) => {
     if (dmx) dmx.cancelDiscover();
-    const needsShutdown = Boolean((dmx && dmx.active) || (showControl && showControl.active));
+    const needsShutdown = Boolean((dmx && dmx.active) || (showControl && showControl.active) || (aiBridge && aiBridge.active));
     if (!quittingAfterShutdown && needsShutdown) {
       event.preventDefault();
       quittingAfterShutdown = true;
       void Promise.all([
         dmx && dmx.active ? dmx.shutdown('quit') : Promise.resolve(),
         showControl && showControl.active ? showControl.shutdown() : Promise.resolve(),
+        aiBridge && aiBridge.active ? aiBridge.disable('quit', { skipQuiesceWait: true }) : Promise.resolve(),
       ]).finally(() => app.quit());
     }
   });
@@ -319,15 +350,44 @@ if (!hasLock) {
         }
       },
     });
+    outputInterlock = createOutputInterlock({
+      isDmxActive: () => Boolean(dmx && dmx.active),
+    });
+    aiBridge = createAiBridgeService({
+      isPackaged: app.isPackaged,
+      allowZeroPort: !app.isPackaged,
+      interlock: outputInterlock,
+      onStatus: (status, targetOwnerId) => {
+        if (typeof targetOwnerId === 'number') {
+          const wc = webContents.fromId(targetOwnerId);
+          if (wc && !wc.isDestroyed() && isAppPage(wc.getURL())) {
+            wc.send('stageforge:ai-bridge-status', status);
+          }
+        }
+      },
+      dispatchToRenderer: (payload, targetOwnerId) => {
+        const wc = webContents.fromId(targetOwnerId);
+        if (!wc || wc.isDestroyed() || !isAppPage(wc.getURL())) {
+          throw new Error('StageForge window is no longer available.');
+        }
+        wc.send('stageforge:ai-bridge-request', payload);
+      },
+      onQuiesceWait: (targetOwnerId) => {
+        const wc = webContents.fromId(targetOwnerId);
+        return Boolean(wc && !wc.isDestroyed() && isAppPage(wc.getURL()));
+      },
+    });
     registerDmxIpc();
 
     powerMonitor.on('suspend', () => {
       if (dmx && dmx.active) void dmx.shutdown('suspend');
       if (showControl && showControl.active) void showControl.shutdown();
+      if (aiBridge && aiBridge.active) void aiBridge.disable('suspend', { skipQuiesceWait: true });
     });
     powerMonitor.on('shutdown', () => {
       if (dmx && dmx.active) void dmx.shutdown('os-shutdown');
       if (showControl && showControl.active) void showControl.shutdown();
+      if (aiBridge && aiBridge.active) void aiBridge.disable('os-shutdown', { skipQuiesceWait: true });
     });
 
     const ses = session.defaultSession;
@@ -355,7 +415,11 @@ if (!hasLock) {
       if (permission === 'media') {
         return !details?.mediaType || details.mediaType === 'audio';
       }
-      if (permission === 'serial' || permission === 'midi' || permission === 'midiSysex') {
+      if (permission === 'serial') {
+        if (outputInterlock && outputInterlock.isBridgeHoldingAuthority()) return false;
+        return true;
+      }
+      if (permission === 'midi' || permission === 'midiSysex') {
         return true;
       }
       return false;
@@ -365,13 +429,20 @@ if (!hasLock) {
     // viewer mode is enforced by setPermissionCheckHandler, select-serial-port, and renderer liveOutput: false.
     ses.setDevicePermissionHandler((details) => {
       if (details.deviceType !== 'serial' || !isAppPage(details.origin)) return false;
+      if (outputInterlock && outputInterlock.isBridgeHoldingAuthority()) return false;
       const key = serialDeviceKey(details.device);
       return Boolean(key && grantedSerialDevices.has(key));
     });
 
     ses.on('select-serial-port', (event, portList, contents, callback) => {
       event.preventDefault();
-      if (!contents || contents.isDestroyed() || !isAppPage(contents.getURL()) || viewerTracker.isViewerWindow(contents.id)) {
+      if (
+        !contents ||
+        contents.isDestroyed() ||
+        !isAppPage(contents.getURL()) ||
+        viewerTracker.isViewerWindow(contents.id) ||
+        (outputInterlock && outputInterlock.isBridgeHoldingAuthority())
+      ) {
         callback('');
         return;
       }
@@ -396,6 +467,16 @@ if (!hasLock) {
         defaultId: labels.length,
         noLink: true,
       }).then(({ response }) => {
+        // Re-check viewer mode, window liveness, and AI bridge interlock after async chooser resolves.
+        if (
+          contents.isDestroyed() ||
+          !isAppPage(contents.getURL()) ||
+          viewerTracker.isViewerWindow(contents.id) ||
+          (outputInterlock && outputInterlock.isBridgeHoldingAuthority())
+        ) {
+          callback('');
+          return;
+        }
         if (response >= 0 && response < visible.length) {
           const chosen = visible[response];
           const key = serialDeviceKey(chosen);

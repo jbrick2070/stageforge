@@ -133,6 +133,50 @@ type ShowControlCommandBridge =
   | { type: 'configure'; config: ShowControlConfigBridge }
   | { type: 'send'; payload: ShowControlSendBridge };
 
+interface AiBridgeStatusBridge {
+  enabled: boolean;
+  state: 'off' | 'starting' | 'on' | 'stopping';
+  generation: number;
+  port: number | null;
+  url: string | null;
+  token: string | null;
+  activeSessions: number;
+  activeToolCalls: number;
+  lastError: string | null;
+}
+
+interface AiBridgeRequestBridge {
+  requestId: string;
+  bridgeGeneration: number;
+  deadlineMs: number;
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+
+interface AiBridgeReplyBridge {
+  requestId: string;
+  bridgeGeneration: number;
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+}
+
+type AiBridgeControlCommandBridge =
+  | { type: 'getStatus' }
+  | { type: 'disable' }
+  | { type: 'enable'; config?: { port?: number } }
+  | { type: 'quiesced'; generation: number };
+
+type OutputClaimCommandBridge = {
+  type: 'claim' | 'release';
+  kind: 'armed' | 'serial';
+};
+
+interface OutputClaimResultBridge {
+  ok: boolean;
+  reason: string | null;
+}
+
 interface Window {
   stageforgeDesktop?: {
     onRigCommand(listener: (command: 'open' | 'openBundle' | 'openMvr' | 'openViewer' | 'export' | 'show' | 'bundle' | 'dxf' | 'glb' | 'csv' | 'mvr', source?: string | Uint8Array) => void): () => void;
@@ -153,5 +197,14 @@ interface Window {
     onShowControlEvent(listener: (event: ShowControlEventBridge) => void): () => void;
     onShowControlStatus(listener: (status: ShowControlStatusBridge) => void): () => void;
     setViewerMode(active: boolean): Promise<{ viewer: boolean }>;
+    aiBridgeControl(command: { type: 'getStatus' }): Promise<AiBridgeStatusBridge>;
+    aiBridgeControl(command: { type: 'disable' }): Promise<AiBridgeStatusBridge>;
+    aiBridgeControl(command: { type: 'enable'; config?: { port?: number } }): Promise<AiBridgeStatusBridge>;
+    aiBridgeControl(command: { type: 'quiesced'; generation: number }): Promise<{ ok: boolean }>;
+    aiBridgeControl(command: AiBridgeControlCommandBridge): Promise<unknown>;
+    onAiBridgeStatus(listener: (status: AiBridgeStatusBridge) => void): () => void;
+    onAiBridgeRequest(listener: (request: AiBridgeRequestBridge) => void): () => void;
+    replyAiBridgeRequest(reply: AiBridgeReplyBridge): Promise<boolean>;
+    outputClaim(command: OutputClaimCommandBridge): Promise<OutputClaimResultBridge>;
   };
 }
