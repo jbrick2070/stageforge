@@ -13,6 +13,7 @@ interface RiggingPowerPrintSheetProps {
 
 export interface RiggingPowerPrintContentProps extends RiggingPowerPrintSheetProps {
   generatedDate: string;
+  sheetLabel?: string;
 }
 
 /** Reusable printable body for the Rigging & Power report (shared with PaperworkPrintSheet). */
@@ -21,6 +22,7 @@ export const RiggingPowerPrintContent: React.FC<RiggingPowerPrintContentProps> =
   loads,
   power,
   generatedDate,
+  sheetLabel,
 }) => {
   const activeFeederA = power.totals.configuredFeederA ?? power.totals.recommendedFeederA;
 
@@ -31,6 +33,7 @@ export const RiggingPowerPrintContent: React.FC<RiggingPowerPrintContentProps> =
           <h1>{rig.name} — Rigging &amp; Power Report</h1>
           <p className="print-meta">
             Venue: {rig.venue.toUpperCase()} · Power: {power.system.label} · Date: {generatedDate}
+            {sheetLabel ? ` · ${sheetLabel}` : ''}
           </p>
         </div>
         <p className="print-disclaimer">{RIGGING_DISCLAIMER}</p>

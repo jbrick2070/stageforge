@@ -88,6 +88,17 @@ export function podLocalPoint(pod: TrussPodConfig, point: PlanPoint): PlanPoint 
   return { x: c * x - s * z, z: s * x + c * z };
 }
 
+/** Local-space centreline points for a non-circle truss pod (shared by DXF export and plot plan). */
+export function trussCenterLine(pod: TrussPodConfig): PlanPoint[] {
+  if (pod.shape === 'path') return pod.path ?? [];
+  const half = pod.width / 2;
+  if (pod.shape === 'chevron') {
+    const endZ = -half * Math.tan(0.36);
+    return [{ x: -half, z: endZ }, { x: 0, z: 0 }, { x: half, z: endZ }];
+  }
+  return [{ x: -half, z: 0 }, { x: half, z: 0 }];
+}
+
 export function makeTrussPath(points: PlanPoint[], elevation: number): TrussPodConfig {
   if (
     points.length < 2 ||

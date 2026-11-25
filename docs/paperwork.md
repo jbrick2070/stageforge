@@ -1,18 +1,31 @@
 # StageForge Show Paperwork
 
-StageForge generates five production paperwork sheets directly from the same resolved rig geometry, fixture placements, rigging load solver, electrical power report, and show cue stack used by the 3D engine, MVR 1.6 export, and DXF plan export.
+StageForge generates a six-sheet production paperwork book directly from the same resolved rig geometry, fixture placements, rigging load solver, electrical power report, and show cue stack used by the 3D engine, MVR 1.6 export, and DXF plan export.
 
 Access paperwork in **Gear & production → Paperwork** (or download individual CSV tables from **Show files → Exchange formats**).
 
-## The Five Sheets
+## The Production Book (Six Sheets)
 
-| Sheet | Sort Order | CSV Filename | Print Page |
+| Sheet | Sort Order / Contents | CSV Filename | Print Page |
 |---|---|---|---|
-| **Patch Sheet** | DMX Universe → Start Address → Fixture # | `<rig>.patch-sheet.csv` | Portrait |
-| **Instrument Schedule** | Hanging Position (truss pods, then Stage floor) → Mount # | `<rig>.instrument-schedule.csv` | Landscape (`@page wide`) |
-| **Channel Hookup** | Fixture # / Console Channel (`1..N`) | `<rig>.channel-hookup.csv` | Landscape (`@page wide`) |
-| **Power & Load Report** | Overhead hoist points, truss spans, other flown loads, 3-phase balance & circuits | `<rig>.rigging-power.csv` | Portrait |
-| **Cue Sheet** | Cue stack order (`1..N`) | `<rig>.cue-sheet.csv` | Portrait |
+| **1. Plot Plan** | True-scale vector plan (1:25–1:250), symbols, fixture numbers & addresses, scale bar, upstage arrow, legend & title block | Print / Save as PDF (vector SVG) | Landscape (`@page plot-a4` / `plot-letter`) |
+| **2. Patch Sheet** | DMX Universe → Start Address → Fixture # | `<rig>.patch-sheet.csv` | Portrait |
+| **3. Instrument Schedule** | Hanging Position (truss pods, then Stage floor) → Mount # | `<rig>.instrument-schedule.csv` | Landscape (`@page wide`) |
+| **4. Channel Hookup** | Fixture # / Console Channel (`1..N`) | `<rig>.channel-hookup.csv` | Landscape (`@page wide`) |
+| **5. Power & Load Report** | Overhead hoist points, truss spans, other flown loads, 3-phase balance & circuits | `<rig>.rigging-power.csv` | Portrait |
+| **6. Cue Sheet** | Cue stack order (`1..N`) | `<rig>.cue-sheet.csv` | Portrait |
+
+## True-Scale Plot Plan (Sheet 1)
+
+**Print full book** opens with `PlotPlanPage` (`src/data/plotPlan.ts`, `src/components/PlotPlanPage.tsx`) rendered entirely as inline vector SVG — no PDF library is required. Use the browser's or Electron's **Save as PDF** at **100% (Actual size)** on **A4 landscape** (297 × 210 mm) or **Letter landscape** (11 × 8.5 in) with 10 mm margins.
+
+- **Single-source positions:** Every fixture's position (`x`, `z`), rotation (`yaw`), fixture number (`#`), DMX address, and status comes straight from `ShowPaperwork.units` without recomputing placement, so the plot, patch sheet, instrument schedule, MVR, and DXF stay locked together.
+- **Rig geometry & symbols:** Trusses and decks come from `resolveStudioGeometry()`, LED walls from `planWalls()` (stock main LED wall + authored secondary screens), and PA hangs from `effectiveHangs()` (stock line arrays + authored hangs). Fixture silhouettes come from `symbolForHardware()` + `specToSvgPath()` in `src/data/equipmentSymbols.ts`.
+- **Automatic true scale:** `buildPlotPlan()` picks the largest standard scale (`1:25`, `1:50`, `1:75`, `1:100`, `1:150`, `1:200`, `1:250`) at which the rig bounds plus a 0.5 m margin and 8 mm label clearance fit inside the printable plan area left of the legend and title block. Rigs larger than `1:250` step up to an explicit fit scale (`1:300`, `1:400`, `1:500`, `1:750`, `1:1000`, or nearest 100) with a sheet note that multi-sheet tiling is not supported.
+- **Orientation & verification:** Upstage (`−Z`) is at the top of the page (marked with an Upstage arrow) and audience (`+Z`) is at the bottom (marked `DOWNSTAGE / AUDIENCE`), matching the DXF plan. The bottom band includes a metric scale bar (1, 5, and 10 m ticks at scales `≥ 1:75`; 1–5 m at `1:50` and 1–2 m at `1:25` where 10 m physically exceeds the plan column) and a printed check dimension (`10 m = 10000 ÷ scale mm`) to verify 100% print scale with a ruler. In the browser or Electron print dialog, choose the same paper size (`A4` or `Letter` landscape), 10 mm margins, and 100% ("Actual size") scale so the right-hand sidebar is never clipped.
+- **Dense clusters & patch issues:** When fixtures are closer than 4 mm on paper, labels offset along the truss normal with leader lines; if full labels still collide, the plot prints fixture numbers only and adds a note pointing to the Patch Sheet. Units with DMX `conflict` or `overflow` status are outlined in red dashed double rings with a `!` marker so they remain legible on monochrome printers too.
+- **Legend & title block:** The legend summarises every placed symbol and model (manufacturer, model, count, watts each — matching the Instrument Schedule per model, and summing across DMX modes to match total Inventory counts when `unplaced` is empty) plus line styles for truss, deck edge, LED wall, and PA hang. The bottom-right title block shows the rig name (truncated with an ellipsis if long), venue, designer, revision letter, date, scale, sheet number (`Sheet 1 of 6` in book mode, `Sheet 1 of 1` when printing the plan alone), and the disclaimer *"Design guidance: not for construction. Verify all dimensions, loads and power on site."*
+- **Local-only settings:** Paper size (`A4` / `Letter`) and title-block fields are edited under **Plot page & title block** in the Paperwork tab and saved in `localStorage` under `stageforge.titleBlock`. They are never written to show files.
 
 ## CSV notes
 
@@ -21,7 +34,7 @@ Access paperwork in **Gear & production → Paperwork** (or download individual 
 - Units the rig counts but could not place appear as extra rows with Status `UNPLACED`, so the CSV never silently disagrees with the inventory and power totals.
 - Cells that start with `=`, `+`, `-`, `@`, tab or CR are neutralised against spreadsheet formula injection.
 
-Use **Print full book** to print all five sheets in a single packet separated by page breaks (`break-before: page`) with repeating table headers (`thead { display: table-header-group }`).
+Use **Print full book** to print all six sheets (Plot Plan first, then the five tabular sheets) in a single packet separated by page breaks (`break-before: page`) with repeating table headers (`thead { display: table-header-group }`).
 
 ## Single-Source Parity with MVR and DXF
 

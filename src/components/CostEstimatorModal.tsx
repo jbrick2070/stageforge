@@ -8,12 +8,17 @@ import { computeInventory } from '../data/equipmentInventory';
 import { computePowerReport } from '../data/powerReport';
 import { evaluateRigLoads } from '../data/rigLoads';
 import { DEFAULT_SHOP_STATE, type ShopStockState } from '../data/shopStock';
-import { buildShowPaperwork, type PaperworkSheetId } from '../data/showPaperwork';
+import { buildShowPaperwork } from '../data/showPaperwork';
+import { loadTitleBlock, saveTitleBlock, type PlotTitleBlockState } from '../data/plotPlan';
 import { CostCrewPanel } from './CostCrewPanel';
 import { InventoryPanel } from './InventoryPanel';
 import { InventoryPrintSheet } from './InventoryPrintSheet';
 import { PaperworkPanel } from './PaperworkPanel';
-import { PaperworkPrintSheet, type PaperworkPrintMode } from './PaperworkPrintSheet';
+import {
+  PaperworkPrintSheet,
+  type PaperworkPrintMode,
+  type PaperworkViewId,
+} from './PaperworkPrintSheet';
 import { RiggingPowerPanel } from './RiggingPowerPanel';
 import { RiggingPowerPrintSheet } from './RiggingPowerPrintSheet';
 
@@ -78,10 +83,11 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<GearTab>(readInitialTab);
   const [applyD8Derate, setApplyD8Derate] = useState(true);
-  const [paperworkSheet, setPaperworkSheet] = useState<PaperworkSheetId>('patch');
-  const paperworkSheetRef = useRef<PaperworkSheetId>('patch');
+  const [paperworkSheet, setPaperworkSheet] = useState<PaperworkViewId>('patch');
+  const paperworkSheetRef = useRef<PaperworkViewId>('patch');
   paperworkSheetRef.current = paperworkSheet;
   const [paperworkPrintMode, setPaperworkPrintMode] = useState<PaperworkPrintMode>('patch');
+  const [titleBlock, setTitleBlock] = useState<PlotTitleBlockState>(loadTitleBlock);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inventoryTabRef = useRef<HTMLButtonElement>(null);
   const riggingTabRef = useRef<HTMLButtonElement>(null);
@@ -123,9 +129,14 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
           ? paperworkTabRef
           : costTabRef;
 
-  const handlePaperworkSheetChange = (next: PaperworkSheetId) => {
+  const handlePaperworkSheetChange = (next: PaperworkViewId) => {
     setPaperworkSheet(next);
     setPaperworkPrintMode(next);
+  };
+
+  const handleTitleBlockChange = (next: PlotTitleBlockState) => {
+    setTitleBlock(next);
+    saveTitleBlock(next);
   };
 
   const handlePrintPaperwork = (mode: PaperworkPrintMode) => {
@@ -373,6 +384,8 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
                 paperwork={paperwork}
                 activeSheet={paperworkSheet}
                 onChangeSheet={handlePaperworkSheetChange}
+                titleBlock={titleBlock}
+                onChangeTitleBlock={handleTitleBlockChange}
                 onPrint={handlePrintPaperwork}
                 onJumpToRigging={() => selectTab('rigging', true)}
                 onNotify={onNotify}
@@ -403,7 +416,13 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
         <RiggingPowerPrintSheet rig={rig} loads={loads} power={power} />
       )}
       {activeTab === 'paperwork' && paperwork && (
-        <PaperworkPrintSheet rig={rig} paperwork={paperwork} mode={paperworkPrintMode} />
+        <PaperworkPrintSheet
+          rig={rig}
+          stage={stage}
+          paperwork={paperwork}
+          mode={paperworkPrintMode}
+          titleBlock={titleBlock}
+        />
       )}
     </>
   );

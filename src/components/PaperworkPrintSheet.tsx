@@ -1,20 +1,30 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import type { RigConfig } from '../types/show';
+import type { NativeStage } from '../data/showFile';
 import {
   PAPERWORK_SIMULATED_MAP_NOTICE,
   type PaperworkSheetId,
   type ShowPaperwork,
 } from '../data/showPaperwork';
+import {
+  buildPlotPlan,
+  DEFAULT_TITLE_BLOCK,
+  type PlotTitleBlockState,
+} from '../data/plotPlan';
 import { LASER_SAFETY_DISCLAIMER } from '../data/laserSafety';
+import { PlotPlanPage } from './PlotPlanPage';
 import { RiggingPowerPrintContent } from './RiggingPowerPrintSheet';
 
-export type PaperworkPrintMode = PaperworkSheetId | 'book';
+export type PaperworkViewId = 'plot' | PaperworkSheetId;
+export type PaperworkPrintMode = PaperworkViewId | 'book';
 
 interface PaperworkPrintSheetProps {
   rig: RigConfig;
+  stage?: NativeStage;
   paperwork: ShowPaperwork;
   mode: PaperworkPrintMode;
+  titleBlock?: PlotTitleBlockState;
 }
 
 function formatLocalDate(): string {
@@ -42,18 +52,35 @@ function UnplacedPrintBanner({ paperwork }: { paperwork: ShowPaperwork }) {
 
 /**
  * High-contrast black-on-white printable show paperwork portalled outside `#root`.
- * Mounts a single `.print-sheet` root matching either one selected sheet or the full 5-sheet Production Book.
+ * Mounts a single `.print-sheet` root matching either one selected sheet or the full 6-sheet Production Book
+ * (true-scale Plot Plan first, followed by Patch, Instrument Schedule, Channel Hookup, Power & Load, and Cue Sheet).
  */
 export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
   rig,
+  stage,
   paperwork,
   mode,
+  titleBlock = DEFAULT_TITLE_BLOCK,
 }) => {
-  if (typeof document === 'undefined') return null;
-
   const generatedDate = formatLocalDate();
   const isBook = mode === 'book';
-  const show = (id: PaperworkSheetId) => isBook || mode === id;
+  const show = (id: PaperworkViewId) => isBook || mode === id;
+  const needPlot = show('plot');
+  const plotPlan = useMemo(
+    () =>
+      needPlot
+        ? buildPlotPlan(paperwork, rig, stage, {
+            paper: titleBlock.paper,
+            titleBlock,
+            generatedDate,
+            sheetNumber: 1,
+            totalSheets: isBook ? 6 : 1,
+          })
+        : null,
+    [needPlot, paperwork, rig, stage, titleBlock, generatedDate, isBook],
+  );
+
+  if (typeof document === 'undefined') return null;
 
   return createPortal(
     <section
@@ -61,6 +88,16 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
       aria-label={isBook ? 'Printable show production book' : 'Printable show paperwork sheet'}
       data-print-mode={mode}
     >
+      {plotPlan && (
+        <div
+          className="print-section plot-page"
+          data-paperwork-section="plot"
+          data-paper={plotPlan.paper}
+        >
+          <PlotPlanPage plan={plotPlan} />
+        </div>
+      )}
+
       {show('patch') && (
         <div className="print-section" data-paperwork-section="patch">
           <header className="print-header">
@@ -68,6 +105,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
               <h1>{paperwork.rigName} — Patch Sheet</h1>
               <p className="print-meta">
                 Venue: {paperwork.venue.toUpperCase()} · {paperwork.totals.unitCount} fixtures · Date: {generatedDate}
+                {isBook ? ' · Sheet 2 of 6' : ''}
               </p>
             </div>
             <p className="print-disclaimer">{PAPERWORK_SIMULATED_MAP_NOTICE}</p>
@@ -154,6 +192,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
               <p className="print-meta">
                 Venue: {paperwork.venue.toUpperCase()} · {paperwork.positions.length} positions ·{' '}
                 {paperwork.totals.unitCount} fixtures · Date: {generatedDate}
+                {isBook ? ' · Sheet 3 of 6' : ''}
               </p>
             </div>
             <p className="print-disclaimer">
@@ -238,6 +277,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
               <h1>{paperwork.rigName} — Channel Hookup</h1>
               <p className="print-meta">
                 Venue: {paperwork.venue.toUpperCase()} · {paperwork.totals.unitCount} channels · Date: {generatedDate}
+                {isBook ? ' · Sheet 4 of 6' : ''}
               </p>
             </div>
             <p className="print-disclaimer">
@@ -315,6 +355,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
             loads={paperwork.loads}
             power={paperwork.power}
             generatedDate={generatedDate}
+            sheetLabel={isBook ? 'Sheet 5 of 6' : undefined}
           />
         </div>
       )}
@@ -328,6 +369,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
                 Venue: {paperwork.venue.toUpperCase()} · {paperwork.totals.cueCount} cues
                 {paperwork.timelineFrameRate ? ` · Take TC @ ${paperwork.timelineFrameRate} fps` : ''} · Date:{' '}
                 {generatedDate}
+                {isBook ? ' · Sheet 6 of 6' : ''}
               </p>
             </div>
             <p className="print-disclaimer">

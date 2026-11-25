@@ -623,6 +623,33 @@ test('Gear & production Inventory loads under stageforge:// CSP, prints via wind
   expect(await page.evaluate(() => window.__desktopPrintCalls)).toBe(2);
   expect(await page.evaluate(() => window.open('https://example.com'))).toBeNull();
 
+  // Verify Electron webContents.printToPDF() renders the full 6-sheet book (starting with A4 landscape plot plan).
+  const pdfSummary = await app.evaluate(async ({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    const buf = await win.webContents.printToPDF({
+      landscape: true,
+      pageSize: 'A4',
+      margins: { top: 0.3937, bottom: 0.3937, left: 0.3937, right: 0.3937 },
+      preferCSSPageSize: true,
+      printBackground: true,
+    });
+    const text = buf.toString('latin1');
+    const mediaMatch = text.match(/\/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/);
+    const pages = text.match(/\/Type\s*\/Page\b(?!s)/g) ?? [];
+    return {
+      headerOk: text.startsWith('%PDF-'),
+      bytes: buf.length,
+      pageCount: pages.length,
+      mediaBox: mediaMatch ? mediaMatch.slice(1).map(Number) : null,
+    };
+  });
+  expect(pdfSummary.headerOk).toBe(true);
+  expect(pdfSummary.bytes).toBeGreaterThan(5000);
+  expect(pdfSummary.pageCount).toBeGreaterThanOrEqual(6);
+  expect(pdfSummary.mediaBox).not.toBeNull();
+  expect(Math.abs(pdfSummary.mediaBox[2] - 841.9)).toBeLessThan(3);
+  expect(Math.abs(pdfSummary.mediaBox[3] - 595.3)).toBeLessThan(3);
+
   const pwChecks = [
     { radio: 'Patch sheet', suffix: '.patch-sheet.csv', title: 'Export patch sheet', header: 'Universe,DMX Address' },
     { radio: 'Instrument schedule', suffix: '.instrument-schedule.csv', title: 'Export instrument schedule', header: 'Position,Mount #,Fixture #' },

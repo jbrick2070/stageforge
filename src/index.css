@@ -425,16 +425,30 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
   outline-offset: 2px;
 }
 
+.plot-preview svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
 .print-sheet {
   display: none;
 }
 
 @media print {
   @page {
-    margin: 12mm;
+    margin: 10mm;
   }
   @page wide {
     size: landscape;
+    margin: 10mm;
+  }
+  @page plot-a4 {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+  @page plot-letter {
+    size: letter landscape;
     margin: 10mm;
   }
   html,
@@ -551,5 +565,25 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
   }
   .print-wide {
     page: wide;
+  }
+  .plot-page {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    overflow: hidden;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .plot-page[data-paper="a4"] {
+    page: plot-a4;
+    width: 276mm;
+    height: 189mm;
+  }
+  .plot-page[data-paper="letter"] {
+    page: plot-letter;
+    width: 258mm;
+    height: 194mm;
+  }
+  .plot-page .plot-svg {
+    display: block;
   }
 }

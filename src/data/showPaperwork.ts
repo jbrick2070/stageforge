@@ -69,6 +69,8 @@ export interface PaperworkUnit {
   x: number;
   y: number;
   z: number;
+  /** Fixture yaw about +Y in radians, directly from `placeFixtures()`. */
+  yaw: number;
   weightKg: number;
   weightEstimated: boolean;
   powerW: number;
@@ -481,6 +483,7 @@ export function buildShowPaperwork(
       x: p.position.x,
       y: p.position.y,
       z: p.position.z,
+      yaw: p.yaw,
       weightKg: specs.weightKg,
       weightEstimated: specs.weightEstimated,
       powerW: specs.powerW,

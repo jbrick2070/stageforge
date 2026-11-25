@@ -83,26 +83,29 @@ test('Paperwork tab supports 4-tab keyboard nav, 5 sub-sheets, CSV exports, and 
   expect(singlePrint).toEqual({ sheetCount: 1, sectionCount: 1, rootDisplay: 'none' });
   await page.emulateMedia({ media: 'screen' });
 
-  // Print full production book -> still exactly 1 .print-sheet, containing all 5 .print-section sheets.
+  // Print full production book -> still exactly 1 .print-sheet, containing Plot Plan first + all 5 tabular sheets.
   await panel.getByRole('button', { name: 'Print full book' }).click();
   expect(await page.evaluate(() => window.__printCalls)).toBe(2);
   await page.emulateMedia({ media: 'print' });
   const bookPrint = await page.evaluate(() => {
     const sheets = document.querySelectorAll('.print-sheet');
     const sections = Array.from(document.querySelectorAll('.print-sheet .print-section'));
+    const tabularSections = sections.filter((s) => s.getAttribute('data-paperwork-section') !== 'plot');
     return {
       sheetCount: sheets.length,
       sectionCount: sections.length,
       sectionIds: sections.map((s) => s.getAttribute('data-paperwork-section')),
-      hasAllTheads: sections.every((s) => s.querySelectorAll('table thead tr').length >= 1),
+      hasPlotSvg: Boolean(sections[0]?.querySelector('[data-testid="plot-plan-svg"]')),
+      hasAllTheads: tabularSections.every((s) => s.querySelectorAll('table thead tr').length >= 1),
       rootDisplay: getComputedStyle(document.getElementById('root')).display,
       sheetDisplay: sheets[0] ? getComputedStyle(sheets[0]).display : null,
     };
   });
   expect(bookPrint).toEqual({
     sheetCount: 1,
-    sectionCount: 5,
-    sectionIds: ['patch', 'instrument', 'hookup', 'power', 'cues'],
+    sectionCount: 6,
+    sectionIds: ['plot', 'patch', 'instrument', 'hookup', 'power', 'cues'],
+    hasPlotSvg: true,
     hasAllTheads: true,
     rootDisplay: 'none',
     sheetDisplay: 'block',

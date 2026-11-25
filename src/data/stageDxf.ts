@@ -2,7 +2,7 @@ import { DxfWriter, LWPolylineFlags, Units, point2d, point3d } from '@tarikjabir
 import type { DxfBlock, ExtendedData } from '@tarikjabiri/dxf';
 import type { FixtureType, FloorFxType, PlanPoint, RigConfig, StagePropKind, TrussPodConfig } from '../types/show';
 import { buildDmxPatch, formatDmxLabel } from './dmxPatch';
-import { getPlatforms, podWorldPoint, stageSurfaceHeight } from './stageDesign';
+import { getPlatforms, podWorldPoint, stageSurfaceHeight, trussCenterLine } from './stageDesign';
 import { PROP_CATALOG } from './stageProps';
 import { placeFixtures } from './fixturePlacement';
 import { dxfBlockName, symbolForHardware } from './equipmentSymbols';
@@ -37,15 +37,6 @@ function outline(writer: ShapeWriter, points: PlanPoint[], elevation: number, la
 }
 function rectangle(x: number, z: number, width: number, depth: number): PlanPoint[] {
   return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => ({ x: x+a*width/2, z: z+b*depth/2 }));
-}
-function centerLine(pod: TrussPodConfig): PlanPoint[] {
-  if (pod.shape === 'path') return pod.path ?? [];
-  const half = pod.width / 2;
-  if (pod.shape === 'chevron') {
-    const endZ = -half * Math.tan(0.36);
-    return [{ x: -half, z: endZ }, { x: 0, z: 0 }, { x: half, z: endZ }];
-  }
-  return [{ x: -half, z: 0 }, { x: half, z: 0 }];
 }
 
 // Drafting symbols come from equipmentSymbols (same silhouettes as 3D models, 2D plan and picker).
@@ -140,7 +131,7 @@ export function exportStageDxf(sourceRig: RigConfig, stage?: NativeStage): strin
       include({x:pod.x-pod.width/2,z:pod.z+pod.width/2});
       labelAt = {x:pod.x,z:pod.z-pod.width/2};
     } else {
-      const points = centerLine(pod).map(p => podWorldPoint(pod,p));
+      const points = trussCenterLine(pod).map(p => podWorldPoint(pod,p));
       if (points.length < 2) continue;
       const first = points[0], last = points[points.length-1];
       const closed = points.length > 2 && Math.hypot(first.x-last.x,first.z-last.z)<0.0001;

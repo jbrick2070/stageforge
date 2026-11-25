@@ -1,9 +1,15 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { AlertTriangle, BookOpen, Download, Printer, SlidersHorizontal } from 'lucide-react';
 import type { RigConfig } from '../types/show';
 import type { NativeStage } from '../data/showFile';
 import { downloadStageFile } from '../data/rigImport';
 import { riggingPowerCsv } from '../data/powerReport';
+import {
+  buildPlotPlan,
+  normalizeRevision,
+  type PlotPaperSize,
+  type PlotTitleBlockState,
+} from '../data/plotPlan';
 import {
   channelHookupCsv,
   cueSheetCsv,
@@ -15,25 +21,34 @@ import {
   type ShowPaperwork,
 } from '../data/showPaperwork';
 import { RIGGING_DISCLAIMER, statusLabelText } from '../data/rigLoads';
+import type { PaperworkPrintMode, PaperworkViewId } from './PaperworkPrintSheet';
+import { PlotPlanPage } from './PlotPlanPage';
 
 interface PaperworkPanelProps {
   rig: RigConfig;
   stage?: NativeStage;
   paperwork: ShowPaperwork;
-  activeSheet: PaperworkSheetId;
-  onChangeSheet: (next: PaperworkSheetId) => void;
-  onPrint: (mode: PaperworkSheetId | 'book') => void;
+  activeSheet: PaperworkViewId;
+  onChangeSheet: (next: PaperworkViewId) => void;
+  titleBlock: PlotTitleBlockState;
+  onChangeTitleBlock: (next: PlotTitleBlockState) => void;
+  onPrint: (mode: PaperworkPrintMode) => void;
   onJumpToRigging?: () => void;
   onNotify?: (message: string) => void;
 }
 
 const SHEET_OPTIONS: ReadonlyArray<{
-  id: PaperworkSheetId;
+  id: PaperworkViewId;
   label: string;
   shortLabel: string;
-  csvSuffix: string;
-  csvNotice: string;
+  csvSuffix?: string;
+  csvNotice?: string;
 }> = [
+  {
+    id: 'plot',
+    label: 'Plot plan',
+    shortLabel: 'Plot',
+  },
   {
     id: 'patch',
     label: 'Patch sheet',
@@ -71,6 +86,11 @@ const SHEET_OPTIONS: ReadonlyArray<{
   },
 ];
 
+function formatTodayLocal(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
 function StatusBadge({ status }: { status: PaperworkUnitStatus }) {
   const cls =
     status === 'ok'
@@ -91,15 +111,31 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
   paperwork,
   activeSheet,
   onChangeSheet,
+  titleBlock,
+  onChangeTitleBlock,
   onPrint,
   onJumpToRigging,
   onNotify,
 }) => {
   const [exportNotice, setExportNotice] = useState('');
+  const today = useMemo(() => formatTodayLocal(), []);
 
-  const currentMeta = SHEET_OPTIONS.find((s) => s.id === activeSheet) ?? SHEET_OPTIONS[0];
+  const currentMeta = SHEET_OPTIONS.find((s) => s.id === activeSheet) ?? SHEET_OPTIONS[1];
+  const isPlot = activeSheet === 'plot';
+
+  const plotPreview = useMemo(() => {
+    if (!isPlot) return null;
+    return buildPlotPlan(paperwork, rig, stage, {
+      paper: titleBlock.paper,
+      titleBlock,
+      generatedDate: today,
+      sheetNumber: 1,
+      totalSheets: 6,
+    });
+  }, [isPlot, paperwork, rig, stage, titleBlock, today]);
 
   const handleExportCsv = () => {
+    if (activeSheet === 'plot' || !currentMeta.csvSuffix || !currentMeta.csvNotice) return;
     let csv: string;
     if (activeSheet === 'patch') csv = patchSheetCsv(paperwork);
     else if (activeSheet === 'instrument') csv = instrumentScheduleCsv(paperwork);
@@ -110,6 +146,10 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
     downloadStageFile(rig.name, currentMeta.csvSuffix, new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     setExportNotice(currentMeta.csvNotice);
     onNotify?.(currentMeta.csvNotice);
+  };
+
+  const updateTitleBlock = (patch: Partial<PlotTitleBlockState>) => {
+    onChangeTitleBlock({ ...titleBlock, ...patch });
   };
 
   return (
@@ -168,13 +208,99 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
             <button
               type="button"
               onClick={handleExportCsv}
-              className="gear-touch-control inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/50 text-xs font-semibold text-emerald-100 cursor-pointer"
+              disabled={isPlot}
+              title={isPlot ? 'Plot plan is vector print/PDF only; pick a tabular sheet for CSV' : undefined}
+              className={`gear-touch-control inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold ${
+                isPlot
+                  ? 'bg-white/5 border-white/10 text-zinc-500 cursor-not-allowed'
+                  : 'bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-400/50 text-emerald-100 cursor-pointer'
+              }`}
             >
               <Download className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Export CSV</span>
             </button>
           </div>
         </div>
+
+        {/* Collapsible paper size & title block settings (persisted in localStorage, never written to show files) */}
+        <details className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5" data-testid="plot-settings">
+          <summary className="gear-touch-control flex items-center justify-between gap-2 cursor-pointer text-xs font-semibold text-zinc-200 select-none">
+            <span>Plot page &amp; title block</span>
+            <span className="font-mono-tech text-[11px] text-cyan-200">
+              {titleBlock.paper === 'letter' ? 'Letter' : 'A4'} landscape · Rev {titleBlock.revision}
+              {titleBlock.designer ? ` · ${titleBlock.designer}` : ''}
+            </span>
+          </summary>
+          <div className="pt-2.5 pb-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+            <label className="flex flex-col gap-1 text-[11px] text-zinc-300">
+              <span className="font-mono-tech text-[10px] uppercase text-zinc-400">Paper size</span>
+              <select
+                aria-label="Plot paper size"
+                value={titleBlock.paper}
+                onChange={(e) => updateTitleBlock({ paper: e.target.value as PlotPaperSize })}
+                className="gear-touch-control rounded-md border border-white/15 bg-black/60 px-2 py-1 text-xs text-white"
+              >
+                <option value="a4">A4 landscape (297 × 210 mm)</option>
+                <option value="letter">Letter landscape (11 × 8.5 in)</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-zinc-300">
+              <span className="font-mono-tech text-[10px] uppercase text-zinc-400">Venue</span>
+              <input
+                type="text"
+                aria-label="Title block venue"
+                maxLength={120}
+                value={titleBlock.venue}
+                placeholder={paperwork.venue.toUpperCase()}
+                onChange={(e) => updateTitleBlock({ venue: e.target.value })}
+                className="gear-touch-control rounded-md border border-white/15 bg-black/60 px-2 py-1 text-xs text-white placeholder:text-zinc-500"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-zinc-300">
+              <span className="font-mono-tech text-[10px] uppercase text-zinc-400">Designer</span>
+              <input
+                type="text"
+                aria-label="Title block designer"
+                maxLength={120}
+                value={titleBlock.designer}
+                placeholder="Lighting designer"
+                onChange={(e) => updateTitleBlock({ designer: e.target.value })}
+                className="gear-touch-control rounded-md border border-white/15 bg-black/60 px-2 py-1 text-xs text-white placeholder:text-zinc-500"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-zinc-300">
+              <span className="font-mono-tech text-[10px] uppercase text-zinc-400">Revision</span>
+              <input
+                type="text"
+                aria-label="Title block revision"
+                maxLength={2}
+                value={titleBlock.revision}
+                onChange={(e) =>
+                  updateTitleBlock({
+                    revision: e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2),
+                  })
+                }
+                onBlur={(e) => updateTitleBlock({ revision: normalizeRevision(e.target.value) })}
+                className="gear-touch-control rounded-md border border-white/15 bg-black/60 px-2 py-1 text-xs font-mono-tech text-white"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-zinc-300">
+              <span className="font-mono-tech text-[10px] uppercase text-zinc-400">Date</span>
+              <input
+                type="text"
+                aria-label="Title block date"
+                maxLength={32}
+                value={titleBlock.date}
+                placeholder={today}
+                onChange={(e) => updateTitleBlock({ date: e.target.value })}
+                className="gear-touch-control rounded-md border border-white/15 bg-black/60 px-2 py-1 text-xs font-mono-tech text-white placeholder:text-zinc-500"
+              />
+            </label>
+          </div>
+          <p className="text-[10px] text-zinc-400 pt-1">
+            Stored locally in this browser only; never written into show files.
+          </p>
+        </details>
 
         <div
           role="status"
@@ -208,6 +334,23 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
               </strong>{' '}
               could not be assigned a mount slot and are omitted from MVR/DXF placements (rig total:{' '}
               {paperwork.totalExpectedUnits}).
+            </div>
+          </div>
+        )}
+
+        {activeSheet === 'plot' && plotPreview && (
+          <div className="space-y-3">
+            <div className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-100 flex flex-wrap items-center justify-between gap-2">
+              <span>
+                True-scale vector plot ({plotPreview.titleBlock.scaleLabel}, {plotPreview.geometry.paperLabel} landscape).
+                In the print dialog, choose {plotPreview.geometry.paperLabel} landscape, 10 mm margins, and 100% (&ldquo;Actual size&rdquo;) scale; &ldquo;Print full book&rdquo; puts this plan first as Sheet 1 of 6.
+              </span>
+              {plotPreview.oversizeNote && (
+                <span className="font-semibold text-amber-200">{plotPreview.oversizeNote}</span>
+              )}
+            </div>
+            <div className="plot-preview rounded-xl border border-white/15 bg-white p-2 shadow-lg">
+              <PlotPlanPage plan={plotPreview} />
             </div>
           </div>
         )}
