@@ -816,7 +816,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       canAcknowledge: !hardBlock && !requiresLaserInhibit,
       isLaser: true,
       requiresLaserInhibit,
-      canInhibitLaser: !hardBlock,
+      canInhibitLaser: !activeAudienceScan,
       rowFingerprint: laserRowFingerprint, // Binds to authored revision + runtime laser findings
       summary: findings.map((f) => f.message).join(' '),
       findings,

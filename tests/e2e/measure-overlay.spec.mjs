@@ -129,38 +129,129 @@ test('Measure overlay is off and zero-cost by default, matches live ?probe aim v
 
 test('Pre-flight gate enforces acknowledgements, never skips lasers, marks stale on fixture edit, keeps Advanced collapsed, and prints/exports Commissioning Record', async ({
   page,
+  context,
 }) => {
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
 
+  // Sprint 24 (SF-H2 / N2): First verify in pure browser mode (Web Serial transport only, no stageforgeDesktop)
+  // that default arena_mainstage (with generic fixtures, lasers, blinders, strobes, CO2, smoke) stays HARD-BLOCKED
+  // on Web Serial even after acknowledging warnings and inhibiting every laser projector!
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.preflightReport)).toBe('function');
+  await page.getByRole('button', { name: 'DMX monitor', exact: true }).click();
+  await page.getByTestId('dmx-advanced-summary').click();
+  await page.getByTestId('dmx-open-preflight').click();
+  const serialPanel = page.getByTestId('preflight-panel');
+  await serialPanel.getByTestId('preflight-run-check').click();
+  const serialAcks = serialPanel.locator('input[type="checkbox"][data-testid^="preflight-ack-"]');
+  for (let i = 0; i < (await serialAcks.count()); i++) await serialAcks.nth(i).check();
+  const serialLaserInhibits = serialPanel.locator('input[type="checkbox"][data-testid^="preflight-laser-inhibit-"]');
+  expect(await serialLaserInhibits.count()).toBeGreaterThan(0);
+  for (let i = 0; i < (await serialLaserInhibits.count()); i++) await serialLaserInhibits.nth(i).check();
+  await expect(serialPanel.getByTestId('preflight-eligibility')).not.toContainText('Eligible to arm');
+  await expect(page.evaluate(() => window.stageforgeProbe.preflightReport().canArm)).resolves.toBe(false);
+  await expect(page.evaluate(() => window.stageforgeProbe.preflightReport().overallStatus)).resolves.toBe('blocked');
+  await serialPanel.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(page.getByTestId('dmx-output-arm')).toBeDisabled();
+  await page.close();
+
+  // Now open a fresh isolated page with desktop sACN transport capability (watchdog-backed) to verify the full
+  // pre-flight acknowledgement, laser-inhibit, cue-Go non-staleness, rig-edit staleness, and Commissioning Record flow.
+  const sacnPage = await context.newPage();
+  sacnPage.on('pageerror', (err) => errors.push(err.message));
+  await sacnPage.addInitScript(() => {
+    localStorage.clear();
+    window.stageforgeDesktop = {
+      onRigCommand: () => () => {},
+      sendDmxFrame: () => true,
+      sendDmxHeartbeat: () => true,
+      dmxControl: async (cmd) => {
+        if (cmd?.type === 'listInterfaces') {
+          return [{ name: 'Loopback', address: '127.0.0.1', netmask: '255.0.0.0', broadcast: null, internal: true }];
+        }
+        return {
+          enabled: false,
+          state: 'idle',
+          protocol: 'sacn',
+          iface: '127.0.0.1',
+          rateHz: 40,
+          measuredHz: 0,
+          packetsSent: 0,
+          degraded: false,
+          lastError: null,
+          cid: '00000000-0000-0000-0000-000000000000',
+          universes: [1, 2],
+          nodes: [],
+        };
+      },
+      onDmxStatus: () => () => {},
+      showControl: async () => ({
+        active: false,
+        oscRxListening: false,
+        oscRxPort: null,
+        oscRxAddress: null,
+        oscTxEnabled: false,
+        oscTxHost: '127.0.0.1',
+        oscTxPort: 9000,
+        artnetTcRxListening: false,
+        artnetTcRxPort: null,
+        artnetTcTxEnabled: false,
+        artnetTcTxHost: '127.0.0.1',
+        oscRxCount: 0,
+        oscDroppedCount: 0,
+        artnetTcRxCount: 0,
+        oscError: null,
+        artnetTcError: null,
+      }),
+      onShowControlEvent: () => () => {},
+      onShowControlStatus: () => () => {},
+      setViewerMode: async (viewer) => ({ viewer }),
+      aiBridgeControl: async () => ({
+        enabled: false,
+        state: 'off',
+        generation: 0,
+        port: null,
+        url: null,
+        token: null,
+        activeSessions: 0,
+        activeToolCalls: 0,
+        lastError: null,
+      }),
+      onAiBridgeStatus: () => () => {},
+      onAiBridgeRequest: () => () => {},
+      replyAiBridgeRequest: async () => true,
+      outputClaim: async () => ({ ok: true, reason: null }),
+    };
+  });
+  await sacnPage.goto('/?probe');
+  await expect.poll(() => sacnPage.evaluate(() => typeof window.stageforgeProbe?.preflightReport)).toBe('function');
 
   // 1. Pre-flight badge starts "Not checked" (never "Ready").
-  const badge = page.getByTestId('topbar-preflight-badge');
+  const badge = sacnPage.getByTestId('topbar-preflight-badge');
   await expect(badge).toBeVisible();
   await expect(badge).toContainText('Not checked');
 
   // 2. Open DMX monitor -> Advanced starts collapsed, shows experimental note + GitHub link when expanded.
-  await page.getByRole('button', { name: 'DMX monitor', exact: true }).click();
-  const advDetails = page.getByTestId('dmx-advanced-details');
+  await sacnPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
+  const advDetails = sacnPage.getByTestId('dmx-advanced-details');
   await expect(advDetails).not.toHaveAttribute('open', '');
-  await page.getByTestId('dmx-advanced-summary').click();
+  await sacnPage.getByTestId('dmx-advanced-summary').click();
   await expect(advDetails).toHaveAttribute('open', '');
-  await expect(page.getByTestId('dmx-experimental-note')).toContainText('Live output to real lights is experimental.');
-  await expect(page.getByTestId('dmx-experimental-note').getByRole('link')).toHaveAttribute(
+  await expect(sacnPage.getByTestId('dmx-experimental-note')).toContainText('Live output to real lights is experimental.');
+  await expect(sacnPage.getByTestId('dmx-experimental-note').getByRole('link')).toHaveAttribute(
     'href',
     'https://github.com/jbrick2070/stageforge',
   );
 
   // Arm output MUST be disabled before pre-flight is completed.
-  const armBtn = page.getByTestId('dmx-output-arm');
+  const armBtn = sacnPage.getByTestId('dmx-output-arm');
   await expect(armBtn).toBeDisabled();
 
   // 3. Open Pre-flight panel -> run check -> acknowledge all non-laser warnings ONLY:
   //    Arm output must STILL remain disabled because lasers cannot be skipped!
-  await page.getByTestId('dmx-open-preflight').click();
-  const panel = page.getByTestId('preflight-panel');
+  await sacnPage.getByTestId('dmx-open-preflight').click();
+  const panel = sacnPage.getByTestId('preflight-panel');
   await expect(panel).toBeVisible();
   await panel.getByTestId('preflight-run-check').click();
   await expect(panel.getByTestId('preflight-crowd-scan-warning')).toBeVisible();
@@ -189,42 +280,42 @@ test('Pre-flight gate enforces acknowledgements, never skips lasers, marks stale
 
   // Badge stays "N warnings" (never "Checks passed" when warnings/lasers exist), and Arm output is now enabled!
   await expect(badge).toContainText(/warning/i);
-  await expect(page.evaluate(() => window.stageforgeProbe.preflightReport().canArm)).resolves.toBe(true);
-  const inhibitedBeforeGo = await page.evaluate(() => window.stageforgeProbe.preflightReport().inhibitedLaserKeys);
+  await expect(sacnPage.evaluate(() => window.stageforgeProbe.preflightReport().canArm)).resolves.toBe(true);
+  const inhibitedBeforeGo = await sacnPage.evaluate(() => window.stageforgeProbe.preflightReport().inhibitedLaserKeys);
   expect(inhibitedBeforeGo.length).toBeGreaterThan(0);
 
   // C1 + H3 regression: firing a cue Go does NOT mark pre-flight stale and NEVER drops inhibited lasers!
-  await page.getByRole('button', { name: /Arena Rock/ }).first().click();
-  await expect(page.evaluate(() => window.stageforgeProbe.preflightReport().stale)).resolves.toBe(false);
-  await expect(page.evaluate(() => window.stageforgeProbe.preflightReport().inhibitedLaserKeys)).resolves.toEqual(
+  await sacnPage.getByRole('button', { name: /Arena Rock/ }).first().click();
+  await expect(sacnPage.evaluate(() => window.stageforgeProbe.preflightReport().stale)).resolves.toBe(false);
+  await expect(sacnPage.evaluate(() => window.stageforgeProbe.preflightReport().inhibitedLaserKeys)).resolves.toEqual(
     inhibitedBeforeGo,
   );
 
   // 4. Editing a fixture/truss in Rig Builder marks status STALE and disables Arm output,
   //    while STILL preserving session-inhibited lasers (C1)!
-  await page.getByRole('button', { name: 'Rig builder', exact: true }).click();
-  const rigDrawer = page.getByLabel('Rig builder');
+  await sacnPage.getByRole('button', { name: 'Rig builder', exact: true }).click();
+  const rigDrawer = sacnPage.getByLabel('Rig builder');
   await expect(rigDrawer).toBeVisible();
   // Add a fixture unit or toggle side wings / truss geometry to mutate the rig cleanly
   await rigDrawer.getByRole('button', { name: /IMAG Side Wings/i }).click();
   await expect(badge).toContainText(/Not checked/i);
-  await expect(page.evaluate(() => window.stageforgeProbe.preflightReport().stale)).resolves.toBe(true);
-  await expect(page.evaluate(() => window.stageforgeProbe.preflightReport().canArm)).resolves.toBe(false);
-  await expect(page.evaluate(() => window.stageforgeProbe.preflightReport().inhibitedLaserKeys)).resolves.toEqual(
+  await expect(sacnPage.evaluate(() => window.stageforgeProbe.preflightReport().stale)).resolves.toBe(true);
+  await expect(sacnPage.evaluate(() => window.stageforgeProbe.preflightReport().canArm)).resolves.toBe(false);
+  await expect(sacnPage.evaluate(() => window.stageforgeProbe.preflightReport().inhibitedLaserKeys)).resolves.toEqual(
     inhibitedBeforeGo,
   );
   await rigDrawer.getByRole('button', { name: /Close rig builder/i }).click();
 
   // 5. Paperwork Commissioning Record sheet prints & exports consistent CSV.
-  await page.getByRole('button', { name: 'Gear, cost and crew', exact: true }).click();
-  const gearDialog = page.getByRole('dialog', { name: 'Gear & production' });
+  await sacnPage.getByRole('button', { name: 'Gear, cost and crew', exact: true }).click();
+  const gearDialog = sacnPage.getByRole('dialog', { name: 'Gear & production' });
   await gearDialog.getByRole('tab', { name: /Paperwork/ }).click();
   const pwPanel = gearDialog.getByRole('tabpanel', { name: /Paperwork/ });
   await pwPanel.getByRole('radio', { name: /Commissioning record/ }).click({ force: true });
   await expect(pwPanel.getByTestId('commissioning-record-sheet')).toBeVisible();
   await pwPanel.getByTestId('commissioning-tester-name').fill('Alex M. Electrician');
 
-  const downloadPromise = page.waitForEvent('download');
+  const downloadPromise = sacnPage.waitForEvent('download');
   await pwPanel.getByRole('button', { name: 'Export CSV' }).click();
   const dl = await downloadPromise;
   expect(dl.suggestedFilename()).toMatch(/\.commissioning-record\.csv$/);
@@ -234,13 +325,14 @@ test('Pre-flight gate enforces acknowledgements, never skips lasers, marks stale
   expect(csvContent).toContain('Alex M. Electrician');
 
   // Verify printable Commissioning sheet renders in print media with signature line.
-  await page.emulateMedia({ media: 'print' });
-  const printCommission = page.locator('.print-sheet [data-paperwork-section="commissioning"]');
+  await sacnPage.emulateMedia({ media: 'print' });
+  const printCommission = sacnPage.locator('.print-sheet [data-paperwork-section="commissioning"]');
   await expect(printCommission).toBeVisible();
   await expect(printCommission).toContainText('Commissioning Record');
   await expect(printCommission).toContainText('Alex M. Electrician');
   await expect(printCommission).toContainText('Signature');
-  await page.emulateMedia({ media: 'screen' });
+  await sacnPage.emulateMedia({ media: 'screen' });
+  await sacnPage.close();
 
   expect(errors).toEqual([]);
 });

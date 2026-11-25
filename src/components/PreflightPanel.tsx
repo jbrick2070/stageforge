@@ -200,7 +200,7 @@ export const PreflightPanel: React.FC<PreflightPanelProps> = ({
                   </label>
                 )}
 
-                {!row.hardBlock && row.isLaser && row.projectorKey && (
+                {row.isLaser && row.projectorKey && (row.canAcknowledge || row.canInhibitLaser) && (
                   <div className="flex flex-wrap items-center gap-3 pt-1 border-t border-white/10">
                     {row.canAcknowledge && (
                       <label className="inline-flex items-center gap-2 text-[10px] text-amber-100 cursor-pointer">
