@@ -41,7 +41,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10 and 11 (see "Designed Sprints 6–8" and Sprints 9, 10 and 11 below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 12 and 11 in that order (see "Designed Sprints 6–8" and Sprints 9, 10, 11 and 12 below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -214,7 +214,7 @@ Opus 5.5 needs Claude Code 2.1.280 or newer. If the call fails with a version er
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10 and 11 below, in that order, one per round, before Realism items 6 to 8.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 12 and 11 below, in that order (Sprint 12 before Sprint 11), one per round, before Realism items 6 to 8.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9 and 12. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
@@ -486,7 +486,7 @@ These come from a code-grounded roadmap review. The goal is that a working progr
 
 ### Sprint 11: AI bridge, an MCP server so people can drive StageForge with their own AI (designed by Claude Code, 2026-11-24)
 
-**Do this after Sprint 9** (it exposes audio mappings) and after Sprints 7 and 8 have settled the show format.
+**Do this after Sprint 9** (it exposes audio mappings), after Sprint 12 (add a read-only `get_safety_report` tool that returns the pre-flight and zone results, and never lets the AI pass a check or arm output), and after Sprints 7 and 8 have settled the show format.
 
 **Goal:** from a desktop-app switch, any local MCP client (Claude, Cursor, Codex and others) can read the show, propose edits, run the show and look at the result. The AI writes the show; StageForge plays it deterministically. No AI sits in the real-time loop, and the AI can never switch on real outputs.
 
@@ -543,6 +543,70 @@ These come from a code-grounded roadmap review. The goal is that a working progr
   - disabling the bridge closes the port.
 
 **Done when:** the gate is green; the bridge is off on a fresh boot; the security and never-available tests pass; the desktop smoke test passes; and `docs/ai-bridge.md` exists.
+
+### Sprint 12: live measurements and safety zones in the sim, with a visible pre-flight gate (designed by Claude Code, 2026-11-24)
+
+**Run this before Sprint 11** (the AI bridge can then expose a read-only safety report).
+
+**Goal:** the simulator becomes a bit of a real-time physics simulator. While the show runs, the user sees real numbers (angles, heights, distances, beam sizes) on the fixtures, and the safety zones are calculated from them and drawn in 3D and on the plan. A visible pre-flight status gates "Arm output". Everything is guidance, never certification.
+
+**Today (reuse, don't reinvent):**
+- `src/engine/focusAim.ts` has `aimAngles`, `PAN_LIMIT` (270°), `TILT_LIMIT` (135°) and `axisDmx`. The engine already computes every head's live aim from them.
+- `src/data/laserSafety.ts` already computes, per projector, the minimum ray clearance over the audience zone (`minClearanceM`), `entersAudienceBelowThreshold`, `MIN_AUDIENCE_CLEARANCE_M` (3.0 m) and `LATERAL_SEPARATION_GUIDANCE_M` (2.5 m), with `LASER_SAFETY_DISCLAIMER`.
+- The catalogue (`equipmentCatalog.ts`) has `divergenceMrad`, laser optical power, `optics.beamDeg` and `weightKg`/`powerW`. `gdtfOptics.ts` has luminous flux where known.
+- Live DMX has two-step arming, the LIVE badge and a guaranteed blackout (`docs/live-dmx.md`).
+
+**Design:**
+1. **Pure measurement module** `src/data/measure.ts`, built on the existing aim data. Never recompute placement or aim a second way: read the engine's current per-head aim.
+   - Per fixture unit: trim height above the deck and above the floor; pan and tilt in degrees (and the DMX value from `axisDmx`); beam axis direction; beam angle from the catalogue optics and the current zoom; the hit point where the axis first meets a surface (deck, floor, wall, audience plane); throw distance; incidence angle; beam footprint (diameter at normal incidence `2·d·tan(θ/2)`, and the stretched major axis at oblique incidence).
+   - Illuminance at the hit point (lux) only when the catalogue has the photometric data, shown as an estimate and `n/a` otherwise. Never invent a value.
+   - Warnings: pan or tilt within 5° of its limit; a beam that hits nothing; a beam that enters the audience zone below `MIN_AUDIENCE_CLEARANCE_M`.
+2. **Safety zones**, computed from real data and drawn as translucent overlays in 3D and as outlines on the plan:
+   - **Audience keep-out volume:** the audience area from the floor up to `MIN_AUDIENCE_CLEARANCE_M`, reusing `laserSafety.ts` (its numbers and the new overlay must agree: test it). Beam segments inside it turn red.
+   - **Laser hazard distance (NOHD), per projector:** `NOHD = (1/φ) · sqrt(4P / (π · MPE) − a²)`, with P the optical power in watts, φ the full-angle divergence in radians, a the beam diameter at the aperture, and MPE = 25.4 W/m² (visible light, 0.25 s aversion response, 400–700 nm).
+     - If the catalogue lacks a beam diameter, use 5 mm and show it as an assumption.
+     - Treat every beam as static, which is the worst case, and say so: scanned and pulsed beams need a proper hazard analysis.
+     - Draw it as a cone or sphere clipped to the venue, with the distance in metres, and mark where the audience zone falls inside it.
+   - **Reach map:** the part of the stage plane each head can reach within its pan and tilt limits, as an option. It also feeds the pre-flight check below.
+   - All zones are off by default, each with its own toggle.
+3. **Measure overlay UI:**
+   - A "Measure" toggle in the top bar and bottom console (pick a key that does not clash with existing hotkeys), off by default, with no cost when off.
+   - Small labels at each hit point (distance, incidence, footprint). A readout card for the selected fixture: pan, tilt, trim, throw, incidence, beam angle, footprint, lux (estimate), plus its warnings. A compact list of the worst offenders across the rig.
+   - Update at most 10 Hz and only for visible or selected fixtures. Use batched line geometry, not one mesh per beam.
+4. **Pre-flight status and gate, visible:**
+   - A status badge next to the LIVE badge in the top bar: "Not checked", "N warnings" or "Ready". The Arm output button shows the same status.
+   - A pre-flight panel with one row per fixture group (pass, warn or fail, with the reason), using the same numbers as the overlay: patch conflicts and overflow, unpatched fixtures, power and hoist load, aim reachability, audience clearance, laser NOHD against the audience zone.
+   - **Gate:** Arm output stays disabled until the checks pass, or the user acknowledges each warning in the panel. A laser projector can never be skipped: each needs its own explicit acknowledgement, and the audience-scan warning always shows. Arming still needs the fresh two-step confirmation in the current session, as today.
+   - Editing a fixture's position, patch or aim marks its status stale.
+   - A printable "Commissioning record" in the paperwork book (check results, tester name, date, signature line), using the same sheet pattern as the other paperwork.
+5. **Rules:**
+   - Guidance only. Reuse `LASER_SAFETY_DISCLAIMER`, add a visible "not certification; a qualified laser safety officer must assess the real installation" line to the laser zone UI, and never claim compliance.
+   - Commissioning status is informational and never persisted as "enabled".
+   - Sprint 11's AI bridge may later read the safety report, never pass a check or arm output.
+
+**Out:** the hardware point test and pan/tilt invert, swap and offset calibration (these need new per-fixture fields, a schema change and real hardware, so they are a later sprint); scanned-beam hazard analysis beyond the static worst case; photometric simulation; automatic fixes.
+
+**Tests:**
+- **Unit, `tests/measure.test.mjs`:**
+  - footprint at normal incidence (10 m throw, 10° beam gives about 1.75 m) and at oblique incidence;
+  - hit points on deck, floor, wall and audience planes;
+  - pan and tilt degrees equal the values from the existing focus-aim functions for the same rig;
+  - NOHD pins: 5 W, 1 mrad, 5 mm gives about 500 m; 0.5 W, 1 mrad gives about 158 m; a larger beam diameter shortens it; zero or missing power gives no zone;
+  - the audience zone numbers equal `laserSafety.ts`'s `minClearanceM` for the same rig;
+  - limit-proximity warnings; lux is `n/a` when there is no photometric data.
+- **E2E, `tests/e2e/measure-overlay.spec.mjs`:**
+  - Measure is off by default, with identical `renderStats` (draw calls) on and off-by-default runs;
+  - with it on, the readout numbers match the `?probe` aim values within tolerance while the demo runs;
+  - zone toggles show and hide the overlays;
+  - the pre-flight badge shows the right state;
+  - Arm output is disabled until the checks pass or the warnings are acknowledged;
+  - a laser projector cannot be skipped;
+  - moving a fixture makes its status stale;
+  - overlay-on frame time stays within 1 ms of overlay-off on the arena rig (log both).
+- **Desktop smoke:** the pre-flight gate holds in the Electron app, and live output still boots off.
+- **Paperwork:** the commissioning sheet prints and its CSV is consistent.
+
+**Done when:** the gate is green; the overlay is off and free by default; formula pins and the audience-zone parity test pass; the pre-flight badge and gate work as described; the guidance-only text is visible in the UI and `docs/` (add `docs/measure.md`, and note the gate in `docs/live-dmx.md`); and the Overnight log records the overlay-on and overlay-off frame times.
 
 ## Backlog (in this order)
 
