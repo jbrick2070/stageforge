@@ -584,6 +584,13 @@ These come from a code-grounded roadmap review. The goal is that a working progr
    - Commissioning status is informational and never persisted as "enabled".
    - Sprint 11's AI bridge may later read the safety report, never pass a check or arm output.
 
+6. **Real output moves under "Advanced", with an open invitation.** Most people use StageForge as a simulator, so sending signals to real lights should not be in their way.
+   - In the DMX output section (`DmxOutputSection.tsx`, opened from `DmxMonitorDrawer.tsx`), put the transport settings and the Arm output and Go live controls inside a collapsed "Advanced: live output to real lights (experimental)" section (a native `<details>` is fine). It starts collapsed. Remember the open state in `localStorage` (a UI preference only, never the armed or live state), wrapped in try/catch.
+   - The LIVE badge, **Blackout & stop** and the pre-flight status badge stay outside the collapsed section and always visible while output is live. Collapsing the section must never hide a live output.
+   - At the top of the Advanced section, show this note, with a real link: "Live output to real lights is experimental. It has only been tested against a local DMX receiver, not real fixtures, and its checks are guidance, not certification. If you like StageForge, want to try it on a real rig, or can improve it, get in touch or open an issue or pull request at github.com/jbrick2070/stageforge. Contributions are welcome." Do not put any personal email address or phone number in the app: the contact route is the GitHub repository.
+   - Add the same invitation as a short "Contributing" section in `README.md`, and say in `docs/live-dmx.md` that real output is experimental and the manual hardware checklist is still unticked.
+   - Keep it keyboard and screen-reader friendly (the summary is focusable and announces its state).
+
 **Out:** the hardware point test and pan/tilt invert, swap and offset calibration (these need new per-fixture fields, a schema change and real hardware, so they are a later sprint); scanned-beam hazard analysis beyond the static worst case; photometric simulation; automatic fixes.
 
 **Tests:**
@@ -603,10 +610,10 @@ These come from a code-grounded roadmap review. The goal is that a working progr
   - a laser projector cannot be skipped;
   - moving a fixture makes its status stale;
   - overlay-on frame time stays within 1 ms of overlay-off on the arena rig (log both).
-- **Desktop smoke:** the pre-flight gate holds in the Electron app, and live output still boots off.
+- **Desktop smoke:** the pre-flight gate holds in the Electron app, and live output still boots off. The existing smoke test that arms output (`tests/desktop/electron-smoke.spec.mjs`) must expand the Advanced section first. Add tests that it starts collapsed, that its open state is remembered, and that the LIVE badge, Blackout & stop and the pre-flight badge stay visible outside the collapsed section while output is live.
 - **Paperwork:** the commissioning sheet prints and its CSV is consistent.
 
-**Done when:** the gate is green; the overlay is off and free by default; formula pins and the audience-zone parity test pass; the pre-flight badge and gate work as described; the guidance-only text is visible in the UI and `docs/` (add `docs/measure.md`, and note the gate in `docs/live-dmx.md`); and the Overnight log records the overlay-on and overlay-off frame times.
+**Done when:** the gate is green; the overlay is off and free by default; real output sits under Advanced with the experimental note and the contribution invitation; formula pins and the audience-zone parity test pass; the pre-flight badge and gate work as described; the guidance-only text is visible in the UI and `docs/` (add `docs/measure.md`, and note the gate in `docs/live-dmx.md`); and the Overnight log records the overlay-on and overlay-off frame times.
 
 ## Backlog (in this order)
 
