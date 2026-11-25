@@ -767,6 +767,8 @@ Extend `BakedIldaClip` processing with bounded dwell and corner weights that res
 4. **Tests:** catalogue integrity (unique ids, required fields, positive integer channel counts, valid categories, non-empty sources, sane numeric ranges, laser fields coherent, every `unverified` name is a real field); the entry count; every new entry builds a 3D model, a plan symbol, a DXF block name, an inventory row and a paperwork row without errors; old shows and every stock template load unchanged; the first-load size does not grow noticeably (report the `dist` size before and after).
 5. Pass the gate, run Sonnet QA on the changed code and tests, and commit locally.
 
+**Keep it swappable.** The owner may later decide not to use real manufacturer and model names, and would then ship "faux" equipment: the same numbers under invented neutral names. Make that a pure data change. Manufacturer and model strings live only in the catalogue entry, the `docs/equipment.md` table and the source citations, never scattered through code, shaders or labels. Do not hard-code real model names in tests except in a test whose subject is the sourcing itself. Entry ids stay stable and neutral in meaning, so a renamed entry still loads old shows.
+
 **Out:** new 3D models, GDTF files, changing existing entries, pushing.
 
 **Done when:** the gate is green; the new entries are in the catalogue with citations and honest `unverified` lists; the spot-check results are in the Overnight log; and `docs/equipment.md` is updated.
