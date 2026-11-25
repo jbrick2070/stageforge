@@ -30,6 +30,8 @@ export interface PhysicalPersonality {
   readonly channels: number;
   readonly manualRef: string;
   readonly channelNames: readonly string[];
+  /** True only for passive non-strobing LED luminaires safe on renderer-local Web Serial (no lasers, atmospherics, or blinders). */
+  readonly allowOnRendererSerial: boolean;
   readonly encode: (state: PhysicalUnitState, out: number[]) => number[];
 }
 
@@ -92,6 +94,7 @@ const PERSONALITY_LIST: readonly PhysicalPersonality[] = [
     channels: 1,
     manualRef: 'ETC ColorSource PAR User Manual (1-Ch mode: Ch 1 = Preset 1 Intensity)',
     channelNames: ['Intensity (Preset 1)'],
+    allowOnRendererSerial: true,
     encode(state, out) {
       out.length = 1;
       out[0] = state.blackout ? 0 : clampByte(clampUnit(state.dimmer) * 255);
@@ -105,6 +108,7 @@ const PERSONALITY_LIST: readonly PhysicalPersonality[] = [
     channels: 3,
     manualRef: 'ETC ColorSource PAR User Manual (RGB 3-Ch mode: Ch 1 Red, Ch 2 Green, Ch 3 Blue)',
     channelNames: ['Red', 'Green', 'Blue'],
+    allowOnRendererSerial: true,
     encode(state, out) {
       out.length = 3;
       const dim = state.blackout ? 0 : clampUnit(state.dimmer);
@@ -121,6 +125,7 @@ const PERSONALITY_LIST: readonly PhysicalPersonality[] = [
     channels: 5,
     manualRef: 'ETC ColorSource PAR User Manual (5-Ch mode: Ch 1 Intensity, Ch 2 Red, Ch 3 Green, Ch 4 Blue, Ch 5 Strobe=0)',
     channelNames: ['Intensity', 'Red', 'Green', 'Blue', 'Strobe'],
+    allowOnRendererSerial: true,
     encode(state, out) {
       out.length = 5;
       const dim = state.blackout ? 0 : clampUnit(state.dimmer);
@@ -148,6 +153,7 @@ const PERSONALITY_LIST: readonly PhysicalPersonality[] = [
     channels: 1,
     manualRef: 'CHAUVET Professional STRIKE 4 User Manual Rev 1 (1-Ch mode: Ch 1 Dimmer)',
     channelNames: ['Dimmer'],
+    allowOnRendererSerial: false,
     encode(state, out) {
       out.length = 1;
       out[0] = state.blackout ? 0 : clampByte(clampUnit(state.blinder) * 255);
@@ -161,6 +167,7 @@ const PERSONALITY_LIST: readonly PhysicalPersonality[] = [
     channels: 4,
     manualRef: 'CHAUVET Professional STRIKE 4 User Manual Rev 1 (4-Ch mode: Ch 1–4 White Pod 1–4)',
     channelNames: ['White 1', 'White 2', 'White 3', 'White 4'],
+    allowOnRendererSerial: false,
     encode(state, out) {
       out.length = 4;
       const byte = state.blackout ? 0 : clampByte(clampUnit(state.blinder) * 255);
@@ -178,6 +185,7 @@ const PERSONALITY_LIST: readonly PhysicalPersonality[] = [
     channels: 1,
     manualRef: 'Martin JEM ZR25/35/45 User Manual (1-Ch: 0–12 idle, 13–240 variable, 241–255 max)',
     channelNames: ['Fog Output'],
+    allowOnRendererSerial: false,
     encode(state, out) {
       out.length = 1;
       out[0] = state.blackout ? 0 : encodeZr45SmokeByte(clampUnit(state.smoke));
@@ -196,17 +204,18 @@ export function listImplementedPhysicalPersonalities(): readonly PhysicalPersona
 
 /**
  * Single source of truth deciding whether a fixture group drives physical DMX through an
- * implemented datasheet personality, StageForge's generic simulated layout (non-catalogue rigs),
- * or neutral zeros (`simulation-only` for unimplemented/unverified/legacy catalogue modes).
+ * implemented datasheet personality or emits neutral zeros (`simulation-only`).
+ * Generic non-catalogue fixtures keep StageForge's simulated layout in `dmxUniverse1/2` (3D sim & SIM monitor),
+ * NEVER on physical wire (`SF-H1` / `N1`).
  */
 export function classifyPhysicalGroup(
   group: Pick<PhysicalGroup, 'catalogId' | 'dmxMode' | 'dmxChannels' | 'type'>,
 ): PhysicalGroupClassification {
   if (!group.catalogId) {
     return {
-      status: 'generic-simulated',
-      label: 'Simulated layout',
-      reason: GENERIC_SIMULATED_LABEL,
+      status: 'simulation-only',
+      label: SIMULATION_ONLY_LABEL,
+      reason: 'Generic non-catalogue fixture — not driven on physical DMX (outputs neutral zeros).',
     };
   }
   const entry = getCatalogEntry(group.catalogId);
@@ -244,36 +253,73 @@ export function classifyPhysicalGroup(
   };
 }
 
+const SERIAL_BLOCKED_TYPES = new Set(['laser', 'floor_laser', 'co2', 'smoke', 'hazer', 'strobe', 'blinder']);
+const SERIAL_BLOCKED_CATEGORIES = new Set(['laser', 'fogger', 'hazer', 'co2', 'sparks', 'strobe', 'blinder']);
+
+/**
+ * True when a fixture group represents a hazardous luminaire or atmospheric effect that MUST NOT be
+ * armed or driven over renderer-local Web Serial (which lacks an out-of-process crash watchdog).
+ */
+export function isSerialBlockedFixtureGroup(
+  group: Pick<PhysicalGroup, 'catalogId' | 'type'>,
+): boolean {
+  if (SERIAL_BLOCKED_TYPES.has(group.type)) return true;
+  if (group.catalogId) {
+    const entry = getCatalogEntry(group.catalogId);
+    if (entry && SERIAL_BLOCKED_CATEGORIES.has(entry.category)) return true;
+  }
+  return false;
+}
+
+export function checkSerialTransportSafety(rig: RigConfig): {
+  allowed: boolean;
+  reason: string | null;
+  blockingGroupIds: string[];
+} {
+  const blockingGroupIds: string[] = [];
+  for (const pod of rig.trussPods) {
+    for (const g of pod.fixtures) {
+      if (g.count > 0 && isSerialBlockedFixtureGroup(g)) blockingGroupIds.push(g.id);
+    }
+  }
+  for (const fx of rig.floorFx) {
+    if (fx.count > 0 && isSerialBlockedFixtureGroup(fx)) blockingGroupIds.push(fx.id);
+  }
+  if (blockingGroupIds.length > 0) {
+    return {
+      allowed: false,
+      reason:
+        'USB Serial DMX lacks an out-of-process crash watchdog and is blocked when lasers, blinders, strobes, or atmospheric effects (smoke, haze, CO2) are patched. Remove hazardous fixtures or switch to desktop sACN / Art-Net 4.',
+      blockingGroupIds,
+    };
+  }
+  return { allowed: true, reason: null, blockingGroupIds: [] };
+}
+
 /**
  * Write physical DMX bytes for one patched unit into `physBuf`, never overwriting neighbours.
- * - `implemented`: encodes via the verified personality encoder.
- * - `generic-simulated`: copies `width` bytes from `simBuf`.
- * - `simulation-only`: zeroes `width` bytes (neutral safe output).
+ * - `implemented`: encodes via the verified personality encoder (unless `serialOnlySafe` rejects non-serial personalities).
+ * - All other groups (`simulation-only`, including generic non-catalogue fixtures): zeroes `width` bytes.
  */
 export function writePhysicalUnitBytes(
   physBuf: Uint8Array,
-  simBuf: Uint8Array,
+  _simBuf: Uint8Array,
   start: number,
   width: number,
   classification: PhysicalGroupClassification,
   state: PhysicalUnitState,
   scratch: number[] = [],
+  serialOnlySafe = false,
 ): void {
   const ch = start - 1;
   if (ch < 0 || width <= 0 || ch >= physBuf.length) return;
   const clampedWidth = Math.min(width, physBuf.length - ch);
-  if (classification.status === 'simulation-only') {
+  if (classification.status !== 'implemented') {
     physBuf.fill(0, ch, ch + clampedWidth);
     return;
   }
-  if (classification.status === 'generic-simulated') {
-    for (let i = 0; i < clampedWidth; i++) {
-      physBuf[ch + i] = simBuf[ch + i];
-    }
-    return;
-  }
   const personality = classification.personality;
-  if (!personality) {
+  if (!personality || (serialOnlySafe && !personality.allowOnRendererSerial)) {
     physBuf.fill(0, ch, ch + clampedWidth);
     return;
   }

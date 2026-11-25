@@ -167,7 +167,11 @@ test('H1: golden bytes for every implemented physical personality, one-channel P
   assert.deepEqual([...activeOut.u1.slice(10, 14)], [204, 204, 204, 204], 'CHAUVET STRIKE 4 4-Ch drives all 4 pods');
   assert.ok(activeOut.u1.slice(14, 30).every((b) => b === 0), 'Unimplemented Claypaky Sharpy outputs neutral zeros');
   assert.ok(activeOut.u1.slice(30, 46).every((b) => b === 0), 'Unverified catalogue laser outputs neutral zeros on physical wire');
-  assert.deepEqual([...activeOut.u1.slice(46, 54)], [128, 64, 200, 255, 128, 32, 180, 12], 'Generic non-catalogue beam keeps simulated layout');
+  assert.ok(
+    activeOut.u1.slice(46, 54).every((b) => b === 0),
+    'Generic non-catalogue beam outputs neutral zeros on physical wire while simU1 keeps simulated layout',
+  );
+  assert.deepEqual([...simU1.slice(46, 54)], [128, 64, 200, 255, 128, 32, 180, 12], 'simU1 retains simulated layout for 3D sim and SIM monitor');
   // Martin JEM ZR45: 0.5 -> 13 + round(0.5 * 227) = 127 (within 13..240 proportional band)
   assert.equal(activeOut.u2[0], 127, 'Martin JEM ZR45 1-Ch proportional curve at 50% -> 127');
   assert.equal(activeOut.u2[1], 0, 'MagicFX CO2Jet II (external switchpack) is simulation-only -> neutral 0');
@@ -188,16 +192,15 @@ test('H1: golden bytes for every implemented physical personality, one-channel P
     blinder: 1,
     smoke: 1,
   }));
-  assert.deepEqual([...blackoutOut.u1.slice(0, 46)], new Array(46).fill(0), 'All catalogue fixtures (implemented and simulation-only) output 0 on blackout');
+  assert.deepEqual([...blackoutOut.u1.slice(0, 54)], new Array(54).fill(0), 'All fixtures (implemented, unverified catalogue, and generic) output 0 on blackout');
   assert.equal(blackoutOut.u2[0], 0, 'ZR45 outputs 0 on blackout');
   assert.equal(blackoutOut.u2[1], 0, 'CO2Jet II outputs 0 on blackout');
 
   // Classification summary matches policy wording
   const summary = physicalDmx.summarizePhysicalDrive(rig);
   assert.equal(summary.implemented.length, 6);
-  assert.equal(summary.genericSimulated.length, 1);
-  assert.equal(summary.genericSimulated[0].classification.reason, physicalDmx.GENERIC_SIMULATED_LABEL);
-  assert.equal(summary.simulationOnly.length, 3);
+  assert.equal(summary.genericSimulated.length, 0);
+  assert.equal(summary.simulationOnly.length, 4);
   assert.ok(summary.simulationOnly.every((item) => item.classification.label === physicalDmx.SIMULATION_ONLY_LABEL));
 
   // Laser encoder: disabled / blacked-out verified layouts emit all zeros (including posX, never 128).

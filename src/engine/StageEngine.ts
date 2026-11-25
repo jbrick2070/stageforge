@@ -420,12 +420,22 @@ export class StageEngine {
 
   // DMX Universe buffers:
   // - dmxUniverse1/2 hold StageForge's simulation / monitor buffers (unchanged for legacy ?probe & monitor).
-  // - physicalDmxU1/U2 hold outgoing physical wire buffers (only verified personalities & generic rigs; unimplemented catalogue modes = 0).
+  // - physicalDmxU1/U2 hold outgoing physical wire buffers (strictly datasheet-verified personalities only; all generic & unimplemented modes = 0).
+  // - serialPhysicalDmxU1/U2 hold Web Serial wire buffers (strictly passive non-strobing LED personalities only; atmospherics/blinders/lasers = 0).
   public dmxUniverse1 = new Uint8Array(512);
   public dmxUniverse2 = new Uint8Array(512);
   public physicalDmxU1 = new Uint8Array(512);
   public physicalDmxU2 = new Uint8Array(512);
-  private dmxFrameListener?: (u1: Uint8Array, u2: Uint8Array, u1Changed: boolean, u2Changed: boolean) => void;
+  public serialPhysicalDmxU1 = new Uint8Array(512);
+  public serialPhysicalDmxU2 = new Uint8Array(512);
+  private dmxFrameListener?: (
+    u1: Uint8Array,
+    u2: Uint8Array,
+    u1Changed: boolean,
+    u2Changed: boolean,
+    serialU1: Uint8Array,
+    serialU2: Uint8Array,
+  ) => void;
   private dmxAccum = 0;
   private lastDmxU1 = new Uint8Array(512);
   private lastDmxU2 = new Uint8Array(512);
@@ -2016,6 +2026,8 @@ export class StageEngine {
     this.dmxUniverse2.fill(0);
     this.physicalDmxU1.fill(0);
     this.physicalDmxU2.fill(0);
+    this.serialPhysicalDmxU1.fill(0);
+    this.serialPhysicalDmxU2.fill(0);
     this.trussPods = [];
     this.movingFixtures = [];
     this.laserUnits = [];
@@ -3118,7 +3130,14 @@ export class StageEngine {
    * so backgrounded/occluded windows continue advancing blackout, bumps, and cues cleanly.
    */
   public setDmxFrameListener(
-    listener?: (u1: Uint8Array, u2: Uint8Array, u1Changed: boolean, u2Changed: boolean) => void
+    listener?: (
+      u1: Uint8Array,
+      u2: Uint8Array,
+      u1Changed: boolean,
+      u2Changed: boolean,
+      serialU1: Uint8Array,
+      serialU2: Uint8Array,
+    ) => void
   ) {
     this.dmxFrameListener = listener;
     this.dmxAccum = 0;
@@ -3132,7 +3151,14 @@ export class StageEngine {
     }
     this.lastDmxU1.set(this.physicalDmxU1);
     this.lastDmxU2.set(this.physicalDmxU2);
-    listener(this.physicalDmxU1, this.physicalDmxU2, true, true);
+    listener(
+      this.physicalDmxU1,
+      this.physicalDmxU2,
+      true,
+      true,
+      this.serialPhysicalDmxU1,
+      this.serialPhysicalDmxU2,
+    );
     this.startControlFallbackTimer();
   }
 
@@ -3161,7 +3187,14 @@ export class StageEngine {
     if (!u1Changed && !u2Changed) return;
     if (u1Changed) this.lastDmxU1.set(this.physicalDmxU1);
     if (u2Changed) this.lastDmxU2.set(this.physicalDmxU2);
-    listener(this.physicalDmxU1, this.physicalDmxU2, u1Changed, u2Changed);
+    listener(
+      this.physicalDmxU1,
+      this.physicalDmxU2,
+      u1Changed,
+      u2Changed,
+      this.serialPhysicalDmxU1,
+      this.serialPhysicalDmxU2,
+    );
   }
 
   private runControlTick(now: number, allowRender: boolean) {
@@ -3278,9 +3311,11 @@ export class StageEngine {
     const blackoutActive = Boolean(s.blackout);
     const darkOpening = !!demo && (!!demo.beforeDownbeat || demoOpeningStep! <= DEMO_BLACKOUT_STEPS);
     const master = blackoutActive || darkOpening ? 0 : s.masterDimmer;
-    // Clear physical buffers before encoding so repatched or simulation-only ranges always stay neutral 0.
+    // Clear physical buffers before encoding so repatched, generic, or simulation-only ranges always stay neutral 0.
     this.physicalDmxU1.fill(0);
     this.physicalDmxU2.fill(0);
+    this.serialPhysicalDmxU1.fill(0);
+    this.serialPhysicalDmxU2.fill(0);
     const roomGain = openingStep === undefined ? 1 : THREE.MathUtils.lerp(demoFade(openingStep, 96, 208), 1, manualMix);
     this.houseAmbient.intensity = 0.36 * roomGain;
     this.scene.environmentIntensity = 0.55 * roomGain;
@@ -3689,6 +3724,7 @@ export class StageEngine {
       // Clamp writes strictly to fx.dmxWidth so narrow catalogue modes (e.g. 1–6 ch PARs) never overwrite neighbours.
       const uBuf = fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
       const physBuf = fx.dmxUniverse === 1 ? this.physicalDmxU1 : this.physicalDmxU2;
+      const serialPhysBuf = fx.dmxUniverse === 1 ? this.serialPhysicalDmxU1 : this.serialPhysicalDmxU2;
       if (fx.dmxStart > 0) {
         writeDmxChannels(uBuf, fx.dmxStart, fx.dmxWidth, [
           axisDmx(fx.currentPan, PAN_LIMIT),
@@ -3700,36 +3736,20 @@ export class StageEngine {
           Math.round(effZoom * 255),
           groupDmxStrobe,
         ]);
-        const unitRgb = stepDeliveredUnitRgb(
-          this.audioModState,
-          fx.physRgbGov,
-          clampedFinalInt,
-          tempCol.r,
-          tempCol.g,
-          tempCol.b,
-          blackoutActive || darkOpening,
-          this.deliveredRgbScratch,
-        );
-        if (unitRgb.limited) {
-          mod.flashLimited = true;
-        }
-        if (fx.physicalClass.status === 'generic-simulated') {
-          const ch = fx.dmxStart - 1;
-          const clampedW = Math.min(fx.dmxWidth, physBuf.length - ch);
-          if (ch >= 0 && clampedW > 0) {
-            this.physicalDmxScratch.length = 8;
-            this.physicalDmxScratch[0] = axisDmx(fx.currentPan, PAN_LIMIT);
-            this.physicalDmxScratch[1] = axisDmx(fx.currentTilt, TILT_LIMIT);
-            this.physicalDmxScratch[2] = blackoutActive ? 0 : Math.round(unitRgb.rgbDimmer * 255);
-            this.physicalDmxScratch[3] = blackoutActive ? 0 : Math.round(unitRgb.r * 255);
-            this.physicalDmxScratch[4] = blackoutActive ? 0 : Math.round(unitRgb.g * 255);
-            this.physicalDmxScratch[5] = blackoutActive ? 0 : Math.round(unitRgb.b * 255);
-            this.physicalDmxScratch[6] = Math.round(effZoom * 255);
-            // Hold hardware strobe slot at 0 on physical wire so external fixtures cannot self-strobe > 3 Hz.
-            this.physicalDmxScratch[7] = 0;
-            writeDmxChannels(physBuf, fx.dmxStart, clampedW, this.physicalDmxScratch);
+        if (fx.physicalClass.status === 'implemented') {
+          const unitRgb = stepDeliveredUnitRgb(
+            this.audioModState,
+            fx.physRgbGov,
+            clampedFinalInt,
+            tempCol.r,
+            tempCol.g,
+            tempCol.b,
+            blackoutActive || darkOpening,
+            this.deliveredRgbScratch,
+          );
+          if (unitRgb.limited) {
+            mod.flashLimited = true;
           }
-        } else {
           const ps = this.physicalUnitScratch;
           ps.blackout = blackoutActive;
           if (fx.physicalClass.personalityKey === 'etc-colorsource-par::1-Ch') {
@@ -3743,7 +3763,8 @@ export class StageEngine {
             ps.g = unitRgb.g;
             ps.b = unitRgb.b;
           }
-          writePhysicalUnitBytes(physBuf, uBuf, fx.dmxStart, fx.dmxWidth, fx.physicalClass, ps, this.physicalDmxScratch);
+          writePhysicalUnitBytes(physBuf, uBuf, fx.dmxStart, fx.dmxWidth, fx.physicalClass, ps, this.physicalDmxScratch, false);
+          writePhysicalUnitBytes(serialPhysBuf, uBuf, fx.dmxStart, fx.dmxWidth, fx.physicalClass, ps, this.physicalDmxScratch, true);
         }
       }
     }
@@ -3986,33 +4007,6 @@ export class StageEngine {
           const ch = l.dmxStart - 1;
           const clampedW = Math.min(l.dmxWidth, physBuf.length - ch);
           if (ch >= 0 && clampedW > 0) physBuf.fill(0, ch, ch + clampedW);
-        } else if (l.physicalClass.status === 'generic-simulated') {
-          const laserPhysRgb = stepDeliveredUnitRgb(
-            this.audioModState,
-            l.physRgbGov,
-            Math.min(1, unitBaseLaserInt),
-            tempCol.r,
-            tempCol.g,
-            tempCol.b,
-            blackoutActive || darkOpening || !laserEnabled,
-            this.deliveredRgbScratch,
-          );
-          if (laserPhysRgb.limited) {
-            mod.flashLimited = true;
-          }
-          dv.enabled = laserEnabled && laserPhysRgb.rgbDimmer > 0.01 && !blackoutActive;
-          dv.intensity = blackoutActive ? 0 : laserPhysRgb.rgbDimmer;
-          dv.strobe = 0;
-          dv.colorR = laserPhysRgb.r;
-          dv.colorG = laserPhysRgb.g;
-          dv.colorB = laserPhysRgb.b;
-          const physLaserBytes = encodeLaserDmxChannels(l.resolvedMode, dv, this.physicalDmxScratch);
-          const ch = l.dmxStart - 1;
-          const clampedW = Math.min(l.dmxWidth, physBuf.length - ch);
-          if (ch >= 0 && clampedW > 0) {
-            physBuf.fill(0, ch, ch + clampedW);
-            writeDmxChannels(physBuf, l.dmxStart, clampedW, physLaserBytes);
-          }
         } else {
           writePhysicalUnitBytes(physBuf, uBuf, l.dmxStart, l.dmxWidth, l.physicalClass, ps, this.physicalDmxScratch);
         }
@@ -4097,21 +4091,9 @@ export class StageEngine {
           dimByte,
           strobeBarDmxRate,
         ]);
-        if (st.physicalClass.status === 'generic-simulated') {
-          const ch = st.start - 1;
-          const clampedW = Math.min(w, st.physBuffer.length - ch);
-          if (ch >= 0 && clampedW > 0) {
-            this.physicalDmxScratch.length = 2;
-            this.physicalDmxScratch[0] = blackoutActive ? 0 : dimByte;
-            // Hold hardware strobe rate slot at 0 on physical wire; dimmer byte carries <= 3/s flashes.
-            this.physicalDmxScratch[1] = 0;
-            writeDmxChannels(st.physBuffer, st.start, clampedW, this.physicalDmxScratch);
-          }
-        } else {
-          const ps = this.physicalUnitScratch;
-          ps.blackout = blackoutActive;
-          writePhysicalUnitBytes(st.physBuffer, st.buffer, st.start, w, st.physicalClass, ps, this.physicalDmxScratch);
-        }
+        const ps = this.physicalUnitScratch;
+        ps.blackout = blackoutActive;
+        writePhysicalUnitBytes(st.physBuffer, st.buffer, st.start, w, st.physicalClass, ps, this.physicalDmxScratch);
       }
       const strobeLensWhite = previewLimited
         ? (strobeBarAudioMapped

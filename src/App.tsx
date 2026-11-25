@@ -555,6 +555,7 @@ export const App: React.FC = () => {
       if (!rep) return { allowed: false, reason: 'Run pre-flight check before starting live DMX output.' };
       return { allowed: rep.canArm, reason: rep.blockingReasons[0] };
     },
+    rigRef,
   );
   const liveDmxRef = useRef(liveDmx);
   liveDmxRef.current = liveDmx;
@@ -660,9 +661,11 @@ export const App: React.FC = () => {
       if (liveDmxRef.current.isLive) {
         const rep = preflightRef.current;
         if (rep && (rep.overallStatus === 'blocked' || rep.stale)) {
-          setLiveSafetyViolation(
-            rep.blockingReasons[0] ?? 'Pre-flight safety check is failing or stale while live output is active.',
-          );
+          const reason =
+            rep.blockingReasons[0] ?? 'Pre-flight safety check became failing or stale while live output was active.';
+          setLiveSafetyViolation(reason);
+          clearAllBumps();
+          void liveDmxRef.current.emergencyStopOnFault(`Output stopped: ${reason}`);
         } else if (snap.audienceBreachCount > 0) {
           setLiveSafetyViolation(
             `${snap.audienceBreachCount} beam(s) entered the audience keep-out volume (< 3.0 m) while output is live.`,
@@ -673,20 +676,24 @@ export const App: React.FC = () => {
     return () => {
       engine.setMeasureListener(undefined);
     };
-  }, [live.measure, liveDmx.isLive, measureOptions]);
+  }, [clearAllBumps, live.measure, liveDmx.isLive, measureOptions]);
 
-  // Immediately flag live violation if a hard fail or stale config appears while output is live; clear on stop.
+  // Fail-closed live TOCTOU enforcement (SF-M1): if any rig/patch/power/cue/ILDA/routing edit makes pre-flight
+  // stale or blocked (including activating audienceScan) while output is live, immediately blackout, stop, and disarm.
   useEffect(() => {
     if (!liveDmx.isLive) {
       setLiveSafetyViolation(null);
       return;
     }
     if (preflightReport.overallStatus === 'blocked' || preflightReport.stale) {
-      setLiveSafetyViolation(
-        preflightReport.blockingReasons[0] ?? 'Pre-flight safety check became failing or stale while live output is active.',
-      );
+      const reason =
+        preflightReport.blockingReasons[0] ??
+        'Pre-flight safety check became failing or stale while live output was active.';
+      setLiveSafetyViolation(reason);
+      clearAllBumps();
+      void liveDmxRef.current.emergencyStopOnFault(`Output stopped: ${reason}`);
     }
-  }, [liveDmx.isLive, preflightReport]);
+  }, [clearAllBumps, liveDmx.isLive, preflightReport]);
 
   const laserZonesForHud = useMemo(() => {
     if (!measureOptions.showLaserNohd) return [];

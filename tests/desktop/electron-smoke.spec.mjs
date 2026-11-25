@@ -426,7 +426,19 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
     await dmxPage.waitForTimeout(1000);
     expect(packets.length).toBe(0);
 
-    // 2. Open DMX monitor -> Advanced starts collapsed -> expand Advanced (remembered) -> complete pre-flight gate -> sACN unicast 127.0.0.1 -> Arm -> Go live.
+    // 2. Patch a verified catalogue personality (ETC ColorSource PAR, U1 433..462) onto MAC Aura Pro RGBW so Universe 1
+    //    has an implemented physical personality alongside generic non-catalogue fixtures (U1 1..432, which MUST stay 0 per SF-H1).
+    await dmxPage.getByRole('button', { name: 'Rig builder', exact: true }).click();
+    await dmxPage.getByRole('button', { name: /Choose equipment model for MAC Aura Pro RGBW/ }).first().click();
+    const eqPicker = dmxPage.getByRole('dialog', { name: /Equipment catalogue for/ });
+    await expect(eqPicker).toBeVisible();
+    await eqPicker.getByRole('searchbox', { name: 'Search equipment catalogue' }).fill('ColorSource PAR');
+    await eqPicker.getByRole('button', { name: /ETC ColorSource PAR/ }).click();
+    await eqPicker.getByRole('button', { name: 'Apply model' }).click();
+    await expect(eqPicker).toBeHidden();
+    await dmxPage.getByRole('button', { name: 'Close Rig Builder' }).click();
+
+    // Open DMX monitor -> Advanced starts collapsed -> expand Advanced (remembered) -> complete pre-flight gate -> sACN unicast 127.0.0.1 -> Arm -> Go live.
     await dmxPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
     const advDetails = dmxPage.getByTestId('dmx-advanced-details');
     await expect(advDetails).not.toHaveAttribute('open', '');
@@ -484,7 +496,13 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
     if (!packaged) {
       // Trigger a cue so non-zero fixture channels stream through the frame IPC channel.
       await dmxPage.locator('.cue-pad').first().click();
-      await expect.poll(() => packets.some((p) => p.universe === 1 && p.slots.some((v) => v > 0)), { timeout: 5000 }).toBe(true);
+      await expect.poll(() => packets.some((p) => p.universe === 1 && p.slots.slice(432, 462).some((v) => v > 0)), { timeout: 5000 }).toBe(true);
+      // Sprint 24 (Codex SF-H1 / N1): All generic non-catalogue fixture slots in Universe 1 (0..431) MUST remain 0 on physical sACN!
+      const liveCueFrames = packets.filter((p) => p.universe === 1 && p.slots.slice(432, 462).some((v) => v > 0));
+      expect(liveCueFrames.length).toBeGreaterThan(0);
+      for (const p of liveCueFrames) {
+        expect(p.slots.slice(0, 432).every((v) => v === 0)).toBe(true);
+      }
 
       // 4. Blackout & stop sends zero data frames followed by Stream_Terminated, then goes silent.
       const beforeDisable = packets.length;
@@ -573,6 +591,30 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       await dmxPage.waitForTimeout(350);
       await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
       expect(packets.length).toBe(countBeforeRestore);
+
+      // 4d. Sprint 24 (Codex SF-M1): Mutating the rig while live DMX is active (making pre-flight stale) MUST immediately
+      //     stop physical output with 3 blackout frames + 3 Stream_Terminated packets and surface the stopped notice!
+      if ((await dmxPage.getByTestId('dmx-advanced-details').getAttribute('open')) === null) {
+        await dmxPage.getByTestId('dmx-advanced-summary').click();
+      }
+      await dmxPage.getByTestId('dmx-output-arm').click();
+      await dmxPage.getByTestId('dmx-output-go-live').click();
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
+      await expect.poll(() => packets.length > countBeforeRestore + 2, { timeout: 5000 }).toBe(true);
+
+      const beforeStaleEdit = packets.length;
+      await dmxPage.getByRole('button', { name: 'Close DMX monitor', exact: true }).click();
+      await dmxPage.getByRole('button', { name: 'Rig builder', exact: true }).click();
+      await dmxPage.getByRole('button', { name: 'DJ Console', exact: true }).click();
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
+      await expect(dmxPage.getByTestId('live-dmx-stopped-badge')).toContainText('Output stopped:');
+      await expect.poll(() => {
+        const tail = packets.slice(beforeStaleEdit).filter((p) => p.universe === 1);
+        const termIdx = tail.findIndex((p) => (p.options & SACN_OPT_STREAM_TERMINATED) !== 0);
+        return termIdx >= 3 && tail.slice(termIdx).length >= 3;
+      }, { timeout: 5000 }).toBe(true);
+      await dmxPage.getByRole('button', { name: 'Close Rig Builder' }).click();
+      await dmxPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
 
       // 5. Re-enable and forcibly crash the renderer: main process MUST still send blackout + terminate.
       // (Re-expand Advanced first; step 4 triggered a cue which may make pre-flight stale, so refresh if needed.)

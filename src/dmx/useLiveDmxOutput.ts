@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { StageEngine } from '../engine/StageEngine';
+import type { RigConfig } from '../types/show';
 import { EnttecProTransport, isWebSerialSupported, type SerialTransportStatus } from './enttecPro';
+import { checkSerialTransportSafety } from './physicalDmx';
 import {
   loadDmxOutputSettings,
   parseTargetList,
@@ -53,6 +55,7 @@ export function useLiveDmxOutput(
   enabled = true,
   onBeforeDisable?: () => void,
   canArmCheck?: () => { allowed: boolean; reason?: string },
+  rigRef?: React.RefObject<RigConfig>,
 ): LiveDmxControllerApi {
   const hasDesktopBridge = Boolean(typeof window !== 'undefined' && window.stageforgeDesktop);
   const hasWebSerial = isWebSerialSupported();
@@ -113,6 +116,13 @@ export function useLiveDmxOutput(
       setError('Cannot arm live DMX output while graphics context is lost.');
       return false;
     }
+    if (settings.mode === 'serial' && rigRef?.current) {
+      const serialSafety = checkSerialTransportSafety(rigRef.current);
+      if (!serialSafety.allowed) {
+        setError(serialSafety.reason ?? 'USB Serial DMX is blocked while hazardous fixtures are patched.');
+        return false;
+      }
+    }
     const preCheck = canArmCheckRef.current?.();
     if (preCheck && !preCheck.allowed) {
       setError(preCheck.reason ?? 'Complete pre-flight checks before arming live DMX output.');
@@ -164,7 +174,7 @@ export function useLiveDmxOutput(
     armedRef.current = true;
     setArmed(true);
     return true;
-  }, [engineRef]);
+  }, [engineRef, rigRef, settings.mode]);
 
   const serialRef = useRef<EnttecProTransport | null>(null);
   if (!serialRef.current) {
@@ -253,9 +263,11 @@ export function useLiveDmxOutput(
       }
     };
     window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onPageHide);
     return () => {
       mountedRef.current = false;
       window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('beforeunload', onPageHide);
       releaseClaim('armed');
       void serialRef.current?.disable().finally(() => releaseClaim('serial'));
       if (desktopLiveRef.current && window.stageforgeDesktop?.dmxControl) {
@@ -277,15 +289,15 @@ export function useLiveDmxOutput(
     }
     const bridge = window.stageforgeDesktop;
     const serial = serialRef.current;
-    engine.setDmxFrameListener((u1, u2, u1Changed, u2Changed) => {
+    engine.setDmxFrameListener((u1, u2, u1Changed, u2Changed, serialU1, serialU2) => {
       if (!enabledRef.current) return;
       if (desktopLive && bridge?.sendDmxFrame) {
         if (u1Changed) bridge.sendDmxFrame(1, u1);
         if (u2Changed) bridge.sendDmxFrame(2, u2);
       }
       if (serialLive && serial) {
-        if (u1Changed) serial.update(1, u1);
-        if (u2Changed) serial.update(2, u2);
+        if (u1Changed) serial.update(1, serialU1);
+        if (u2Changed) serial.update(2, serialU2);
       }
     });
     return () => {
@@ -389,6 +401,14 @@ export function useLiveDmxOutput(
       setError('Cannot start live DMX output while graphics context is lost.');
       return false;
     }
+    if (settings.mode === 'serial' && rigRef?.current) {
+      const serialSafety = checkSerialTransportSafety(rigRef.current);
+      if (!serialSafety.allowed) {
+        releaseClaim('armed');
+        setError(serialSafety.reason ?? 'USB Serial DMX is blocked while hazardous fixtures are patched.');
+        return false;
+      }
+    }
     const preCheck = canArmCheckRef.current?.();
     if (preCheck && !preCheck.allowed) {
       releaseClaim('armed');
@@ -441,18 +461,20 @@ export function useLiveDmxOutput(
           throw err;
         }
         const postCheck = canArmCheckRef.current?.();
+        const postSerialSafety = rigRef?.current ? checkSerialTransportSafety(rigRef.current) : { allowed: true, reason: null };
         const engineFault = Boolean(engineRef.current?.isContextLost() || engineRef.current?.isDisposed());
         if (
           !mountedRef.current ||
           !enabledRef.current ||
           gen !== faultGenRef.current ||
           engineFault ||
+          !postSerialSafety.allowed ||
           (postCheck && !postCheck.allowed)
         ) {
           await serialRef.current?.disable().finally(() => releaseClaim('serial'));
           releaseClaim('armed');
-          if (mountedRef.current && postCheck && !postCheck.allowed) {
-            setError(postCheck.reason ?? 'Pre-flight state changed while opening serial output.');
+          if (mountedRef.current && (!postSerialSafety.allowed || (postCheck && !postCheck.allowed))) {
+            setError(postSerialSafety.reason ?? postCheck?.reason ?? 'Pre-flight state changed while opening serial output.');
           }
           return false;
         }
@@ -542,7 +564,7 @@ export function useLiveDmxOutput(
     } finally {
       setBusySync(false);
     }
-  }, [desktopStatus?.enabled, engineRef, onToast, releaseClaim, setBusySync, settings]);
+  }, [desktopStatus?.enabled, engineRef, onToast, releaseClaim, rigRef, setBusySync, settings]);
 
   // Unified 1 Hz control-loop health + renderer heartbeat watchdog while live DMX (desktop OR Web Serial) is active.
   // Renews Electron's 5 s heartbeat ONLY when StageEngine's control loop is actively advancing (`seq` progress and

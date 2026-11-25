@@ -4,7 +4,12 @@ import type { NativeStage } from './showFile';
 import { formatCsv, type CsvValue } from './csv';
 import { buildDmxPatch } from './dmxPatch';
 import { getCatalogEntry } from './equipmentCatalog';
-import { classifyPhysicalGroup, GENERIC_SIMULATED_LABEL, SIMULATION_ONLY_LABEL } from '../dmx/physicalDmx';
+import {
+  classifyPhysicalGroup,
+  GENERIC_SIMULATED_LABEL,
+  isSerialBlockedFixtureGroup,
+  SIMULATION_ONLY_LABEL,
+} from '../dmx/physicalDmx';
 import { computePowerReport, type PowerReport } from './powerReport';
 import { evaluateRigLoads, RIGGING_DISCLAIMER, type RigLoadsReport } from './rigLoads';
 import { resolveStudioGeometry } from './studioGeometry';
@@ -545,6 +550,16 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       outcome = 'fail';
       hardBlock = true;
     }
+    if (input.dmxSettings?.mode === 'serial' && isSerialBlockedFixtureGroup(row.group)) {
+      findings.push({
+        code: 'serial_watchdog_unsupported',
+        outcome: 'fail',
+        message:
+          'USB Serial DMX lacks an out-of-process crash watchdog and is blocked when blinders, strobes, or atmospheric effects (smoke, haze, CO2) are patched. Switch transport to desktop sACN / Art-Net 4.',
+      });
+      outcome = 'fail';
+      hardBlock = true;
+    }
     if (unplacedCount > 0) {
       findings.push({
         code: 'unplaced_units',
@@ -661,6 +676,17 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
     let outcome: PreflightOutcome = 'warn';
     let hardBlock = false;
     let requiresLaserInhibit = false;
+
+    if (input.dmxSettings?.mode === 'serial') {
+      findings.push({
+        code: 'serial_laser_blocked',
+        outcome: 'fail',
+        message:
+          'USB Serial DMX lacks an out-of-process crash watchdog and is blocked when laser projectors are patched. Switch transport to desktop sACN / Art-Net 4.',
+      });
+      outcome = 'fail';
+      hardBlock = true;
+    }
 
     if (activeAudienceScan) {
       findings.push({

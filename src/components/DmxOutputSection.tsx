@@ -549,7 +549,7 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
                     Show all serial devices (non-FTDI clones)
                   </label>
                   <p className="text-[9px] text-zinc-400 leading-snug">
-                    USB Pro holds the last frame if the window reloads, closes abruptly or crashes. Click Blackout &amp; stop before closing.
+                    USB Pro runs in the renderer (no crash watchdog) and is restricted to passive ColorSource PAR LED rigs; lasers, blinders, strobes, and smoke/haze/CO2 are hard-blocked on USB Pro. Click Blackout &amp; stop before closing.
                   </p>
                 </>
               )}

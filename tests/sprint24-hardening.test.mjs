@@ -15,6 +15,8 @@ let previewFlash;
 let audioMod;
 let renderProbe;
 let physicalDmx;
+let preflight;
+let presets;
 
 before(async () => {
   server = await createServer({
@@ -28,6 +30,8 @@ before(async () => {
   audioMod = await server.ssrLoadModule('/src/engine/audioModulation.ts');
   renderProbe = await server.ssrLoadModule('/src/engine/renderProbe.ts');
   physicalDmx = await server.ssrLoadModule('/src/dmx/physicalDmx.ts');
+  preflight = await server.ssrLoadModule('/src/data/preflight.ts');
+  presets = await server.ssrLoadModule('/src/data/presets.ts');
 });
 
 after(async () => {
@@ -464,4 +468,282 @@ test('Sprint 24 (safety-claim audit): LaserSafetyPanel & PreflightPanel never la
   ]) {
     assert.doesNotMatch(src, /label:\s*['"][^'"]*\b(safe|certified|compliant|approved)\b/i, `${name} must not have a safe/certified/compliant badge label`);
   }
+});
+
+function acknowledgeEverything(report) {
+  const acknowledgedRows = {};
+  const acknowledgedLasers = {};
+  const inhibitedLasers = {};
+  for (const row of report.rows) {
+    if (row.isLaser && row.projectorKey) {
+      if (row.requiresLaserInhibit || row.canInhibitLaser) {
+        inhibitedLasers[row.projectorKey] = report.configRevision;
+      } else {
+        acknowledgedLasers[row.projectorKey] = row.rowFingerprint;
+      }
+    } else if (row.canAcknowledge || row.outcome === 'warn') {
+      acknowledgedRows[row.id] = row.rowFingerprint;
+    }
+  }
+  return {
+    checked: true,
+    checkedRevision: report.configRevision,
+    acknowledgedRows,
+    acknowledgedLasers,
+    inhibitedLasers,
+  };
+}
+
+test('Sprint 24 (Codex SF-H1 / N1): generic non-catalogue fixtures never copy simulated bytes onto physical DMX even after pre-flight ack', () => {
+  const defaultRig = structuredClone(presets.RIG_TEMPLATES.arena_mainstage);
+  const simU1 = new Uint8Array(512).fill(255);
+  const simU2 = new Uint8Array(512).fill(255);
+
+  // Every fixture in default arena_mainstage lacks a catalogId and MUST classify as simulation-only.
+  const summary = physicalDmx.summarizePhysicalDrive(defaultRig);
+  assert.equal(summary.implemented.length, 0);
+  assert.equal(summary.genericSimulated.length, 0);
+  assert.ok(summary.simulationOnly.length > 0);
+  for (const item of summary.simulationOnly) {
+    assert.equal(item.classification.status, 'simulation-only');
+  }
+
+  // Acknowledge all pre-flight warnings + inhibit unassessed lasers so the rig is eligible to arm on sACN.
+  const dmxSettings = {
+    mode: 'sacn',
+    iface: '127.0.0.1',
+    sacnMode: 'unicast',
+    sacnUniverse1: 1,
+    sacnUniverse2: 2,
+    sacnTargets: '127.0.0.1',
+    artnetBase: '0:0:0',
+    artnetTargets: '127.0.0.1',
+    artnetBroadcast: false,
+    serialUniverse: 1,
+    rateHz: 30,
+  };
+  const initialReport = preflight.evaluatePreflight({
+    rig: defaultRig,
+    cues: presets.SHOW_CUES,
+    showState: presets.INITIAL_SHOW_STATE,
+    dmxSettings,
+  });
+  const ackedReport = preflight.evaluatePreflight({
+    rig: defaultRig,
+    cues: presets.SHOW_CUES,
+    showState: presets.INITIAL_SHOW_STATE,
+    dmxSettings,
+    acks: acknowledgeEverything(initialReport),
+  });
+  assert.equal(ackedReport.canArm, true);
+
+  // Even when armed and driven at 100% intensity with simU1/simU2 filled with 255, physical DMX MUST stay all-zero!
+  const out = physicalDmx.buildPhysicalUniverses(defaultRig, simU1, simU2, () => ({
+    blackout: false,
+    dimmer: 1,
+    r: 1,
+    g: 1,
+    b: 1,
+    blinder: 1,
+    smoke: 1,
+  }));
+  assert.ok(out.u1.every((b) => b === 0), 'Physical Universe 1 must emit 0 for all generic non-catalogue fixtures');
+  assert.ok(out.u2.every((b) => b === 0), 'Physical Universe 2 must emit 0 for all generic non-catalogue fixtures');
+  assert.ok(simU1.every((b) => b === 255), 'Simulator Universe 1 remains untouched');
+  assert.ok(simU2.every((b) => b === 255), 'Simulator Universe 2 remains untouched');
+});
+
+test('Sprint 24 (Codex SF-H2 / N2): renderer Web Serial hard-blocks and byte-zeroes hazardous fixtures (ZR45, STRIKE 4, lasers, strobes, atmospherics)', () => {
+  const serialSettings = {
+    mode: 'serial',
+    iface: '127.0.0.1',
+    sacnMode: 'unicast',
+    sacnUniverse1: 1,
+    sacnUniverse2: 2,
+    sacnTargets: '127.0.0.1',
+    artnetBase: '0:0:0',
+    artnetTargets: '127.0.0.1',
+    artnetBroadcast: false,
+    serialUniverse: 1,
+    rateHz: 30,
+  };
+
+  const makeSingleFixtureRig = (fixture, floorFx = []) => ({
+    ...structuredClone(presets.RIG_TEMPLATES.club_stage),
+    trussPods: [
+      {
+        id: 'pod-test',
+        name: 'Test Truss',
+        shape: 'box',
+        width: 8,
+        x: 0,
+        baseY: 6,
+        z: 0,
+        rotationY: 0,
+        motorized: false,
+        motorMinY: 6,
+        motorMaxY: 6,
+        fixtures: fixture ? [fixture] : [],
+      },
+    ],
+    floorFx,
+  });
+
+  // 1. Passive ETC ColorSource PAR rig is allowed on serial once pre-flight is checked/acknowledged.
+  const parOnlyRig = makeSingleFixtureRig({
+    id: 'f-par',
+    type: 'wash',
+    modelName: 'ETC ColorSource PAR',
+    catalogId: 'etc-colorsource-par',
+    dmxMode: '5-Ch (Default)',
+    dmxChannels: 5,
+    count: 4,
+    dmxUniverse: 1,
+    dmxStartChannel: 1,
+  });
+  assert.equal(physicalDmx.checkSerialTransportSafety(parOnlyRig).allowed, true);
+  const parInitial = preflight.evaluatePreflight({
+    rig: parOnlyRig,
+    cues: presets.SHOW_CUES,
+    showState: presets.INITIAL_SHOW_STATE,
+    dmxSettings: serialSettings,
+  });
+  const parAcked = preflight.evaluatePreflight({
+    rig: parOnlyRig,
+    cues: presets.SHOW_CUES,
+    showState: presets.INITIAL_SHOW_STATE,
+    dmxSettings: serialSettings,
+    acks: acknowledgeEverything(parInitial),
+  });
+  assert.equal(parAcked.canArm, true, `Expected pure PAR rig to arm on serial, got: ${parAcked.blockingReasons.join('; ')}`);
+
+  // 2. Martin JEM ZR45, CHAUVET STRIKE 4, lasers, strobes, CO2, smoke, and hazer MUST hard-block serial (un-acknowledgeable).
+  const hazardousConfigs = [
+    ['Martin JEM ZR45', makeSingleFixtureRig(null, [{ id: 'fx-zr45', type: 'smoke', modelName: 'Martin JEM ZR45', catalogId: 'martin-jem-zr45', dmxMode: '1-Ch', dmxChannels: 1, count: 1, x: 0, z: 2, spread: 4, dmxUniverse: 1, dmxStartChannel: 1 }])],
+    ['CHAUVET STRIKE 4', makeSingleFixtureRig({ id: 'f-strike', type: 'blinder', modelName: 'CHAUVET STRIKE 4', catalogId: 'chauvet-strike-4', dmxMode: '4-Ch', dmxChannels: 4, count: 2, dmxUniverse: 1, dmxStartChannel: 1 })],
+    ['Generic strobe', makeSingleFixtureRig({ id: 'f-strobe', type: 'strobe', modelName: 'Generic Strobe', count: 2, dmxUniverse: 1, dmxStartChannel: 1 })],
+    ['Generic CO2', makeSingleFixtureRig(null, [{ id: 'fx-co2', type: 'co2', modelName: 'Generic CO2', count: 2, x: 0, z: 2, spread: 4, dmxUniverse: 1, dmxStartChannel: 1 }])],
+    ['Laser projector', makeSingleFixtureRig({ id: 'f-laser', type: 'laser', modelName: 'KVANT Clubmax 3000 FB4', catalogId: 'kvant-clubmax', dmxMode: '16-Ch Show', dmxChannels: 16, count: 1, dmxUniverse: 1, dmxStartChannel: 1 })],
+  ];
+
+  for (const [label, rig] of hazardousConfigs) {
+    const safety = physicalDmx.checkSerialTransportSafety(rig);
+    assert.equal(safety.allowed, false, `${label} must be blocked by checkSerialTransportSafety`);
+    const rep0 = preflight.evaluatePreflight({
+      rig,
+      cues: presets.SHOW_CUES,
+      showState: presets.INITIAL_SHOW_STATE,
+      dmxSettings: serialSettings,
+    });
+    const repAcked = preflight.evaluatePreflight({
+      rig,
+      cues: presets.SHOW_CUES,
+      showState: presets.INITIAL_SHOW_STATE,
+      dmxSettings: serialSettings,
+      acks: acknowledgeEverything(rep0),
+    });
+    assert.equal(repAcked.overallStatus, 'blocked', `${label} must remain hard-blocked on serial even after acknowledging everything`);
+    assert.equal(repAcked.canArm, false, `${label} must never allow arming on serial`);
+  }
+
+  // 3. Defense-in-depth byte encoding: serialOnlySafe=true zeroes ZR45 and STRIKE 4 while keeping ColorSource PAR active.
+  const simBuf = new Uint8Array(512).fill(255);
+  const serialBuf = new Uint8Array(512).fill(99);
+  const zr45Class = physicalDmx.classifyPhysicalGroup({ catalogId: 'martin-jem-zr45', dmxMode: '1-Ch', dmxChannels: 1, type: 'smoke' });
+  const strikeClass = physicalDmx.classifyPhysicalGroup({ catalogId: 'chauvet-strike-4', dmxMode: '4-Ch', dmxChannels: 4, type: 'blinder' });
+  const parClass = physicalDmx.classifyPhysicalGroup({ catalogId: 'etc-colorsource-par', dmxMode: '5-Ch (Default)', dmxChannels: 5, type: 'wash' });
+  assert.equal(zr45Class.personality.allowOnRendererSerial, false);
+  assert.equal(strikeClass.personality.allowOnRendererSerial, false);
+  assert.equal(parClass.personality.allowOnRendererSerial, true);
+
+  physicalDmx.writePhysicalUnitBytes(serialBuf, simBuf, 1, 1, zr45Class, { blackout: false, smoke: 1.0 }, [], true);
+  physicalDmx.writePhysicalUnitBytes(serialBuf, simBuf, 2, 4, strikeClass, { blackout: false, blinder: 1.0 }, [], true);
+  physicalDmx.writePhysicalUnitBytes(serialBuf, simBuf, 6, 5, parClass, { blackout: false, dimmer: 1.0, r: 1.0, g: 0.5, b: 0.25 }, [], true);
+
+  assert.equal(serialBuf[0], 0, 'ZR45 must emit 0 on serialOnlySafe buffer');
+  assert.deepEqual([...serialBuf.slice(1, 5)], [0, 0, 0, 0], 'STRIKE 4 must emit 0 on serialOnlySafe buffer');
+  assert.deepEqual([...serialBuf.slice(5, 10)], [255, 255, 128, 64, 0], 'ColorSource PAR remains active on serialOnlySafe buffer');
+});
+
+test('Sprint 24 (Codex SF-M1): live TOCTOU pre-flight staleness and runtime hazards trigger immediate live DMX shutdown', async () => {
+  const dmxSettings = {
+    mode: 'sacn',
+    iface: '127.0.0.1',
+    sacnMode: 'unicast',
+    sacnUniverse1: 1,
+    sacnUniverse2: 2,
+    sacnTargets: '127.0.0.1',
+    artnetBase: '0:0:0',
+    artnetTargets: '127.0.0.1',
+    artnetBroadcast: false,
+    serialUniverse: 1,
+    rateHz: 30,
+  };
+  const baseRig = structuredClone(presets.RIG_TEMPLATES.club_stage);
+  const initial = preflight.evaluatePreflight({
+    rig: baseRig,
+    cues: presets.SHOW_CUES,
+    showState: presets.INITIAL_SHOW_STATE,
+    dmxSettings,
+  });
+  const acks = acknowledgeEverything(initial);
+  const armedReport = preflight.evaluatePreflight({
+    rig: baseRig,
+    cues: presets.SHOW_CUES,
+    showState: presets.INITIAL_SHOW_STATE,
+    dmxSettings,
+    acks,
+  });
+  assert.equal(armedReport.canArm, true);
+  assert.equal(armedReport.stale, false);
+
+  // Normal runtime cue Go (audienceScan: false) MUST NOT mark pre-flight stale or blocked.
+  const cueGoState = { ...structuredClone(presets.SHOW_CUES[0].state), laser: { ...presets.SHOW_CUES[0].state.laser, audienceScan: false } };
+  const afterCueGo = preflight.evaluatePreflight({
+    rig: baseRig,
+    cues: presets.SHOW_CUES,
+    showState: cueGoState,
+    dmxSettings,
+    acks,
+  });
+  assert.equal(afterCueGo.stale, false);
+  assert.equal(afterCueGo.overallStatus === 'blocked', false);
+  assert.equal(afterCueGo.canArm, true);
+
+  // Mutating the rig (e.g. creating a patch conflict) while live flips stale=true and records a hardBlock finding.
+  const conflictRig = structuredClone(baseRig);
+  conflictRig.trussPods[0].fixtures[1].dmxUniverse = conflictRig.trussPods[0].fixtures[0].dmxUniverse;
+  conflictRig.trussPods[0].fixtures[1].dmxStartChannel = conflictRig.trussPods[0].fixtures[0].dmxStartChannel;
+  const conflictReport = preflight.evaluatePreflight({
+    rig: conflictRig,
+    cues: presets.SHOW_CUES,
+    showState: cueGoState,
+    dmxSettings,
+    acks,
+  });
+  assert.equal(conflictReport.stale, true);
+  assert.equal(conflictReport.rows.some((r) => r.hardBlock), true);
+  assert.equal(conflictReport.canArm, false);
+
+  // Activating runtime audienceScan without mutating the rig flips overallStatus='blocked' immediately.
+  const crowdScanReport = preflight.evaluatePreflight({
+    rig: baseRig,
+    cues: presets.SHOW_CUES,
+    showState: { ...cueGoState, laser: { ...cueGoState.laser, enabled: true, audienceScan: true } },
+    dmxSettings,
+    acks,
+  });
+  assert.equal(crowdScanReport.overallStatus, 'blocked');
+  assert.equal(crowdScanReport.canArm, false);
+
+  // Verify App.tsx wires `overallStatus === 'blocked' || preflightReport.stale` while `liveDmx.isLive` to `emergencyStopOnFault`.
+  const appSrc = await fs.readFile(path.join(repoRoot, 'src/App.tsx'), 'utf8');
+  assert.match(
+    appSrc,
+    /if\s*\(\s*preflightReport\.overallStatus\s*===\s*'blocked'\s*\|\|\s*preflightReport\.stale\s*\)\s*\{[\s\S]{0,400}?clearAllBumps\(\);[\s\S]{0,160}?emergencyStopOnFault/,
+  );
+  assert.match(
+    appSrc,
+    /if\s*\(\s*rep\s*&&\s*\(\s*rep\.overallStatus\s*===\s*'blocked'\s*\|\|\s*rep\.stale\s*\)\s*\)\s*\{[\s\S]{0,400}?emergencyStopOnFault/,
+  );
 });
