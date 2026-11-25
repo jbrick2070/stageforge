@@ -2301,6 +2301,7 @@ export const App: React.FC = () => {
     replaying.current = false;
     directorArmed.current = false;
     autoDirRef.current = false;
+    stopLiveOutputBeforeStructuralChange('Entered Pitch Viewer while live output was active.');
     clearAllBumps();
     setIldaClip(null);
     engineRef.current?.setIldaClip(null);
@@ -2386,6 +2387,8 @@ export const App: React.FC = () => {
     if (request !== openRequestRef.current || startEpoch !== sessionEpochRef.current) return;
 
     if (!viewerModeRef.current) {
+      // Stop any live/armed physical DMX output synchronously BEFORE locking menus or applying viewer state (qa-07 R1).
+      stopLiveOutputBeforeStructuralChange('Entered Pitch Viewer while live output was active.');
       // Lock desktop main-process menus & output gates BEFORE switching renderer state (fail-closed, H2 & L3).
       // Track in-flight viewer entries + serialize IPC so overlapping opens never unlock a newer viewer open.
       pendingViewerEntriesRef.current++;

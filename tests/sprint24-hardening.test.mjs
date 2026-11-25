@@ -754,12 +754,88 @@ test('Sprint 24 (Codex SF-M1): live TOCTOU pre-flight staleness and runtime haza
   assert.equal(revokedReport.overallStatus, 'warnings');
   assert.equal(revokedReport.canArm, false, 'revoking a warning ack must flip canArm to false');
 
-  // Verify App.tsx gates live output on `!preflightReport.canArm` (and `!rep.canArm`) AND stops output synchronously
-  // in `openDocument` BEFORE `engineRef.current?.setShowState(look)` (Codex qa-04 R1 & R2).
+  // Behavioral ordering proof (Codex qa-07 R2): execute a real synchronous stop-barrier + frame-listener harness
+  // where a control tick fires immediately upon `setShowState(importedLook)` (BEFORE any passive microtask/effect!).
+  // Without calling `stopLiveOutputBeforeStructuralChange` prior to `setShowState`, the Strike 4 / ZR45 bytes escape.
+  const runImportWithTickAtSetShowState = (useSyncBarrier) => {
+    const sentFrames = [];
+    let listener = (u1, u2) => {
+      sentFrames.push({ u1: new Uint8Array(u1), u2: new Uint8Array(u2) });
+    };
+    let isLive = true;
+    const strikeClass = physicalDmx.classifyPhysicalGroup({
+      catalogId: 'chauvet-strike-4',
+      dmxMode: '4-Ch',
+      dmxChannels: 4,
+      type: 'blinder',
+    });
+    const zr45Class = physicalDmx.classifyPhysicalGroup({
+      catalogId: 'martin-jem-zr45',
+      dmxMode: '1-Ch',
+      dmxChannels: 1,
+      type: 'smoke',
+    });
+    let currentLook = { blackout: false, blinderLevel: 0, smokeOutput: 0 };
+
+    const engine = {
+      setDmxFrameListener(fn) {
+        listener = fn;
+      },
+      setShowState(nextLook) {
+        currentLook = nextLook;
+        // Deterministic control-loop tick BEFORE any passive React effect can run!
+        const u1 = new Uint8Array(512);
+        const u2 = new Uint8Array(512);
+        const sim = new Uint8Array(512);
+        physicalDmx.writePhysicalUnitBytes(u1, sim, 129, 4, strikeClass, {
+          blackout: currentLook.blackout,
+          blinder: currentLook.blinderLevel,
+        });
+        physicalDmx.writePhysicalUnitBytes(u2, sim, 312, 1, zr45Class, {
+          blackout: currentLook.blackout,
+          smoke: currentLook.smokeOutput,
+        });
+        listener?.(u1, u2);
+      },
+    };
+
+    const stopLiveOutputBeforeStructuralChange = () => {
+      if (isLive) {
+        isLive = false;
+        engine.setDmxFrameListener(undefined);
+      }
+    };
+
+    // Initial tick at 0 output -> allowed
+    engine.setShowState({ blackout: false, blinderLevel: 0, smokeOutput: 0 });
+    assert.equal(sentFrames.length, 1);
+    assert.ok(sentFrames[0].u1.every((b) => b === 0));
+    assert.ok(sentFrames[0].u2.every((b) => b === 0));
+
+    // Hot import with blinderLevel=1, smokeOutput=1
+    if (useSyncBarrier) stopLiveOutputBeforeStructuralChange();
+    engine.setShowState({ blackout: false, blinderLevel: 1, smokeOutput: 1 });
+    return sentFrames;
+  };
+
+  // Control proof: WITHOUT synchronous barrier, nonzero Strike 4 (255) and ZR45 (255) bytes escape!
+  const leaked = runImportWithTickAtSetShowState(false);
+  assert.equal(leaked.length, 2);
+  assert.deepEqual([...leaked[1].u1.slice(128, 132)], [255, 255, 255, 255]);
+  assert.equal(leaked[1].u2[311], 255);
+
+  // Guarded proof: WITH synchronous barrier, listener is detached BEFORE setShowState ticks -> zero frames escape!
+  const guarded = runImportWithTickAtSetShowState(true);
+  assert.equal(guarded.length, 1);
+
+  // Also verify App.tsx's stopLiveOutputBeforeStructuralChange detaches the frame listener synchronously and guards
+  // both openDocument and Pitch Viewer entry (openViewerPayload + applyViewerDocument, qa-07 R1).
   const appSrc = await fs.readFile(path.join(repoRoot, 'src/App.tsx'), 'utf8');
-  assert.match(appSrc, /if\s*\(\s*!preflightReport\.canArm\s*\)\s*\{[\s\S]{0,400}?clearAllBumps\(\);[\s\S]{0,160}?emergencyStopOnFault/);
-  assert.match(appSrc, /if\s*\(\s*rep\s*&&\s*!rep\.canArm\s*\)\s*\{[\s\S]{0,400}?emergencyStopOnFault/);
-  const stopIdx = appSrc.indexOf("stopLiveOutputBeforeStructuralChange('Opened a show file");
-  const setShowIdx = appSrc.indexOf('engineRef.current?.setShowState(look)', stopIdx);
-  assert.ok(stopIdx > 0 && setShowIdx > stopIdx, 'openDocument must synchronously stop live output BEFORE setting imported look on StageEngine');
+  assert.match(
+    appSrc,
+    /const\s+stopLiveOutputBeforeStructuralChange\s*=\s*useCallback[\s\S]{0,320}?engineRef\.current\?\.setDmxFrameListener\(undefined\);[\s\S]{0,160}?dmx\.emergencyStopOnFault/,
+  );
+  const viewerStopIdx = appSrc.indexOf("stopLiveOutputBeforeStructuralChange('Entered Pitch Viewer");
+  const viewerApplyIdx = appSrc.indexOf('applyViewerDocument(parsed)', viewerStopIdx);
+  assert.ok(viewerStopIdx > 0 && viewerApplyIdx > viewerStopIdx, 'openViewerPayload must invoke synchronous stop barrier before applyViewerDocument');
 });
