@@ -42,7 +42,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14 in that order (see "Designed Sprints 6–8" and Sprints 9, 10, 11, 12, 13 and 14 below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11, 14 and the graphics Sprints 15 to 21 in that order (see "Designed Sprints 6–8" and Sprints 9 to 14 and "Graphics Sprints 15 to 21" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -231,7 +231,7 @@ Get-Content "$qa\sprint-N-design.md" -Raw | codex exec -m gpt-6-astra -s read-on
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14 below, in that order (13 before 12, 12 before 11, 14 last), one per round, before Realism items 6 to 8.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14, then the graphics Sprints 15 to 21, in that order (13 before 12, 12 before 11, 14 before 15), one per round, before Realism items 6 and 7. Realism item 8 is superseded by Sprints 15, 20 and 21.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
@@ -704,6 +704,52 @@ These come from a code-grounded roadmap review. The goal is that a working progr
 
 **Done when:** the gate is green; the track plays from "Play demo track" in the web and desktop builds; the docs and the provenance row are in; and the Overnight log lists the provenance item as open if the owner has not supplied it.
 
+### Graphics Sprints 15 to 21 (designed by Claude Code from a Codex consult, 2026-11-24)
+
+**Source:** `docs/reviews/codex-graphics-plan-2026-11-24.md`, a read-only consult by Codex (`gpt-6-astra`). It read the code but ran nothing, so its timings are acceptance limits, not measurements. Claude Code spot-checked its "fix first" claims against the code: scenery tubes are fixed at 40 sides for every device (`scenicProps.ts`), the bloom pass is never bypassed, particle capacities do not follow the tier, particles use `Math.random()`, and CO2 puffs launch upward at 11 to 15.6 m/s with drag only.
+
+Realism backlog item 8 is superseded by Sprints 15, 20 and 21. Run these after Sprint 14, in order, one per round.
+
+**Rules for every graphics sprint:**
+- Keep Three.js and WebGL2. No new engine, no new dependency, no required WebGPU.
+- Every visual change sits behind its own renderer flag, **default off**, outside show-file serialization. Defaults must cost nothing: allocate optional resources only when the flag is on. Promote a flag to default-on only with before and after numbers showing no p95 regression, and say so in the Overnight log.
+- Each sprint states its budget and records measured before and after numbers with the Sprint 15 probe, on the phone-like profile (4x CPU throttle, 390 x 844) and on the laptop, at the same scene, time, camera and resolution. Isolated costs may not add linearly, so measure the combined configuration at the end of Sprint 21.
+- Tests: unit tests, approved reference images with localized regions (whole-image averages hide small defects), and the render-budget test. Frozen-frame parity within one run is not enough by itself, because both paths can regress together.
+- Assets are generated in code, and additions are recorded in `docs/assets.md`.
+- **Do not do:** full-resolution volumetrics, per-fixture shadow maps, dynamic cubemap captures, SSR, planar scene re-renders, per-diode geometry or per-person lights. Defer depth of field, motion blur, TAA, exposure adaptation and a handheld camera. Never claim physical accuracy for an approximation.
+- Consult Codex before each sprint (see "Design consult (Codex, read-only)"). It is encouraged here, and time-boxed.
+
+**Sprint 15: measure first, output controls and the fixes the review found.**
+1. **Probe (first):** record the actual drawing-buffer size, CSS size, DPR, tier, backend, AA settings, active passes, particle counts and ILDA segment counts. Time CPU simulation, crowd transforms, particle updates, batch synchronisation and render submission separately. Add asynchronous, feature-detected GPU timer queries (reject disjoint results, never block). Report warmed p50, p95 and p99 over repeated runs. Track upload bytes, render-target estimates, program counts, and resource growth across resize, rebuild, media replacement and disposal. Fix `renderStats().visibleMeshes`, which only checks local visibility, so it counts what is really submitted (or rename it).
+2. **Output controls:** independent flags for bloom resolution and bloom bypass; an optional FXAA pass compared against the existing composer MSAA (never stack the two); keep NeutralToneMapping and one final OutputPass. Low tier gets a cheaper bloom or none. A bloom strength of zero bypasses the pass.
+3. **Fix first:**
+   - Low-detail scenery: `scenicProps.ts` builds the same fixed 40-sided tubes on every device (an arch tube is about 16,320 triangles and a tentacle about 19,968, which you must verify). Add tiered rows and sides.
+   - Tier the particle capacities, and give particles a seeded generator with fixed-step simulation so tests are repeatable.
+   - CO2: behind a flag, make the plume fall like a cold dense cloud (it currently rises). Decide the physics with Opus and Codex.
+4. **Budget:** at most 1 added draw, no net frame-time cost on either profile.
+5. **Tests:** linear ramps and saturated emitters, image and video colour equivalence, zero-bloom parity, resize and disposal, tier budget checks, scenery triangle counts per tier, seeded particle determinism.
+6. **Done when:** the probe numbers for the arena rig are in the Overnight log before any visual change, every flag is default-off or parity-proven, and the gate is green.
+
+**Sprint 16: prism patterns agree with their floor projections.**
+`VOLUMETRIC_BEAM_FRAG` already has edge profiles, shared atmospheric noise, directional scatter and eight prism shafts. Extend `BeamPools` with each fixture's transverse axes and prism phase, and evaluate a shared, derivative-filtered pattern in receiver coordinates, keeping its incidence, attenuation and platform blockers. Use the existing prism state, not a new gobo catalogue. Disable it on low tier if overlapping pools exceed the budget. Budget: 0 added draws, at most 0.20 ms on the phone-like profile and 0.15 ms on the laptop. Tests: lens-origin maths, grazing footprints, moving heads, prism rotation, proxy and unbatched parity, floor-region pixel comparisons. Risks: overbright overlaps and a different apparent orientation. Do not add meshes or lights per fixture, and defer lens flares.
+
+**Sprint 17: restrained viewing-angle response for LED walls.**
+Add the surface normal and view direction to `LED_WALL_VERT` and apply a bounded angular emissivity curve, so walls read well from the front and lose some intensity at extreme grazing angles. Keep the existing derivative-aware diode resolution, pixel snapping and cabinet seams, which already deal with much of the moire. One cheap model for both tiers, independently switchable. Budget: 0 draws, at most 0.10 ms phone-like and 0.05 ms laptop. Tests: front and side views, curved walls, camera-distance sweeps, fractional DPR, paused video, brightness zero. Do not model individual LEDs, add another glow pass, or read video pixels back for spill light.
+
+**Sprint 18: deck sheen from material response.**
+Extend the seeded deck generator in `hardwareMaterials.ts` with subtle roughness variation and, on high tier, a weak normal map, so scuffs and seams interrupt highlights. Reuse `MeshStandardMaterial`, the existing spill lights and the PMREM environment. Low tier: one 128 x 128 roughness map. High tier: shared 256 x 256 roughness and normal maps. Budget: 0 draws, at most 0.15 ms phone-like and 0.10 ms laptop, at most 0.7 MiB. Tests: deterministic generation, texture colour spaces, close and far shimmer, flag-off parity, disposal, GLB export expectations. Do not add planar reflections or SSR.
+
+**Sprint 19: the crowd responds more clearly to the show.**
+Add restrained directional colour and rim terms to the existing crowd material: one aggregate show-light direction on low tier, two on high, with a strict brightness clamp. Keep the instanced bodies, poses, contact patches and phone screens. This is an artistic approximation, not per-person beam tracing. Budget: 0 draws, at most 0.15 ms phone-like and 0.10 ms laptop. Tests: blackout, seated and standing venues, coloured backlight, camera orbit, phones staying attached, close-up halo checks. Do not add individual lights or skinned spectators, and do not combine this with a GPU-animation rewrite (the crowd's CPU animation is an optimisation candidate, not a proven bottleneck, so profile first).
+
+**Sprint 20: locally beam-lit smoke puffs (one bounded slice of the old Realism item 8).**
+Extend `AtmosphericParticles` with the seeded simulation from Sprint 15 and per-instance illumination: choose a stable, capped candidate set and evaluate at most two beam contributions per puff on low tier and four on high, with no per-fragment loop over the whole rig. Add stable depth ordering within batches. Keep `FogExp2` and the analytic beam haze. Budget: 0 added draws, at most 0.60 ms phone-like and 0.30 ms laptop. Tests: seeded spawn and expiry, crossing coloured beams, maximum emissions, near-camera overdraw, overlapping smoke and CO2, tier caps. Risks: candidate-selection popping and transparency errors between batches, so keep it experimental if the overlap QA fails. Do not promise true volumetric occlusion, and defer fluid simulation and fan response. Camera-depth fading can soften intersections but cannot cast a truss shadow along a beam.
+
+**Sprint 21: laser core and scan-energy appearance.**
+Extend `BakedIldaClip` processing with bounded dwell and corner weights that respect blanking. Prototype capped camera-facing segment ribbons with a bright core and softer halo in one shader, replacing the corresponding line draw rather than adding draws. Low tier uses a much smaller segment cap and falls back to the current lines. Reuse the haze density for approximate scatter. Cap added laser triangles at 4,000 on low tier and 16,000 on high across the scene. Budget: 0 added draws, at most 0.30 ms phone-like and 0.20 ms laptop, at most 0.5 MiB low and 2 MiB high. Tests: blanked jumps, sharp corners, monochrome projectors, dense clips, near and far widths, draw-range playback, disposal. Do not claim a physical galvo simulation, and do not rebuild ILDA ingestion.
+
+**Combined optional ceiling:** at most 1 added draw, 1.50 ms on the phone-like profile, 1.00 ms on the laptop, and 2 MiB low / 4 MiB high of GPU memory. Defaults incur no optional cost.
+
 ## Backlog (in this order)
 
 ### Sprint 0: whole-codebase QA sweep
@@ -804,7 +850,7 @@ Goal: people should feel like they are running a real rig, with real equipment, 
 6. **Console feel.** A small, familiar cue-list and playback view with cue numbers, fade times and go and back controls, in the style of real consoles.
 7. **Fixture behaviour polish.** Pan and tilt speed limits, zoom and focus feel, colour mixing and dimmer curves, and gobo and prism looks, tuned to each catalogue entry's real specs where known.
 
-8. **Haze, smoke and laser rendering realism (GPU).** Audit finding on 2026-11-23: it all runs on the real GPU through three.js (WebGL) with an UnrealBloom pass, but it is approximated:
+8. **(SUPERSEDED by graphics Sprints 15, 20 and 21, see "Graphics Sprints 15 to 21".) Haze, smoke and laser rendering realism (GPU).** Audit finding on 2026-11-23: it all runs on the real GPU through three.js (WebGL) with an UnrealBloom pass, but it is approximated:
    - Beams are additive analytic cone shaders (`src/engine/shaders.ts`) driven by a shared haze noise. The haze is not a lit volume, so beams do not light smoke where they cross it, and nothing occludes a beam.
    - Smoke and CO2 are CPU-simulated billboard puffs with a baked noise sprite (`src/engine/ParticleSystem.ts`), not a fluid or a lit volume.
    - Lasers are procedural fragment-shader sheets and cones (`laserGeometry.ts`, `LASER_*` shaders), not point-scanned ILDA frames.
