@@ -1111,7 +1111,7 @@ export class FixtureModelCache {
 
   public getMoving(type: HardwareType, catalogId: string | undefined, isFloor: boolean): MovingModelParts {
     const spec = resolveModelSpec(type, catalogId);
-    const key = `${spec.id}|${isFloor ? 1 : 0}|${this.tier}`;
+    const key = `${spec.id}|${spec.motion}|${isFloor ? 1 : 0}|${this.tier}`;
     let entry = this.moving.get(key);
     if (!entry) {
       entry = buildMovingModelParts(spec, isFloor, this.tier);

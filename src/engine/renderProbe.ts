@@ -190,6 +190,46 @@ export class GpuTimerRing {
     if (this.status === 'ok') this.status = 'lost';
   }
 
+  public onContextRestored(gl: WebGLRenderingContext | WebGL2RenderingContext | null | undefined): void {
+    this.active = false;
+    this.pending.length = 0;
+    this.disposed = false;
+    if (!gl || typeof (gl as WebGL2RenderingContext).createQuery !== 'function') {
+      this.gl = null;
+      this.ext = null;
+      this.status = 'unsupported';
+      return;
+    }
+    const gl2 = gl as WebGL2RenderingContext;
+    const ext = gl2.getExtension('EXT_disjoint_timer_query_webgl2') as DisjointTimerQueryExt | null;
+    if (!ext) {
+      this.gl = null;
+      this.ext = null;
+      this.status = 'unsupported';
+      return;
+    }
+    this.gl = gl2;
+    this.ext = ext;
+    this.status = 'ok';
+  }
+
+  /** Delete any in-flight queries when a measurement session completes so zero WebGLQuery handles linger. */
+  public clearPending(): void {
+    const gl = this.gl;
+    const ext = this.ext;
+    const lost = !gl || (typeof gl.isContextLost === 'function' && gl.isContextLost());
+    if (this.active && gl && ext && !lost) {
+      try { gl.endQuery(ext.TIME_ELAPSED_EXT); } catch { /* ignore */ }
+    }
+    this.active = false;
+    if (gl && !lost) {
+      for (const q of this.pending) {
+        try { gl.deleteQuery(q); } catch { /* ignore */ }
+      }
+    }
+    this.pending.length = 0;
+  }
+
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -282,6 +322,11 @@ export class FrameProfilerSession {
 
   public isDone(): boolean {
     return this.recorded >= this.targetFrames;
+  }
+
+  /** True once warm-up frames have elapsed and the session is recording samples. */
+  public isRecording(): boolean {
+    return this.seenWarmup >= this.warmupFrames && this.recorded < this.targetFrames;
   }
 
   public beginFrame(nowMs: number): void {
@@ -401,6 +446,7 @@ export function computeFrameLuminanceGrid(
   height: number,
   cols = 8,
   rows = 8,
+  flipY = false,
 ): FrameLuminanceGrid {
   const cellCount = cols * rows;
   const sumR = new Float64Array(cellCount);
@@ -418,7 +464,8 @@ export function computeFrameLuminanceGrid(
   const totalPx = Math.max(1, width * height);
 
   for (let y = 0; y < height; y++) {
-    const cy = Math.min(rows - 1, Math.floor((y * rows) / height));
+    const logicalY = flipY ? height - 1 - y : y;
+    const cy = Math.min(rows - 1, Math.floor((logicalY * rows) / height));
     const rowOff = y * width * 4;
     for (let x = 0; x < width; x++) {
       const cx = Math.min(cols - 1, Math.floor((x * cols) / width));

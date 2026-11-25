@@ -261,16 +261,22 @@ export const App: React.FC = () => {
   const effectiveFullRateStrobeRef = useRef(effectiveFullRateStrobe);
   effectiveFullRateStrobeRef.current = effectiveFullRateStrobe;
 
-  const updateRenderSettings = useCallback((patch: Partial<RenderSettings>) => {
-    setRenderSettings((prev) => {
-      const next = parseRenderSettings({ ...prev, ...patch });
-      renderSettingsRef.current = next;
-      // Never write localStorage in read-only Pitch Viewer mode.
-      if (!viewerModeRef.current) saveRenderSettings(next);
-      engineRef.current?.setRenderSettings(next);
-      return next;
-    });
+  const updateRenderSettings = useCallback((patch: Partial<RenderSettings>, persist = true) => {
+    const next = parseRenderSettings({ ...renderSettingsRef.current, ...patch });
+    renderSettingsRef.current = next;
+    // Never write localStorage in read-only Pitch Viewer mode or from `?probe` test helpers.
+    if (persist && !viewerModeRef.current) saveRenderSettings(next);
+    engineRef.current?.setRenderSettings(next);
+    setRenderSettings(next);
   }, []);
+
+  // Clear the session-only full-rate opt-in whenever reduced-motion turns on or Pitch Viewer is entered
+  // so leaving Pitch Viewer or disabling reduced-motion never silently re-arms full-rate flashing.
+  useEffect(() => {
+    if (prefersReducedMotion || viewerMode) {
+      setFullRateStrobeOptIn(false);
+    }
+  }, [prefersReducedMotion, viewerMode]);
 
   useEffect(() => {
     engineRef.current?.setFullRateStrobePreview(effectiveFullRateStrobe);
@@ -1521,24 +1527,36 @@ export const App: React.FC = () => {
       graphicsProbe: () => engine.graphicsProbe(),
       measureFrames: (options?: { warmupFrames?: number; sampleFrames?: number; gpu?: boolean }) =>
         engine.measureFrames(options),
-      setRenderSettings: (patch: Partial<RenderSettings>) => updateRenderSettings(patch),
-      setFullRateStrobePreview: (enabled: boolean) => setFullRateStrobeOptIn(Boolean(enabled)),
+      setRenderSettings: (patch: Partial<RenderSettings>) => updateRenderSettings(patch, false),
+      setFullRateStrobePreview: (enabled: boolean) => {
+        const nextOptIn = Boolean(enabled);
+        setFullRateStrobeOptIn(nextOptIn);
+        const eff = resolveEffectiveFullRateStrobe({
+          userOptIn: nextOptIn,
+          prefersReducedMotion: typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+            ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+            : false,
+          xrPresenting: false,
+          viewerMode: viewerModeRef.current,
+        });
+        effectiveFullRateStrobeRef.current = eff;
+        engine.setFullRateStrobePreview(eff);
+      },
       resetParticles: (seed?: number) => engine.resetParticles(seed),
       stepAndReadLuminance: (dtMs: number) => engine.stepAndReadLuminance(dtMs),
       patchShowState: (patch: Partial<ShowState>) => {
-        setShowState((prev) => {
-          const next: ShowState = {
-            ...prev,
-            ...patch,
-            laser: patch.laser ? { ...prev.laser, ...patch.laser } : prev.laser,
-            led: patch.led ? { ...prev.led, ...patch.led } : prev.led,
-            atmo: patch.atmo ? { ...prev.atmo, ...patch.atmo } : prev.atmo,
-            motors: patch.motors ? { ...prev.motors, ...patch.motors } : prev.motors,
-          };
-          showStateRef.current = next;
-          engine.setShowState(next);
-          return next;
-        });
+        const prev = showStateRef.current;
+        const next: ShowState = {
+          ...prev,
+          ...patch,
+          laser: patch.laser ? { ...prev.laser, ...patch.laser } : prev.laser,
+          led: patch.led ? { ...prev.led, ...patch.led } : prev.led,
+          atmo: patch.atmo ? { ...prev.atmo, ...patch.atmo } : prev.atmo,
+          motors: patch.motors ? { ...prev.motors, ...patch.motors } : prev.motors,
+        };
+        showStateRef.current = next;
+        engine.setShowState(next);
+        setShowState(next);
       },
       setProbeBump: (patch: Partial<BumpState>) => {
         engine.setBumpState({

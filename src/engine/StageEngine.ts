@@ -104,6 +104,7 @@ import {
   evaluateAudioModulation,
   rawManualStrobeOscillator,
   stepCombinedStrobeGate,
+  stepDeliveredBrightness,
   stepDeliveredStrobeGate,
   type AudioModulationFrame,
   type AudioModulationState,
@@ -112,6 +113,7 @@ import {
   createPreviewFlashOutput,
   createPreviewFlashState,
   evaluatePreviewFlash,
+  stepPreviewDeliveredGate,
   type PreviewFlashOutput,
   type PreviewFlashState,
 } from './previewFlash';
@@ -299,6 +301,7 @@ export class StageEngine {
   private handleContextRestoredBound?: () => void;
   private gpuTimer: GpuTimerRing | null = null;
   private profiler: FrameProfilerSession | null = null;
+  private profilerUseGpu = true;
   private readPixelsBuf: Uint8Array | null = null;
   private readPixelsW = 0;
   private readPixelsH = 0;
@@ -582,8 +585,11 @@ export class StageEngine {
     };
     this.handleContextRestoredBound = () => {
       this.contextLost = false;
-      this.gpuTimer?.dispose();
-      this.gpuTimer = new GpuTimerRing(this.renderer.getContext());
+      if (this.gpuTimer) {
+        this.gpuTimer.onContextRestored(this.renderer.getContext());
+      } else {
+        this.gpuTimer = new GpuTimerRing(this.renderer.getContext());
+      }
       this.updateTourTextTexture(this.lastTourText);
       this.onContextLossChange?.(false);
       if (this.rafId === null) this.startLoop();
@@ -997,14 +1003,19 @@ export class StageEngine {
    */
   public measureFrames(options?: { warmupFrames?: number; sampleFrames?: number; gpu?: boolean }): Promise<FrameMeasureReport> {
     if (this.profiler) {
-      throw new Error('A frame measurement session is already running.');
+      return Promise.reject(new Error('A frame measurement session is already running.'));
     }
     if (this.contextLost) {
-      throw new Error('Cannot measure frames while WebGL context is lost.');
+      return Promise.reject(new Error('Cannot measure frames while WebGL context is lost.'));
+    }
+    if (this.standby) {
+      return Promise.reject(new Error('Cannot measure frames while StageEngine is in standby.'));
     }
     const warmup = options?.warmupFrames ?? 60;
     const frames = options?.sampleFrames ?? 240;
-    if (options?.gpu !== false && !this.gpuTimer) {
+    const useGpu = options?.gpu !== false;
+    this.profilerUseGpu = useGpu;
+    if (useGpu && !this.gpuTimer) {
       this.gpuTimer = new GpuTimerRing(this.renderer.getContext());
     }
     const session = new FrameProfilerSession(warmup, frames);
@@ -1055,7 +1066,8 @@ export class StageEngine {
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, this.readPixelsBuf);
     return {
       elapsedMs: this.elapsed * 1000,
-      grid: computeFrameLuminanceGrid(this.readPixelsBuf, w, h, 8, 8),
+      // WebGL readPixels is bottom-up; flipY aligns row 0 with the top of the viewport.
+      grid: computeFrameLuminanceGrid(this.readPixelsBuf, w, h, 8, 8, true),
       previewFlashLimiting: this.previewFlashOut.activeLimiting,
       physicalDmxU1: Array.from(this.physicalDmxU1),
       physicalDmxU2: Array.from(this.physicalDmxU2),
@@ -3046,9 +3058,12 @@ export class StageEngine {
       }
 
       const prof = this.profiler;
+      const recordGpu = Boolean(prof && this.profilerUseGpu && prof.isRecording());
       if (prof) {
         prof.beginFrame(performance.now());
-        this.gpuTimer?.poll((gpuMs) => prof.recordGpuSample(gpuMs));
+        if (this.profilerUseGpu) {
+          this.gpuTimer?.poll((gpuMs) => prof.recordGpuSample(gpuMs));
+        }
       }
 
       const audio = this.audioGetter(audioDt);
@@ -3061,7 +3076,7 @@ export class StageEngine {
       }
 
       const renderStart = prof ? performance.now() : 0;
-      const gpuStarted = prof && shouldRender ? (this.gpuTimer?.beginFrame() ?? false) : false;
+      const gpuStarted = recordGpu && shouldRender ? (this.gpuTimer?.beginFrame() ?? false) : false;
       try {
         if (shouldRender) this.composer.render();
         else this.clearStage();
@@ -3076,11 +3091,12 @@ export class StageEngine {
           performance.now(),
           this.renderer.info.render.calls,
           this.renderer.info.render.triangles,
-          this.gpuTimer,
+          this.profilerUseGpu ? this.gpuTimer : null,
         );
         if (done) {
           this.profiler = null;
           this.batcher?.setSyncObserver(null);
+          if (this.profilerUseGpu) this.gpuTimer?.clearPending();
         }
       }
 
@@ -3173,7 +3189,6 @@ export class StageEngine {
       {
         dtSec: audioDt,
         tSec: t,
-        audioGlobalEdgeMs: this.audioModState.lastGlobalStrobeEdgeMs,
         limited: previewLimited,
         blackout: blackoutActive || darkOpening,
         master,
@@ -3286,10 +3301,37 @@ export class StageEngine {
       if (groupStrobeGate < 0.5 && rawGroupStrobeGate >= 0.5) {
         mod.flashLimited = true;
       }
+      // Final composed DMX brightness limiter (Codex review-05 R1): tracks composed brightness across
+      // ducking dimmer mappings, audioReactive toggles, and blackout recovery so DMX stays <= 3/s.
+      const baseGroupDimmer = gMod?.dimmerMapped
+        ? gMod.dimmer
+        : (kind === 'beam' ? s.beamIntensity : s.washIntensity);
+      const rawComposedBright = Math.min(1.6, baseGroupDimmer * master * groupStrobeGate * (1.0 + audioBoost * 0.48));
+      const deliveredComposedBright = stepDeliveredBrightness(
+        this.audioModState,
+        kind,
+        rawComposedBright,
+        blackoutActive || darkOpening,
+      );
+      const composedBrightSuppressed =
+        !blackoutActive && !darkOpening && deliveredComposedBright < rawComposedBright - 1e-4;
+      if (composedBrightSuppressed) {
+        mod.flashLimited = true;
+      }
+      const composedBrightScale = composedBrightSuppressed
+        ? (rawComposedBright > 1e-6 ? deliveredComposedBright / rawComposedBright : 0)
+        : 1;
       const groupDmxStrobe = strobeMapped || b.strobe ? 0 : Math.round(effectiveStrobe * 255);
-      const previewGroupStrobeGate = previewLimited
+      const rawPreviewGroupStrobeGate = previewLimited
         ? groupStrobeGate
         : (strobeMapped ? (b.strobe ? previewStrobeGate : groupStrobeGate) : previewStrobeGate);
+      const previewGroupStrobeGate = stepPreviewDeliveredGate(
+        this.previewFlashState,
+        kind,
+        rawPreviewGroupStrobeGate,
+        blackoutActive || darkOpening,
+        previewLimited,
+      );
       const primaryScratch = kind === 'beam' ? this.beamPrimaryScratch : this.washPrimaryScratch;
       const accentScratch = kind === 'beam' ? this.beamAccentScratch : this.washAccentScratch;
       const groupPrimary = look.primaryColor === s.primaryColor ? primaryColor : primaryScratch.set(look.primaryColor);
@@ -3298,7 +3340,7 @@ export class StageEngine {
       const previewGroupAccent = look.accentColor === s.accentColor ? previewAccentColor : groupAccent;
       return {
         look, focus, moveSpd: baseMoveSpd, phaseOffset, effSpeedNorm, spread: 0.25 + look.movementSpread * 1.15,
-        effZoom, colorMix, tiltOffset, gMod, strobeMapped, groupStrobeGate, previewGroupStrobeGate, groupDmxStrobe,
+        effZoom, colorMix, tiltOffset, gMod, strobeMapped, groupStrobeGate, composedBrightScale, previewGroupStrobeGate, groupDmxStrobe,
         primary: groupPrimary,
         accent: groupAccent,
         previewPrimary: previewGroupPrimary,
@@ -3310,7 +3352,7 @@ export class StageEngine {
     for (const fx of this.movingFixtures) {
       const {
         look, focus, moveSpd, phaseOffset, spread, effZoom, colorMix, tiltOffset,
-        gMod, groupStrobeGate, previewGroupStrobeGate, groupDmxStrobe, primary, accent, previewPrimary, previewAccent,
+        gMod, groupStrobeGate, composedBrightScale, previewGroupStrobeGate, groupDmxStrobe, primary, accent, previewPrimary, previewAccent,
       } = groups[fx.type];
       const i = fx.index;
       const count = Math.max(1, this.movingFixtures.length);
@@ -3442,8 +3484,10 @@ export class StageEngine {
       if (demo) fx.directedDimmer = groupGain * baseInt;
       const dimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, baseInt, manualMix) : baseInt;
       const previewDimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, previewBaseInt, manualMix) : previewBaseInt;
-      const finalInt = Math.min(1.6, dimmer * master * groupStrobeGate * (1.0 + audioBoost * 0.48));
-      const previewFinalInt = Math.min(1.6, previewDimmer * previewMaster * previewGroupStrobeGate * (1.0 + audioBoost * 0.48));
+      const finalInt = Math.min(1.6, dimmer * master * groupStrobeGate * (1.0 + audioBoost * 0.48)) * composedBrightScale;
+      const previewFinalInt =
+        Math.min(1.6, previewDimmer * previewMaster * previewGroupStrobeGate * (1.0 + audioBoost * 0.48)) *
+        (previewLimited ? composedBrightScale : 1);
 
       fx.beamMat.uniforms.uColor.value.copy(previewTempCol);
       const zoomScale = beamZoomScale(fx.type, effZoom);
@@ -3751,14 +3795,31 @@ export class StageEngine {
     if (barGateLimited) {
       mod.flashLimited = true;
     }
-    const strobeBarBright = barGateLimited ? 0 : rawStrobeBarBright;
+    const strobeBarBrightBeforeCap = barGateLimited ? 0 : rawStrobeBarBright;
+    const strobeBarBright = stepDeliveredBrightness(
+      this.audioModState,
+      'bar',
+      strobeBarBrightBeforeCap / 3.8,
+      blackoutActive || darkOpening,
+    ) * 3.8;
+    if (!blackoutActive && !darkOpening && strobeBarBright < strobeBarBrightBeforeCap - 0.01) {
+      mod.flashLimited = true;
+    }
     const strobeBarDmxRate = strobeBarAudioMapped || b.strobe ? 0 : Math.round(255 * effectiveStrobe);
     const strobeBarFlash = !barGateLimited && (strobeBarAudioMapped ? strobeBarBright > 0.01 : (effectiveStrobe > 0.03 && strobeFlashOn));
+    const previewBarDeliveredGate = stepPreviewDeliveredGate(
+      this.previewFlashState,
+      'bar',
+      previewLimited ? deliveredBarGate : (effectiveStrobe > 0.03 ? (rawPreviewFlashOn ? 1.0 : 0.06) : deliveredBarGate),
+      blackoutActive || darkOpening,
+      previewLimited,
+    );
+    const previewBarSuppressed = previewLimited && previewBarDeliveredGate < 0.5 && deliveredBarGate >= 0.5;
     const previewStrobeBarFlash = previewLimited
-      ? strobeBarFlash
+      ? (!previewBarSuppressed && strobeBarFlash && strobeBarBright > 0.01)
       : (strobeBarAudioMapped ? (b.strobe ? rawPreviewFlashOn : strobeBarFlash) : (effectiveStrobe > 0.03 && rawPreviewFlashOn));
     const previewStrobeBarBright = previewLimited
-      ? (barGateLimited ? 0 : (master > 1e-4 ? rawStrobeBarBright * (previewMaster / master) : 0))
+      ? ((barGateLimited || previewBarSuppressed) ? 0 : (master > 1e-4 ? strobeBarBright * (previewMaster / master) : 0))
       : (effectiveStrobe > 0.03
           ? (rawPreviewFlashOn ? 3.8 * previewMaster : 0)
           : strobeBarBright);
@@ -3820,11 +3881,11 @@ export class StageEngine {
     const spillStrobeGate = previewLimited
       ? (!b.strobe && mod.active && (mod.strobeBar.strobe.mapped || mod.strobeBar.dimmerMapped || (mod.beam.strobe.mapped && mod.wash.strobe.mapped))
           ? (mod.strobeBar.strobe.mapped
-              ? (strobeBarFlash ? 1.35 : 0.06)
+              ? (previewStrobeBarFlash ? 1.35 : 0.06)
               : (mod.beam.strobe.mapped && mod.wash.strobe.mapped
-                  ? (groups.beam.groupStrobeGate >= 0.5 || groups.wash.groupStrobeGate >= 0.5 ? 1.35 : 0.06)
+                  ? (groups.beam.previewGroupStrobeGate >= 0.5 || groups.wash.previewGroupStrobeGate >= 0.5 ? 1.35 : 0.06)
                   : 1.0))
-          : Math.max(groups.beam.groupStrobeGate, groups.wash.groupStrobeGate))
+          : Math.max(groups.beam.previewGroupStrobeGate, groups.wash.previewGroupStrobeGate))
       : Math.max(groups.beam.previewGroupStrobeGate, groups.wash.previewGroupStrobeGate);
     const activeLightPower = ((rigHasLight ? (effBeamIntSpill * 0.55 + effWashIntSpill * 0.72) * this.spillFluxGain : 0) +
       (this.laserUnits.length ? laserInt * 0.09 : 0)) * previewMaster * spillStrobeGate * roomGain;

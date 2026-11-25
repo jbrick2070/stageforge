@@ -691,8 +691,12 @@ export function evaluateLaserZones(
 
     const entry = getCatalogEntry(unit.group.catalogId);
     const spec: CatalogLaserSpec | undefined = entry?.laser;
+    // Use conservative maximum rated optical power for NOHD safety when datasheet states a higher max than guaranteed (Codex review-05 R2).
+    const safetyOpticalPowerW = spec
+      ? Math.max(spec.opticalPowerW, spec.maxOpticalPowerW ?? spec.opticalPowerW)
+      : undefined;
     const nohd = computeLaserNohd({
-      opticalPowerW: spec?.opticalPowerW,
+      opticalPowerW: safetyOpticalPowerW,
       divergenceMrad: spec?.divergenceMrad,
       beamDiameterMm: spec?.beamDiameterMm,
       powerUnverified: entry ? isFieldUnverified(entry, 'laser.opticalPowerW') : false,

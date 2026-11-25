@@ -87,6 +87,8 @@ export interface CatalogLaserSpec {
   readonly singleColorHex?: string;
   /** Guaranteed optical output power at aperture in Watts. */
   readonly opticalPowerW: number;
+  /** Maximum rated optical output power in Watts when higher than guaranteed (used conservatively for NOHD safety). */
+  readonly maxOpticalPowerW?: number;
   /** Galvo scanner speed in kpps @ published ILDA test angle (typically 8 deg). */
   readonly scanSpeedKpps: number;
   /** Maximum optical scan angle in degrees (full angle), when stated in datasheet. */
@@ -123,6 +125,8 @@ export interface CatalogEntry {
   readonly laser?: CatalogLaserSpec;
   /** Published DMX modes ([0] = default real mode; empty for led_panel). */
   readonly modes: readonly CatalogDmxMode[];
+  /** Optional note when hardware requires an additional separately addressed DMX safety channel not auto-patched. */
+  readonly auxSafetyChannelNote?: string;
   readonly panel?: CatalogPanelSpec;
   /** True only for placeholder entries awaiting datasheet verification. */
   readonly placeholder?: true;
@@ -1055,6 +1059,7 @@ export const EQUIPMENT_CATALOG = [
       { name: 'Raw (Angle, Speed, Output)', channels: 3 },
       { name: 'Preset (Preset, Speed, Direction, Go)', channels: 4 },
     ],
+    auxSafetyChannelNote: 'Requires an additional separately addressed DMX safety channel (not reserved by auto-patch; reserve manually on desk).',
     sources: ['magicfx-psyco2jet', 'ofl-magicfx-psyco2jet'],
     unverified: [],
   },
@@ -1167,6 +1172,7 @@ export const EQUIPMENT_CATALOG = [
     laser: {
       colorType: 'rgb',
       opticalPowerW: 3,
+      maxOpticalPowerW: 3.48,
       scanSpeedKpps: 40,
       maxScanAngleDeg: 60,
       divergenceMrad: 0.6,
@@ -1222,6 +1228,7 @@ export const EQUIPMENT_CATALOG = [
     laser: {
       colorType: 'rgb',
       opticalPowerW: 9.7,
+      maxOpticalPowerW: 10.4,
       scanSpeedKpps: 40,
       maxScanAngleDeg: 60,
       divergenceMrad: 0.9,

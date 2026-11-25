@@ -162,6 +162,10 @@ export interface AudioModulationState {
   deliveredBeamGate: number;
   deliveredWashGate: number;
   deliveredBarGate: number;
+  /** Final composed DMX brightness history (0..1) for beam/wash/bar so dimmer toggles & blackout release stay <= 3/s (Codex review-05 R1). */
+  deliveredBeamBright: number;
+  deliveredWashBright: number;
+  deliveredBarBright: number;
   slots: AudioFollowerSlot[];
   manualStrobe: StrobeGateState;
   beamStrobe: StrobeGateState;
@@ -345,6 +349,9 @@ export function createAudioModulationState(): AudioModulationState {
     deliveredBeamGate: 1.0,
     deliveredWashGate: 1.0,
     deliveredBarGate: 1.0,
+    deliveredBeamBright: NaN,
+    deliveredWashBright: NaN,
+    deliveredBarBright: NaN,
     slots,
     manualStrobe: createStrobeGateState(),
     beamStrobe: createStrobeGateState(),
@@ -381,6 +388,9 @@ export function cloneAudioModulationState(src: AudioModulationState): AudioModul
   copy.deliveredBeamGate = src.deliveredBeamGate;
   copy.deliveredWashGate = src.deliveredWashGate;
   copy.deliveredBarGate = src.deliveredBarGate;
+  copy.deliveredBeamBright = src.deliveredBeamBright;
+  copy.deliveredWashBright = src.deliveredWashBright;
+  copy.deliveredBarBright = src.deliveredBarBright;
   for (let i = 0; i < MAX_AUDIO_MAPPINGS; i++) {
     copy.slots[i].id = src.slots[i]?.id ?? '';
     copy.slots[i].envelope = src.slots[i]?.envelope ?? 0;
@@ -731,6 +741,53 @@ export function stepDeliveredStrobeGate(
   if (channel === 'beam') state.deliveredBeamGate = delivered;
   else if (channel === 'wash') state.deliveredWashGate = delivered;
   else state.deliveredBarGate = delivered;
+  return delivered;
+}
+
+/**
+ * Final composed brightness limiter (Codex review-05 R1):
+ * Enforces <= 3 bright rising transitions/s on the final composed brightness reaching DMX/physical output,
+ * covering darkness caused by ducking dimmer mappings, toggling `audioReactive`, and rapid `blackout` toggles.
+ * Blackout always acts immediately (returns 0 and records darkness); subsequent restoration respects the shared 334 ms refractory.
+ */
+export function stepDeliveredBrightness(
+  state: AudioModulationState,
+  channel: 'beam' | 'wash' | 'bar',
+  desiredBrightness: number,
+  blackout: boolean,
+): number {
+  const safeDesired = Number.isFinite(desiredBrightness) ? Math.max(0, desiredBrightness) : 0;
+  if (blackout) {
+    if (channel === 'beam') state.deliveredBeamBright = 0;
+    else if (channel === 'wash') state.deliveredWashBright = 0;
+    else state.deliveredBarBright = 0;
+    return 0;
+  }
+  const tMs = state.clockMs;
+  const prev =
+    channel === 'beam'
+      ? state.deliveredBeamBright
+      : channel === 'wash'
+        ? state.deliveredWashBright
+        : state.deliveredBarBright;
+  let delivered = safeDesired;
+  if (Number.isFinite(prev) && safeDesired - prev >= 0.08) {
+    const globalReady =
+      tMs === state.lastGlobalStrobeEdgeMs ||
+      tMs - state.lastGlobalStrobeEdgeMs >= FLASH_REFRACTORY_MS;
+    if (!globalReady) {
+      state.manualStrobe.limitedUntilMs = Math.max(
+        state.manualStrobe.limitedUntilMs,
+        tMs + FLASH_LIMITED_HOLD_MS,
+      );
+      delivered = prev;
+    } else {
+      state.lastGlobalStrobeEdgeMs = tMs;
+    }
+  }
+  if (channel === 'beam') state.deliveredBeamBright = delivered;
+  else if (channel === 'wash') state.deliveredWashBright = delivered;
+  else state.deliveredBarBright = delivered;
   return delivered;
 }
 

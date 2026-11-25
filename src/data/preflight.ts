@@ -571,6 +571,17 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       outcome = worstOutcome(outcome, 'warn');
     }
 
+    // Auxiliary safety-channel warning for fixtures whose hardware requires a separate safety DMX address (Codex review-05 R3).
+    const catEntry = row.group.catalogId ? getCatalogEntry(row.group.catalogId) : undefined;
+    if (catEntry?.auxSafetyChannelNote) {
+      findings.push({
+        code: 'aux_safety_channel_unreserved',
+        outcome: 'warn',
+        message: `Incomplete DMX patch: ${catEntry.auxSafetyChannelNote}`,
+      });
+      outcome = worstOutcome(outcome, 'warn');
+    }
+
     // Static aim reachability
     const reach = aimReachByGroup.get(row.group.id);
     if (reach && reach.unreachableCount > 0) {

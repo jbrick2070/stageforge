@@ -220,6 +220,10 @@ function formatOpticsNote(group: AnyGroup): string {
     if (entry.laser.scanSpeedKpps) parts.push(`${entry.laser.scanSpeedKpps} kpps`);
   }
 
+  if (entry?.auxSafetyChannelNote) {
+    parts.push(`+1 aux safety DMX ch (reserve manually)`);
+  }
+
   return parts.length ? parts.join(' · ') : '—';
 }
 

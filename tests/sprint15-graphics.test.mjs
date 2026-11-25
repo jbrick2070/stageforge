@@ -15,6 +15,11 @@ let audioMod;
 let laserScan;
 let stageGlb;
 let presets;
+let fixtureModels;
+let measureMod;
+let preflightMod;
+let paperworkMod;
+let physicalDmx;
 
 before(async () => {
   server = await createServer({
@@ -32,6 +37,11 @@ before(async () => {
   laserScan = await server.ssrLoadModule('/src/data/laserScan.ts');
   stageGlb = await server.ssrLoadModule('/src/engine/stageGlb.ts');
   presets = await server.ssrLoadModule('/src/data/presets.ts');
+  fixtureModels = await server.ssrLoadModule('/src/engine/fixtureModels.ts');
+  measureMod = await server.ssrLoadModule('/src/data/measure.ts');
+  preflightMod = await server.ssrLoadModule('/src/data/preflight.ts');
+  paperworkMod = await server.ssrLoadModule('/src/data/showPaperwork.ts');
+  physicalDmx = await server.ssrLoadModule('/src/dmx/physicalDmx.ts');
 });
 
 after(async () => {
@@ -162,9 +172,18 @@ describe('Sprint 15: renderProbe (percentiles, async GPU timer ring, luminance f
     assert.equal(ring.discarded, 8);
     assert.equal(samples.length, 1);
 
-    // Dispose deletes remaining queries
+    // clearPending deletes in-flight queries on measurement completion so pendingCount drops to 0.
     disjoint = false;
     available = false;
+    assert.equal(ring.beginFrame(), true);
+    ring.endFrame();
+    assert.equal(ring.pendingCount(), 1);
+    const beforeClear = deleted.length;
+    ring.clearPending();
+    assert.equal(ring.pendingCount(), 0);
+    assert.equal(deleted.length, beforeClear + 1);
+
+    // Dispose deletes remaining queries
     assert.equal(ring.beginFrame(), true);
     ring.endFrame();
     const beforeDel = deleted.length;
@@ -393,7 +412,6 @@ describe('Sprint 15: preview flash limiter & physical isolation', () => {
       previewFlash.evaluatePreviewFlash(state, {
         dtSec: 0.01,
         tSec: ms / 1000,
-        audioGlobalEdgeMs: modState.lastGlobalStrobeEdgeMs,
         limited: true,
         blackout: false,
         master: 1,
@@ -429,36 +447,49 @@ describe('Sprint 15: preview flash limiter & physical isolation', () => {
       laserScan.flickerIntensityMultiplier(diag.refreshHz, 0.075, false),
     );
 
-    // 3. Rapid blinder mashing (every 100 ms -> 5 Hz) cannot reach full 1.0 peaks > 3/s.
-    const state2 = previewFlash.createPreviewFlashState();
-    let blinderRises = 0;
-    let wasHigh = false;
-    for (let ms = 0; ms < 2000; ms += 16) {
-      const targetBlinder = Math.floor(ms / 100) % 2 === 0 ? 1 : 0;
-      previewFlash.evaluatePreviewFlash(state2, {
-        dtSec: 0.016,
-        tSec: ms / 1000,
-        audioGlobalEdgeMs: -Infinity,
-        limited: true,
-        blackout: false,
-        master: 1,
-        blinder: targetBlinder,
-        ledBright: 0.5,
-        beatPulse: 0,
-        beamIntensity: 0.5,
-        washIntensity: 0.5,
-        laserStrobe: 0,
-        primaryColor: cRed,
-        accentColor: cCyan,
-      }, out);
-      if (!wasHigh && out.blinder >= 0.5) {
-        blinderRises++;
-        wasHigh = true;
-      } else if (out.blinder < 0.2) {
-        wasHigh = false;
+    // 3. H1 regression: 3, 5, 8, 12, and 15 Hz square waves on blinder, blackout, ledBright, beam, wash,
+    // and beatPulse must NOT leak a >0.10-amplitude sawtooth when evaluated via analyzeRollingFlashRate.
+    const toGridSample = (timeMs, level) => ({
+      timeMs,
+      grid: {
+        cols: 1,
+        rows: 1,
+        whole: { y: level, r: level, g: level, b: level, redRatio: 1 / 3, redMetric: 0 },
+        cells: [{ y: level, r: level, g: level, b: level, redRatio: 1 / 3, redMetric: 0 }],
+      },
+    });
+    for (const channel of ['blinder', 'blackout', 'ledBright', 'beamIntensity', 'washIntensity', 'beatPulse']) {
+      for (const hz of [3, 5, 8, 12, 15]) {
+        const st = previewFlash.createPreviewFlashState();
+        const halfPeriodMs = 500 / hz;
+        const seq = [];
+        for (let ms = 0; ms <= 2000; ms += 10) {
+          const high = Math.floor(ms / halfPeriodMs) % 2 === 0;
+          previewFlash.evaluatePreviewFlash(st, {
+            dtSec: 0.01,
+            tSec: ms / 1000,
+            limited: true,
+            blackout: channel === 'blackout' ? !high : false,
+            master: 1,
+            blinder: channel === 'blinder' ? (high ? 1 : 0) : 0,
+            ledBright: channel === 'ledBright' ? (high ? 1 : 0) : 0.5,
+            beatPulse: channel === 'beatPulse' ? (high ? 1 : 0) : 0,
+            beamIntensity: channel === 'beamIntensity' ? (high ? 1 : 0) : 0.5,
+            washIntensity: channel === 'washIntensity' ? (high ? 1 : 0) : 0.5,
+            laserStrobe: 0,
+            primaryColor: cRed,
+            accentColor: cCyan,
+          }, out);
+          const delivered = channel === 'blackout' ? out.master : out[channel];
+          seq.push(toGridSample(ms, Math.max(0, Math.min(1, delivered))));
+        }
+        const rate = renderProbe.analyzeRollingFlashRate(seq);
+        assert.ok(
+          rate.maxGeneralFlashesPerSec <= 3,
+          `H1 sawtooth check failed on ${channel} at ${hz} Hz: got ${rate.maxGeneralFlashesPerSec} flashes/s`,
+        );
       }
     }
-    assert.ok(blinderRises <= 6, `expected <= 6 blinder pulses in 2 s, got ${blinderRises}`);
 
     // 4. Positive control: rawManualStrobeOscillator exceeds 3/s at strobe 1.0 while stepCombinedStrobeGate caps <= 3/s.
     let rawEdges = 0;
@@ -478,6 +509,132 @@ describe('Sprint 15: preview flash limiter & physical isolation', () => {
     }
     assert.ok(rawEdges >= 20, `expected raw strobe >= 20/s, got ${rawEdges}`);
     assert.ok(gatedEdges <= 3, `expected gated physical strobe <= 3/s, got ${gatedEdges}`);
+
+    // 5. Unified preview clock regression: laser + beam + strobe-bar cannot interleave above 3/s,
+    // and stepPreviewDeliveredGate agrees with evaluatePreviewFlash during blackout / darkOpening.
+    const unified = previewFlash.createPreviewFlashState();
+    let totalOnsets = 0;
+    let prevAnyOn = false;
+    for (let ms = 0; ms < 2000; ms += 16) {
+      previewFlash.evaluatePreviewFlash(unified, {
+        dtSec: 0.016,
+        tSec: ms / 1000,
+        limited: true,
+        blackout: false,
+        master: 1,
+        blinder: 0,
+        ledBright: 0.5,
+        beatPulse: 0,
+        beamIntensity: 1,
+        washIntensity: 1,
+        laserStrobe: 1.0,
+        primaryColor: cRed,
+        accentColor: cCyan,
+      }, out);
+      const beamGate = previewFlash.stepPreviewDeliveredGate(unified, 'beam', ms % 100 < 50 ? 1.35 : 0.06, false, true);
+      const barGate = previewFlash.stepPreviewDeliveredGate(unified, 'bar', ms % 100 < 50 ? 1.0 : 0.06, false, true);
+      const anyOn = out.laserStrobeMultiplier > 0 || beamGate >= 0.5 || barGate >= 0.5;
+      if (!prevAnyOn && anyOn) totalOnsets++;
+      prevAnyOn = anyOn;
+    }
+    assert.ok(totalOnsets <= 6, `expected <= 6 combined preview onsets in 2 s, got ${totalOnsets}`);
+
+    // M3 regression: during darkOpening/blackout, stepPreviewDeliveredGate does not consume refractory budget.
+    const darkState = previewFlash.createPreviewFlashState();
+    previewFlash.evaluatePreviewFlash(darkState, {
+      dtSec: 0.016,
+      tSec: 0.016,
+      limited: true,
+      blackout: true,
+      master: 0,
+      blinder: 0,
+      ledBright: 0,
+      beatPulse: 0,
+      beamIntensity: 0,
+      washIntensity: 0,
+      laserStrobe: 0,
+      primaryColor: cRed,
+      accentColor: cCyan,
+    }, out);
+    assert.equal(out.master, 0);
+    previewFlash.stepPreviewDeliveredGate(darkState, 'beam', 1.35, true, true);
+    assert.equal(darkState.lastGlobalEdgeMs, -Infinity, 'blackout/darkOpening must not consume refractory edge');
+  });
+
+  it('M2 & L5 regressions: GLB snapshot strips runtime scenicTier/scenicProp identically across tiers, GpuTimerRing clears active queries & restores context, and flipY aligns top row', () => {
+    // M2: GLB snapshot from low-tier vs high-tier scenic piece produces identical geometry and zero leaked metadata.
+    const archProp = {
+      id: 'arch-glb',
+      name: 'Arch GLB',
+      kind: 'arch',
+      x: 0,
+      y: 0,
+      z: 0,
+      width: 10,
+      height: 7,
+      depth: 1.5,
+      color: '#ff6622',
+      accent: '#22ccff',
+      finish: 'matte',
+      inflate: true,
+    };
+    const hwMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+    const mats = { truss: hwMat, deck: hwMat, chrome: hwMat, body: hwMat, ledBody: hwMat };
+    const lowPiece = scenicProps.buildScenicPiece(archProp, hwMat, 'low');
+    const highPiece = scenicProps.buildScenicPiece(archProp, hwMat, 'high');
+    lowPiece.root.userData = { scenicProp: archProp, scenicTier: 'low' };
+    highPiece.root.userData = { scenicProp: archProp, scenicTier: 'high' };
+    const rig = structuredClone(Object.values(presets.RIG_TEMPLATES)[0]);
+    const snapLow = stageGlb.stageSnapshot(rig, [lowPiece.root], mats);
+    const snapHigh = stageGlb.stageSnapshot(rig, [highPiece.root], mats);
+    assert.equal(countObjectTriangles(snapLow), countObjectTriangles(snapHigh), 'low and high tier GLB snapshots must have identical triangle counts');
+    assert.ok(countObjectTriangles(snapLow) > countObjectTriangles(lowPiece.root), 'GLB snapshot must rebuild canonical high-detail scenery');
+    const checkNoLeakedKeys = (root) => {
+      root.traverse((n) => {
+        assert.equal('scenicTier' in n.userData, false, 'scenicTier must be stripped from GLB userData');
+        assert.equal('scenicProp' in n.userData, false, 'scenicProp must be stripped from GLB userData');
+      });
+    };
+    checkNoLeakedKeys(snapLow);
+    checkNoLeakedKeys(snapHigh);
+
+    // L5: GpuTimerRing.clearPending ends active query and deletes it; onContextRestored recovers from lost.
+    let ended = 0;
+    let deleted = 0;
+    const mockGl = {
+      QUERY_RESULT_AVAILABLE: 0x8867,
+      QUERY_RESULT: 0x8866,
+      getExtension: () => ({ TIME_ELAPSED_EXT: 0x88bf, GPU_DISJOINT_EXT: 0x8fbb }),
+      isContextLost: () => false,
+      createQuery: () => ({ id: 1 }),
+      beginQuery: () => {},
+      endQuery: () => { ended++; },
+      deleteQuery: () => { deleted++; },
+      getParameter: () => false,
+      getQueryParameter: () => false,
+    };
+    const ring = new renderProbe.GpuTimerRing(mockGl);
+    assert.equal(ring.beginFrame(), true);
+    ring.clearPending();
+    assert.equal(ended, 1, 'clearPending must end an active in-flight query');
+    assert.equal(deleted, 1, 'clearPending must delete pending queries');
+    assert.equal(ring.pendingCount(), 0);
+    ring.onContextLost();
+    assert.equal(ring.getStatus(), 'lost');
+    ring.onContextRestored(mockGl);
+    assert.equal(ring.getStatus(), 'ok');
+    ring.dispose();
+
+    // L5: computeFrameLuminanceGrid flipY=true places bottom-up WebGL top pixels in row 0.
+    const rgba = new Uint8Array(2 * 2 * 4);
+    // In WebGL readPixels (bottom-up), y=1 is the top row. Paint y=1 white and y=0 black.
+    for (let x = 0; x < 2; x++) {
+      const idx = (1 * 2 + x) * 4;
+      rgba[idx] = 255; rgba[idx + 1] = 255; rgba[idx + 2] = 255; rgba[idx + 3] = 255;
+    }
+    const flipped = renderProbe.computeFrameLuminanceGrid(rgba, 2, 2, 1, 2, true);
+    assert.ok(flipped.cells[0].y > 0.99, 'flipY=true must map top-of-screen pixels into row 0');
+    assert.ok(flipped.cells[1].y < 0.01, 'flipY=true must map bottom-of-screen pixels into row 1');
   });
 });
 
@@ -505,5 +662,176 @@ describe('Sprint 15: safety wording over-claim guard', () => {
         assert.equal(re.test(content), false, `Forbidden overclaim ${re} matched in ${file}`);
       }
     }
+  });
+});
+
+describe('Codex review-05 regressions (R1-R4)', () => {
+  it('R1: caps final composed DMX brightness <= 3/s across 50 ms ducking-dimmer audioReactive toggles and 50 ms blackout toggles', () => {
+    const parGroup = {
+      id: 'wash-par',
+      type: 'wash',
+      catalogId: 'etc-colorsource-par',
+      modelName: 'ETC ColorSource PAR',
+      count: 1,
+      dmxUniverse: 1,
+      dmxStartChannel: 1,
+      dmxMode: '1-Ch',
+      dmxChannels: 1,
+    };
+    const parClass = physicalDmx.classifyPhysicalGroup(parGroup);
+    assert.equal(parClass.status, 'implemented');
+
+    const baseLook = structuredClone(presets.INITIAL_SHOW_STATE);
+    baseLook.masterDimmer = 1;
+    baseLook.washIntensity = 0.9;
+    baseLook.strobeRate = 0;
+    baseLook.blackout = false;
+    baseLook.audioMap = {
+      mappings: [{
+        id: 'duck-wash',
+        name: 'Energy duck wash',
+        enabled: true,
+        source: 'energy',
+        target: { group: 'wash', param: 'dimmer' },
+        amount: -1,
+        attackMs: 0,
+        releaseMs: 10,
+        threshold: 0.2,
+        curve: 'linear',
+      }],
+    };
+    const metrics = { playing: true, bass: 1, mid: 1, high: 1, energy: 1, beat: false, beatPulse: 0, drop: false, spectrum: new Float32Array(32) };
+
+    const runScenario = (mode) => {
+      const state = audioMod.createAudioModulationState();
+      const frame = audioMod.createAudioModulationFrame();
+      const uBuf = new Uint8Array(512);
+      const physBuf = new Uint8Array(512);
+      const scratch = [];
+      let prevByte = 0;
+      let transitions = 0;
+      for (let ms = 0; ms < 1000; ms += 10) {
+        const halfCycle = Math.floor(ms / 50) % 2 === 0;
+        const look = {
+          ...baseLook,
+          audioReactive: mode === 'duck_toggle' ? halfCycle : false,
+          blackout: mode === 'blackout_toggle' ? halfCycle : false,
+        };
+        audioMod.evaluateAudioModulation(look, metrics, state, 0.01, frame);
+        const master = look.blackout ? 0 : look.masterDimmer;
+        const baseDimmer = frame.active && frame.wash.dimmerMapped ? frame.wash.dimmer : look.washIntensity;
+        const rawComposed = baseDimmer * master;
+        const delivered = audioMod.stepDeliveredBrightness(state, 'wash', rawComposed, look.blackout);
+        physBuf.fill(0);
+        physicalDmx.writePhysicalUnitBytes(
+          physBuf,
+          uBuf,
+          1,
+          1,
+          parClass,
+          { blackout: look.blackout, dimmer: Math.min(1, delivered), r: 1, g: 1, b: 1 },
+          scratch,
+        );
+        const byte = physBuf[0];
+        if (prevByte < 30 && byte >= 200) transitions++;
+        prevByte = byte;
+      }
+      return transitions;
+    };
+
+    assert.ok(runScenario('duck_toggle') <= 3, '50 ms ducking dimmer toggle must stay <= 3 physical transitions/s');
+    assert.ok(runScenario('blackout_toggle') <= 3, '50 ms blackout toggle must stay <= 3 physical transitions/s');
+
+    // Pass 2 QA regression: non-zero-floor swings (0.25 <-> 1.0) and low-amplitude swings (0 <-> 0.2)
+    // must also stay <= 3 rises/s, and the first frame must not consume the shared refractory budget.
+    for (const [low, high] of [[0.25, 1.0], [0.0, 0.2]]) {
+      const st = audioMod.createAudioModulationState();
+      // First frame initializes without consuming lastGlobalStrobeEdgeMs.
+      st.clockMs = 0;
+      audioMod.stepDeliveredBrightness(st, 'beam', high, false);
+      assert.equal(st.lastGlobalStrobeEdgeMs, -Infinity, 'startup frame must not consume shared refractory');
+      let rises = 0;
+      let prev = high;
+      for (let ms = 10; ms < 1000; ms += 10) {
+        st.clockMs = ms;
+        const target = Math.floor(ms / 50) % 2 === 0 ? low : high;
+        const delivered = audioMod.stepDeliveredBrightness(st, 'beam', target, false);
+        if (delivered - prev >= 0.08) rises++;
+        prev = delivered;
+      }
+      assert.ok(rises <= 3, `expected <= 3 physical rises/s for ${low}<->${high} swing, got ${rises}`);
+    }
+  });
+
+  it('R2: uses maximum rated optical power (3.48 W / 10.4 W) for Clubmax 3000 & Clubmax 10 NOHD calculations', () => {
+    const baseRig = Object.values(presets.RIG_TEMPLATES)[0];
+    const mkRig = (catalogId) => ({
+      ...structuredClone(baseRig),
+      trussPods: [],
+      floorFx: [{
+        id: 'fl-1',
+        type: 'floor_laser',
+        catalogId,
+        modelName: catalogId,
+        count: 1,
+        dmxUniverse: 1,
+        dmxStartChannel: 1,
+        dmxMode: 'FB4 16-Ch (FB3 Profile)',
+        dmxChannels: 16,
+      }],
+    });
+    const laserState = { ...presets.INITIAL_SHOW_STATE.laser, enabled: true, intensity: 1 };
+    const cm3 = measureMod.evaluateLaserZones(mkRig('laser-tour-01'), laserState);
+    const cm10 = measureMod.evaluateLaserZones(mkRig('laser-tour-02'), laserState);
+    assert.equal(cm3.zones.length, 1);
+    assert.equal(cm10.zones.length, 1);
+    assert.ok(Math.abs(cm3.zones[0].nohd.nohdM - 696.068) < 0.2, `expected ~696.068 m for Clubmax 3000 (3.48 W max), got ${cm3.zones[0].nohd.nohdM}`);
+    assert.ok(Math.abs(cm10.zones[0].nohd.nohdM - 802.236) < 0.2, `expected ~802.236 m for Clubmax 10 (10.4 W max), got ${cm10.zones[0].nohd.nohdM}`);
+  });
+
+  it('R3: flags MagicFX PSYCO2JET missing auxiliary safety DMX channel in preflight and paperwork', () => {
+    const rig = {
+      ...structuredClone(Object.values(presets.RIG_TEMPLATES)[0]),
+      trussPods: [],
+      floorFx: [{
+        id: 'co2-1',
+        type: 'co2',
+        catalogId: 'co2-jet-moving-01',
+        modelName: 'MagicFX PSYCO2JET',
+        count: 1,
+        dmxUniverse: 1,
+        dmxStartChannel: 1,
+        dmxMode: 'Raw (Angle, Speed, Output)',
+        dmxChannels: 3,
+      }],
+    };
+    const report = preflightMod.evaluatePreflight({
+      rig,
+      showState: presets.INITIAL_SHOW_STATE,
+      cues: [],
+    });
+    const row = report.rows.find((r) => r.groupId === 'co2-1');
+    assert.ok(row, 'expected preflight row for PSYCO2JET');
+    assert.ok(row.findings.some((f) => f.code === 'aux_safety_channel_unreserved'), 'expected aux_safety_channel_unreserved finding');
+    assert.equal(row.outcome, 'warn');
+
+    const pw = paperworkMod.buildShowPaperwork(rig, undefined, []);
+    assert.ok(pw.units[0].opticsNote.includes('aux safety DMX ch'), `expected aux safety note in paperwork, got ${pw.units[0].opticsNote}`);
+  });
+
+  it('R4: FixtureModelCache keeps fixed and tilting battens isolated regardless of insertion order', () => {
+    const cacheA = new fixtureModels.FixtureModelCache('high');
+    const tiltFirst = cacheA.getMoving('wash', 'batten-tilt-01', false);
+    const fixedSecond = cacheA.getMoving('wash', 'batten-static-01', false);
+    assert.equal(tiltFirst.spec.motion, 'tilt');
+    assert.equal(fixedSecond.spec.motion, 'fixed');
+    cacheA.dispose();
+
+    const cacheB = new fixtureModels.FixtureModelCache('high');
+    const fixedFirst = cacheB.getMoving('wash', 'batten-static-01', false);
+    const tiltSecond = cacheB.getMoving('wash', 'batten-tilt-01', false);
+    assert.equal(fixedFirst.spec.motion, 'fixed');
+    assert.equal(tiltSecond.spec.motion, 'tilt');
+    cacheB.dispose();
   });
 });

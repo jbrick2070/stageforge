@@ -31,7 +31,9 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const fullRateCheckboxRef = useRef<HTMLInputElement>(null);
   const cancelConfirmRef = useRef<HTMLButtonElement>(null);
+  const enableConfirmRef = useRef<HTMLButtonElement>(null);
   const warningId = useId();
   const panelId = useId();
 
@@ -42,9 +44,24 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKeyDown = (e: KeyboardEvent) => {
+      if (confirmOpen && e.key === 'Tab') {
+        const cancelEl = cancelConfirmRef.current;
+        const enableEl = enableConfirmRef.current;
+        if (cancelEl && enableEl) {
+          e.preventDefault();
+          const active = document.activeElement;
+          if (e.shiftKey) {
+            (active === cancelEl ? enableEl : cancelEl).focus();
+          } else {
+            (active === enableEl ? cancelEl : enableEl).focus();
+          }
+        }
+        return;
+      }
       if (e.key === 'Escape') {
         if (confirmOpen) {
           setConfirmOpen(false);
+          fullRateCheckboxRef.current?.focus();
         } else {
           setOpen(false);
           triggerRef.current?.focus();
@@ -175,6 +192,7 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
 
             <label className={`flex items-start gap-2 min-h-[44px] text-[11px] ${fullRateDisabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
               <input
+                ref={fullRateCheckboxRef}
                 type="checkbox"
                 data-testid="full-rate-strobe-checkbox"
                 checked={fullRateOptIn && !fullRateDisabled}
@@ -237,17 +255,22 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
                 ref={cancelConfirmRef}
                 type="button"
                 data-testid="full-rate-strobe-cancel"
-                onClick={() => setConfirmOpen(false)}
+                onClick={() => {
+                  setConfirmOpen(false);
+                  fullRateCheckboxRef.current?.focus();
+                }}
                 className="rounded-lg border border-white/20 bg-white/10 hover:bg-white/20 px-3 py-2 text-xs font-medium text-white cursor-pointer"
               >
                 Cancel
               </button>
               <button
+                ref={enableConfirmRef}
                 type="button"
                 data-testid="full-rate-strobe-enable"
                 onClick={() => {
                   setConfirmOpen(false);
                   onSetFullRateOptIn(true);
+                  fullRateCheckboxRef.current?.focus();
                 }}
                 className="rounded-lg border border-amber-400/80 bg-amber-600 hover:bg-amber-500 px-3 py-2 text-xs font-bold text-black cursor-pointer"
               >

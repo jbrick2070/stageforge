@@ -107,7 +107,9 @@ export function stageSnapshot(rig: RigConfig, roots: THREE.Object3D[], mats: Sha
       }
     } else node = new THREE.Group();
     node.name = source.name || `${source instanceof THREE.Mesh ? (names.get(source.material) || 'Mesh') : 'Assembly'} ${index + 1}`;
-    node.userData = { ...source.userData };
+    // Strip runtime-only scenery LOD metadata so low-tier and high-tier exports produce identical glTF extras.
+    const { scenicProp: _scenicProp, scenicTier: _scenicTier, ...cleanUserData } = source.userData;
+    node.userData = cleanUserData;
     node.position.copy(source.position);
     node.quaternion.copy(source.quaternion);
     node.scale.copy(source.scale);
