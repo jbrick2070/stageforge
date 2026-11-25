@@ -1503,3 +1503,73 @@ The overnight runner was stopped after Round 5. Claude Code took over for one sp
   - Kept zero new npm dependencies, zero show-format/bundle/schema changes.
 - **Leftovers / next up:**
   - Next up: **Sprint 9** (audio-reactive mappings for fixtures and controls), then Realism items 6–8 (`console feel`, `fixture behaviour polish`, `haze/smoke/laser GPU realism`) and optional static-rig `matrixAutoUpdate = false`.
+
+### 2026-11-24 20:50 PST — Sprint 9: audio-reactive mappings for fixtures and controls (`f4213fa`)
+
+- **Consults & QA runs:**
+  - Opus 5.5 (`claude-opus-5-5`) available (`opus-status.txt`) and consulted (`sprint-9-design.md` → `sprint-9-design-reply.md`) on the zero-allocation `evaluateAudioModulation` hot-path design paired with a pure `modulateLook` wrapper, phase-continuous shader/motion offsets (`uPhaseOffset` / `uRotOffset`) with bit-exact `+ 0.0` parity when unmapped, DMX strobe-rate channel zeroing under audio mapping, Show v8 additive schema & pruning rules, photosensitivity flash-limiting mechanics, and ref-driven UI isolation to avoid 20 Hz React reconciliation.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) QA pass 1 on all uncommitted Sprint 9 changes (0 Critical, 1 High, 6 Medium, 5 Low), followed by code verification, targeted fixes, and regression tests for every real finding.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) follow-up QA pass 2 on the Step-4 fixes (0 Critical, 0 High, 2 Medium, 3 Low); fixed both Medium findings (stale `projFlags` on inactive reset and legacy strobe oscillator leak into strobe lens color / stage spill light) and L4 documentation, added the Pass 2 M1 regression test, and re-ran the full gate.
+- **What shipped:**
+  - **Pure audio modulation engine (`src/engine/audioModulation.ts`, `src/types/show.ts`):**
+    - Added `AudioMappingSource`, `AudioMappingCurve`, `AudioTargetGroup`, `AudioTargetParam`, `AudioMappingTarget`, `AudioMapping`, `AudioMapConfig`, and optional `ShowState.audioMap`.
+    - Implemented zero-allocation `evaluateAudioModulation(look, metrics, state, dt, out)` (using pre-allocated follower slots and per-projector laser pools) and pure `modulateLook(look, metrics, followers, dt)` wrapper.
+    - Supports `bass`, `mid`, `high`, `energy`, `beat`, `drop`, and 32-band FFT `band` (`bands: [lo, hi]` in `0..31`) averaged per frame; exponential attack/release followers (`dt <= 0` holds `prev` with zero snap), threshold gating, `linear`/`square`/`sqrt` curves, negative-amount ducking & strict clamping, and 4 built-in presets (`AUDIO_MAPPING_PRESETS`).
+    - **Safety enforcement:**
+      - Blackout and `masterDimmer` always win (`modulatedValue` and engine output zero under blackout / master 0).
+      - **Combined photosensitivity flash limiter (`<= 3` full flashes/s):** all strobe gates (`beam`, `wash`, `strobe`, `laser`, per-projector lasers) share a monotonic `334 ms` refractory clock (`state.lastGlobalStrobeEdgeMs`, permitting synchronized same-frame hits as one room flash while suppressing staggered `< 334 ms` hits and persisting across Beat sync toggles and cue switches); all continuous dimmer/brightness/intensity targets (`beam.dimmer`, `wash.dimmer`, `blinder.dimmer`, `strobe.dimmer`, `ledWall.brightness`, `laser.intensity`, and per-projector `laser.intensity`) enforce `FLASH_SLEW_FALL_PER_SEC = 1.75` (`>= 343 ms` per `>= 0.6` full flash).
+      - **Laser safety:** never enables a disabled laser, never enables `audienceScan`, never touches `tilt`, caps `intensity`/`spread`/`rotation` strictly `<= base` (with `spread >= min(base, 0.1)`), and restricts `speed` to `[base, 1]`.
+      - **Haze inertia:** enforces `attackMs >= 1000` and `releaseMs >= 2000` in runtime, loader, and UI.
+  - **Engine, shaders, audio & live DMX integration (`src/engine/StageEngine.ts`, `src/engine/shaders.ts`, `src/audio/AudioEngine.ts`):**
+    - Wired `evaluateAudioModulation` once per frame in `StageEngine.updateScene` before both 3D rendering and live DMX universe writes so visual and physical fixtures (Art-Net / sACN / Enttec USB Pro) follow the exact same envelope.
+    - Added `uPhaseOffset` (default `0.0`) to `LASER_SHEET_VERT`, `LASER_SHEET_FRAG`, `LASER_CONE_VERT`, `LASER_CONE_FRAG` (plus `uRotOffset`), and `LED_WALL_FRAG`; kept accumulated phase offsets intact across disables/cue switches so animations never phase-jump while unmapped shows stay exact `+ 0.0`.
+    - Zeroed DMX strobe-rate channel bytes (and suppressed legacy 3.5–27.5 Hz strobe oscillator on mapped strobe lenses/spill) whenever strobe is audio-mapped so physical fixtures flash exclusively via the dimmer gate at `<= 3 Hz`; suppressed legacy `audioBoost` when explicit mappings are active.
+    - Passed real elapsed `audioDt = Math.min(0.5, elapsed)` into `AudioEngine.getMetrics(audioDt)` and `evaluateAudioModulation`, scaled `AnalyserNode.smoothingTimeConstant` frame-rate-independently (`0.78^(dt*60)` — exact `0.78` at 60 fps), and disabled browser voice DSP (`echoCancellation`, `noiseSuppression`, `autoGainControl: false`) on `getUserMedia` for accurate live mic/line-in music FFT analysis.
+    - Exposed `?probe` methods `audioModulation()`, `fixtureParams(group?)`, `dmxSnapshot()`, and `audioPlaybackTime()`.
+  - **Show format v8 & cue recall (`src/schemas/show-v8.schema.json`, `src/data/showFile.ts`, `src/data/cueLook.ts`, `vite.config.ts`):**
+    - Added additive `show-v8.schema.json` (LF-normalized SHA-256 pinned in `tests/show-file.test.mjs`, emitted to `dist/schemas/` via `vite.config.ts`) supporting `audioMap` on `look`, `cues[*].state`, and `timeline.events[*].look`.
+    - Writer selects v8 only when at least one valid mapping survives pruning (stale laser `projectorKey` drops its mapping; empty `audioMap` omitted so v1–v7 shows save unchanged).
+    - `checkLook` enforces all cross-field constraints (duplicate IDs, `lo <= hi`, valid `(group, param)`, rig laser `projectorKey` existence, non-negative strobe/laser-speed amounts, slow haze bounds, prototype-safe IDs).
+    - `cueLook` deep-clones `audioMap` on recall, clears stale `audioMap` on full captured or built-in scene cues without mappings (deleting the key so `differsFromCue` stays exact), and preserves live `audioMap` on true partial cues.
+  - **UI, OSC, Gamepad & Docs (`src/components/AudioMappingSection.tsx`, `src/components/BottomConsole.tsx`, `src/App.tsx`, `src/showControl/oscCodec.ts`, `desktop/osc-packets.cjs`, `src/showControl/clockOwner.ts`, `src/showControl/useShowControl.ts`, `src/input/useShowGamepad.ts`, `src/components/ShowOverlay.tsx`, `docs/show-format.md`, `docs/show-control.md`):**
+    - Built accessible **Show cues → Audio** section with Beat sync master toggle, Track/Mic source buttons, ref-driven 32-band `FftBandPicker` (pointer drag + keyboard `Lo`/`Hi` inputs), 4 one-click presets, per-mapping controls (source, target, optional laser projector, amount, threshold, attack `0..5000 ms`, release `0..10000 ms`, curve, live meter), and a persistent `role="status" aria-live="polite"` flash-limiter badge; isolated live telemetry into ref-driven leaves so 20 Hz updates cause zero React re-renders of mapping rows.
+    - Added `/stageforge/audio/reactive` and `/stageforge/audio/mapping/<id>/amount` across TS & CJS OSC codecs (allowed in `caller` mode; manual `audio` allowed in `master`, `chase`, and `caller`), with viewer-capability gating, no-op/unknown-ID guards, rAF coalescing for rapid OSC faders, and throttled OSC amount logs.
+    - Added Xbox gamepad **L3 (250 ms hold)** toggle for Beat sync (preventing accidental clicks during live camera orbit) and documented v8 + Audio-Reactive Mappings in `docs/show-format.md` and `docs/show-control.md`.
+  - **Tests (+9 unit tests, 240 → 249; +4 E2E tests, 60 → 64):**
+    - `tests/audio-modulation.test.mjs` (8 tests): purity/no-op, envelope/threshold/band/curve math, ducking & clamping, blackout/master & `modulateLook` engine parity, 10 Hz vs 2 Hz flash limiter across variable `dt`, laser & haze safety invariants, live Art-Net UDP DMX loopback on `127.0.0.1`, plus QA regressions (zero-`dt` inertia, combined room strobe budget, 8 Hz wash/beam/LED/laser dimmer slew caps, refractory persistence across toggles/cues, per-projector compose/disable/reactivate, and slot reorder/delete/disable).
+    - `tests/show-file.test.mjs`: v8 hash pin (LF + CRLF normalization), v8 additive round-trip & drop-back, projector pruning, cue recall/`differsFromCue` (full, built-in, partial), v7 rejection, and 13 hostile v8 cases.
+    - `tests/show-control.test.mjs`: TS/CJS OSC parity for `/stageforge/audio/reactive` (empty/`T`/`F`/`i`/`f`) and `/stageforge/audio/mapping/<id>/amount`, unsafe-ID rejection, and `clockOwner` truth table for `audio`.
+    - `tests/e2e/audio-mappings.spec.mjs` (4 tests): pulsed WAV track driving wash dimmer, beam strobe (DMX strobe byte = 0), dragged FFT band 8–14 → laser rotation, in-phase + DMX wash byte parity, Beat sync static restore, cue recall, and v8 save/reopen; live fake-mic periodic FFT driving; frozen-frame Arena Rock pixel parity; and 4× CPU throttle phone-like performance check.
+- **Performance & pixel parity (final code):**
+  - Frozen-frame Arena Rock pixel parity (0 mappings vs disabled mapping): **0.0000%** mean abs pixel diff.
+  - Phone-like 4× CPU throttle (`390×844` viewport, Arena Rock + demo audio):
+    - 0 mappings: `median = 188.50 ms`, `mean = 187.36 ms`, `p95 = 201.30 ms`
+    - 16 active mappings: `median = 189.50 ms`, `mean = 189.39 ms`, `p95 = 193.60 ms`
+    - **`deltaMedian = +1.00 ms`** (after moving 20 Hz telemetry from section state to ref-driven leaves, which eliminated an earlier `+60.20 ms` React reconciliation spike).
+- **Gate results (final code):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**249/249**)
+  - `npm run build`: PASS (`dist/schemas/show-v1..v8.schema.json` emitted; `show-v8.schema.json` LF verified)
+  - `npm run desktop:win`: PASS (portable exe built; zero new dependencies; SPDX gate green)
+  - `npm run test:desktop`: PASS (**10/10**, 12.5 s)
+  - `npx playwright test --workers=1`: PASS (**64/64**, 10.0 m)
+  - `git status --short`: clean
+- **QA findings verified and fixed:**
+  - *Pass 1 H1:* Added shared global room strobe refractory (`state.lastGlobalStrobeEdgeMs`, permitting simultaneous same-frame hits as one flash while blocking staggered `< 334 ms` hits) and applied `stepSlewLimiter` to `beam.dimmer`, `wash.dimmer`, `ledWall.brightness`, `laser.intensity`, and per-projector `laser.intensity` (+regression tests).
+  - *Pass 1 M1:* Fixed `stepEnvelope` to return `clampedPrev` when `safeDt <= 0` so zero-`dt` frames never bypass haze inertia or snap envelopes (+regression tests).
+  - *Pass 1 M2:* Kept `state.clockMs`, `lastGlobalStrobeEdgeMs`, and gate `lastEdgeMs`/`limitedUntilMs` monotonic across Beat sync toggles, mapping disables, and cue switches (`disarmStrobeGate`/`disarmSlewLimiter`) (+regression tests).
+  - *Pass 1 M3:* Stopped resetting `beamPhaseOffset`, `washPhaseOffset`, `ledPhaseOffset`, `laserSpeedPhaseOffsets`, and `laserRotPhaseOffsets` when unmapped/disabled so animation phase never jumps.
+  - *Pass 1 M4:* Fixed `modulateLook` to keep pre-master channel values (no double-master scaling) and write `strobeRate = 0` / `laser.strobe = 0` when audio-mapped (+regression tests).
+  - *Pass 1 M5 & Pass 2 M1:* Replaced per-frame `Object.keys`/`new Set`/`createLaserModValues` allocations in `evaluateAudioModulation` and `StageEngine.ts` with pre-allocated scratch arrays and pooled `LaserModValues`, and zeroed `state.projFlags[k]` on the `!anyEnabled` cleanup path so re-enabling a per-projector mapping always reactivates cleanly (+regression test).
+  - *Pass 1 M6:* Added unknown-ID / no-op guards before `previewRig`/`setCueModified` in `App.tsx`, coalesced rapid OSC `audio_mapping_amount` updates to 1 rAF commit, and throttled `useShowControl` amount log entries to `<= 2/s`.
+  - *Pass 1 L1, L3, L4, L5 & Pass 2 M2, L4:* Allowed `manual` `audio` in `chase` mode in `clockOwner.ts`; changed gamepad L3 Beat sync toggle to a 250 ms hold; made `flyout` wrap IEEE-754 bit-exact for `>= 0` phase; converted `FlashLimiterNotice` to a persistent `role="status" aria-live="polite"` region, decoupled FFT drag/Lo/Hi inputs from silently rewriting existing rows, and matched slider maxes to v8 schema (`5000`/`10000 ms`); suppressed legacy `strobeFlashOn`/`strobeGate` leak on audio-mapped strobe lens color and stage spill light; documented `checkLook` cross-field rules and slew-limited dimmer behavior.
+- **QA findings rejected or noted (with reasons):**
+  - *Pass 1 L2 (`getUserMedia` disabling AEC/NS/AGC):* Intentional for Sprint 9 live mic/line-in FFT music analysis (voice DSP suppresses musical transients and pulsed test streams); explicitly called out in commit message and docs.
+  - *Pass 2 L3 (slew re-init on unmap/remap):* `disarmSlewLimiter` already preserves `limitedUntilMs`; continuing to slew-decay while unmapped would prevent Beat sync off from immediately restoring the static look.
+  - *Pass 2 L5 (`modulateLook` per-projector overrides):* `ShowState.laser.projectors` schema only stores appearance fields (`beamCount`, `patternSegments`, colors), so per-projector modulation outputs live on `frame.laser.projectors` as designed.
+- **Design decisions:**
+  - Provided both zero-allocation `evaluateAudioModulation` (used in `StageEngine.updateScene`) and pure `modulateLook` (matching the Sprint 9 API brief) so the 60 fps hot path stays allocation-free while keeping a clean functional entry point.
+  - Used real elapsed `audioDt` (`<= 0.5 s`) and frame-rate-independent `AnalyserNode.smoothingTimeConstant` (`0.78^(dt*60)`) so envelopes, FFT decay, and the `334 ms` flash refractory timer track real wall-clock music time even at low fps (e.g. 5–15 fps mobile/SwiftShader) while remaining bit-exact at 60 fps.
+  - Kept zero new npm dependencies and zero new desktop IPC channels.
+- **Leftovers / next up:**
+  - Next up per `HANDOFF.md` queue: **Sprint 10**, then **Sprint 12**, then **Sprint 11**, then Realism items 6–8 (`console feel`, `fixture behaviour polish`, `haze/smoke/laser GPU realism`).
