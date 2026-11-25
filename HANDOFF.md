@@ -235,7 +235,7 @@ Add `-Full` for a whole-repository review. It runs Codex `gpt-5.6-terra` read-on
 4. Stop when the verdict is `VERDICT: NO BLOCKERS`. Only then reply `DONE` and move on to the next sprint.
 5. If a finding keeps coming back, or you believe it is wrong, reject it with a written reason in the Overnight log (Codex reads that log and should stop repeating it), and never spend more than 3 cycles on the same finding. Do not reply `DONE` with a verified Critical or High finding open, because a `DONE` reply is pushed to the live site. If the round runs out of time with blockers open, say so in the Overnight log: the next round must keep fixing them before it starts anything new.
 
-Record one line per cycle in the Overnight log: `Codex QA <file name>: cycle N, fixed <ids>, rejected <ids> (reason), verdict <...>`. Never edit, move or delete files in the inbox.
+Record one line per cycle in the Overnight log: `Codex QA <file name>: cycle N, fixed <ids>, rejected <ids> (reason), verdict <...>`. **A background watcher also runs Terra on its own.** `terra-watch.ps1` reviews the whole repository once at the start (label `Early full review`), then reviews every new batch of commits (label `Watch <hash>`), and drops each result in the same inbox as a `qa-*.md` file. **Before each fix batch, and again before you run `codex-qa.ps1`, list the inbox and read every `qa-*.md` or `review-*.md` file that the Overnight log has not yet recorded as handled.** Treat each one like any other review (verify, fix, or reject with a written reason) and add one Overnight-log line per file. Never edit, move or delete files in the inbox.
 
 ### Sprint 5: instance the moving-head beam cones (designed by Claude Code, 2026-11-24)
 
