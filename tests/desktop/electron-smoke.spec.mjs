@@ -223,7 +223,7 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
     };
   }, CSP_PROBE);
   expect(world).toEqual({
-    bridge: ['onRigCommand', 'sendDmxFrame', 'dmxControl', 'onDmxStatus', 'showControl', 'onShowControlEvent', 'onShowControlStatus'],
+    bridge: ['onRigCommand', 'sendDmxFrame', 'dmxControl', 'onDmxStatus', 'showControl', 'onShowControlEvent', 'onShowControlStatus', 'setViewerMode'],
     node: 'undefined/undefined',
     secure: true,
     inlineScript: 'script-src-elem',
@@ -705,5 +705,119 @@ test('Gear & production Inventory loads under stageforge:// CSP, prints via wind
 
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  expectNoProblems();
+});
+
+test('File → Open in viewer… enters pitch viewer via openViewer IPC, disables mutating File menus, blocks DMX/show-control, and restores desk on Exit', async () => {
+  const getMenuStates = () => app.evaluate(({ Menu }) => {
+    const menu = Menu.getApplicationMenu();
+    const ids = [
+      'file-open',
+      'file-open-viewer',
+      'file-save-show',
+      'file-save-bundle',
+      'file-export-rig',
+      'file-export-submenu',
+      'file-export-mvr',
+      'file-export-dxf',
+      'file-export-glb',
+      'file-export-csv',
+    ];
+    return Object.fromEntries(ids.map((id) => [id, menu.getMenuItemById(id)?.enabled ?? null]));
+  });
+
+  // Before opening viewer, all File menu items are enabled.
+  const beforeMenus = await getMenuStates();
+  expect(Object.values(beforeMenus).every((v) => v === true)).toBe(true);
+
+  const storageBefore = await page.evaluate(() => window.localStorage.getItem('stageforge.design.v1'));
+
+  // Trigger File → Open in viewer… with the verified bundle.
+  const bundlePath = path.join(tmp, 'viewer-bundle.stageforge.zip');
+  const zip = await writeBundle(bundlePath);
+  await watchRendererCommands();
+  await app.evaluate((_electron, file) => { globalThis.__stageforgeTest.nextOpen = file; }, bundlePath);
+  await clickFileMenu('Open in viewer');
+
+  await expect.poll(received).toEqual([{
+    command: 'openViewer', type: '[object Uint8Array]', mainWorldUint8Array: true, length: zip.length, sha256: sha256(zip),
+  }]);
+  await expect(page.getByText('VIEW ONLY', { exact: true })).toBeVisible();
+  await expect(page.locator('header h1')).toHaveText(SHOW_NAME);
+  await expect(page.getByRole('button', { name: 'Rig builder' })).toHaveCount(0);
+
+  // Mutating File menu items must be disabled in main, while Open in viewer… stays enabled.
+  await expect.poll(getMenuStates).toEqual({
+    'file-open': false,
+    'file-open-viewer': true,
+    'file-save-show': false,
+    'file-save-bundle': false,
+    'file-export-rig': false,
+    'file-export-submenu': false,
+    'file-export-mvr': false,
+    'file-export-dxf': false,
+    'file-export-glb': false,
+    'file-export-csv': false,
+  });
+
+  // Main-process DMX & show-control IPC must reject activation while the window is in viewer mode.
+  const ipcErrors = await page.evaluate(async () => {
+    let dmxErr = null;
+    let scErr = null;
+    try {
+      await window.stageforgeDesktop.dmxControl({
+        type: 'enable',
+        config: { protocol: 'sacn', iface: '127.0.0.1', rateHz: 30, sacn: { mode: 'unicast', universes: [1, 2], priority: 100, ttl: 1, targets: ['127.0.0.1'] } },
+      });
+    } catch (e) {
+      dmxErr = String(e?.message ?? e);
+    }
+    try {
+      await window.stageforgeDesktop.showControl({
+        type: 'configure',
+        config: { oscRxEnabled: true, oscPort: 8000, oscAllowAllInterfaces: false, oscTxEnabled: false, oscTxHost: '127.0.0.1', oscTxPort: 9000, artnetTcRxEnabled: false, artnetTcTxEnabled: false, artnetTcTxHost: '127.0.0.1' },
+      });
+    } catch (e) {
+      scErr = String(e?.message ?? e);
+    }
+    return { dmxErr, scErr };
+  });
+  expect(ipcErrors.dmxErr).toMatch(/pitch viewer/i);
+  expect(ipcErrors.scErr).toMatch(/pitch viewer/i);
+
+  // Also test opening a JSON show while already in viewer mode.
+  await watchRendererCommands();
+  await app.evaluate((_electron, file) => { globalThis.__stageforgeTest.nextOpen = file; }, examplePath);
+  await clickFileMenu('Open in viewer');
+  await expect.poll(received).toContainEqual(expect.objectContaining({
+    command: 'openViewer', type: '[object String]', mainWorldUint8Array: false,
+  }));
+  await expect(page.locator('header h1')).toHaveText('Amber Walk-on');
+
+  // Defense-in-depth: will-download cancels even a normally-whitelisted suffix while in viewer mode.
+  await app.evaluate(({ session }) => {
+    const record = globalThis.__stageforgeTest.viewerDownload = { state: 'waiting' };
+    const listener = (_event, item) => {
+      session.defaultSession.off('will-download', listener);
+      if (item.getState() === 'cancelled') record.state = 'cancelled';
+      else item.once('done', (_e, state) => { record.state = state; });
+    };
+    session.defaultSession.on('will-download', listener);
+  });
+  await page.evaluate(() => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['{}'], { type: 'application/json' }));
+    a.download = 'blocked.stageforge.json';
+    document.body.append(a);
+    a.click();
+    a.remove();
+  });
+  await expect.poll(() => app.evaluate(() => globalThis.__stageforgeTest.viewerDownload.state), { timeout: 15_000 }).toBe('cancelled');
+
+  // Exit viewer -> restores desk and re-enables all File menu items, leaving storage untouched.
+  await page.getByRole('button', { name: 'Exit viewer' }).click();
+  await expect(page.getByRole('button', { name: 'Show files', exact: true })).toBeVisible();
+  await expect.poll(getMenuStates).toEqual(beforeMenus);
+  expect(await page.evaluate(() => window.localStorage.getItem('stageforge.design.v1'))).toBe(storageBefore);
   expectNoProblems();
 });

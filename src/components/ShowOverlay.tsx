@@ -8,9 +8,10 @@ interface Props {
   audioStore: LiveStore<AudioMetrics>;
   controller: 'connected' | 'waiting' | 'unsupported';
   cinema: boolean;
+  showControllerGuide?: boolean;
 }
 
-export function ShowOverlay({ audioStore, controller, cinema }: Props) {
+export function ShowOverlay({ audioStore, controller, cinema, showControllerGuide = true }: Props) {
   const demo = useLive(audioStore).demo;
   const menu = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
@@ -36,7 +37,7 @@ export function ShowOverlay({ audioStore, controller, cinema }: Props) {
         <span>Bar {demo.bar + 1} / {DEMO_TOTAL_BARS}</span></div>
       <progress aria-label="Demo performance" value={demo.step} max={DEMO_TOTAL_STEPS} />
     </div>}
-    {!cinema && <details ref={menu} className="controller-guide">
+    {!cinema && showControllerGuide && <details ref={menu} className="controller-guide">
       <summary aria-label="Xbox controller guide" title="Xbox controller guide" data-connected={controller === 'connected'}>
         <Gamepad2 size={16} /> <span>Controller</span>
       </summary>

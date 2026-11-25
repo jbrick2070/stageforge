@@ -7,6 +7,7 @@ const { createDmxController } = require('./dmx-sender.cjs');
 const { createDmxIpcHandlers } = require('./dmx-ipc.cjs');
 const { createShowControlService } = require('./show-control-service.cjs');
 const { createShowControlIpcHandlers } = require('./show-control-ipc.cjs');
+const { createViewerModeTracker, createViewerIpcHandler } = require('./viewer-ipc.cjs');
 
 const startUrl = 'stageforge://app/';
 const rendererRoot = path.join(__dirname, 'renderer');
@@ -17,6 +18,7 @@ const rigFilters = [{ name: 'StageForge rig', extensions: ['json'] }];
 const showFilters = [{ name: 'StageForge show JSON', extensions: ['json'] }];
 const bundleFilters = [{ name: 'StageForge show bundle', extensions: ['zip'] }];
 const openFilters = [{ name: 'StageForge shows, bundles, rigs and MVR scenes', extensions: ['json', 'zip', 'mvr'] }];
+const viewerOpenFilters = [{ name: 'StageForge shows and bundles', extensions: ['json', 'zip'] }];
 const exportsBySuffix = [
   ['.stageforge.zip', 'Save show bundle', bundleFilters],
   ['.mvr', 'Export MVR scene', [{ name: 'MVR scene (DIN SPEC 15801)', extensions: ['mvr'] }]],
@@ -65,8 +67,21 @@ let dmx = null;
 let artnetRx = null;
 let showControl = null;
 let quittingAfterShutdown = false;
+const viewerTracker = createViewerModeTracker();
 // Serial device grants live only in memory for this session (never persisted across launches).
 const grantedSerialDevices = new Set();
+
+function syncMenuForWindow(win) {
+  const menu = Menu.getApplicationMenu();
+  if (!menu) return;
+  const target = win && !win.isDestroyed()
+    ? win
+    : (BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null);
+  const restricted = Boolean(
+    target && !target.isDestroyed() && viewerTracker.isViewerWindow(target.webContents.id)
+  );
+  viewerTracker.applyMenuRestrictions(menu, restricted);
+}
 
 function restoreBackgroundThrottling(wcId) {
   if (typeof wcId !== 'number') return;
@@ -92,19 +107,27 @@ function createWindow() {
   });
   wc.on('did-start-navigation', (details) => {
     if (details && details.isMainFrame && !details.isSameDocument) {
+      viewerTracker.clearWindow(wcId);
+      syncMenuForWindow();
       if (dmx && dmx.ownerId === wcId) void dmx.shutdown('navigation');
       if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
     }
   });
   wc.on('render-process-gone', () => {
+    viewerTracker.clearWindow(wcId);
+    syncMenuForWindow();
     if (dmx && dmx.ownerId === wcId) void dmx.shutdown('renderer-crash');
     if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
   });
   wc.on('destroyed', () => {
+    viewerTracker.clearWindow(wcId);
+    syncMenuForWindow();
     if (dmx && dmx.ownerId === wcId) void dmx.shutdown('window-destroyed');
     if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
   });
   win.on('closed', () => {
+    viewerTracker.clearWindow(wcId);
+    syncMenuForWindow();
     if (dmx && dmx.ownerId === wcId) void dmx.shutdown('window-closed');
     if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
   });
@@ -154,16 +177,31 @@ async function readBoundedFile(filename, binary) {
 
 async function runRigCommand(command) {
   const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || createWindow();
+  if (win.isDestroyed()) return;
+  const wcId = win.webContents.id;
+  // Never dispatch mutating/export commands to a window currently in read-only pitch viewer mode.
+  if (command !== 'openViewer' && viewerTracker.isViewerWindow(wcId)) return;
   let source;
-  if (command === 'open') {
+  if (command === 'open' || command === 'openViewer') {
+    const isViewer = command === 'openViewer';
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: 'Open show or rig', filters: openFilters, properties: ['openFile'],
+      title: isViewer ? 'Open show in pitch viewer' : 'Open show or rig',
+      filters: isViewer ? viewerOpenFilters : openFilters,
+      properties: ['openFile'],
     });
     if (canceled || !filePaths.length) return;
     try {
       const filename = filePaths[0];
       const lower = filename.toLowerCase();
-      if (lower.endsWith('.zip') || lower.endsWith('.mvr')) {
+      if (isViewer) {
+        if (lower.endsWith('.zip')) {
+          source = await readBoundedFile(filename, true);
+        } else if (lower.endsWith('.json')) {
+          source = await readBoundedFile(filename, false);
+        } else {
+          throw new Error('Pitch viewer opens StageForge shows (.stageforge.show.json) and bundles (.stageforge.zip).');
+        }
+      } else if (lower.endsWith('.zip') || lower.endsWith('.mvr')) {
         source = await readBoundedFile(filename, true);
         command = lower.endsWith('.mvr') ? 'openMvr' : 'openBundle';
       } else {
@@ -177,20 +215,34 @@ async function runRigCommand(command) {
   if (win.isDestroyed()) return;
   const contents = win.webContents;
   const send = () => {
-    if (!contents.isDestroyed() && isAppPage(contents.getURL())) {
-      contents.send('stageforge:rig-command', command, source);
-    }
+    if (contents.isDestroyed() || !isAppPage(contents.getURL())) return;
+    if (command !== 'openViewer' && viewerTracker.isViewerWindow(contents.id)) return;
+    contents.send('stageforge:rig-command', command, source);
   };
   if (contents.isLoadingMainFrame()) contents.once('did-finish-load', send);
   else send();
 }
 
 function registerDmxIpc() {
-  const { onFrame, onControl } = createDmxIpcHandlers(() => dmx);
+  const isRestricted = (wcId) => viewerTracker.isViewerWindow(wcId);
+  const { onFrame, onControl } = createDmxIpcHandlers(() => dmx, { isRestricted });
   ipcMain.on('stageforge:dmx-frame', onFrame);
   ipcMain.handle('stageforge:dmx-control', onControl);
-  const { onControl: onShowControl } = createShowControlIpcHandlers(() => showControl);
+  const { onControl: onShowControl } = createShowControlIpcHandlers(() => showControl, { isRestricted });
   ipcMain.handle('stageforge:show-control', onShowControl);
+  const onSetViewerMode = createViewerIpcHandler({
+    tracker: viewerTracker,
+    onEnterViewer: async (wcId) => {
+      const shutdowns = [];
+      if (dmx && dmx.ownerId === wcId) shutdowns.push(dmx.shutdown('viewer-mode'));
+      if (showControl && showControl.ownerId === wcId) shutdowns.push(showControl.shutdown());
+      if (shutdowns.length) await Promise.all(shutdowns);
+    },
+    onStateChanged: () => {
+      syncMenuForWindow();
+    },
+  });
+  ipcMain.handle('stageforge:viewer-mode', onSetViewerMode);
 }
 
 const hasLock = app.requestSingleInstanceLock();
@@ -274,7 +326,7 @@ if (!hasLock) {
     const ses = session.defaultSession;
     ses.on('will-download', (_event, item, contents) => {
       const choice = exportsBySuffix.find(([suffix]) => item.getFilename().endsWith(suffix));
-      if (!contents || !isAppPage(contents.getURL()) || !choice) {
+      if (!contents || !isAppPage(contents.getURL()) || viewerTracker.isViewerWindow(contents.id) || !choice) {
         item.cancel();
         return;
       }
@@ -292,6 +344,7 @@ if (!hasLock) {
     ses.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
       if (!isAppPage(requestingOrigin) || (contents && !isAppPage(contents.getURL()))) return false;
       if (details && details.isMainFrame === false) return false;
+      if (contents && viewerTracker.isViewerWindow(contents.id)) return false;
       if (permission === 'media') {
         return !details?.mediaType || details.mediaType === 'audio';
       }
@@ -301,6 +354,8 @@ if (!hasLock) {
       return false;
     });
 
+    // Note: Electron's setDevicePermissionHandler receives no WebContents, so serial denial in
+    // viewer mode is enforced by setPermissionCheckHandler, select-serial-port, and renderer liveOutput: false.
     ses.setDevicePermissionHandler((details) => {
       if (details.deviceType !== 'serial' || !isAppPage(details.origin)) return false;
       const key = serialDeviceKey(details.device);
@@ -309,7 +364,7 @@ if (!hasLock) {
 
     ses.on('select-serial-port', (event, portList, contents, callback) => {
       event.preventDefault();
-      if (!contents || contents.isDestroyed() || !isAppPage(contents.getURL())) {
+      if (!contents || contents.isDestroyed() || !isAppPage(contents.getURL()) || viewerTracker.isViewerWindow(contents.id)) {
         callback('');
         return;
       }
@@ -351,6 +406,7 @@ if (!hasLock) {
       if (!isAppPage(contents.getURL())) return callback(false);
       if (details && details.isMainFrame === false) return callback(false);
       if (details?.requestingUrl && !isAppPage(details.requestingUrl)) return callback(false);
+      if (viewerTracker.isViewerWindow(contents.id)) return callback(false);
       if (permission === 'midi' || permission === 'midiSysex') {
         return callback(true);
       }
@@ -365,15 +421,17 @@ if (!hasLock) {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       ...(isMac ? [{ role: 'appMenu' }] : []),
       { label: 'File', submenu: [
-        { label: 'Open show or rig…', accelerator: 'CmdOrCtrl+O', click: () => run('open') },
-        { label: 'Save show as…', accelerator: 'CmdOrCtrl+S', click: () => run('show') },
-        { label: 'Save show bundle…', click: () => run('bundle') },
-        { label: 'Export rig…', accelerator: 'CmdOrCtrl+Shift+S', click: () => run('export') },
-        { label: 'Export', submenu: [
-          { label: 'MVR scene for consoles and visualizers…', click: () => run('mvr') },
-          { label: 'CAD plan (DXF)…', click: () => run('dxf') },
-          { label: '3D scene (GLB)…', click: () => run('glb') },
-          { label: 'DMX channel patch (CSV)…', click: () => run('csv') },
+        { id: 'file-open', label: 'Open show or rig…', accelerator: 'CmdOrCtrl+O', click: () => run('open') },
+        { id: 'file-open-viewer', label: 'Open in viewer…', accelerator: 'CmdOrCtrl+Shift+O', click: () => run('openViewer') },
+        { type: 'separator' },
+        { id: 'file-save-show', label: 'Save show as…', accelerator: 'CmdOrCtrl+S', click: () => run('show') },
+        { id: 'file-save-bundle', label: 'Save show bundle…', click: () => run('bundle') },
+        { id: 'file-export-rig', label: 'Export rig…', accelerator: 'CmdOrCtrl+Shift+S', click: () => run('export') },
+        { id: 'file-export-submenu', label: 'Export', submenu: [
+          { id: 'file-export-mvr', label: 'MVR scene for consoles and visualizers…', click: () => run('mvr') },
+          { id: 'file-export-dxf', label: 'CAD plan (DXF)…', click: () => run('dxf') },
+          { id: 'file-export-glb', label: '3D scene (GLB)…', click: () => run('glb') },
+          { id: 'file-export-csv', label: 'DMX channel patch (CSV)…', click: () => run('csv') },
         ] },
         { type: 'separator' }, { role: isMac ? 'close' : 'quit' },
       ] },
@@ -382,6 +440,7 @@ if (!hasLock) {
         { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
       { role: 'windowMenu' },
     ]));
+    app.on('browser-window-focus', (_event, win) => syncMenuForWindow(win));
     createWindow();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

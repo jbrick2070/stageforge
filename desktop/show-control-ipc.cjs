@@ -6,7 +6,9 @@
 const { isAppPage } = require('./protocol.cjs');
 const { isAuthorizedDmxSender } = require('./dmx-ipc.cjs');
 
-function createShowControlIpcHandlers(getService) {
+function createShowControlIpcHandlers(getService, options = {}) {
+  const isRestricted = typeof options.isRestricted === 'function' ? options.isRestricted : () => false;
+
   async function onControl(event, command) {
     const svc = getService();
     if (!svc || !isAuthorizedDmxSender(event)) {
@@ -15,12 +17,13 @@ function createShowControlIpcHandlers(getService) {
     if (!command || typeof command !== 'object' || Array.isArray(command)) {
       throw new Error('Invalid show control command.');
     }
+    const restricted = isRestricted(event.sender.id);
     const keys = Object.keys(command);
     switch (command.type) {
       case 'getStatus': {
         if (keys.length !== 1) throw new Error('Unexpected fields in getStatus command.');
         const status = svc.getStatus();
-        if (svc.ownerId !== null && svc.ownerId !== event.sender.id) {
+        if (restricted || (svc.ownerId !== null && svc.ownerId !== event.sender.id)) {
           return {
             active: false,
             oscRxListening: false,
@@ -50,6 +53,7 @@ function createShowControlIpcHandlers(getService) {
         return svc.shutdown();
       }
       case 'configure': {
+        if (restricted) throw new Error('Show control is disabled in pitch viewer mode.');
         if (keys.length !== 2 || !command.config || typeof command.config !== 'object') {
           throw new Error('Invalid show control configure command.');
         }
@@ -61,9 +65,14 @@ function createShowControlIpcHandlers(getService) {
           await svc.shutdown();
           throw new Error('Renderer closed or navigated before show control started.');
         }
+        if (isRestricted(event.sender.id)) {
+          await svc.shutdown();
+          throw new Error('Show control is disabled in pitch viewer mode.');
+        }
         return status;
       }
       case 'send': {
+        if (restricted) return false;
         if (keys.length !== 2 || !command.payload || typeof command.payload !== 'object') {
           throw new Error('Invalid show control send command.');
         }

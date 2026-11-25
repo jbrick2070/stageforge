@@ -255,6 +255,36 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
 .camera-select svg { pointer-events: none; }
 .camera-select svg:last-child { position: absolute; right: 7px; width: 11px; }
 .cinema-tools { position: fixed; right: 10px; top: 10px; z-index: 40; }
+.viewer-badge {
+  flex: none;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: #1b3430;
+  border: 1px solid #4fa995;
+  color: #a9f4e1;
+  font: 700 10px/1 'JetBrains Mono', monospace;
+  letter-spacing: .08em;
+}
+.viewer-go-btn {
+  background: #233933;
+  border-color: #568e80;
+  color: #b6ffed;
+}
+.viewer-exit-btn {
+  border-color: #5b4c4c;
+  color: #f3d5d5;
+}
+.viewer-exit-btn:hover {
+  background: #3d2427;
+  border-color: #9e5c64;
+  color: #fff;
+}
+.pitch-viewer-bar .transport-brand { min-width: 0; }
+.pitch-viewer-bar .transport-brand h1 { font-size: 16px; }
+@media (max-width: 640px) {
+  .pitch-viewer-bar .transport-tools .transport-btn span { display: none; }
+  .pitch-viewer-bar .viewer-exit-btn span { display: inline; }
+}
 .audio-popover {
   position: absolute; z-index: 2; top: calc(100% - 3px); width: 260px; padding: 14px;
   display: grid; gap: 12px; font-size: 12px; background: #1b1e22; border: 1px solid var(--line);

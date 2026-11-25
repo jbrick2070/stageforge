@@ -26,8 +26,13 @@ function deliver(listener, args) {
 ipcRenderer.on('stageforge:rig-command', (_event, command, rawSource) => {
   // Hand the renderer a Uint8Array: contextBridge copies typed arrays reliably.
   const binary = command === 'openBundle' || command === 'openMvr';
-  const source = binary && isBuffer(rawSource) ? new Uint8Array(rawSource) : rawSource;
-  const opening = (command === 'open' && typeof source === 'string') || (binary && isBytes(source));
+  const source = (binary || command === 'openViewer') && isBuffer(rawSource)
+    ? new Uint8Array(rawSource)
+    : rawSource;
+  const opening =
+    (command === 'open' && typeof source === 'string') ||
+    (binary && isBytes(source)) ||
+    (command === 'openViewer' && (typeof source === 'string' || isBytes(source)));
   if (!opening && !['export', 'show', 'bundle', 'dxf', 'glb', 'csv', 'mvr'].includes(command)) return;
   const args = opening ? [command, source] : [command];
   if (!listeners.size) pending = args;
@@ -96,5 +101,11 @@ contextBridge.exposeInMainWorld('stageforgeDesktop', {
     showControlStatusListeners.add(listener);
     if (latestShowControlStatus) deliver(listener, [latestShowControlStatus]);
     return () => showControlStatusListeners.delete(listener);
+  },
+  setViewerMode(active) {
+    if (typeof active !== 'boolean') {
+      return Promise.reject(new TypeError('Expected a boolean viewer mode flag'));
+    }
+    return ipcRenderer.invoke('stageforge:viewer-mode', active);
   },
 });

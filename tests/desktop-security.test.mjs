@@ -121,6 +121,7 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
     'showControl',
     'onShowControlEvent',
     'onShowControlStatus',
+    'setViewerMode',
   ]);
   const fire = ipcHandlers.get('stageforge:rig-command');
   const fireStatus = ipcHandlers.get('stageforge:dmx-status');
@@ -141,17 +142,27 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
   fire({}, 'open', new Uint8Array([1, 2]));
   fire({}, 'openBundle', 'not-bytes');
   fire({}, 'openMvr', 'not-bytes');
+  fire({}, 'openViewer', 12345);
+  fire({}, 'openViewer', null);
+  fire({}, 'openViewer');
   assert.equal(firstReceived.length, 1);
 
-  // Valid ArrayBuffer payload for openMvr is converted to Uint8Array; non-open commands strip extra payload.
+  // Valid ArrayBuffer payload for openMvr is converted to Uint8Array; openViewer accepts string, Uint8Array, or ArrayBuffer;
+  // non-open commands strip extra payload.
   const buf = new Uint8Array([9, 8, 7]).buffer;
   fire({}, 'openMvr', buf);
   fire({}, 'mvr', 'ignored-payload');
-  assert.equal(firstReceived.length, 3);
+  fire({}, 'openViewer', '{"format":"stageforge-show"}');
+  fire({}, 'openViewer', new Uint8Array([5, 6]).buffer);
+  assert.equal(firstReceived.length, 5);
   assert.equal(firstReceived[1][0], 'openMvr');
   assert.ok(firstReceived[1][1] instanceof Uint8Array);
   assert.deepEqual([...firstReceived[1][1]], [9, 8, 7]);
   assert.deepEqual(firstReceived[2], ['mvr']);
+  assert.deepEqual(firstReceived[3], ['openViewer', '{"format":"stageforge-show"}']);
+  assert.equal(firstReceived[4][0], 'openViewer');
+  assert.ok(firstReceived[4][1] instanceof Uint8Array);
+  assert.deepEqual([...firstReceived[4][1]], [5, 6]);
 
   // Throwing listener must not block other listeners.
   unsub1();
@@ -223,6 +234,15 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
   assert.equal(seenScStatus.length, 1);
   unsubScSt();
   assert.throws(() => exposedApi.onShowControlStatus('nope'), TypeError);
+
+  // Viewer mode IPC whitelist: strictly boolean.
+  await assert.rejects(() => exposedApi.setViewerMode('true'), TypeError);
+  await assert.rejects(() => exposedApi.setViewerMode(1), TypeError);
+  await assert.rejects(() => exposedApi.setViewerMode(null), TypeError);
+  await exposedApi.setViewerMode(true);
+  assert.deepEqual(invokedMessages.at(-1), ['stageforge:viewer-mode', true]);
+  await exposedApi.setViewerMode(false);
+  assert.deepEqual(invokedMessages.at(-1), ['stageforge:viewer-mode', false]);
 });
 
 test('serial port helpers prioritize FTDI devices, cap at 8, and desktop/prepare.mjs copies every local main.cjs require', async () => {
@@ -271,6 +291,7 @@ test('serial port helpers prioritize FTDI devices, cap at 8, and desktop/prepare
   assert.ok(localRequires.includes('artnet-rx.cjs'));
   assert.ok(localRequires.includes('show-control-service.cjs'));
   assert.ok(localRequires.includes('show-control-ipc.cjs'));
+  assert.ok(localRequires.includes('viewer-ipc.cjs'));
   for (const mod of localRequires) {
     assert.ok(
       prepareSource.includes(`'${mod}'`),
@@ -360,6 +381,123 @@ test('main-process DMX IPC handlers enforce sender, mainFrame, window ownership 
   await assert.rejects(() => onControl(dyingWin, { type: 'enable', config: { protocol: 'sacn' } }), /closed or navigated/);
   assert.equal(shutdownReason, 'owner-gone');
   assert.equal(running, false);
+});
+
+test('viewer-ipc enforces sender/type checks, disables mutating File menus, and blocks DMX & show-control activation while allowing disable/stop', async () => {
+  const { MUTATING_FILE_MENU_IDS, createViewerModeTracker, createViewerIpcHandler } = require('../desktop/viewer-ipc.cjs');
+  const { createDmxIpcHandlers } = require('../desktop/dmx-ipc.cjs');
+  const { createShowControlIpcHandlers } = require('../desktop/show-control-ipc.cjs');
+
+  const tracker = createViewerModeTracker();
+  const menuItems = new Map(MUTATING_FILE_MENU_IDS.map((id) => [id, { id, enabled: true }]));
+  const openViewerItem = { id: 'file-open-viewer', enabled: true };
+  menuItems.set('file-open-viewer', openViewerItem);
+  const fakeMenu = { getMenuItemById: (id) => menuItems.get(id) ?? null };
+
+  let enterCalls = [];
+  let stateChanges = [];
+  const onSetViewerMode = createViewerIpcHandler({
+    tracker,
+    onEnterViewer: async (wcId) => { enterCalls.push(wcId); },
+    onStateChanged: (wcId, active) => {
+      stateChanges.push([wcId, active]);
+      tracker.applyMenuRestrictions(fakeMenu, active);
+    },
+  });
+
+  function makeEvent({ id = 7, url = 'stageforge://app/', isSubframe = false } = {}) {
+    const mainFrame = { url };
+    return {
+      senderFrame: isSubframe ? { url } : mainFrame,
+      sender: { id, mainFrame, getURL: () => url, isDestroyed: () => false, setBackgroundThrottling: () => {} },
+    };
+  }
+
+  // Reject hostile sender, subframe, and non-boolean flag.
+  await assert.rejects(() => onSetViewerMode(makeEvent({ url: 'https://evil.example/' }), true), /Unauthorized/);
+  await assert.rejects(() => onSetViewerMode(makeEvent({ isSubframe: true }), true), /Unauthorized/);
+  await assert.rejects(() => onSetViewerMode(makeEvent(), 'yes'), /boolean/);
+
+  // Enter viewer mode -> tracker marks window, calls onEnterViewer, disables mutating File menus, keeps Open in viewer enabled.
+  const win = makeEvent({ id: 7 });
+  assert.deepEqual(await onSetViewerMode(win, true), { viewer: true });
+  assert.equal(tracker.isViewerWindow(7), true);
+  assert.deepEqual(enterCalls, [7]);
+  for (const id of MUTATING_FILE_MENU_IDS) {
+    assert.equal(menuItems.get(id).enabled, false, `menu ${id} must be disabled in viewer mode`);
+  }
+  assert.equal(openViewerItem.enabled, true, 'file-open-viewer must remain enabled in viewer mode');
+
+  // DMX & show-control handlers reject activation/frames while restricted, but allow disable/stop/getStatus.
+  const dmxShutdowns = [];
+  const scShutdowns = [];
+  const fakeDmx = {
+    ownerId: 7,
+    active: false,
+    isRunning: () => true,
+    listInterfaces: () => [],
+    getStatus: () => ({ enabled: true, state: 'running' }),
+    update: () => true,
+    enable: async () => ({ enabled: true }),
+    shutdown: async (reason) => { dmxShutdowns.push(reason); return { enabled: false, state: 'idle' }; },
+    discover: async () => ({ nodes: [], warning: null }),
+  };
+  const fakeSc = {
+    ownerId: 7,
+    active: false,
+    getStatus: () => ({ active: true, oscRxListening: true }),
+    configure: async () => ({ active: true }),
+    send: () => true,
+    shutdown: async () => { scShutdowns.push('stop'); return { active: false }; },
+  };
+  const isRestricted = (wcId) => tracker.isViewerWindow(wcId);
+  const dmxHandlers = createDmxIpcHandlers(() => fakeDmx, { isRestricted });
+  const scHandlers = createShowControlIpcHandlers(() => fakeSc, { isRestricted });
+
+  assert.equal(dmxHandlers.onFrame(win, 1, new Uint8Array(512)), false);
+  await assert.rejects(() => dmxHandlers.onControl(win, { type: 'enable', config: { protocol: 'sacn' } }), /pitch viewer/);
+  await assert.rejects(() => dmxHandlers.onControl(win, { type: 'discover', iface: '127.0.0.1' }), /pitch viewer/);
+  assert.equal((await dmxHandlers.onControl(win, { type: 'getStatus' })).enabled, false);
+  await dmxHandlers.onControl(win, { type: 'disable' });
+  assert.deepEqual(dmxShutdowns, ['disable']);
+
+  await assert.rejects(() => scHandlers.onControl(win, { type: 'configure', config: {} }), /pitch viewer/);
+  assert.equal(await scHandlers.onControl(win, { type: 'send', payload: { kind: 'feedback' } }), false);
+  assert.equal((await scHandlers.onControl(win, { type: 'getStatus' })).active, false);
+  await scHandlers.onControl(win, { type: 'stop' });
+  assert.deepEqual(scShutdowns, ['stop']);
+
+  // Exit viewer mode -> re-enables all File menu items.
+  assert.deepEqual(await onSetViewerMode(win, false), { viewer: false });
+  assert.equal(tracker.isViewerWindow(7), false);
+  for (const id of MUTATING_FILE_MENU_IDS) {
+    assert.equal(menuItems.get(id).enabled, true, `menu ${id} must re-enable on exit`);
+  }
+
+  // QA regression (post-bind race): entering viewer mode while async enable/configure is in-flight
+  // must immediately shut down the bound service and reject.
+  dmxShutdowns.length = 0;
+  scShutdowns.length = 0;
+  fakeDmx.enable = async () => {
+    tracker.setViewerWindow(7, true);
+    return { enabled: true };
+  };
+  await assert.rejects(
+    () => dmxHandlers.onControl(win, { type: 'enable', config: { protocol: 'sacn' } }),
+    /pitch viewer/,
+  );
+  assert.deepEqual(dmxShutdowns, ['viewer-mode']);
+
+  tracker.setViewerWindow(7, false);
+  fakeSc.configure = async () => {
+    tracker.setViewerWindow(7, true);
+    return { active: true };
+  };
+  await assert.rejects(
+    () => scHandlers.onControl(win, { type: 'configure', config: {} }),
+    /pitch viewer/,
+  );
+  assert.deepEqual(scShutdowns, ['stop']);
 });
 
 test('prepare.mjs validates SPDX licences, resolves nested node_modules and skips licence directories', async () => {

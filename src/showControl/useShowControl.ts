@@ -187,9 +187,11 @@ export interface ShowControlApi {
   syncFromShowTimeline: (meta?: { frameRate?: SmpteFrameRate; timecodeOffsetMs?: number }) => void;
 }
 
-export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi {
+export function useShowControl(callbacks: ShowControlCallbacks, enabled = true): ShowControlApi {
   const hasDesktopBridge = typeof window !== 'undefined' && typeof window.stageforgeDesktop?.showControl === 'function';
   const hasWebMidi = MidiShowControlClient.isSupported();
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   const cbRef = useRef(callbacks);
   cbRef.current = callbacks;
@@ -268,6 +270,7 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
   }, []);
 
   const handleIncomingEvent = useCallback((event: NormalizedTriggerEvent | TimecodeEvent) => {
+    if (!enabledRef.current) return;
     const mode = clockModeRef.current;
 
     if (event.kind === 'timecode') {
@@ -396,9 +399,10 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
 
   // Subscribe to Electron main-process show control events & status.
   useEffect(() => {
-    if (!hasDesktopBridge) return;
+    if (!hasDesktopBridge || !enabled) return;
     const bridge = window.stageforgeDesktop!;
     const unsubEvents = bridge.onShowControlEvent((ev) => {
+      if (!enabledRef.current) return;
       if (ev.kind === 'timecode') {
         handleIncomingEvent({
           source: ev.source,
@@ -426,10 +430,37 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
       unsubStatus();
       void bridge.showControl({ type: 'stop' }).catch(() => {});
     };
-  }, [hasDesktopBridge, handleIncomingEvent]);
+  }, [hasDesktopBridge, enabled, handleIncomingEvent]);
 
-  // Instantiate browser WS OSC and Web MIDI clients once.
+  // Instantiate browser WS OSC and Web MIDI clients only when showControl capability is enabled.
   useEffect(() => {
+    if (!enabled) {
+      oscWsRef.current?.disconnect();
+      midiRef.current?.dispose();
+      oscWsRef.current = null;
+      midiRef.current = null;
+      chaseRef.current.reset();
+      dedupeRef.current.reset();
+      syncLockState('UNLOCKED');
+      if (clockModeRef.current !== 'master') {
+        clockModeRef.current = 'master';
+        setClockModeState('master');
+      }
+      flagsRef.current = { oscRxEnabled: false, oscTxActive: false, artnetTcRxEnabled: false, artnetTcTxEnabled: false };
+      setOscRxState(false);
+      setOscTxActive(false);
+      setArtnetTcRxState(false);
+      setArtnetTcTxState(false);
+      setMidiMtcRxState(false);
+      setMidiMscRxState(false);
+      setMidiMtcTxState(false);
+      setOscWsState('disconnected');
+      setOscWsError(null);
+      if (hasDesktopBridge) {
+        void window.stageforgeDesktop?.showControl({ type: 'stop' }).then(setDesktopStatus).catch(() => {});
+      }
+      return;
+    }
     const wsClient = new OscWebSocketClient(
       (ev) => handleIncomingEvent(ev),
       (st) => {
@@ -450,7 +481,7 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
       oscWsRef.current = null;
       midiRef.current = null;
     };
-  }, [handleIncomingEvent]);
+  }, [enabled, hasDesktopBridge, handleIncomingEvent, syncLockState]);
 
   // Keep ChaseEngine parameters in sync with settings.
   useEffect(() => {
@@ -474,7 +505,7 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
 
   // Periodic chase interpolation + dropout/freewheel timer (only while in chase mode).
   useEffect(() => {
-    if (clockMode !== 'chase') return;
+    if (!enabled || clockMode !== 'chase') return;
     const timer = window.setInterval(() => {
       const step = chaseRef.current.tick(performance.now());
       syncLockState(step.lockState);
@@ -493,11 +524,11 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
       }
     }, 33);
     return () => window.clearInterval(timer);
-  }, [clockMode, syncLockState, tcStore]);
+  }, [enabled, clockMode, syncLockState, tcStore]);
 
   // Optional outbound MTC / Art-Net TC in Master mode only (never re-emit in chase/caller).
   useEffect(() => {
-    const canEmitTc = allows(clockMode, 'internal', 'outbound_timecode');
+    const canEmitTc = enabled && allows(clockMode, 'internal', 'outbound_timecode');
     if (!canEmitTc) {
       midiRef.current?.stopMtcOutput();
       return;
@@ -517,7 +548,7 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
     if (hasDesktopBridge && artnetTcTxEnabled) {
       const interval = Math.max(16, Math.round(frameDurationMs(fps)));
       artnetTimer = window.setInterval(() => {
-        if (!cbRef.current.isTakePlaying()) return;
+        if (!enabledRef.current || !cbRef.current.isTakePlaying()) return;
         const raw = cbRef.current.getTakePlayheadMs() + offset;
         const ms = ((raw % DAY_MS) + DAY_MS) % DAY_MS;
         void window.stageforgeDesktop?.showControl({ type: 'send', payload: { kind: 'timecode', ms, fps } }).catch(() => {});
@@ -527,13 +558,13 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
       midiRef.current?.stopMtcOutput();
       if (artnetTimer !== null) window.clearInterval(artnetTimer);
     };
-  }, [clockMode, midiMtcTxEnabled, midiStatus.connected, settings.midiOutputId, artnetTcTxEnabled, settings.frameRate, settings.timecodeOffsetMs, hasDesktopBridge]);
+  }, [enabled, clockMode, midiMtcTxEnabled, midiStatus.connected, settings.midiOutputId, artnetTcTxEnabled, settings.frameRate, settings.timecodeOffsetMs, hasDesktopBridge]);
 
   const applyDesktopConfig = useCallback(async (
     nextFlags: { oscRxEnabled: boolean; oscTxActive: boolean; artnetTcRxEnabled: boolean; artnetTcTxEnabled: boolean },
     nextSettings: ShowControlSettings,
   ) => {
-    if (!hasDesktopBridge) return;
+    if (!hasDesktopBridge || !enabledRef.current) return;
     try {
       const st = await window.stageforgeDesktop!.showControl({
         type: 'configure',
@@ -558,6 +589,7 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
   }, [hasDesktopBridge]);
 
   const setClockMode = useCallback((nextMode: ClockMode) => {
+    if (!enabledRef.current) return;
     if (nextMode === clockModeRef.current) return;
     // Switching clock mode cancels every timer, stops take playback, resets chase/dedupe, and fires nothing.
     chaseRef.current.reset();
@@ -571,6 +603,7 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
   }, [appendLog, syncLockState]);
 
   const updateSettings = useCallback((patch: Partial<ShowControlSettings>) => {
+    if (!enabledRef.current) return;
     // Compute next settings outside setState updater so StrictMode never runs side effects twice (H1/M13).
     const next = { ...settingsRef.current, ...patch };
     settingsRef.current = next;
@@ -592,36 +625,40 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
     }
   }, [applyDesktopConfig, hasDesktopBridge]);
 
-  const setOscRxEnabled = useCallback(async (enabled: boolean) => {
-    const nextFlags = { ...flagsRef.current, oscRxEnabled: enabled };
+  const setOscRxEnabled = useCallback(async (nextEnabled: boolean) => {
+    if (!enabledRef.current) return;
+    const nextFlags = { ...flagsRef.current, oscRxEnabled: nextEnabled };
     flagsRef.current = nextFlags;
-    setOscRxState(enabled);
+    setOscRxState(nextEnabled);
     await applyDesktopConfig(nextFlags, settingsRef.current);
   }, [applyDesktopConfig]);
 
-  const setOscTxEnabled = useCallback(async (enabled: boolean) => {
-    const nextFlags = { ...flagsRef.current, oscTxActive: enabled };
+  const setOscTxEnabled = useCallback(async (nextEnabled: boolean) => {
+    if (!enabledRef.current) return;
+    const nextFlags = { ...flagsRef.current, oscTxActive: nextEnabled };
     flagsRef.current = nextFlags;
-    setOscTxActive(enabled);
+    setOscTxActive(nextEnabled);
     await applyDesktopConfig(nextFlags, settingsRef.current);
   }, [applyDesktopConfig]);
 
-  const setArtnetTcRxEnabled = useCallback(async (enabled: boolean) => {
-    const nextFlags = { ...flagsRef.current, artnetTcRxEnabled: enabled };
+  const setArtnetTcRxEnabled = useCallback(async (nextEnabled: boolean) => {
+    if (!enabledRef.current) return;
+    const nextFlags = { ...flagsRef.current, artnetTcRxEnabled: nextEnabled };
     flagsRef.current = nextFlags;
-    setArtnetTcRxState(enabled);
+    setArtnetTcRxState(nextEnabled);
     await applyDesktopConfig(nextFlags, settingsRef.current);
   }, [applyDesktopConfig]);
 
-  const setArtnetTcTxEnabled = useCallback(async (enabled: boolean) => {
-    const nextFlags = { ...flagsRef.current, artnetTcTxEnabled: enabled };
+  const setArtnetTcTxEnabled = useCallback(async (nextEnabled: boolean) => {
+    if (!enabledRef.current) return;
+    const nextFlags = { ...flagsRef.current, artnetTcTxEnabled: nextEnabled };
     flagsRef.current = nextFlags;
-    setArtnetTcTxState(enabled);
+    setArtnetTcTxState(nextEnabled);
     await applyDesktopConfig(nextFlags, settingsRef.current);
   }, [applyDesktopConfig]);
 
   const connectOscWs = useCallback(() => {
-    if (hasDesktopBridge) return;
+    if (!enabledRef.current || hasDesktopBridge) return;
     try {
       oscWsRef.current?.connect(settingsRef.current.oscWsUrl);
     } catch (err) {
@@ -634,10 +671,27 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
   }, []);
 
   const connectMidi = useCallback(async () => {
+    if (!enabledRef.current) return;
     await midiRef.current?.connect();
   }, []);
 
+  const setMidiMtcRxEnabled = useCallback((nextEnabled: boolean) => {
+    if (!enabledRef.current) return;
+    setMidiMtcRxState(nextEnabled);
+  }, []);
+
+  const setMidiMscRxEnabled = useCallback((nextEnabled: boolean) => {
+    if (!enabledRef.current) return;
+    setMidiMscRxState(nextEnabled);
+  }, []);
+
+  const setMidiMtcTxEnabled = useCallback((nextEnabled: boolean) => {
+    if (!enabledRef.current) return;
+    setMidiMtcTxState(nextEnabled);
+  }, []);
+
   const sendFeedback = useCallback((payload: { cue?: string; timecode?: string; bpm?: number; clock?: ClockMode }) => {
+    if (!enabledRef.current) return;
     if (!allows(clockModeRef.current, 'internal', 'outbound_osc_feedback')) return;
     if (hasDesktopBridge && flagsRef.current.oscTxActive) {
       void window.stageforgeDesktop?.showControl({
@@ -653,6 +707,7 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
   }, [hasDesktopBridge]);
 
   const syncFromShowTimeline = useCallback((meta?: { frameRate?: SmpteFrameRate; timecodeOffsetMs?: number }) => {
+    if (!enabledRef.current) return;
     // Reset to clean defaults when opening a v1-v4 show without TC metadata so prior offsets never leak (M12).
     const defaults = defaultShowControlSettings();
     const next: ShowControlSettings = {
@@ -667,24 +722,24 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
   return {
     hasDesktopBridge,
     hasWebMidi,
-    clockMode,
+    clockMode: enabled ? clockMode : 'master',
     setClockMode,
-    lockState,
+    lockState: enabled ? lockState : 'UNLOCKED',
     tcStore,
     settings,
     updateSettings,
     runtime: {
-      oscRxEnabled,
-      oscTxActive,
-      oscWsState,
-      oscWsError,
+      oscRxEnabled: enabled && oscRxEnabled,
+      oscTxActive: enabled && oscTxActive,
+      oscWsState: enabled ? oscWsState : 'disconnected',
+      oscWsError: enabled ? oscWsError : null,
       oscWsRxCount,
-      midiMtcRxEnabled,
-      midiMscRxEnabled,
-      midiMtcTxEnabled,
-      artnetTcRxEnabled,
-      artnetTcTxEnabled,
-      desktopStatus,
+      midiMtcRxEnabled: enabled && midiMtcRxEnabled,
+      midiMscRxEnabled: enabled && midiMscRxEnabled,
+      midiMtcTxEnabled: enabled && midiMtcTxEnabled,
+      artnetTcRxEnabled: enabled && artnetTcRxEnabled,
+      artnetTcTxEnabled: enabled && artnetTcTxEnabled,
+      desktopStatus: enabled ? desktopStatus : null,
       midiStatus,
     },
     eventLog,
@@ -696,9 +751,9 @@ export function useShowControl(callbacks: ShowControlCallbacks): ShowControlApi 
     connectOscWs,
     disconnectOscWs,
     connectMidi,
-    setMidiMtcRxEnabled: setMidiMtcRxState,
-    setMidiMscRxEnabled: setMidiMscRxState,
-    setMidiMtcTxEnabled: setMidiMtcTxState,
+    setMidiMtcRxEnabled,
+    setMidiMscRxEnabled,
+    setMidiMtcTxEnabled,
     sendFeedback,
     syncFromShowTimeline,
   };

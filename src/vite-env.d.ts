@@ -130,7 +130,7 @@ type ShowControlCommandBridge =
 
 interface Window {
   stageforgeDesktop?: {
-    onRigCommand(listener: (command: 'open' | 'openBundle' | 'openMvr' | 'export' | 'show' | 'bundle' | 'dxf' | 'glb' | 'csv' | 'mvr', source?: string | Uint8Array) => void): () => void;
+    onRigCommand(listener: (command: 'open' | 'openBundle' | 'openMvr' | 'openViewer' | 'export' | 'show' | 'bundle' | 'dxf' | 'glb' | 'csv' | 'mvr', source?: string | Uint8Array) => void): () => void;
     sendDmxFrame(universe: 1 | 2, data: Uint8Array): boolean;
     dmxControl(command: { type: 'listInterfaces' }): Promise<DmxNetworkInterfaceBridge[]>;
     dmxControl(command: { type: 'getStatus' }): Promise<DmxStatusBridge>;
@@ -146,5 +146,6 @@ interface Window {
     showControl(command: ShowControlCommandBridge): Promise<unknown>;
     onShowControlEvent(listener: (event: ShowControlEventBridge) => void): () => void;
     onShowControlStatus(listener: (status: ShowControlStatusBridge) => void): () => void;
+    setViewerMode(active: boolean): Promise<{ viewer: boolean }>;
   };
 }

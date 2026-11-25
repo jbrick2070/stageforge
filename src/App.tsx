@@ -24,7 +24,7 @@ import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
-import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange } from './data/showFile';
+import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange, type ShowTimeline } from './data/showFile';
 import { hasCatalogFixtures } from './data/equipmentCatalog';
 import { DEMO_ILDA_PRESETS, generateDemoIlda, ILDA_MAX_BYTES, parseIlda, type DemoIldaKind, type IldaClip } from './data/ilda';
 import type { IldaRenderMode } from './engine/ildaRenderer';
@@ -38,11 +38,21 @@ import { useShowTimeline } from './input/useShowTimeline';
 import { useWallClock } from './input/useWallClock';
 import { patchCsv } from './data/patchCsv';
 import { BottomConsole } from './components/BottomConsole';
+import { PitchViewer } from './components/PitchViewer';
 import type { DmxSnapshot } from './components/DmxMonitorDrawer';
 import { LiveDmxBadge } from './components/LiveDmxBadge';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { loadShopStockState, saveShopStockState, type ShopStockState } from './data/shopStock';
 import { useLiveDmxOutput } from './dmx/useLiveDmxOutput';
+import {
+  CapabilitiesProvider,
+  capabilitiesForMode,
+  isViewerUrlSearch,
+  resolveGlobalHotkey,
+  VIEWER_CAPABILITIES,
+  EDITOR_CAPABILITIES,
+} from './viewer/capabilities';
+import { parseViewerSource, type ParsedViewerDocument } from './viewer/parseViewer';
 
 const loadCostEstimatorModal = () => import('./components/CostEstimatorModal');
 const createLazyCostEstimatorModal = () => lazy(loadCostEstimatorModal);
@@ -122,19 +132,78 @@ function readSavedDesign(): RigConfig | null {
   }
 }
 
+interface DeskSessionSnapshot {
+  rig: RigConfig;
+  stage?: NativeStage;
+  interchange?: ShowInterchange;
+  mvrResources?: Map<string, Uint8Array>;
+  cues: ShowCue[];
+  activeCueId: string | null;
+  cueModified: boolean;
+  showState: ShowState;
+  screen: ScreenRef;
+  captureVideoPosition: boolean;
+  activeCamera: CameraPreset;
+  volume: number;
+  timeline?: ShowTimeline;
+  expectedMusic: MusicRef;
+  assets: Map<string, { file: File; url?: string }>;
+  mediaUrls: Set<string>;
+  ildaClip: IldaClip | null;
+  ildaMode: IldaRenderMode;
+  ildaFps: number;
+  lastMvrReport: MvrReportRecord | null;
+  cinemaMode: boolean;
+  takeMetaExplicit: boolean;
+}
+
+let viewerModeIpcQueue: Promise<unknown> = Promise.resolve();
+
+function syncDesktopViewerMode(active: boolean): Promise<boolean> {
+  const bridge = window.stageforgeDesktop;
+  if (!bridge?.setViewerMode) return Promise.resolve(true);
+  const task = viewerModeIpcQueue.then(async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await bridge.setViewerMode(active);
+        return true;
+      } catch {
+        // Retry once in case the main-process IPC handler raced with startup or focus.
+      }
+    }
+    return false;
+  });
+  viewerModeIpcQueue = task.catch(() => {});
+  return task;
+}
+
 export const App: React.FC = () => {
   const viewportRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<StageEngine | null>(null);
   const audioEngineRef = useRef<AudioEngine | null>(null);
+
+  const [viewerMode, setViewerMode] = useState<boolean>(() => isViewerUrlSearch(window.location.search));
+  const viewerModeRef = useRef(viewerMode);
+  viewerModeRef.current = viewerMode;
+  const capabilities = useMemo(() => capabilitiesForMode(viewerMode ? 'viewer' : 'editor'), [viewerMode]);
+  const capabilitiesRef = useRef(capabilities);
+  capabilitiesRef.current = capabilities;
+  const sessionEpochRef = useRef(0);
+  const pendingViewerEntriesRef = useRef(0);
+  const deskSnapshotRef = useRef<DeskSessionSnapshot | null>(null);
 
   const [savedDesign, setSavedDesign] = useState(readSavedDesign);
   const nativeStage = useRef<NativeStage | undefined>(undefined);
   const interchangeRef = useRef<ShowInterchange | undefined>(undefined);
   const mvrResourcesRef = useRef<Map<string, Uint8Array> | undefined>(undefined);
   const [studioStage, setStudioStage] = useState<NativeStage>();
-  const installStage = (stage?: NativeStage) => {
+  const setStageDirect = (stage?: NativeStage) => {
     nativeStage.current = stage;
     setStudioStage(stage);
+  };
+  const installStage = (stage?: NativeStage) => {
+    if (!capabilitiesRef.current.edit) return;
+    setStageDirect(stage);
   };
   const installInterchange = (interchange?: ShowInterchange, resources?: Map<string, Uint8Array>) => {
     interchangeRef.current = interchange;
@@ -152,15 +221,22 @@ export const App: React.FC = () => {
     ].filter(Boolean);
     return window.confirm(`Replacing the rig discards ${parts.length ? parts.join(', ') : 'the authored stage layout'}. Continue?`);
   };
-  const [rig, setRig] = useState<RigConfig>(() => savedDesign ?? structuredClone(RIG_TEMPLATES.arena_mainstage));
+  const [rig, setRig] = useState<RigConfig>(() =>
+    viewerMode ? structuredClone(RIG_TEMPLATES.arena_mainstage) : (savedDesign ?? structuredClone(RIG_TEMPLATES.arena_mainstage))
+  );
+  const rigRef = useRef(rig);
+  rigRef.current = rig;
   const [showState, setShowState] = useState<ShowState>(() => structuredClone(INITIAL_SHOW_STATE));
+  const showStateRef = useRef(showState);
+  showStateRef.current = showState;
   const [bump, setBump] = useState<BumpState>(EMPTY_BUMP);
   const [controllerBump, setControllerBump] = useState<BumpState>(EMPTY_BUMP);
   const liveBump = useMemo(() => {
+    if (!capabilities.edit) return EMPTY_BUMP;
     const result = { ...bump };
     for (const key of Object.keys(controllerBump) as (keyof BumpState)[]) result[key] ||= controllerBump[key];
     return result;
-  }, [bump, controllerBump]);
+  }, [bump, controllerBump, capabilities.edit]);
   const [cues, setCues] = useState<ShowCue[]>(() => structuredClone(SHOW_CUES));
   const [activeCueId, setActiveCueId] = useState<string | null>(null);
   const [cueModified, setCueModified] = useState(false);
@@ -173,16 +249,30 @@ export const App: React.FC = () => {
   const [audioDiscrete, setAudioDiscrete] = useState(INITIAL_DISCRETE_AUDIO);
   const [volume, setVolume] = useState(0.72);
   const [activeCamera, setActiveCamera] = useState<CameraPreset>('foh');
+  const activeCameraRef = useRef(activeCamera);
+  activeCameraRef.current = activeCamera;
   const [rigDrawerOpen, setRigDrawerOpen] = useState(false);
   const [dmxDrawerOpen, setDmxDrawerOpen] = useState(false);
   const [showControlOpen, setShowControlOpen] = useState(false);
   const [costModalOpen, setCostModalOpen] = useState(false);
   const [costModalRetry, setCostModalRetry] = useState(0);
   const CostEstimatorModal = useMemo(() => createLazyCostEstimatorModal(), [costModalRetry]);
-  // Fetch the panels' code right after first paint, so they open instantly.
-  useEffect(preloadPanels, []);
+  // Fetch the editor panels' code right after first paint (skipped when booted in viewer mode).
+  useEffect(() => {
+    if (!viewerMode) preloadPanels();
+  }, [viewerMode]);
+  // Notify desktop main process if booted directly in `?view` mode.
+  useEffect(() => {
+    if (viewerMode) {
+      void syncDesktopViewerMode(true).then((ok) => {
+        if (!ok) showToast('Warning: could not lock desktop menus for pitch viewer mode.');
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [shopStock, setShopStock] = useState<ShopStockState>(loadShopStockState);
   const updateShopStock = useCallback((next: ShopStockState) => {
+    if (!capabilitiesRef.current.edit) return;
     setShopStock(next);
     saveShopStockState(next);
   }, []);
@@ -254,13 +344,16 @@ export const App: React.FC = () => {
     setToast(msg);
   }, []);
 
-  const liveDmx = useLiveDmxOutput(engineRef, showToast);
+  const liveDmx = useLiveDmxOutput(engineRef, showToast, capabilities.liveOutput);
+  const liveDmxRef = useRef(liveDmx);
+  liveDmxRef.current = liveDmx;
 
   useEffect(() => {
     engineRef.current?.setIldaSettings(ildaMode, ildaFps);
   }, [ildaMode, ildaFps]);
 
   const applyLoadedIlda = useCallback((clip: IldaClip) => {
+    if (!capabilitiesRef.current.edit) return;
     setIldaClip(clip);
     engineRef.current?.setIldaClip(clip);
     previewRig();
@@ -277,6 +370,7 @@ export const App: React.FC = () => {
   }, [previewRig, showToast]);
 
   const handleLoadDemoIlda = useCallback((kind: DemoIldaKind) => {
+    if (!capabilitiesRef.current.edit) return;
     try {
       const preset = DEMO_ILDA_PRESETS.find((p) => p.id === kind);
       const bytes = generateDemoIlda(kind);
@@ -289,11 +383,14 @@ export const App: React.FC = () => {
   }, [applyLoadedIlda, showToast]);
 
   const handleUploadIlda = useCallback(async (file: File) => {
+    if (!capabilitiesRef.current.edit) return;
+    const epoch = sessionEpochRef.current;
     try {
       if (file.size > ILDA_MAX_BYTES) {
         throw new Error(`ILDA file is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB; limit is ${ILDA_MAX_BYTES / (1024 * 1024)} MB).`);
       }
       const buffer = await file.arrayBuffer();
+      if (epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) return;
       const tier = engineRef.current?.getRenderTier() ?? 'high';
       const clip = parseIlda(buffer, { name: file.name, tier });
       applyLoadedIlda(clip);
@@ -303,15 +400,16 @@ export const App: React.FC = () => {
   }, [applyLoadedIlda, showToast]);
 
   const handleClearIlda = useCallback(() => {
+    if (!capabilitiesRef.current.edit) return;
     setIldaClip(null);
     engineRef.current?.setIldaClip(null);
     showToast('Unloaded ILDA clip (back to procedural laser patterns).');
   }, [showToast]);
 
   // Revoke after a grace period so a renderer still holding the old URL can swap first.
-  const releaseUrl = (url: string) => {
-    mediaUrls.current.delete(url);
-    window.setTimeout(() => { if (!mediaUrls.current.has(url)) URL.revokeObjectURL(url); }, 5000);
+  const releaseUrl = (url: string, urlSet = mediaUrls.current) => {
+    urlSet.delete(url);
+    window.setTimeout(() => { if (!urlSet.has(url)) URL.revokeObjectURL(url); }, 5000);
   };
   /** Drop linked media the incoming show never references (e.g. a previous bundle's clips). */
   const pruneAssets = (keep: Set<string>) => {
@@ -342,6 +440,12 @@ export const App: React.FC = () => {
     mediaUrls.current.forEach(url => URL.revokeObjectURL(url));
     mediaUrls.current.clear();
     assets.current.clear();
+    if (deskSnapshotRef.current) {
+      deskSnapshotRef.current.mediaUrls.forEach(url => URL.revokeObjectURL(url));
+      deskSnapshotRef.current.mediaUrls.clear();
+      deskSnapshotRef.current.assets.clear();
+      deskSnapshotRef.current = null;
+    }
   }, []);
   const wallLook = (look: ShowState, ref: ScreenRef): ShowState => ({
     ...look, led: { ...look.led, customMediaUrl: assets.current.get(ref.kind + ':' + ref.name)?.url ?? null,
@@ -365,8 +469,12 @@ export const App: React.FC = () => {
   const replayScreenOffset = () => (replayScreen.current.offsetSeconds ?? 0) +
     (replayScreen.current.playing ? (performance.now() - replayScreenClock.current) / 1000 : 0);
   const restoreReplayMusic = (ref: MusicRef, lateMs: number) => {
+    const epoch = sessionEpochRef.current;
     void audioEngineRef.current?.restoreTimelineMusic(ref, assets.current.get('file:' + ref.name)?.file, replayLook.current.bpm, lateMs)
-      .catch(e => { if (e?.name !== 'AbortError') showToast(e instanceof Error ? e.message : 'Audio could not play.'); });
+      .then(() => {
+        if (epoch !== sessionEpochRef.current) audioEngineRef.current?.stopAll();
+      })
+      .catch(e => { if (epoch === sessionEpochRef.current && e?.name !== 'AbortError') showToast(e instanceof Error ? e.message : 'Audio could not play.'); });
   };
   const timeline = useShowTimeline(
     () => ({ look: showState, cueId: activeCueId, cueModified: !!activeCueId && cueModified,
@@ -422,6 +530,10 @@ export const App: React.FC = () => {
 
   const flushDesign = useCallback(() => {
     window.clearTimeout(saveTimer.current);
+    if (!capabilitiesRef.current.autosave) {
+      pendingDesign.current = null;
+      return;
+    }
     const design = pendingDesign.current;
     if (!design) return;
     pendingDesign.current = null;
@@ -487,6 +599,7 @@ export const App: React.FC = () => {
   }, [follow, followingCue, triggerCue]);
 
   const applyDeskBpm = useCallback((nextBpm: number) => {
+    if (!capabilitiesRef.current.edit) return;
     const clamped = Math.round(Math.max(70, Math.min(180, nextBpm)) * 10) / 10;
     setCueModified(true);
     setShowState((s) => ({ ...s, bpm: clamped }));
@@ -500,6 +613,7 @@ export const App: React.FC = () => {
   }, []);
 
   const handleTapTempo = useCallback(() => {
+    if (!capabilitiesRef.current.edit) return;
     const { bpm: tapped } = tapTrackerRef.current.tap(performance.now());
     if (tapped !== null) {
       applyDeskBpm(tapped);
@@ -508,16 +622,19 @@ export const App: React.FC = () => {
   }, [applyDeskBpm, showToast]);
 
   const handleHalfTime = useCallback(() => {
+    if (!capabilitiesRef.current.edit) return;
     const next = halfTimeBpm(bpmRef.current);
     if (next !== null) applyDeskBpm(next);
   }, [applyDeskBpm]);
 
   const handleDoubleTime = useCallback(() => {
+    if (!capabilitiesRef.current.edit) return;
     const next = doubleTimeBpm(bpmRef.current);
     if (next !== null) applyDeskBpm(next);
   }, [applyDeskBpm]);
 
   const handleNudgeGrid = useCallback((deltaMs: number) => {
+    if (!capabilitiesRef.current.edit) return;
     const current = audioEngineRef.current?.getBeatGrid();
     if (!current) return;
     const nudged = nudgeBeatGrid(current, deltaMs);
@@ -526,6 +643,7 @@ export const App: React.FC = () => {
   }, []);
 
   const handleSetDownbeat = useCallback(() => {
+    if (!capabilitiesRef.current.edit) return;
     const current = audioEngineRef.current?.getBeatGrid();
     if (!current || !audioEngineRef.current) return;
     const anchored = setBeatGridDownbeat(current, audioEngineRef.current.getPlaybackMs());
@@ -535,6 +653,7 @@ export const App: React.FC = () => {
   }, [showToast]);
 
   const handleToggleFollowLiveBpm = useCallback(() => {
+    if (!capabilitiesRef.current.edit) return;
     const next = !followLiveBpmRef.current;
     followLiveBpmRef.current = next;
     setFollowLiveBpm(next);
@@ -547,6 +666,7 @@ export const App: React.FC = () => {
     setLiveBpmStatus({ state: 'starting' });
     audioEngineRef.current?.setLiveBpmAnalysis(true, {
       onReading: (rawBpm, locked) => {
+        if (!capabilitiesRef.current.edit) return;
         const { medianBpm, applyBpm } = liveBpmStabilizerRef.current.observe(
           rawBpm,
           bpmRef.current,
@@ -677,22 +797,29 @@ export const App: React.FC = () => {
       audioEngineRef.current?.stopAll();
     },
     onUpdateTakeMeta: (meta) => {
+      if (!capabilitiesRef.current.edit) return;
       takeMetaExplicitRef.current = true;
       timeline.setMetadata(meta);
     },
     onToast: showToast,
-  });
+  }, capabilities.showControl);
+  const showControlRef = useRef(showControl);
+  showControlRef.current = showControl;
   clockModeRef.current = showControl.clockMode;
+
+  const timelineRef = useRef(timeline);
+  timelineRef.current = timeline;
 
   // Send optional OSC state feedback whenever active cue, BPM, or clock mode changes.
   useEffect(() => {
+    if (!capabilities.showControl) return;
     const activeCue = cues.find((c) => c.id === activeCueId);
     showControl.sendFeedback({
       cue: activeCue ? activeCue.name : '',
       bpm: showState.bpm,
       clock: showControl.clockMode,
     });
-  }, [activeCueId, cues, showState.bpm, showControl.clockMode, showControl.sendFeedback]);
+  }, [capabilities.showControl, activeCueId, cues, showState.bpm, showControl.clockMode, showControl.sendFeedback]);
 
   const tempoProps: TempoControlProps = useMemo(() => ({
     canHalfTime: halfTimeBpm(showState.bpm) !== null,
@@ -791,6 +918,36 @@ export const App: React.FC = () => {
       primaryScreen: () => engine.screenTransport(),
       hangs: () => engine.hangDiagnostics(),
       renderStats: () => engine.renderStats(),
+      rig: () => structuredClone(rigRef.current),
+      capabilities: () => ({ ...capabilitiesRef.current }),
+      viewerMode: () => viewerModeRef.current,
+      activeCueId: () => activeCueIdRef.current,
+      camera: () => activeCameraRef.current,
+      showStateSummary: () => ({
+        blackout: showStateRef.current.blackout,
+        masterDimmer: showStateRef.current.masterDimmer,
+        bpm: showStateRef.current.bpm,
+      }),
+      takeState: () => {
+        const tl = timelineRef.current;
+        const durationMs = Math.max(tl.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+        return { mode: tl.mode, timeMs: tl.playhead(), durationMs };
+      },
+      dmxLive: () => liveDmxRef.current.isLive,
+      showControlActive: () => {
+        const sc = showControlRef.current;
+        return (
+          sc.clockMode !== 'master' ||
+          sc.runtime.oscRxEnabled ||
+          sc.runtime.oscTxActive ||
+          sc.runtime.oscWsState === 'connected' ||
+          sc.runtime.midiMtcRxEnabled ||
+          sc.runtime.midiMscRxEnabled ||
+          sc.runtime.midiMtcTxEnabled ||
+          sc.runtime.artnetTcRxEnabled ||
+          sc.runtime.artnetTcTxEnabled
+        );
+      },
       setBatching: (enabled: boolean, options?: { proxies?: boolean }) => engine.setBatching(enabled, options),
       redrawAndCapture: (options?: { hideBeams?: boolean }) => engine.redrawAndCapture(options),
       rebuildRig: () => engine.forceRebuildCurrentRig(),
@@ -842,6 +999,18 @@ export const App: React.FC = () => {
   useEffect(() => { wallClock.refresh(); }, [linkedVersion, wallClock.refresh]);
 
   // Global keyboard live show hotkeys (when not typing in a text box)
+  const hotkeyHandlerRef = useRef<{
+    toggleViewerPlay: () => void;
+    go: () => void;
+    back: () => void;
+    camera: (cam: CameraPreset) => void;
+  }>({
+    toggleViewerPlay: () => {},
+    go: () => {},
+    back: () => {},
+    camera: () => {},
+  });
+
   useEffect(() => {
     const isTyping = (target: EventTarget | null) =>
       target instanceof HTMLElement && (target.isContentEditable || !!target.closest(
@@ -851,84 +1020,52 @@ export const App: React.FC = () => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (isTyping(e.target) || document.querySelector('dialog[open],[aria-modal=true]')) return;
       if (e.target instanceof Element && e.target.closest('select,[role=listbox],[role=combobox]')) return;
-      if (e.code === 'Space' && e.target instanceof Element && e.target.closest('button,summary,input[type=color],input[type=checkbox]')) return;
+      if (e.code === 'Space' && e.target instanceof Element && e.target.closest('button,summary,input[type=color],input[type=checkbox],a')) return;
+      if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'PageUp' || e.code === 'PageDown') &&
+        e.target instanceof Element && e.target.closest('input[type=range],[role=slider],[aria-label="Take markers"]')) return;
       if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
 
-      switch (e.code) {
-        case 'Space':
+      const action = resolveGlobalHotkey(e.code, capabilitiesRef.current);
+      if (!action) return;
+
+      switch (action.type) {
+        case 'blackout':
           e.preventDefault();
           previewRig();
           setCueModified(true);
           setShowState((s) => ({ ...s, blackout: !s.blackout }));
           break;
-        case 'KeyB':
-          setBump((b) => ({ ...b, blinder: true }));
+        case 'bump':
+          setBump((b) => ({ ...b, [action.key]: true }));
           break;
-        case 'KeyS':
-          setBump((b) => ({ ...b, strobe: true }));
-          break;
-        case 'KeyC':
-          setBump((b) => ({ ...b, co2: true }));
-          break;
-        case 'KeyF':
-          setBump((b) => ({ ...b, smoke: true }));
-          break;
-        case 'KeyL':
-          setBump((b) => ({ ...b, laser: true }));
-          break;
-        case 'KeyD':
-          setBump((b) => ({ ...b, motorDrop: true }));
-          break;
-        case 'KeyT':
+        case 'tapTempo':
           handleTapTempo();
           break;
-        case 'KeyH':
+        case 'cinema':
           setCinemaMode((v) => !v);
           break;
-        case 'Digit1':
-          handleCamera('foh');
+        case 'camera':
+          hotkeyHandlerRef.current.camera(action.preset);
           break;
-        case 'Digit2':
-          handleCamera('front_row');
+        case 'playPause':
+          e.preventDefault();
+          hotkeyHandlerRef.current.toggleViewerPlay();
           break;
-        case 'Digit3':
-          handleCamera('wide_arena');
+        case 'go':
+          e.preventDefault();
+          hotkeyHandlerRef.current.go();
           break;
-        case 'Digit4':
-          handleCamera('stage_side');
-          break;
-        case 'Digit5':
-          handleCamera('overhead');
-          break;
-        case 'Digit6':
-          handleCamera('orbit');
-          break;
-        case 'Digit7':
-          handleCamera('pa_closeup');
+        case 'back':
+          e.preventDefault();
+          hotkeyHandlerRef.current.back();
           break;
       }
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
-      switch (e.code) {
-        case 'KeyB':
-          setBump((b) => ({ ...b, blinder: false }));
-          break;
-        case 'KeyS':
-          setBump((b) => ({ ...b, strobe: false }));
-          break;
-        case 'KeyC':
-          setBump((b) => ({ ...b, co2: false }));
-          break;
-        case 'KeyF':
-          setBump((b) => ({ ...b, smoke: false }));
-          break;
-        case 'KeyL':
-          setBump((b) => ({ ...b, laser: false }));
-          break;
-        case 'KeyD':
-          setBump((b) => ({ ...b, motorDrop: false }));
-          break;
+      const action = resolveGlobalHotkey(e.code, capabilitiesRef.current);
+      if (action?.type === 'bump') {
+        setBump((b) => ({ ...b, [action.key]: false }));
       }
     };
 
@@ -941,7 +1078,7 @@ export const App: React.FC = () => {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', releaseBumps);
     };
-  }, [handleTapTempo]);
+  }, [handleTapTempo, previewRig]);
 
   const handleCamera = (cam: CameraPreset) => {
     previewRig();
@@ -950,6 +1087,7 @@ export const App: React.FC = () => {
   };
 
   const startDemo = () => {
+    if (!capabilitiesRef.current.edit) return;
     const ae = audioEngineRef.current;
     if (!ae) return;
     directorArmed.current = true; expectedMusic.current = NO_MUSIC; setFollow(null);
@@ -973,24 +1111,34 @@ export const App: React.FC = () => {
     if (!ae) return;
     const status = ae.getStatus();
     if (status.source === 'none' && expectedMusic.current.kind === 'demo') {
-      directorArmed.current = true;
+      if (!viewerModeRef.current) directorArmed.current = true;
       void ae.restoreTimelineMusic({ ...expectedMusic.current, playing: true }, undefined, showState.bpm, 0)
         .catch(e => showToast(e instanceof Error ? e.message : 'Could not resume the score.'));
       return;
     }
     if (status.source === 'none' && expectedMusic.current.kind === 'live') {
-      showToast('Select Mic in Audio settings to use the live input.');
+      showToast(viewerModeRef.current
+        ? 'Live microphone input is disabled in pitch viewer mode.'
+        : 'Select Mic in Audio settings to use the live input.');
       return;
     }
     if (status.source === 'none' && expectedMusic.current.kind === 'file') {
       const ref = expectedMusic.current;
       const file = assets.current.get('file:' + ref.name)?.file;
-      if (!file) { setFilesOpen(true); return; }
+      if (!file) {
+        if (viewerModeRef.current) showToast(`Missing audio file (${ref.name}) · use Relink.`);
+        else setFilesOpen(true);
+        return;
+      }
       void ae.restoreTimelineMusic({ ...ref, playing: true }, file, showState.bpm, 0)
         .catch(e => showToast(e instanceof Error ? e.message : 'Could not play linked music.'));
       return;
     }
     if (status.source === 'none' || status.demoFinished) {
+      if (viewerModeRef.current) {
+        showToast('No audio track or recorded take in this show.');
+        return;
+      }
       startDemo();
       return;
     }
@@ -999,12 +1147,18 @@ export const App: React.FC = () => {
   };
 
   const handleUploadAudio = async (file: File) => {
+    if (!capabilitiesRef.current.edit) return;
     const ae = audioEngineRef.current;
     if (!ae) return;
+    const epoch = sessionEpochRef.current;
     beatGridAbortRef.current?.abort();
     beatGridAbortRef.current = null;
     try {
       const name = await ae.loadAudioFile(file);
+      if (epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) {
+        ae.stopAll();
+        return;
+      }
       registerAsset('file', file);
       expectedMusic.current = { kind: 'file', name: file.name, playing: true };
       previewRig();
@@ -1016,7 +1170,7 @@ export const App: React.FC = () => {
       const uploadedName = file.name;
       setBeatGridStatus({ state: 'analyzing', trackName: name });
       void analyzeFileBeatGrid(file, abort.signal).then((result) => {
-        if (abort.signal.aborted || beatGridAbortRef.current !== abort) return;
+        if (abort.signal.aborted || beatGridAbortRef.current !== abort || epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) return;
         const currentMusic = audioEngineRef.current?.timelineMusic();
         if (!currentMusic || currentMusic.kind !== 'file' || currentMusic.name !== uploadedName) return;
         setBeatGridStatus(result);
@@ -1031,7 +1185,7 @@ export const App: React.FC = () => {
           showToast(`Beat grid ready: ${result.grid.bpm} BPM`);
         }
       }).catch(() => {
-        if (!abort.signal.aborted && beatGridAbortRef.current === abort) {
+        if (!abort.signal.aborted && beatGridAbortRef.current === abort && epoch === sessionEpochRef.current) {
           setBeatGridStatus({ state: 'unavailable', reason: 'Beat grid analysis failed.' });
         }
       });
@@ -1042,6 +1196,7 @@ export const App: React.FC = () => {
   };
 
   const handleToggleMic = async () => {
+    if (!capabilitiesRef.current.edit) return;
     const ae = audioEngineRef.current;
     if (!ae) return;
     if (live.audio.get().source === 'mic') {
@@ -1050,8 +1205,13 @@ export const App: React.FC = () => {
       showToast('Live Mic Stopped');
       return;
     }
+    const epoch = sessionEpochRef.current;
     try {
       await ae.startMicInput();
+      if (epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) {
+        ae.stopAll();
+        return;
+      }
       previewRig();
       showToast('Live Mic / Room Audio Sync Active');
     } catch (error) {
@@ -1061,6 +1221,7 @@ export const App: React.FC = () => {
   };
 
   const handleSaveCue = (cueId: string) => {
+    if (!capabilitiesRef.current.edit) return;
     previewRig();
     setCues((prev) =>
       prev.map((c) =>
@@ -1103,6 +1264,7 @@ export const App: React.FC = () => {
   }, [rig, studioStage]);
 
   const toggleDirector = () => {
+    if (!capabilitiesRef.current.edit) return;
     if (!allows(clockModeRef.current, 'autoLD', 'auto_ld')) {
       showToast(`Auto-LD is disabled in ${clockModeRef.current} mode.`);
       return;
@@ -1120,6 +1282,7 @@ export const App: React.FC = () => {
     showToast(next ? 'Auto-LD on' : 'Manual lighting control');
   };
   const takeDesk = () => {
+    if (!capabilitiesRef.current.edit) return;
     previewRig();
     setCueModified(true);
     if (autoDirRef.current) engineRef.current?.releaseDirector(true);
@@ -1127,18 +1290,365 @@ export const App: React.FC = () => {
     setShowState(s => s.autoDirector ? { ...s, autoDirector: false } : s);
   };
   const applyRig = useCallback((next: RigConfig, saveNow = false) => {
+    if (!capabilitiesRef.current.edit) return;
     // Loading a preset leaves storage alone, but the first edit to one becomes the saved design,
     // as long as that doesn't replace a design already saved in the single slot.
     if (next.schemaVersion !== 1 && !savedDesign && !isPristinePreset(next)) next = { ...next, schemaVersion: 1 };
     setRig(next);
-    if (next.schemaVersion !== 1) return;
+    if (!capabilitiesRef.current.autosave || next.schemaVersion !== 1) return;
     setSavedDesign(next);
     pendingDesign.current = next;
     window.clearTimeout(saveTimer.current);
     if (saveNow) flushDesign();
     else saveTimer.current = window.setTimeout(flushDesign, 250);
   }, [savedDesign, flushDesign]);
+
+  // Always-fresh ref mirror for snapshot fields so async viewer entry never captures stale render-closure state (H1).
+  const deskLiveStateRef = useRef({
+    cueModified,
+    screen,
+    captureVideoPosition,
+    volume,
+    ildaClip,
+    ildaMode,
+    ildaFps,
+    lastMvrReport,
+    cinemaMode,
+  });
+  deskLiveStateRef.current = {
+    cueModified,
+    screen,
+    captureVideoPosition,
+    volume,
+    ildaClip,
+    ildaMode,
+    ildaFps,
+    lastMvrReport,
+    cinemaMode,
+  };
+
+  const captureDeskSession = (deskTimeline: ShowTimeline | undefined): DeskSessionSnapshot => {
+    const liveDesk = deskLiveStateRef.current;
+    return {
+      rig: structuredClone(rigRef.current),
+      stage: nativeStage.current ? structuredClone(nativeStage.current) : undefined,
+      interchange: interchangeRef.current ? structuredClone(interchangeRef.current) : undefined,
+      mvrResources: mvrResourcesRef.current ? new Map(mvrResourcesRef.current) : undefined,
+      cues: structuredClone(cuesRef.current),
+      activeCueId: activeCueIdRef.current,
+      cueModified: liveDesk.cueModified,
+      showState: structuredClone(showStateRef.current),
+      screen: { ...liveDesk.screen },
+      captureVideoPosition: liveDesk.captureVideoPosition,
+      activeCamera: activeCameraRef.current,
+      volume: liveDesk.volume,
+      timeline: deskTimeline ? structuredClone(deskTimeline) : undefined,
+      expectedMusic: { ...expectedMusic.current },
+      // Keep the desk's live Map & Set intact; viewer receives fresh empty containers so prune/revoke never touches desk media.
+      assets: assets.current,
+      mediaUrls: mediaUrls.current,
+      ildaClip: liveDesk.ildaClip,
+      ildaMode: liveDesk.ildaMode,
+      ildaFps: liveDesk.ildaFps,
+      lastMvrReport: liveDesk.lastMvrReport,
+      cinemaMode: liveDesk.cinemaMode,
+      takeMetaExplicit: takeMetaExplicitRef.current,
+    };
+  };
+
+  const restoreDeskSession = (snap: DeskSessionSnapshot) => {
+    assets.current = snap.assets;
+    mediaUrls.current = snap.mediaUrls;
+    setLinkedVersion(v => v + 1);
+    setStageDirect(snap.stage);
+    installInterchange(snap.interchange, snap.mvrResources);
+    takeMetaExplicitRef.current = snap.takeMetaExplicit;
+    const pausedMusic: MusicRef = { ...snap.expectedMusic, playing: false };
+    const pausedScreen: ScreenRef = snap.screen.kind === 'video' ? { ...snap.screen, playing: false } : { ...snap.screen };
+    expectedMusic.current = pausedMusic;
+    timeline.replace(snap.timeline, {
+      look: snap.showState, cueId: snap.activeCueId, camera: snap.activeCamera,
+      volume: snap.volume, bump: EMPTY_BUMP, screen: pausedScreen, music: pausedMusic,
+    });
+    wallClock.set(0, false);
+    setFollow(null);
+    replaying.current = false;
+    directorArmed.current = false;
+    autoDirRef.current = snap.showState.autoDirector;
+    replayLook.current = snap.showState;
+    replayScreen.current = pausedScreen;
+    replayScreenClock.current = 0;
+    replayMusicClock.current = 0;
+    live.audio.set(EMPTY_AUDIO);
+    setAudioDiscrete(INITIAL_DISCRETE_AUDIO);
+    setBump(EMPTY_BUMP);
+    setControllerBump(EMPTY_BUMP);
+    setRig(snap.rig);
+    setCues(snap.cues);
+    setActiveCueId(snap.activeCueId);
+    setCueModified(snap.cueModified);
+    setShowState(snap.showState);
+    setScreen(pausedScreen);
+    setCaptureVideoPosition(snap.captureVideoPosition);
+    setActiveCamera(snap.activeCamera);
+    setVolume(snap.volume);
+    setIldaClip(snap.ildaClip);
+    setIldaMode(snap.ildaMode);
+    setIldaFps(snap.ildaFps);
+    setLastMvrReport(snap.lastMvrReport);
+    setCinemaMode(snap.cinemaMode);
+    audioEngineRef.current?.setBpm(snap.showState.bpm);
+    audioEngineRef.current?.setVolume(snap.volume);
+    engineRef.current?.setIldaClip(snap.ildaClip);
+    engineRef.current?.setIldaSettings(snap.ildaMode, snap.ildaFps);
+    engineRef.current?.releaseDirector(false);
+    engineRef.current?.setShowState(snap.showState);
+    engineRef.current?.setBumpState(EMPTY_BUMP);
+    engineRef.current?.setCameraPreset(snap.activeCamera);
+    if (pausedScreen.kind === 'video') {
+      engineRef.current?.restoreScreenTransport(false, pausedScreen.offsetSeconds);
+    }
+    previewRig();
+  };
+
+  const revokeViewerMediaNow = () => {
+    for (const url of mediaUrls.current) URL.revokeObjectURL(url);
+    mediaUrls.current.clear();
+    assets.current.clear();
+  };
+
+  const applyViewerDocument = (doc: ParsedViewerDocument) => {
+    timeline.stop();
+    audioEngineRef.current?.stopAll();
+    beatGridAbortRef.current?.abort();
+    beatGridAbortRef.current = null;
+    setBeatGridStatus({ state: 'idle' });
+    setFollow(null);
+    replaying.current = false;
+    directorArmed.current = false;
+    autoDirRef.current = false;
+    setBump(EMPTY_BUMP);
+    setControllerBump(EMPTY_BUMP);
+    setIldaClip(null);
+    engineRef.current?.setIldaClip(null);
+    live.audio.set(EMPTY_AUDIO);
+    setAudioDiscrete(INITIAL_DISCRETE_AUDIO);
+    revokeViewerMediaNow();
+
+    if (doc.kind === 'rig') {
+      setStageDirect(undefined);
+      installInterchange(undefined, undefined);
+      expectedMusic.current = NO_MUSIC;
+      const look = structuredClone(INITIAL_SHOW_STATE);
+      look.autoDirector = false;
+      timeline.replace(undefined);
+      wallClock.set(0, false);
+      setRig(doc.rig);
+      setCues([]);
+      setActiveCueId(null);
+      setCueModified(false);
+      setShowState(look);
+      setScreen(NO_SCREEN);
+      setActiveCamera('foh');
+      setVolume(0.72);
+      setLinkedVersion(v => v + 1);
+      audioEngineRef.current?.setBpm(look.bpm);
+      audioEngineRef.current?.setVolume(0.72);
+      engineRef.current?.releaseDirector(false);
+      engineRef.current?.setShowState(look);
+      engineRef.current?.setBumpState(EMPTY_BUMP);
+      engineRef.current?.setCameraPreset('foh');
+      previewRig();
+      showToast(`Viewing ${doc.rig.name} (read-only).`);
+      return;
+    }
+
+    const { file, nextRig, bundledMedia } = doc;
+    const referenced = referencedFiles(file.media, file.cues, file.timeline, file.stage);
+    const wall = file.media?.screen ?? NO_SCREEN;
+    for (const { kind, file: medium } of bundledMedia) registerAsset(kind, medium);
+    const look = { ...wallLook(file.look, wall), autoDirector: false };
+    const camera = file.controls?.camera ?? 'foh';
+    const vol = file.controls?.volume ?? 0.72;
+    const music = file.media?.music ?? NO_MUSIC;
+    timeline.replace(file.timeline, {
+      look, cueId: file.activeCueId, camera, volume: vol, bump: EMPTY_BUMP, screen: wall, music,
+    });
+    setStageDirect(file.stage);
+    installInterchange(undefined, undefined);
+    wallClock.set(0, false);
+    expectedMusic.current = music;
+    replayLook.current = look;
+    replayScreen.current = wall;
+    replayScreenClock.current = 0;
+    replayMusicClock.current = 0;
+    setRig(nextRig);
+    setCues(file.cues);
+    setActiveCueId(file.activeCueId);
+    setCueModified(false);
+    setShowState(look);
+    setScreen(wall);
+    setCaptureVideoPosition(false);
+    setVolume(vol);
+    setActiveCamera(camera);
+    setLinkedVersion(v => v + 1);
+    audioEngineRef.current?.setBpm(look.bpm);
+    audioEngineRef.current?.setVolume(vol);
+    engineRef.current?.releaseDirector(false);
+    engineRef.current?.setShowState(look);
+    engineRef.current?.setBumpState(EMPTY_BUMP);
+    previewRig();
+    if (wall.kind === 'video') engineRef.current?.restoreScreenTransport(wall.playing, wall.offsetSeconds);
+    engineRef.current?.setCameraPreset(camera);
+    const missingCount = [...referenced].filter(key => !assets.current.has(key)).length;
+    const warning = missingCount ? ` · ${missingCount} missing media ${missingCount === 1 ? 'file' : 'files'}` : '';
+    showToast(`Viewing ${file.rig.name} · ${file.cues.length} cues${warning}`);
+  };
+
+  const openViewerPayload = async (source: File | string | Uint8Array) => {
+    const request = ++openRequestRef.current;
+    const startEpoch = sessionEpochRef.current;
+    // Parse and verify purely in memory before entering viewer mode or touching the desk.
+    const parsed = await parseViewerSource(source);
+    if (request !== openRequestRef.current || startEpoch !== sessionEpochRef.current) return;
+
+    if (!viewerModeRef.current) {
+      // Lock desktop main-process menus & output gates BEFORE switching renderer state (fail-closed, H2 & L3).
+      // Track in-flight viewer entries + serialize IPC so overlapping opens never unlock a newer viewer open.
+      pendingViewerEntriesRef.current++;
+      let locked = false;
+      try {
+        locked = await syncDesktopViewerMode(true);
+      } finally {
+        pendingViewerEntriesRef.current = Math.max(0, pendingViewerEntriesRef.current - 1);
+      }
+      if (!locked) {
+        throw new Error('Could not lock desktop menus and outputs for pitch viewer mode.');
+      }
+      if (request !== openRequestRef.current || startEpoch !== sessionEpochRef.current || viewerModeRef.current) {
+        if (!viewerModeRef.current && pendingViewerEntriesRef.current === 0) {
+          void syncDesktopViewerMode(false);
+        }
+        return;
+      }
+
+      // Flush any pending legitimate desk edit before viewer disables autosave.
+      flushDesign();
+      const deskTimeline = timelineRef.current.snapshot();
+      timelineRef.current.stop();
+      audioEngineRef.current?.stopAll();
+      beatGridAbortRef.current?.abort();
+      beatGridAbortRef.current = null;
+      audioEngineRef.current?.setLiveBpmAnalysis(false);
+      setFollowLiveBpm(false);
+      followLiveBpmRef.current = false;
+      setLiveBpmStatus({ state: 'off' });
+      setBeatGridStatus({ state: 'idle' });
+      deskSnapshotRef.current = captureDeskSession(deskTimeline);
+      // Swap in fresh isolated asset containers so viewer media never touches or revokes desk URLs.
+      assets.current = new Map();
+      mediaUrls.current = new Set();
+      // Close every editor drawer/modal and clear momentary bumps.
+      setRigDrawerOpen(false);
+      setDmxDrawerOpen(false);
+      setShowControlOpen(false);
+      setCostModalOpen(false);
+      setFilesOpen(false);
+      setCueEditor(false);
+      setDesignerRig(null);
+      setPendingMvr(null);
+      setViewingMvrReport(false);
+      setCinemaMode(false);
+      setBump(EMPTY_BUMP);
+      setControllerBump(EMPTY_BUMP);
+      sessionEpochRef.current++;
+      viewerModeRef.current = true;
+      capabilitiesRef.current = VIEWER_CAPABILITIES;
+      setViewerMode(true);
+    } else {
+      sessionEpochRef.current++;
+    }
+
+    applyViewerDocument(parsed);
+  };
+
+  const exitViewer = () => {
+    if (!viewerModeRef.current) return;
+    sessionEpochRef.current++;
+    openRequestRef.current++;
+    timeline.stop();
+    audioEngineRef.current?.stopAll();
+    beatGridAbortRef.current?.abort();
+    beatGridAbortRef.current = null;
+    revokeViewerMediaNow();
+    void syncDesktopViewerMode(false).then((ok) => {
+      if (!ok) showToast('Could not unlock desktop menus — reload the window to restore File menu items.');
+    });
+
+    // Strip `?view` from the URL bar without triggering a reload (preserving `?probe` etc.).
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('view')) {
+      params.delete('view');
+      const qs = params.toString();
+      const nextUrl = window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
+      try { window.history.replaceState(null, '', nextUrl); } catch { /* ignore */ }
+    }
+
+    viewerModeRef.current = false;
+    capabilitiesRef.current = EDITOR_CAPABILITIES;
+    setViewerMode(false);
+
+    const snap = deskSnapshotRef.current;
+    deskSnapshotRef.current = null;
+    if (snap) {
+      restoreDeskSession(snap);
+      showToast('Returned to StageForge desk.');
+      return;
+    }
+
+    // Booted directly via `?view`: hydrate the editor desk read-only from storage or default preset.
+    assets.current = new Map();
+    mediaUrls.current = new Set();
+    setLinkedVersion(v => v + 1);
+    const stored = readSavedDesign();
+    setSavedDesign(stored);
+    const nextRig = stored ?? structuredClone(RIG_TEMPLATES.arena_mainstage);
+    const freshLook = structuredClone(INITIAL_SHOW_STATE);
+    setStageDirect(undefined);
+    installInterchange(undefined, undefined);
+    expectedMusic.current = NO_MUSIC;
+    timeline.replace(undefined);
+    wallClock.set(0, false);
+    setFollow(null);
+    replaying.current = false;
+    directorArmed.current = true;
+    autoDirRef.current = freshLook.autoDirector;
+    live.audio.set(EMPTY_AUDIO);
+    setAudioDiscrete(INITIAL_DISCRETE_AUDIO);
+    setBump(EMPTY_BUMP);
+    setControllerBump(EMPTY_BUMP);
+    setRig(nextRig);
+    setCues(structuredClone(SHOW_CUES));
+    setActiveCueId(null);
+    setCueModified(false);
+    setShowState(freshLook);
+    setScreen(NO_SCREEN);
+    setActiveCamera('foh');
+    setVolume(0.72);
+    setCinemaMode(false);
+    audioEngineRef.current?.setBpm(freshLook.bpm);
+    audioEngineRef.current?.setVolume(0.72);
+    engineRef.current?.setIldaClip(null);
+    engineRef.current?.releaseDirector(false);
+    engineRef.current?.setShowState(freshLook);
+    engineRef.current?.setBumpState(EMPTY_BUMP);
+    engineRef.current?.setCameraPreset('foh');
+    previewRig();
+    showToast('Returned to StageForge desk.');
+  };
+
   const openDocument = (rawJson: string, bundledMedia: BundleAsset[] = []) => {
+    if (!capabilitiesRef.current.edit) return;
     const json = rawJson.charCodeAt(0) === 0xfeff ? rawJson.slice(1) : rawJson;
     if (json.length > MAX_SHOW_JSON_BYTES || new TextEncoder().encode(json).length > MAX_SHOW_JSON_BYTES) {
       throw new Error('This JSON file exceeds the 32 MiB limit.');
@@ -1197,10 +1707,13 @@ export const App: React.FC = () => {
     showToast(`Opened ${file.rig.name} · ${file.cues.length} cues${warning}.`);
   };
   const openBundleBytes = async (bytes: Uint8Array, request?: number) => {
+    if (!capabilitiesRef.current.edit) return;
+    const epoch = sessionEpochRef.current;
     const { MAX_BUNDLE_BYTES, openShowBundle } = await import('./data/showBundle');
     if (bytes.byteLength > MAX_BUNDLE_BYTES) throw new Error('This show exceeds the 512 MiB in-memory bundle limit.');
     // Fully verified (hashes, paths, schema) before any desk state changes.
     const bundle = await openShowBundle(bytes);
+    if (epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) return;
     if (request !== undefined && request !== openRequestRef.current) return;
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     openDocument(JSON.stringify(bundle.show), bundle.files);
@@ -1209,6 +1722,7 @@ export const App: React.FC = () => {
   // StageForge round trips commit directly, while foreign MVRs or StageForge MVRs with
   // merge/loss findings open the preflight dialog so nothing changes silently.
   const commitMvr = (pending: { result: MvrImport; normalized: RigConfig; request: number; fileName: string }) => {
+    if (!capabilitiesRef.current.edit) return;
     if (pending.request !== openRequestRef.current) {
       setPendingMvr(null);
       showToast('This MVR import was superseded by a newer file open.');
@@ -1237,10 +1751,13 @@ export const App: React.FC = () => {
     showToast(`Opened ${next.name} from MVR · ${count(report.fixtures, 'fixture', 'fixtures')} · ${count(report.trusses, 'truss', 'trusses')}${brief ? ' · ' + brief : ''}`);
   };
   const openMvrBytes = async (bytes: Uint8Array, request?: number, fileName = 'scene.mvr') => {
+    if (!capabilitiesRef.current.edit) return;
+    const epoch = sessionEpochRef.current;
     const { importMvr } = await import('./interchange/mvr/importMvr');
     const result = importMvr(bytes);
     const normalized = normalizeDesign(result.rig);
     const req = request ?? openRequestRef.current;
+    if (epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) return;
     if (request !== undefined && request !== openRequestRef.current) return;
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     const pending = { result, normalized, request: req, fileName };
@@ -1252,6 +1769,8 @@ export const App: React.FC = () => {
     setPendingMvr(pending);
   };
   const openFile = async (file: File) => {
+    if (!capabilitiesRef.current.edit) return;
+    const epoch = sessionEpochRef.current;
     const request = ++openRequestRef.current;
     setPendingMvr(null);
     const lower = file.name.toLowerCase();
@@ -1259,25 +1778,26 @@ export const App: React.FC = () => {
       const { MAX_ARCHIVE_BYTES } = await import('./interchange/mvr/archive');
       if (file.size > MAX_ARCHIVE_BYTES) throw new Error('This MVR file exceeds the 512 MiB limit.');
       const bytes = new Uint8Array(await file.arrayBuffer());
-      if (request !== openRequestRef.current) return;
+      if (epoch !== sessionEpochRef.current || request !== openRequestRef.current || !capabilitiesRef.current.edit) return;
       if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
       return openMvrBytes(bytes, request, file.name);
     }
     if (!lower.endsWith('.zip')) {
       if (file.size > MAX_SHOW_JSON_BYTES) throw new Error('This JSON file exceeds the 32 MiB limit.');
       const text = await file.text();
-      if (request !== openRequestRef.current) return;
+      if (epoch !== sessionEpochRef.current || request !== openRequestRef.current || !capabilitiesRef.current.edit) return;
       if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
       return openDocument(text);
     }
     const { MAX_BUNDLE_BYTES } = await import('./data/showBundle');
     if (file.size > MAX_BUNDLE_BYTES) throw new Error('This show exceeds the 512 MiB in-memory bundle limit.');
     const bytes = new Uint8Array(await file.arrayBuffer());
-    if (request !== openRequestRef.current) return;
+    if (epoch !== sessionEpochRef.current || request !== openRequestRef.current || !capabilitiesRef.current.edit) return;
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     await openBundleBytes(bytes, request);
   };
   const saveDocument = async (action: FileAction) => {
+    if (!capabilitiesRef.current.save) return;
     if (action === 'rig') return downloadRig(rig);
     if (action === 'show' || action === 'bundle') {
       const validActiveCue = cues.some(c => c.id === activeCueId) ? activeCueId : null;
@@ -1332,13 +1852,15 @@ export const App: React.FC = () => {
     }
   };
   const openExample = async (name: 'amber-walk-on' | 'split-rig') => {
+    if (!capabilitiesRef.current.edit) return;
+    const epoch = sessionEpochRef.current;
     const request = ++openRequestRef.current;
     setPendingMvr(null);
     const folder = import.meta.env.BASE_URL + 'examples/';
     const [show, video] = await Promise.all([fetch(folder + name + '.stageforge.show.json'), fetch(folder + 'amber-clouds.mp4')]);
     if (!show.ok || !video.ok) throw new Error('The example files could not be opened.');
     const [json, videoBlob] = await Promise.all([show.text(), video.blob()]);
-    if (request !== openRequestRef.current) return;
+    if (epoch !== sessionEpochRef.current || request !== openRequestRef.current || !capabilitiesRef.current.edit) return;
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     openDocument(json, [{ kind: 'video', file: new File([videoBlob], 'amber-clouds.mp4', { type: 'video/mp4' }) }]);
   };
@@ -1374,7 +1896,22 @@ export const App: React.FC = () => {
     if (count) wallClock.refresh();
     return count ? `Relinked ${count} media reference${count === 1 ? '' : 's'}.` : 'Choose media with the filenames listed in this show.';
   };
-  const fileCommand = React.useEffectEvent(async (command: 'open' | 'openBundle' | 'openMvr' | 'export' | FileAction, source?: string | Uint8Array) => {
+  const fileCommand = React.useEffectEvent(async (command: 'open' | 'openBundle' | 'openMvr' | 'openViewer' | 'export' | FileAction, source?: string | Uint8Array) => {
+    if (command === 'openViewer') {
+      if (source === undefined) return;
+      if (designerOpenRef.current) {
+        window.alert('Apply or cancel the open stage plan before opening a show in the viewer.');
+        return;
+      }
+      try {
+        await openViewerPayload(source);
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : 'Could not open this show in the pitch viewer.');
+      }
+      return;
+    }
+    // Ignore all mutating/saving/exporting desktop menu commands while in pitch viewer mode.
+    if (viewerModeRef.current || !capabilitiesRef.current.edit) return;
     if (designerOpenRef.current) {
       window.alert('Apply or cancel the open stage plan before opening or exporting a rig.');
       return;
@@ -1402,8 +1939,9 @@ export const App: React.FC = () => {
   useEffect(() => window.stageforgeDesktop?.onRigCommand(fileCommand), []);
 
   const controller = useShowGamepad({
-    enabled: !costModalOpen && !designerRig && !filesOpen && !pendingMvr && !viewingMvrReport && !cueEditor && timeline.mode !== 'playing',
+    enabled: capabilities.controllers && !costModalOpen && !designerRig && !filesOpen && !pendingMvr && !viewingMvrReport && !cueEditor && timeline.mode !== 'playing',
     command: action => {
+      if (!capabilitiesRef.current.controllers) return;
       switch (action) {
         case 'play':
           if (!live.audio.get().playing && navigator.userActivation && !navigator.userActivation.hasBeenActive) {
@@ -1435,25 +1973,147 @@ export const App: React.FC = () => {
         case 'cinema': setCinemaMode(v => !v); break;
       }
     },
-    hold: (key, active) => setControllerBump(s => ({ ...s, [key]: active })),
-    orbit: (x, y) => engineRef.current?.orbitBy(x, y),
+    hold: (key, active) => {
+      if (!capabilitiesRef.current.controllers) return;
+      setControllerBump(s => ({ ...s, [key]: active }));
+    },
+    orbit: (x, y) => {
+      if (!capabilitiesRef.current.controllers) return;
+      engineRef.current?.orbitBy(x, y);
+    },
   });
 
   const demoOpeningBlack = showState.autoDirector && audioDiscrete.openingBlack;
   useEffect(() => {
-    if (cinemaMode || designerRig || costModalOpen) setBump(EMPTY_BUMP);
-  }, [cinemaMode, designerRig, costModalOpen]);
+    if (cinemaMode || designerRig || costModalOpen || viewerMode) setBump(EMPTY_BUMP);
+  }, [cinemaMode, designerRig, costModalOpen, viewerMode]);
   // Every cue the take fires; the console draws them all as scrubber markers.
   const takeCues = useMemo(() => (timeline.timeline?.events ?? [])
     .filter((e): e is TimelineEvent & { cueId: string } => typeof e.cueId === 'string')
     .map(e => ({ atMs: e.atMs, cueId: e.cueId, name: cues.find(c => c.id === e.cueId)?.name ?? e.cueId })),
   [timeline.timeline, cues]);
+
+  const takeDurationMs = Math.max(timeline.timeline?.durationMs ?? 0, studioStage?.screenEvents.at(-1)?.atMs ?? 0);
+  const hasTake = !!timeline.timeline && (timeline.timeline.events.length > 0 || timeline.timeline.durationMs > 0);
+
+  const playTake = () => {
+    if (!allows(clockModeRef.current, 'internal', 'take_play')) {
+      showToast(`Replay is disabled in ${clockModeRef.current} mode.`);
+      return;
+    }
+    if (missing.length) showToast(viewerModeRef.current
+      ? `Playing with missing media (${missing.join(', ')}) · use Relink.`
+      : `Playing with missing media. Relink ${missing.join(', ')} in Files.`);
+    const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+    setFollow(null); replaying.current = true; replayLook.current = showState; replayScreen.current = NO_SCREEN; replayMusicClock.current = 0;
+    engineRef.current?.releaseDirector(false); previewRig(); timeline.play(false);
+    wallClock.set(0, true, endMs);
+  };
+  const resumeTake = () => {
+    if (!allows(clockModeRef.current, 'internal', 'take_play')) {
+      showToast(`Replay is disabled in ${clockModeRef.current} mode.`);
+      return;
+    }
+    if (missing.length) showToast(viewerModeRef.current
+      ? `Playing with missing media (${missing.join(', ')}) · use Relink.`
+      : `Playing with missing media. Relink ${missing.join(', ')} in Files.`);
+    const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+    setFollow(null); replaying.current = true; replayLook.current = showState; replayMusicClock.current = 0;
+    engineRef.current?.releaseDirector(false); previewRig(); timeline.play(true);
+    wallClock.set(timeline.playhead(), true, endMs);
+  };
+  const pauseTake = () => {
+    timeline.pause();
+    replaying.current = false;
+    const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+    wallClock.set(timeline.playhead(), false, endMs);
+  };
+  const seekTake = (ms: number) => {
+    const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+    const clamped = Math.max(0, Math.min(endMs, Math.round(ms)));
+    const keepPlaying = timeline.mode === 'playing' && clamped < endMs;
+    setFollow(null); replaying.current = keepPlaying;
+    engineRef.current?.releaseDirector(false); previewRig();
+    timeline.seek(clamped);
+    wallClock.set(clamped, keepPlaying, endMs);
+  };
+  const stopTake = () => {
+    timeline.stop();
+    replaying.current = false;
+    wallClock.set(timeline.playhead(), false);
+  };
+
+  const handleViewerTogglePlayback = () => {
+    if (hasTake && takeDurationMs > 0) {
+      if (timeline.mode === 'playing') pauseTake();
+      else if (timeline.canResume) resumeTake();
+      else playTake();
+      return;
+    }
+    handleTogglePlay();
+  };
+
+  hotkeyHandlerRef.current = {
+    toggleViewerPlay: handleViewerTogglePlayback,
+    go: () => { if (timeline.mode !== 'playing' && nextCue) triggerCue(nextCue); },
+    back: () => { if (timeline.mode !== 'playing' && previousCue) triggerCue(previousCue); },
+    camera: handleCamera,
+  };
+
   return (
-    <main data-cinema={cinemaMode} data-demo-blackout={demoOpeningBlack} className="stage-workstation relative w-screen h-screen bg-black overflow-hidden">
+    <CapabilitiesProvider value={capabilities}>
+    <main data-cinema={cinemaMode} data-viewer={viewerMode} data-demo-blackout={demoOpeningBlack} className="stage-workstation relative w-screen h-screen bg-black overflow-hidden">
       {/* Full-Viewport HQ 3D WebGL2 Canvas */}
       <div ref={viewportRef} className="stage-viewport w-full h-full cursor-grab active:cursor-grabbing" />
-      <ShowOverlay audioStore={live.audio} controller={controller} cinema={cinemaMode} />
+      <ShowOverlay audioStore={live.audio} controller={controller} cinema={cinemaMode} showControllerGuide={capabilities.controllers} />
 
+      {viewerMode ? (
+        <PitchViewer
+          showName={rig.name}
+          fixtureCount={counts.fixtures}
+          laserCount={counts.lasers}
+          fpsStore={live.fps}
+          audioStore={live.audio}
+          blackout={showState.blackout}
+          activeCamera={activeCamera}
+          cinemaMode={cinemaMode}
+          cues={cues}
+          activeCueId={activeCueId}
+          follow={follow}
+          stage={studioStage}
+          mainScreen={media.screen}
+          missingMedia={missing}
+          take={{
+            mode: timeline.mode,
+            timeMs: timeline.timeMs,
+            durationMs: takeDurationMs,
+            hasTake,
+            canResume: timeline.canResume,
+            cues: takeCues,
+            play: playTake,
+            resume: resumeTake,
+            pause: pauseTake,
+            seek: seekTake,
+            stop: stopTake,
+          }}
+          onSelectCamera={handleCamera}
+          onToggleCinemaMode={() => setCinemaMode((v) => !v)}
+          onTogglePlayback={handleViewerTogglePlayback}
+          onGo={() => { if (timeline.mode !== 'playing' && nextCue) triggerCue(nextCue); }}
+          onBack={() => { if (timeline.mode !== 'playing' && previousCue) triggerCue(previousCue); }}
+          onTriggerCue={(cue) => {
+            if (timeline.mode === 'playing') return;
+            triggerCue(cue);
+            showToast(`Cue: ${cue.name}`);
+          }}
+          onHoldFollow={() => setFollow('held')}
+          onOpenShow={openViewerPayload}
+          onRelinkMedia={onRelink}
+          onError={showToast}
+          onExitViewer={exitViewer}
+        />
+      ) : (
+      <>
       {/* Top Transport, Audio, Cameras & Tools Bar */}
       <TopBar
         fpsStore={live.fps}
@@ -1497,6 +2157,7 @@ export const App: React.FC = () => {
         onBpmChange={(nextBpm) => applyDeskBpm(nextBpm)}
         onToggleAutoDirector={toggleDirector}
         onToggleAudioReactive={() => {
+          if (!capabilitiesRef.current.edit) return;
           setCueModified(true);
           setShowState((s) => ({ ...s, audioReactive: !s.audioReactive }));
         }}
@@ -1538,7 +2199,7 @@ export const App: React.FC = () => {
           blocks: lastMvrReport.report.findings.filter(f => f.severity === 'block').length,
         } : undefined}
         onViewMvrReport={() => setViewingMvrReport(true)}
-        onOpen={openFile} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onError={showToast} onClose={() => setFilesOpen(false)}/></ErrorBoundary>}
+        onOpen={openFile} onOpenInViewer={openViewerPayload} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onError={showToast} onClose={() => setFilesOpen(false)}/></ErrorBoundary>}
       {pendingMvr && !filesOpen && <ErrorBoundary label="MVR import preflight" onReset={() => setPendingMvr(null)} onExportRig={() => downloadRig(rig)}><MvrImportReportDialog
         key={pendingMvr.request}
         mode="preflight"
@@ -1557,18 +2218,13 @@ export const App: React.FC = () => {
       {cueEditor && <ErrorBoundary label="Cue list editor" onReset={() => setCueEditor(false)} onExportRig={() => downloadRig(rig)}><CueListEditor cues={cues} capture={() => ({ id: crypto.randomUUID(), name: 'New look',
         tag: 'USER', accent: showState.primaryColor, state: structuredClone(showState), screen: cueScreen() })}
         onApply={next => {
+          if (!capabilitiesRef.current.edit) return;
           const index = next.findIndex(c => c.id === activeCueId);
           if (index < 0) { setActiveCueId(null); setCueModified(false); }
           if (index < 0 || !next[index + 1] || next[index].followSeconds !== cues[currentIndex]?.followSeconds) setFollow(null);
           setCues(next);
         }}
         onClose={() => setCueEditor(false)}/></ErrorBoundary>}
-      {toast && !demoOpeningBlack && (
-        <div role="status" aria-live="polite" className="fixed top-16 left-1/2 -translate-x-1/2 z-50 glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
-          {toast}
-        </div>
-      )}
-
       {/* Always-visible safety badge whenever live DMX output is enabled (including cinema mode) */}
       <LiveDmxBadge
         banner={liveDmx.banner}
@@ -1594,12 +2250,6 @@ export const App: React.FC = () => {
         }}
       />
 
-      {showState.blackout && !demoOpeningBlack && (
-        <div role="alert" className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none px-5 py-2 rounded-xl bg-rose-950/80 border border-rose-500/70 font-mono-tech text-sm tracking-widest text-rose-200 shadow-[0_0_30px_rgba(244,63,94,0.45)]">
-          STAGE BLACKOUT — PRESS [SPACE] TO RESTORE
-        </div>
-      )}
-
       {/* Slide-Over Rig Builder */}
       {!cinemaMode && (
         <ErrorBoundary label="Rig Builder" onReset={() => setRigDrawerOpen(false)} onExportRig={() => downloadRig(rig)}>
@@ -1615,9 +2265,11 @@ export const App: React.FC = () => {
             onOpenSavedDesign={savedDesign ? () => setDesignerRig(savedDesign) : undefined}
             onNotify={showToast}
             onModelChanged={(podId, groupId) => {
+              if (!capabilitiesRef.current.edit) return;
               interchangeRef.current = pruneInterchangeFixtureSpecs(interchangeRef.current, podId, groupId);
             }}
             onChangeRig={(next, replacing) => {
+              if (!capabilitiesRef.current.edit) return;
               if (replacing && !confirmDiscardStage()) return;
               if (replacing) {
                 installStage();
@@ -1626,6 +2278,7 @@ export const App: React.FC = () => {
               applyRig(next);
             }}
             onChangeStage={(next) => {
+              if (!capabilitiesRef.current.edit) return;
               const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
               installStage(next);
               const nextEvents = next?.screenEvents ?? [];
@@ -1664,6 +2317,7 @@ export const App: React.FC = () => {
       {designerRig && (
         <ErrorBoundary label="Stage Designer" onReset={() => setDesignerRig(null)} onExportRig={() => downloadRig(rig)}>
           <StageDesigner rig={designerRig} stage={studioStage} onClose={() => setDesignerRig(null)} onChange={(design, stage, replacing) => {
+            if (!capabilitiesRef.current.edit) return;
             const next = normalizeDesign(design);
             // A new blank design replaces the authored overlay and its wall cues, even if the user then
             // drew new screens or hangs; ask first, and keep the designer open if they decline.
@@ -1698,6 +2352,7 @@ export const App: React.FC = () => {
               shopStock={shopStock}
               onChangeShopStock={updateShopStock}
               onChangeRig={(next) => {
+                if (!capabilitiesRef.current.edit) return;
                 previewRig();
                 applyRig(next);
               }}
@@ -1719,27 +2374,33 @@ export const App: React.FC = () => {
           activeCueId={activeCueId}
           cueModified={cueModified}
           onPatchState={(patch) => {
+            if (!capabilitiesRef.current.edit) return;
             if (Object.keys(patch).some(key => key !== 'masterDimmer' && key !== 'blackout' && key !== 'bloomStrength')) takeDesk();
             else { previewRig(); setCueModified(true); }
             setShowState((s) => applyDeskPatch(s, patch));
           }}
           onPatchLaser={(patch) => {
+            if (!capabilitiesRef.current.edit) return;
             takeDesk();
             setShowState((s) => ({ ...s, laser: { ...s.laser, ...patch } }));
           }}
           onPatchMotors={(patch) => {
+            if (!capabilitiesRef.current.edit) return;
             takeDesk();
             setShowState((s) => ({ ...s, motors: { ...s.motors, ...patch } }));
           }}
           onPatchAtmo={(patch) => {
+            if (!capabilitiesRef.current.edit) return;
             takeDesk();
             setShowState((s) => ({ ...s, atmo: { ...s.atmo, ...patch } }));
           }}
           onPatchLed={(patch) => {
+            if (!capabilitiesRef.current.edit) return;
             takeDesk();
             setShowState((s) => ({ ...s, led: { ...s.led, ...patch } }));
           }}
           onSetPodMotor={(podId, height, tilt) => {
+            if (!capabilitiesRef.current.edit) return;
             takeDesk();
             setShowState((s) => ({
               ...s,
@@ -1759,6 +2420,7 @@ export const App: React.FC = () => {
           }}
           onSaveCue={handleSaveCue}
           onUploadScreen={file => {
+            if (!capabilitiesRef.current.edit) return;
             const kind = file.type.startsWith('video/') || (!file.type && VIDEO_EXT.test(file.name)) ? 'video' : 'image';
             const asset = registerAsset(kind, file);
             takeDesk(); setCaptureVideoPosition(false); setScreen({ target: 'main-led', kind, name: file.name, playing: kind === 'video', offsetSeconds: 0 });
@@ -1768,6 +2430,7 @@ export const App: React.FC = () => {
           screenName={media.screen.name} videoPlaying={media.screen.playing}
           captureVideoPosition={captureVideoPosition} onCaptureVideoPosition={setCaptureVideoPosition}
           onToggleVideo={() => {
+            if (!capabilitiesRef.current.edit) return;
             if (missing.includes(screen.name)) { setFilesOpen(true); return; }
             takeDesk();
             const next = { ...readScreen(), playing: !media.screen.playing };
@@ -1783,6 +2446,7 @@ export const App: React.FC = () => {
           mainScreen={media.screen}
           missingMedia={missing}
           onApplyWallCue={(event: SecondaryScreenEvent, file?: File) => {
+            if (!capabilitiesRef.current.edit) return;
             const clampedAtMs = Math.max(0, Math.min(MAX_WALL_CUE_MS, Math.round(event.atMs)));
             const nextStage = upsertSecondaryScreenEvent(rig, nativeStage.current, event);
             // upsert rejects unknown walls and unnamed media; leave the desk untouched then.
@@ -1799,6 +2463,7 @@ export const App: React.FC = () => {
             else wallClock.set(wallClock.position(), true, timeline.mode === 'recording' ? Infinity : endMs);
           }}
           onRemoveWallCue={(target, atMs) => {
+            if (!capabilitiesRef.current.edit) return;
             const nextStage = removeSecondaryScreenEvent(rig, nativeStage.current, target, atMs);
             installStage(nextStage);
             const nextEvents = nextStage?.screenEvents ?? [];
@@ -1808,12 +2473,13 @@ export const App: React.FC = () => {
           take={{
             mode: timeline.mode,
             timeMs: timeline.timeMs,
-            durationMs: Math.max(timeline.timeline?.durationMs ?? 0, studioStage?.screenEvents.at(-1)?.atMs ?? 0),
-            hasTake: !!timeline.timeline && (timeline.timeline.events.length > 0 || timeline.timeline.durationMs > 0),
+            durationMs: takeDurationMs,
+            hasTake,
             canResume: timeline.canResume,
             cues: takeCues,
             playhead: () => timeline.playhead(),
             record: () => {
+              if (!capabilitiesRef.current.edit) return;
               if (!timeline.timeline?.events.length || window.confirm('Replace the recorded take in this session?')) {
                 const stampMeta = takeMetaExplicitRef.current || showControl.clockMode === 'chase';
                 timeline.record(stampMeta ? {
@@ -1823,48 +2489,11 @@ export const App: React.FC = () => {
                 wallClock.set(0, true);
               }
             },
-            play: () => {
-              if (!allows(clockModeRef.current, 'internal', 'take_play')) {
-                showToast(`Replay is disabled in ${clockModeRef.current} mode.`);
-                return;
-              }
-              if (missing.length) showToast(`Playing with missing media. Relink ${missing.join(', ')} in Files.`);
-              const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
-              setFollow(null); replaying.current = true; replayLook.current = showState; replayScreen.current = NO_SCREEN; replayMusicClock.current = 0;
-              engineRef.current?.releaseDirector(false); previewRig(); timeline.play(false);
-              wallClock.set(0, true, endMs);
-            },
-            resume: () => {
-              if (!allows(clockModeRef.current, 'internal', 'take_play')) {
-                showToast(`Replay is disabled in ${clockModeRef.current} mode.`);
-                return;
-              }
-              if (missing.length) showToast(`Playing with missing media. Relink ${missing.join(', ')} in Files.`);
-              const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
-              setFollow(null); replaying.current = true; replayLook.current = showState; replayMusicClock.current = 0;
-              engineRef.current?.releaseDirector(false); previewRig(); timeline.play(true);
-              wallClock.set(timeline.playhead(), true, endMs);
-            },
-            pause: () => {
-              timeline.pause();
-              replaying.current = false;
-              const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
-              wallClock.set(timeline.playhead(), false, endMs);
-            },
-            seek: (ms: number) => {
-              const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
-              const clamped = Math.max(0, Math.min(endMs, Math.round(ms)));
-              const keepPlaying = timeline.mode === 'playing' && clamped < endMs;
-              setFollow(null); replaying.current = keepPlaying;
-              engineRef.current?.releaseDirector(false); previewRig();
-              timeline.seek(clamped);
-              wallClock.set(clamped, keepPlaying, endMs);
-            },
-            stop: () => {
-              timeline.stop();
-              replaying.current = false;
-              wallClock.set(timeline.playhead(), false);
-            },
+            play: playTake,
+            resume: resumeTake,
+            pause: pauseTake,
+            seek: seekTake,
+            stop: stopTake,
           }}
           clockMode={showControl.clockMode}
           tempo={tempoProps}
@@ -1878,10 +2507,28 @@ export const App: React.FC = () => {
             onChangeMode: setIldaMode,
             onChangeFps: setIldaFps,
           }}
-          onSetBump={(key, active) => setBump((b) => ({ ...b, [key]: active }))}
+          onSetBump={(key, active) => {
+            if (!capabilitiesRef.current.edit) return;
+            setBump((b) => ({ ...b, [key]: active }));
+          }}
         />
       )}
+      </>
+      )}
+
+      {toast && !demoOpeningBlack && (
+        <div role="status" aria-live="polite" className="fixed top-16 left-1/2 -translate-x-1/2 z-50 glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
+          {toast}
+        </div>
+      )}
+
+      {showState.blackout && !demoOpeningBlack && (
+        <div role="alert" className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none px-5 py-2 rounded-xl bg-rose-950/80 border border-rose-500/70 font-mono-tech text-sm tracking-widest text-rose-200 shadow-[0_0_30px_rgba(244,63,94,0.45)]">
+          {capabilities.mutatingHotkeys ? 'STAGE BLACKOUT — PRESS [SPACE] TO RESTORE' : 'STAGE BLACKOUT'}
+        </div>
+      )}
     </main>
+    </CapabilitiesProvider>
   );
 };
 export default App;

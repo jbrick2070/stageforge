@@ -56,11 +56,11 @@ export function DeskDialog({ title, onClose, className, children }: {title: stri
   </dialog>;
 }
 
-export function ShowFiles({ name, media, stage, timeline, missing, cueNames, lastMvrSummary, onViewMvrReport, onOpen, onExample, onSave, onRelink, onError, onClose }: {
+export function ShowFiles({ name, media, stage, timeline, missing, cueNames, lastMvrSummary, onViewMvrReport, onOpen, onOpenInViewer, onExample, onSave, onRelink, onError, onClose }: {
   name: string; media: ShowMedia; stage?: NativeStage; timeline?: ShowTimeline; missing: string[]; cueNames: Map<string, string>;
   lastMvrSummary?: { fileName: string; warnings: number; blocks: number };
   onViewMvrReport?: () => void;
-  onOpen: (file: File) => Promise<void>; onSave: (action: FileAction) => Promise<void>;
+  onOpen: (file: File) => Promise<void>; onOpenInViewer?: (file: File) => Promise<void>; onSave: (action: FileAction) => Promise<void>;
   onExample: (name: 'amber-walk-on' | 'split-rig') => Promise<void>;
   onRelink: (files: File[]) => string; onError?: (message: string) => void; onClose: () => void;
 }) {
@@ -73,6 +73,7 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, las
     return () => { mounted.current = false; };
   }, []);
   const picker = useRef<HTMLInputElement>(null);
+  const viewerPicker = useRef<HTMLInputElement>(null);
   const relink = useRef<HTMLInputElement>(null);
   const job = async (fn: () => Promise<void>) => {
     setBusy(true); setNote('');
@@ -93,10 +94,13 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, las
     <p className="file-show-name">{name}</p>
     <div className="file-actions">
       <button disabled={busy} onClick={() => picker.current?.click()}>Open show or rig…</button>
+      {onOpenInViewer && <button disabled={busy} onClick={() => viewerPicker.current?.click()}>Open in viewer…</button>}
       <button disabled={busy} onClick={() => void job(() => onSave('show'))}>Save show JSON</button>
       <button disabled={busy} onClick={() => void job(() => onSave('bundle'))}>Save show bundle</button>
       <input type="file" hidden ref={picker} accept=".json,.zip,.mvr,application/json,application/zip" aria-label="Open show file"
         onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void job(async () => { await onOpen(f); onClose(); }); }}/>
+      {onOpenInViewer && <input type="file" hidden ref={viewerPicker} accept=".json,.zip,application/json,application/zip" aria-label="Open show in viewer"
+        onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void job(async () => { await onOpenInViewer(f); onClose(); }); }}/>}
     </div>
     <p>The show bundle includes the rig, cues and linked media for offline playback.</p>
     <div className="file-actions">

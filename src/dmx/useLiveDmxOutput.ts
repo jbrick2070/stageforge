@@ -43,9 +43,12 @@ export interface LiveDmxControllerApi {
 export function useLiveDmxOutput(
   engineRef: React.RefObject<StageEngine | null>,
   onToast: (message: string) => void,
+  enabled = true,
 ): LiveDmxControllerApi {
   const hasDesktopBridge = Boolean(typeof window !== 'undefined' && window.stageforgeDesktop);
   const hasWebSerial = isWebSerialSupported();
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   const [settings, setSettings] = useState<DmxOutputSettings>(() => loadDmxOutputSettings(hasDesktopBridge));
   const [interfaces, setInterfaces] = useState<DmxNetworkInterfaceBridge[]>([]);
@@ -66,6 +69,7 @@ export function useLiveDmxOutput(
   }
 
   const updateSettings = useCallback((patch: Partial<DmxOutputSettings>) => {
+    if (!enabledRef.current) return;
     setSettings((prev) => {
       const next = { ...prev, ...patch };
       saveDmxOutputSettings(next);
@@ -75,10 +79,12 @@ export function useLiveDmxOutput(
   }, []);
 
   const refreshInterfaces = useCallback(async () => {
+    if (!enabledRef.current) return;
     const bridge = window.stageforgeDesktop;
     if (!bridge?.dmxControl) return;
     try {
       const list = await bridge.dmxControl({ type: 'listInterfaces' });
+      if (!enabledRef.current) return;
       setInterfaces(list);
       setSettings((prev) => {
         if (list.length > 0 && !list.some((item) => item.address === prev.iface)) {
@@ -96,51 +102,73 @@ export function useLiveDmxOutput(
   // Subscribe to main-process DMX status pushes and query initial (always off) status.
   useEffect(() => {
     const bridge = window.stageforgeDesktop;
-    if (!bridge?.onDmxStatus || !bridge?.dmxControl) return;
+    if (!enabled || !bridge?.onDmxStatus || !bridge?.dmxControl) return;
     const unsub = bridge.onDmxStatus((status) => {
       setDesktopStatus(status);
       if (status.nodes.length > 0) setDiscoveredNodes(status.nodes);
     });
     void bridge.dmxControl({ type: 'getStatus' }).then(setDesktopStatus).catch(() => {});
     return unsub;
-  }, []);
+  }, [enabled]);
 
-  const desktopLive = Boolean(desktopStatus?.enabled);
+  const desktopLive = enabled && Boolean(desktopStatus?.enabled);
   const desktopLiveRef = useRef(false);
-  desktopLiveRef.current = desktopLive;
+  desktopLiveRef.current = Boolean(desktopStatus?.enabled);
   const mountedRef = useRef(true);
+
+  // Runtime-only shutdown when capability is revoked (e.g. entering pitch viewer).
+  // Never writes localStorage so operator preferences remain untouched.
+  useEffect(() => {
+    if (enabled) return;
+    engineRef.current?.setDmxFrameListener(undefined);
+    if (serialRef.current?.isRunning()) {
+      void serialRef.current.disable();
+    }
+    if (desktopLiveRef.current && window.stageforgeDesktop?.dmxControl) {
+      void window.stageforgeDesktop.dmxControl({ type: 'disable' }).then(setDesktopStatus).catch(() => {});
+    }
+    setDesktopStatus((prev) => (prev?.enabled ? { ...prev, enabled: false, state: 'idle' } : prev));
+    setSerialStatus((prev) => (prev.enabled ? { ...prev, enabled: false } : prev));
+    setDiscovering(false);
+    setError(null);
+  }, [enabled, engineRef]);
 
   // Best-effort browser Web Serial blackout on page unload / tab close.
   useEffect(() => {
     mountedRef.current = true;
     const onPageHide = () => {
-      serialRef.current?.emergencyBlackoutBestEffort();
+      if (enabledRef.current) {
+        serialRef.current?.emergencyBlackoutBestEffort();
+      }
     };
     window.addEventListener('pagehide', onPageHide);
     return () => {
       mountedRef.current = false;
       window.removeEventListener('pagehide', onPageHide);
-      void serialRef.current?.disable();
+      if (enabledRef.current || serialRef.current?.isRunning()) {
+        void serialRef.current?.disable();
+      }
       if (desktopLiveRef.current && window.stageforgeDesktop?.dmxControl) {
         void window.stageforgeDesktop.dmxControl({ type: 'disable' }).catch(() => {});
       }
     };
   }, []);
 
-  const serialLive = serialStatus.enabled;
-  const isLive = desktopLive || serialLive;
+  const serialLive = enabled && serialStatus.enabled;
+  const isLive = enabled && (desktopLive || serialLive);
 
   // Wire StageEngine's lightweight <= 44 Hz frame listener ONLY while live output is enabled.
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
-    if (!isLive) {
+    if (!enabled || !isLive) {
       engine.setDmxFrameListener(undefined);
       return;
     }
     const bridge = window.stageforgeDesktop;
     const serial = serialRef.current;
     engine.setDmxFrameListener((u1, u2, u1Changed, u2Changed) => {
+      if (!enabledRef.current) return;
       if (desktopLive && bridge?.sendDmxFrame) {
         if (u1Changed) bridge.sendDmxFrame(1, u1);
         if (u2Changed) bridge.sendDmxFrame(2, u2);
@@ -153,9 +181,10 @@ export function useLiveDmxOutput(
     return () => {
       engine.setDmxFrameListener(undefined);
     };
-  }, [engineRef, isLive, desktopLive, serialLive]);
+  }, [engineRef, enabled, isLive, desktopLive, serialLive]);
 
   const discoverArtNet = useCallback(async () => {
+    if (!enabledRef.current) return;
     const bridge = window.stageforgeDesktop;
     if (!bridge?.dmxControl || discovering) return;
     setDiscovering(true);
@@ -163,6 +192,7 @@ export function useLiveDmxOutput(
     setError(null);
     try {
       const result = await bridge.dmxControl({ type: 'discover', iface: settings.iface });
+      if (!enabledRef.current) return;
       setDiscoveredNodes(result.nodes);
       setDiscoveryWarning(result.warning);
       if (result.nodes.length > 0) {
@@ -199,6 +229,7 @@ export function useLiveDmxOutput(
   }, [onToast]);
 
   const enable = useCallback(async (): Promise<boolean> => {
+    if (!enabledRef.current) return false;
     setBusy(true);
     setError(null);
     try {
@@ -206,12 +237,13 @@ export function useLiveDmxOutput(
         if (window.stageforgeDesktop?.dmxControl && desktopStatus?.enabled) {
           await window.stageforgeDesktop.dmxControl({ type: 'disable' }).then(setDesktopStatus);
         }
+        if (!enabledRef.current) return false;
         const status = await serialRef.current!.enable({
           universe: settings.serialUniverse,
           rateHz: Math.min(44, Math.max(1, settings.rateHz)),
           allowAllDevices: settings.serialAllowAll,
         });
-        if (!mountedRef.current) {
+        if (!mountedRef.current || !enabledRef.current) {
           void serialRef.current?.disable();
           return false;
         }
@@ -227,6 +259,7 @@ export function useLiveDmxOutput(
       if (serialRef.current?.isRunning()) {
         await serialRef.current.disable();
       }
+      if (!enabledRef.current) return false;
       const config = settings.mode === 'sacn'
         ? {
             protocol: 'sacn' as const,
@@ -253,7 +286,7 @@ export function useLiveDmxOutput(
           };
 
       const status = await bridge.dmxControl({ type: 'enable', config });
-      if (!mountedRef.current) {
+      if (!mountedRef.current || !enabledRef.current) {
         void bridge.dmxControl({ type: 'disable' }).catch(() => {});
         return false;
       }
@@ -271,6 +304,9 @@ export function useLiveDmxOutput(
   }, [desktopStatus?.enabled, onToast, settings]);
 
   const banner = useMemo<LiveDmxBannerState>(() => {
+    if (!enabled) {
+      return { active: false, label: 'OFF', detail: '', degraded: false, error: null };
+    }
     if (desktopStatus?.enabled) {
       const proto = desktopStatus.protocol === 'sacn' ? 'sACN' : 'Art-Net';
       const uniLabel = desktopStatus.universes

@@ -157,6 +157,7 @@ async function main() {
     copyFile(path.join(source, 'artnet-rx.cjs'), path.join(app, 'artnet-rx.cjs')),
     copyFile(path.join(source, 'show-control-service.cjs'), path.join(app, 'show-control-service.cjs')),
     copyFile(path.join(source, 'show-control-ipc.cjs'), path.join(app, 'show-control-ipc.cjs')),
+    copyFile(path.join(source, 'viewer-ipc.cjs'), path.join(app, 'viewer-ipc.cjs')),
     copyFile(path.join(source, 'preload.cjs'), path.join(app, 'preload.cjs')),
     copyFile(path.join(source, 'resources', 'icon.png'), path.join(app, 'icon.png')),
     copyFile(path.join(root, 'LICENSE'), path.join(app, 'LICENSE')),
