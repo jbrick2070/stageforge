@@ -47,7 +47,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Sprint 24 (hardening) comes before everything below, and once it is done every sprint ends with the Codex QA gate.** **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11, 14, 14b, the graphics Sprints 15 to 21, then Sprint 23 (a much better default look) and then Sprint 22 (WebXR audience mode) in that order (see "Designed Sprints 6–8" and Sprints 9 to 14 and "Graphics Sprints 15 to 21" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Item 9 (VR) is now designed Sprint 22: do not start it before Sprints 15 to 21 are done.
+After Sprint 3, each round works like this. **Sprint 24 (hardening) comes before everything below, and once it is done every sprint ends with the Codex QA gate.** **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11, 14, 14b, the graphics Sprints 15 to 21, then Sprint 23 (a much better default look) and then Sprint 22 (WebXR audience mode) in that order (see "Designed Sprints 6–8" and Sprints 9 to 14 and "Graphics Sprints 15 to 21" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** After those, work plan cards P1 to P4 (see "After Realism 7" below) before choosing your own work. The user wants people to feel like they are running a real show, with a real inventory of real items. Item 9 (VR) is now designed Sprint 22: do not start it before Sprints 15 to 21 are done.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -279,7 +279,7 @@ Record one line per cycle in the Overnight log: `Codex QA <file name>: cycle N, 
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14, then Sprint 14b (catalogue expansion), then the graphics Sprints 15 to 21, then Sprint 23 (a much better default look), then Sprint 22 (WebXR audience mode), in that order (13 before 12, 12 before 11, 14 and 14b before 15, 15 to 21 before 23, 21 and 23 before 22), one per round, before Realism items 6 and 7. Realism item 8 is superseded by Sprints 15, 20 and 21.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. VR (item 9) is now Sprint 22, the last in that list. The optional CPU win after Realism item 8:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14, then Sprint 14b (catalogue expansion), then the graphics Sprints 15 to 21, then Sprint 23 (a much better default look), then Sprint 22 (WebXR audience mode), in that order (13 before 12, 12 before 11, 14 and 14b before 15, 15 to 21 before 23, 21 and 23 before 22), one per round, before Realism items 6 and 7. Realism item 8 is superseded by Sprints 15, 20 and 21.** Plan cards P1 to P4 follow Realism item 7 (see "After Realism 7" below). Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. VR (item 9) is now Sprint 22, the last in that list. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
@@ -932,6 +932,20 @@ After `HARDENING COMPLETE`, the runner continues with the sprint queue, and from
 **Out:** new features, Sprint 16 and later, pushing, and anything that weakens a safety control.
 
 **Done when:** every finding in the table is fixed or rejected with a reason, the last full Codex review says `NO BLOCKERS`, the gate is green, and the Overnight log says so.
+
+### After Realism 7: console preview milestone, P1 to P4 (planned by Codex, 2026-11-25)
+
+**Source:** [docs/implementation-plan.md](docs/implementation-plan.md), 35 cards, with its [review notes](docs/reviews/codex-implementation-plan-2026-11-25.md). It was written against `a0d399d`, and its source line links are as of that commit.
+
+**When:** only after the hardening hold is lifted and every sprint and Realism item queued above (ending with graphics Sprints 16 to 21, 23, 22, then Realism items 6 and 7) is done or logged as blocked. These cards come before any work you choose yourself.
+
+**Queued:** P1, P2, P3 and P4, in that order, one card per round. Each follows its card, the plan's "Implementation gate and handoff" section, the gate above and the Codex QA gate. At pickup, re-read the Overnight log and `HEAD`, and skip anything already shipped.
+
+**Who codes:** Codex and `agy` (the owner, 2026-11-25), once the sprints queued before these cards are finished. Only one of them writes in this checkout at a time, because the overnight runner works directly on `main` and stashes whatever is left uncommitted. Before starting a card, add a line to the Overnight log saying who is taking it, commit that line, and never take a card the log shows as claimed or done. The rule under "Design consult (Codex, read-only)" against Codex editing files covers consults, not a card Codex is coding. The full gate and the Codex QA gate apply to both.
+
+**Not queued:** P5, P6, P7 and every D, V, A, G and E card. Do not start them until the owner adds them here. P7 (wider physical network output) also needs the owner's separate release decision. DXF import and MVR-xchange stay on demand, as in Sprint 4.
+
+**Logging:** record each one in the Overnight log as "Plan card P1" and so on. Card IDs are separate from sprint numbers.
 
 ## Backlog (in this order)
 
