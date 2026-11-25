@@ -441,7 +441,7 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
     await dmxPage.getByRole('button', { name: /Choose equipment model for Molefay 4-Lite Warm/ }).first().click();
     await expect(eqPicker).toBeVisible();
     await eqPicker.getByRole('searchbox', { name: 'Search equipment catalogue' }).fill('STRIKE 4');
-    await eqPicker.getByRole('button', { name: /CHAUVET STRIKE 4/ }).click();
+    await eqPicker.getByRole('button', { name: /CHAUVET Professional STRIKE 4/ }).click();
     await eqPicker.getByRole('button', { name: 'Apply model' }).click();
     await expect(eqPicker).toBeHidden();
     await dmxPage.getByRole('button', { name: 'Close Rig Builder' }).click();
@@ -648,7 +648,7 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       await dmxPage.getByTestId('dmx-output-go-live').click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
       const beforeRevoke = packets.length;
-      await dmxPage.getByTestId('dmx-open-preflight').click();
+      await dmxPage.getByTestId('live-preflight-badge').click();
       await expect(pfRevoke).toBeVisible();
       await ackRevoke.first().uncheck();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
@@ -677,6 +677,7 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       rawLegacyShow.look.blinderLevel = 1;
       rawLegacyShow.look.atmo = { ...rawLegacyShow.look.atmo, smokeOutput: 1, hazeLevel: 1 };
 
+      await dmxPage.getByRole('button', { name: 'Close DMX monitor', exact: true }).click();
       const beforeOpenDoc = packets.length;
       await dmxPage.getByRole('button', { name: 'Show files', exact: true }).click();
       const showFilesDialog = dmxPage.getByRole('dialog', { name: 'Show files' });
@@ -699,6 +700,7 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
         expect(p.slots.slice(128, 144).every((v) => v === 0)).toBe(true);
       }
       await dmxPage.getByTestId('live-dmx-stopped-dismiss').click();
+      await dmxPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
 
       // 5. Re-enable and forcibly crash the renderer: main process MUST still send blackout + terminate.
       // (Re-expand Advanced first; step 4 triggered a cue which may make pre-flight stale, so refresh if needed.)
