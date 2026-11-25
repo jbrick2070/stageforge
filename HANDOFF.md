@@ -2070,3 +2070,57 @@ The overnight runner was stopped after Round 5. Claude Code took over for one sp
   - *Pass 2 L-B (heavy rollback on early apply throw):* Acceptable safety-first behavior when `applyCandidate` throws unexpectedly.
 - **Leftovers / next up:**
   - Next up per `HANDOFF.md` queue: **Sprint 14** (add the project owner's real demo track from `%LOCALAPPDATA%\stageforge-overnight\demo-track\`), then **Sprint 14b** (catalogue expansion), then graphics **Sprints 15–21**, **Sprint 23**, and **Sprint 22**.
+
+### 2026-11-25 03:21 PST — Sprint 14: ship project owner's real demo track + Codex review-03 fixes (`64f087b`)
+
+- **Consults & QA runs:**
+  - Confirmed Claude Opus 5.5 availability (`%TEMP%\stageforge-overnight\opus-status.txt` + live probe `OK`) and ran read-only design consult (`round-1-design.md` → `round-1-design-reply.md`).
+    - *Opus 5.5 top-5 ranking:* (1) Ship **Sprint 14** and fix all 7 ambiguous `Play demo` test locators (5 regex `/play demo/i` + 2 non-exact `'Play demo'`); (2) First-load JS/CSS size budget check for phones (excluding `/demo/`); (3) Sprint 4 DXF import & MVR-xchange; (4) Accessible-name / test-locator hygiene guard for `"Play demo"` vs `"Play demo track"`; (5) **Sprint 14b** 51-product catalogue expansion.
+    - *Selection decision:* Executed **Sprint 14** per `HANDOFF.md`'s explicit queue order (`14, 14b, 15–21, 23, 22`) plus Opus's #4 cheap locator-hygiene guard and all verified blockers from Codex `review-03-sprint-11-3fddcf9.md`.
+  - **Codex review inbox handling (checked at start, mid-round, and before final gate):**
+    - `Codex review review-03-sprint-11-3fddcf9.md: fixed R1, R2, R3, R4, Previous R5 (commit 64f087b), rejected none, deferred none.`
+      - *R1 (`src/engine/audioModulation.ts` `stepCombinedStrobeGate`):* Tracked `manualStrobeGate` on `AudioModulationState` so releasing strobe from a dark trough (`< 0.5`) holds `0.06` until the shared `334 ms` refractory clock elapses, and records `lastGlobalStrobeEdgeMs = tMs` / `manualStrobe.lastEdgeMs = tMs` on bright restore (`<= 3` physical ETC ColorSource PAR dimmer flashes/s across alternating 50 ms press/release cycles, verified by regression test).
+      - *R2 (`src/aiBridge/aiBridgeProtocol.ts`, `src/aiBridge/useAiBridge.ts`, `src/App.tsx`):* Exported pure `createAiRevertSnapshot` capturing `mvrResources` (`new Map(desk.mvrResources)`) and passed a copy back into `installInterchange(snap.interchange, ...)` in `restoreAiRevertSnapshot` (+custom GDTF MVR round-trip regression test).
+      - *R3 (`src/App.tsx`):* Extracted shared `stopDeskPlayback()` called by both OSC `onStopPlayback` and AI `onStop`, clearing `follow` + `followInitiatedByAiRef`, calling `timelineRef.current.stop()` unconditionally, stopping audio, and restoring screen transport (+live Electron MCP follow-timer cancel regression in Test 13).
+      - *R4 (`src/aiBridge/aiBridgeProtocol.ts`, `src/App.tsx`):* Exported pure `resolveAcceptedCueActiveId(currentActiveCueId, nextCues)` preserving live `activeCueId` across cue create/edit/reorder and clearing only when the active cue itself is removed; synchronized `activeCueIdRef.current = cue.id` inside `triggerCue` and cleared pending `follow` when active cue is cleared or cue order changes (+unit & live Electron MCP regression in Test 13).
+      - *Previous R5 (`src/data/cueLook.ts` `applyTimelineLookPatch`):* Required core scalar look fields (`masterDimmer`, `primaryColor`, `beamIntensity`, `movementMode`) alongside `isFullLookSnapshot` so already-saved ambiguous 4-subsystem deltas `{ laser, motors, atmo, led }` preserve unchanged `movingGroups`, `focusMarkId`, and `audioMap` (+regression test alongside legacy v1 full snapshot without `bpm`).
+  - Ran **Sonnet 5.5 (`claude-sonnet-5-5`) read-only QA** (`sprint-14-prompt.md` → `sprint-14-qa.md`): 0 Critical, 0 High, 4 Medium (`M1–M4`), 8 Low (`L1–L8`). Verified every finding against the code and fixed `M1–M4`, `L3`, `L5`, plus added `L1` mixed audio+manual strobe regression test.
+- **What shipped:**
+  - **Real demo track & attributes (`public/demo/track.mp3`, `public/demo/track.json`, `.gitattributes`):**
+    - Copied the owner's staged 96 kbps CBR stereo MP3 (`3,715,925 B`, ~3.72 MB, 5:09.6, SHA-256 `f56ef9ce…bd8e`) and untouched section map (`122 BPM`, `firstDownbeatMs: 96`, 11 sections, 158 bars, LF-normalized SHA-256 `90d70f52…c920`) into `public/demo/`. Timings verified unchanged (`Kick enters` bar 17 at `0:31.6`, `Breakdown` bar 109 at `3:32.6`; intentional `1.32 s` map margin closed cleanly by `AudioEngine` `ended`).
+    - Added `public/demo/*.json text eol=lf` and `*.mp3 binary` to `.gitattributes` (verified with `git check-attr`).
+  - **Docs & provenance (`docs/demo-track.md`, `docs/assets.md`, `README.md`):**
+    - Documented the shipped track, bar layout, intentional 1.32 s trailing margin, zero-audio-on-first-load behavior, and how to replace/remove `public/demo/` in `docs/demo-track.md`.
+    - Updated `docs/assets.md` (narrowed procedural/MIT claim to visual assets, recorded embedded Suno comment metadata + owner's Suno Pro statement attributed strictly to the owner without asserting Suno's terms, noted `public/demo/track.mp3` is **not** covered by the repo's MIT licence, and listed all 4 open owner provenance items verbatim) and added the matching MIT carve-out note in `README.md`.
+  - **Tests (+4 unit tests, 289 → 293; +1 desktop smoke test, 12 → 13; +1 E2E test, 73 → 74):**
+    - Fixed all 7 ambiguous `Play demo` locators across `electron-smoke.spec.mjs`, `venue-presets.spec.mjs`, `measure-overlay.spec.mjs`, `audio-mappings.spec.mjs`, and `render-budget.spec.mjs` to `{ name: 'Play demo', exact: true }`, and added a multi-line `getByRole`/`getByText` locator hygiene guard in `tests/demo-track.test.mjs`.
+    - Added shipped-track unit checks (`parseDemoTrackMap`, SHA-256 pins, LF/CRLF normalization, MP3 header & `< 4 MiB` budget, bar 17/109 boundary checks, `309.6 s` `ended=false/true` margin checks).
+    - Added unmocked E2E test in `tests/e2e/demo-track.spec.mjs` verifying zero MP3 requests on boot, 390×844 & 393×852 phone fit, lazy single MP3 fetch on click, `122.0 BPM · 96 ms` beat grid, real section jumps (`Kick enters`, `Breakdown`), and natural end → `Replay track`.
+    - Updated `tests/desktop/electron-smoke.spec.mjs` Test 1 (verifying `renderer/demo/track.{json,mp3}` + `show-v8.schema.json`, `200` with CSP, zero MP3 fetched on boot), Test 11 (playing & section-jumping the real shipped MP3 from `stageforge://app/` — also verified directly against packaged `win-unpacked/StageForge.exe` / `app.asar`), Test 12 (isolated copy with `renderer/demo` removed confirming `204` + `no-store` + no button + synth demo), and Test 13 (live MCP R3/R4 regressions).
+    - Closed unused authoring tab before opening second browser context in `tests/e2e/studio-screens-hangs.spec.mjs` and `tests/e2e/studio-transport.spec.mjs`, eliminating the recurring dual-tab SwiftShader bundle-reopen timeout (dropping them to `15.2 s` and `20.8 s`).
+- **Build size measurements (before → after Sprint 14):**
+  - `dist/`: `3,308,374 B` (`3.16 MiB`) → **`7,026,102 B` (`6.70 MiB`)** (`+3,717,728 B`, i.e., `track.mp3` + `track.json` only; zero JS/CSS startup audio fetch — first load fetches 0 MP3 bytes).
+  - `desktop/build/app/`: `4,423,001 B` (`4.22 MiB`) → **`8,140,729 B` (`7.76 MiB`)** (`desktop/build/app/renderer/demo/track.{json,mp3}` verified present).
+  - `desktop/build/release/StageForge-1.3.0-win-x64.exe`: `111,369,066 B` (`106.21 MiB`) → **`115,042,852 B` (`109.71 MiB`)** (`+3.50 MiB`; packaged `win-unpacked/StageForge.exe` `app.asar` demo track playback verified PASS in 2.8 s).
+- **Gate results (final code at `64f087b`):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**293/293**)
+  - `npm run build`: PASS
+  - `npm run desktop:win`: PASS (zero new dependencies; SPDX gate green)
+  - `npm run test:desktop`: PASS (**13/13**, 22.1 s)
+  - `npx playwright test --workers=1`: PASS (**74/74**, 9.8 m — zero failures, zero retries)
+  - `git status --short`: clean (zero stray files, zero running Vite/Electron processes)
+- **Sonnet 5.5 QA findings verified and fixed:**
+  - *M1 (`README.md`):* Added explicit MIT carve-out for `public/demo/track.mp3` linking to `docs/assets.md#demo-track-provenance`.
+  - *M2 (`src/engine/audioModulation.ts`):* Copied `manualStrobeGate` in `cloneAudioModulationState` (+regression test).
+  - *M3 (`src/engine/audioModulation.ts`):* Preserved `manualStrobeGate` across blackout instead of resetting to `1.0`, so toggling blackout inside a strobe trough cannot bypass the 334 ms refractory window (+regression test).
+  - *M4 (`src/App.tsx`):* Called `timelineRef.current.stop()` unconditionally in `stopDeskPlayback()` instead of gating on potentially stale React `mode` state.
+  - *L1, L3, L5 (`src/App.tsx`, `tests/sprint13-safety.test.mjs`, `tests/demo-track.test.mjs`):* Added mixed audio-strobe + manual-release regression (`<= 3` edges/s); cleared pending `follow` when cue acceptance clears `activeCueId` or reorders cues; widened `Play demo` locator hygiene guard to multi-line `getByRole`/`getByText`.
+  - *Rejected/noted:* `L7` (public Suno generation ID in `docs/assets.md` — included per owner's `provenance.txt`, flagged below for owner review); `L2`/`L4`/`L6`/`L8` verified accurate and already covered.
+- **Open items for the project owner (from `provenance.txt` — not guessed):**
+  1. Fill in the prompt, style tags, and lyrics used for `public/demo/track.mp3` in `docs/assets.md`.
+  2. Confirm whether any part was recorded, edited, or arranged outside Suno (e.g., in a DAW), and which parts.
+  3. Decide the licence terms for `public/demo/track.mp3` inside this MIT repository (currently marked "not covered by MIT; pending owner decision" in `README.md`, `docs/assets.md`, and `docs/demo-track.md`).
+  4. Keep proof of Suno Pro subscription/generation date privately (do not commit), and confirm whether to keep the embedded Suno ID string quoted in `docs/assets.md` (Sonnet QA `L7`).
+- **Leftovers / next up:**
+  - Next up per `HANDOFF.md` queue: **Sprint 14b** (expand equipment catalogue with 51 researched real products from `docs/research/catalogue-candidates-2026-11-24.json`), then graphics **Sprints 15–21**, **Sprint 23**, and **Sprint 22**.
