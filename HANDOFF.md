@@ -2124,3 +2124,73 @@ The overnight runner was stopped after Round 5. Claude Code took over for one sp
   4. Keep proof of Suno Pro subscription/generation date privately (do not commit), and confirm whether to keep the embedded Suno ID string quoted in `docs/assets.md` (Sonnet QA `L7`).
 - **Leftovers / next up:**
   - Next up per `HANDOFF.md` queue: **Sprint 14b** (expand equipment catalogue with 51 researched real products from `docs/research/catalogue-candidates-2026-11-24.json`), then graphics **Sprints 15–21**, **Sprint 23**, and **Sprint 22**.
+
+### 2026-11-25 04:15 PST — Self-directed Round 2 / Sprint 14b: expand equipment catalogue (+50 researched real products) + Codex review-04 fixes (`b781fe3`, `ba3695a`)
+
+- **Consults & QA runs:**
+  - Confirmed Claude Opus 5.5 availability (`%TEMP%\stageforge-overnight\opus-status.txt` + live probe `OK`) and ran read-only design consult (`round-2-design.md` → `round-2-design-reply.md`).
+    - *Opus 5.5 top-5 ranking:* (1) **Sprint 14b: catalogue expansion** (next in queue, stage-design realism, closes laser safety & shop-stock test gaps); (2) **Phone pass ("Sprint 14c") on GitHub Pages before Graphics 15–21** (390 px Playwright project, touch orbit/pinch & bottom sheets, auto low tier on phones, static `matrixAutoUpdate = false`, CI first-load `dist` size cap); (3) **Accessibility pass** (keyboard reach, focus rings, canvas labels, badge contrast, `prefers-reduced-motion`, axe E2E); (4) **Sprint 4 open standards** (DXF import with hostile-input caps/preflight/fuzzing, block-aware DXF export, MVR-xchange); (5) **Graphics Sprints 15–21, then 23 and 22**, held to the phone budget, followed by Realism 6–7.
+    - *Selection decision:* Executed **Sprint 14b** (top-ranked by Opus 5.5 and next in `HANDOFF.md`'s explicit queue) plus all 5 blockers from Codex `review-04-self-directed-round-1-7e98009.md`.
+  - **Codex review inbox handling (checked at round start and before final commit):**
+    - `Codex review review-04-self-directed-round-1-7e98009.md: fixed R1, R2, R3, R4, R5 (commits b781fe3, ba3695a), rejected none, deferred none.`
+      - *R1 (`src/engine/audioModulation.ts`, `src/engine/StageEngine.ts`):* Added zero-allocation `stepDeliveredStrobeGate(state, channel, desiredGate, blackout)` tracking `deliveredBeamGate`/`deliveredWashGate`/`deliveredBarGate` (cloned in `cloneAudioModulationState`) and wired post-composition limiting across beam, wash, strobe bars, and spill light before rendering and physical DMX encoding so manual + audio strobe composition cannot exceed 3 flashes/s.
+      - *R2 (`src/engine/audioModulation.ts`):* Allowed a same-frame admitted global edge (`tMs === state.lastGlobalStrobeEdgeMs`) in `stepCombinedStrobeGate` and `stepDeliveredStrobeGate` so another pulsing group cannot starve a simultaneous manual strobe release.
+      - *R3 (`src/data/cueLook.ts`):* Tightened `applyTimelineLookPatch` to require the full historical v1–v8 `ShowState` scalar snapshot field set (all 19 required scalar keys except optional legacy `bpm`) alongside `isFullLookSnapshot` (verified against `src/schemas/show-v1.schema.json` and frozen `tests/fixtures/legacy-v1.stageforge.show.json`), so historical 8-key captured-cue deltas preserve `movingGroups`, `focusMarkId`, and `audioMap`.
+      - *R4 (`src/App.tsx`):* Disarmed `directorArmed` and `autoDirRef`/`autoDirector` inside `stopDeskPlayback()` so MCP/OSC `stop` genuinely stops Auto-LD playback (+live Electron MCP regression in `tests/desktop/electron-smoke.spec.mjs` Test 13).
+      - *R5 (`tests/sprint13-safety.test.mjs`):* Updated the ETC ColorSource PAR test fixture to `dmxMode: '1-Ch', dmxChannels: 1`, asserted `parClass.status === 'implemented'` and actual bright (`>= 200`) / dark (`<= 30`) physical DMX bytes, and added unit regressions for R1, R2, R3, and `bar`/blackout edge cases.
+  - **6 Primary-source manufacturer spot-checks (2026-11-25, all HTTP 200 direct fetches):**
+    1. *Laserworld DS-15.000 IP65* (`laserworld.com`): confirmed `15'000 mW` guaranteed, `30 kpps @ 8°`, `50°` max scan angle, `ca. 5.5 mm / 1.1 mrad`, `120 W`, `11.5 kg`, `IP65`.
+    2. *Ayrton Diablo Profile S* (`ayrton.eu`): confirmed `IP20`, `22 kg` spec block (`21.8 kg` intro), `550 W`, `19,000 lm`, `7°–53°` zoom.
+    3. *ROE Visual Vanish V8T* (`roevisual.com`): confirmed `8.9 mm`, `1000×1000×95 mm`, `112×112`, `18.2 kg`, `480 W / 240 W`, `4000 nits`, `IP65`.
+    4. *ROE Visual Black Quartz BQ3.9* (`roevisual.com`): confirmed `3.91 mm`, `500×1000×82.62 mm`, `128×256`, `360 W / 180 W`, `5000 nits`, `IP65`, `22 kg` with wind frame (`17.8 kg` bare panel in brochure).
+    5. *CHAUVET Professional Maverick MK3 Profile* (`chauvetprofessional.com`): confirmed `34.7 kg`, `1,180 W @ 230 V`, `23,000 lm` output, `5.9°–64.1°`, `IP20`, 2 personalities (`38, 54`).
+    6. *JEM Professional Hazer Pro* (`jemprofessional.com`): confirmed `15 kg` dry, `675 W`, `3` DMX channels (`Haze, Fan, Control`).
+    - Also verified *Absen PL3.9 / PL2.5 Pro V10* PDFs (W/m² per-cabinet wattage was derived rather than printed verbatim, so `powerW` was omitted on `PL3.9` and `PL2.5`, alongside `ROBE ESPRITE` whose wattage wasn't in the candidate file).
+  - Ran **Sonnet 5.5 (`claude-sonnet-5-5`) read-only QA Pass 1** (`sprint-14b-qa.md`): 0 Critical, 1 High (`H1`), 6 Medium (`M1–M6`), 4 Low (`L1–L4`), followed by **Pass 2** (`sprint-14b-qa-pass2.md`): 0 Critical, 0 High, 3 Medium (`#1–#3`), 4 Low (`#4–#7`). Verified every finding against the code and fixed all real issues with regression tests.
+- **What shipped (Sprint 14b in full):**
+  - **Catalogue expansion (`src/data/equipmentCatalog.ts`, `src/aiBridge/aiBridgeProtocol.ts`):**
+    - Expanded `EQUIPMENT_CATALOG` from 34 → **84 entries** (+50 researched real products across moving beams, spots/profiles/ellipsoidals, washes/battens, strobes, lasers, atmospheric haze/fog/low-fog/CO2/sparks, and LED cabinets). Skipped duplicate candidate #14 (`Laserworld DS-3000RGB MK5`), leaving existing `laserworld-ds-3000rgb` untouched.
+    - All 50 new IDs use neutral, stable role/index slugs (no manufacturer, model, or spec numbers in IDs) so brand/model display names stay swappable as a pure data change.
+    - Widened `CatalogLaserSpec.beamDiameterMm?: number | null` and `maxScanAngleDeg?: number`, added optional `CatalogEntry.motion?: 'pan-tilt' | 'tilt' | 'fixed'`, and wired `isFieldUnverified(entry, 'laser.laserClass')` into `formatCatalogSpecBadges`.
+  - **3D model reuse & static-head kinematics (`src/engine/fixtureModels.ts`):**
+    - Added `FAMILY_DEFAULT_MODEL_ID` + `entry.motion` override inside `resolveModelSpec` and `hasModelSpecForCatalogId`, reusing existing 3D model bodies and GPU cache with zero new geometry while preserving all 34 original `MODEL_SPECS` and legacy `HEAD_PIVOT`.
+    - Static theatrical ellipsoidals (`ellipsoidal-led-01`, `ellipsoidal-led-02`) and static batten (`batten-static-01`) use `motion: 'fixed'` so they never pan/tilt.
+  - **Shop stock tier defaults (`src/data/shopStock.ts`):**
+    - Preserved all 34 existing literal counts byte-exact in `CLUB_STOCK`/`REGIONAL_STOCK`/`TOURING_STOCK`; added `TIER_CATEGORY_DEFAULTS` + `mergeStockWithDefaults` so high-power lasers (`> 3 W`) stay `0` in Club while all 50 new entries are available (`> 0`) in Touring.
+  - **Laser safety & UI fallbacks (`src/data/laserSafety.ts`, `src/data/preflight.ts`, `src/data/measure.ts`, `src/components/LaserProjectorControls.tsx`):**
+    - Omitted `maxScanAngleDeg` renders `Scan angle n/a` in the UI, evaluates ILDA clearance conservatively at `60°` (`45°` visual preview), and emits a `laser_scan_angle_unknown` `warn` in pre-flight.
+    - Checked `apertureUnverified` before the assumed-5 mm branch in `computeLaserNohd`; verified 6 expanded lasers with unverified/missing divergence or optical power yield `nohd.status === 'unknown'`, `canDrawZone: false`, pre-flight `fail`, and `requiresLaserInhibit: true` (`laser-arena-01`, `laser-club-01`, `laser-club-03`, `laser-outdoor-01`, `laser-outdoor-02`, `laser-outdoor-03`).
+  - **Documentation & tests (`docs/equipment.md`, `tests/equipment-catalog.test.mjs`, `tests/measure.test.mjs`, `tests/sprint13-safety.test.mjs`, `tests/e2e/equipment-catalog.spec.mjs`, `tests/desktop/electron-smoke.spec.mjs`):**
+    - Updated `docs/equipment.md` with the sourcing/licensing policy (OFL code MIT vs fixture defs no separate licence, GDTF Share no redistribution, US facts vs EU database right, JEM Professional 2025 ownership lineage, `powerW`, `lumens`, `laser.opticalPowerW` guaranteed-vs-max, `laser.divergenceMrad`, `laser.maxScanAngleDeg` 45°/60° convention, Triton 32-ch placeholder label), all 50 new catalogue rows, and 59 citation IDs.
+    - Added **+4 unit tests** (293 → **297**: neutral slug & dataset cross-check, docs table parity, legacy 34-key shop stock, unknown-ID fallback, unverified DMX mode invariant, explicit 6 unknown-NOHD laser list + scan-angle warning, and Codex review-04 R1–R5 + Pass 2 regressions) and **+1 E2E test** (74 → **75**: 390 px phone picker scroll/filter/pick & 12-panel LED cabinet selector).
+- **Build size measurements (before → after Sprint 14b):**
+  - `dist/` total: `7,026,102 B` → **`7,049,299 B`** (`+23,197 B` / `+22.7 kB`)
+  - `dist/` excl. `demo/`: `3,309,118 B` → **`3,332,315 B`** (`+23,197 B`, `+0.70%`)
+  - `index-*.js`: `882,604 B` → **`885,668 B`** (`+3,064 B` / `+3.0 kB` minified)
+  - `equipmentCatalog-*.js`: **`36,879 B`** (`36.87 kB` / `7.51 kB` gzip)
+- **Gate results (final code at `ba3695a`):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**297/297**)
+  - `npm run build`: PASS
+  - `npm run desktop:win`: PASS (portable exe built; zero new npm dependencies; SPDX gate green)
+  - `npm run test:desktop`: PASS (**13/13**, 23.0 s — including live MCP `stop` disarming Auto-LD)
+  - `npx playwright test --workers=1`: PASS (**75/75**, 10.0 m — zero failures, zero retries; Arena Rock parity `0.0000%`; Measure overlay delta `+0.80 ms`)
+  - `git status --short`: clean (no stray files, no running Vite/Electron processes)
+- **Sonnet 5.5 QA findings verified and fixed:**
+  - *Pass 1 H1 (`src/data/equipmentCatalog.ts`):* Flagged `'laser.divergenceMrad'` on `laser-arena-01` (`<1.1 mrad` upper bound) so it evaluates as `unknown` NOHD + pre-flight `fail` (+explicit 6-ID assertion).
+  - *Pass 1 M1 (`src/data/equipmentCatalog.ts`, `src/engine/fixtureModels.ts`):* Added `motion: 'fixed'` on `batten-static-01` and honored `CatalogEntry.motion` override in `resolveModelSpec`.
+  - *Pass 1 M2 (`src/data/laserSafety.ts`, `src/data/preflight.ts`):* Used conservative `60°` scan-angle fallback for ILDA clearance and emitted `laser_scan_angle_unknown` `warn` in pre-flight (+unit test).
+  - *Pass 1 M3 (`src/data/equipmentCatalog.ts`, `tests/equipment-catalog.test.mjs`):* Dropped unverified `layout` tables on `laser-club-02` and Kvant FB4 entries, flagged `modes[0..1].channels`, and added an invariant test forbidding `layout` on unverified mode channels.
+  - *Pass 1 M4 & M5 (`docs/equipment.md`):* Labelled Triton 32-ch as placeholder and documented guaranteed-vs-max `laser.opticalPowerW` convention.
+  - *Pass 1 M6 (`src/data/measure.ts`):* Checked `apertureUnverified` before the `beamDiameterMm === undefined` assumed-5 mm branch (+unit test).
+  - *Pass 1 L1 & L4 (`src/data/equipmentCatalog.ts`, `tests/equipment-catalog.test.mjs`):* Flagged `laser.beamDiameterMm` on `laser-outdoor-01` and `optics.zoomDeg` on `spot-hybrid-01`; added dataset cross-check, docs table parity, legacy 34-key shop stock, and unknown-ID fallback tests.
+  - *Pass 2 #1, #5, #6, #7 (`src/engine/StageEngine.ts`, `src/engine/audioModulation.ts`, `docs/equipment.md`, `tests/sprint13-safety.test.mjs`):* Wired `stepDeliveredStrobeGate(..., 'bar', ...)` into strobe-bar flash/brightness and delivered beam/wash/bar gates into `spillStrobeGate`; added clock-advance comment on same-frame edge reuse; added `bar` cap and blackout trough-preservation regressions; documented 45° preview vs 60° safety scan-angle fallback.
+- **Sonnet 5.5 QA findings rejected or deferred (with reasons):**
+  - *Pass 1 L1 omitted-null fields:* Rejected — `equipment-catalog.test.mjs` enforces that every `unverified` path resolves to a defined value; omitted `powerW`/`maxScanAngleDeg`/`beamDiameterMm` already trigger explicit `n/a`/allowance/warning paths.
+  - *Pass 1 L2 (`aiBridgeProtocol` `list_catalog` payload) & L3 (illustrative Club stock preset text):* Deferred — payload stays small and Club stock text is illustrative guidance only.
+  - *Pass 2 #2 (conservative delayed edge on late release):* Noted — Sonnet confirmed it is a conservative deviation, not a safety regression.
+  - *Pass 2 #3 (`colorSplitMode` in R3 full-snapshot required keys):* **Rejected (false positive)** — verified against `src/schemas/show-v1.schema.json` `#/$defs/look.required`, which already required all 24 keys including `colorSplitMode` since v1; added regression test using frozen `tests/fixtures/legacy-v1.stageforge.show.json`.
+  - *Pass 2 #4 (MCP/OSC `stop` disarming Auto-LD):* **Rejected (intentional)** — directly required by Codex `review-04` R4.
+- **Leftovers / next up:**
+  - *Visual follow-up (logged):* The three low-fog machines (`lowfog-chilled-01`, `lowfog-ice-01`, `lowfog-co2-01`) currently map to `category: 'fogger'`, `body: 'fogger-box'`, `renderTypes: ['smoke']` and render as a rising fog plume until a ground-hugging plume is added (fits naturally alongside Sprint 15's falling CO2 plume).
+  - *Next up:* Per `HANDOFF.md` queue, **Sprint 15** (graphics probe, output controls, preview flash limiter & falling CO2) — or consider Opus 5.5's recommended **phone usability pass** on GitHub Pages before Graphics Sprints 15–21, **Sprint 23**, **Sprint 22**, and Realism 6–7.
