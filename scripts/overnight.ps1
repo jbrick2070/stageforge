@@ -16,6 +16,7 @@ param(
   [int[]]$Sprints = @(5),
   [double]$Hours = 10,   # 0 = no deadline
   [int]$FollowUps = 2,
+  [string]$Model = 'gemini-4-carbon-high',   # agy model; run `agy models` for the list
   [switch]$DryRun
 )
 
@@ -68,6 +69,7 @@ function Restore-RunnerFiles {
 function Invoke-Agy([string]$prompt, [string]$conversation, [string]$logFile) {
   Restore-RunnerFiles
   $agyArgs = @('-p', $prompt, '--settings', $settingsFile, '--output-format', 'json', '--print-timeout', '0')
+  if ($Model) { $agyArgs += @('--model', $Model) }
   if ($conversation) { $agyArgs += @('--conversation', $conversation) }
   $raw = (& agy @agyArgs 2>&1 | Out-String)
   Add-Content -Path $logFile -Value $raw -Encoding utf8
