@@ -5,10 +5,17 @@ import schemaV4 from '../schemas/show-v4.schema.json';
 import schemaV5 from '../schemas/show-v5.schema.json';
 import schemaV6 from '../schemas/show-v6.schema.json';
 import schemaV7 from '../schemas/show-v7.schema.json';
+import schemaV8 from '../schemas/show-v8.schema.json';
 import type { BumpState, CameraPreset, MusicRef, RigConfig, ScreenRef, ShowCue, ShowState } from '../types/show';
 import { parseRigJson } from './rigImport';
 import { focusMarks } from '../engine/focusAim';
 import { laserProjectors } from './laserProjectors';
+import {
+  allowsNegativeAmount,
+  HAZE_MIN_ATTACK_MS,
+  HAZE_MIN_RELEASE_MS,
+  isValidAudioTargetParam,
+} from '../engine/audioModulation';
 
 export type { MusicRef, ScreenRef } from '../types/show';
 export const MAX_SHOW_JSON_BYTES = 32 * 1024 * 1024;
@@ -21,6 +28,7 @@ export const V4_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/sh
 export const V5_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v5.schema.json';
 export const V6_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v6.schema.json';
 export const V7_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v7.schema.json';
+export const V8_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v8.schema.json';
 
 export type SmpteFrameRate = 24 | 25 | 29.97 | 30;
 
@@ -101,9 +109,9 @@ export function referencedFiles(media: ShowMedia | undefined, cues: ShowCue[], t
 }
 
 export interface StageForgeShowFile {
-  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL | typeof V4_SCHEMA_URL | typeof V5_SCHEMA_URL | typeof V6_SCHEMA_URL | typeof V7_SCHEMA_URL;
+  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL | typeof V4_SCHEMA_URL | typeof V5_SCHEMA_URL | typeof V6_SCHEMA_URL | typeof V7_SCHEMA_URL | typeof V8_SCHEMA_URL;
   format: 'stageforge-show';
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   rig: RigConfig;
   cues: ShowCue[];
   look: ShowState;
@@ -150,6 +158,7 @@ const versions = {
   5: schemaV5 as ShowSchema,
   6: schemaV6 as ShowSchema,
   7: schemaV7 as ShowSchema,
+  8: schemaV8 as ShowSchema,
 };
 const compiledPatterns = new Map<string, RegExp>();
 
@@ -253,6 +262,21 @@ function portableLook<T extends Partial<ShowState>>(look: T, refs: RigReferences
         result.movingGroups[kind] = { ...group, focusMarkId: null };
     }
   }
+  if (look.audioMap) {
+    // Drop mappings targeting removed laser projectors rather than turning a single-projector mapping into all-projectors.
+    const kept = look.audioMap.mappings
+      .filter((m) => !m.target.projectorKey || (m.target.group === 'laser' && refs.lasers.has(m.target.projectorKey)))
+      .map((m) => ({
+        ...m,
+        ...(m.source === 'band' && m.bands ? { bands: [m.bands[0], m.bands[1]] as [number, number] } : {}),
+        target: { ...m.target },
+      }));
+    if (kept.length > 0) {
+      result.audioMap = { mappings: kept };
+    } else {
+      delete result.audioMap;
+    }
+  }
   return result;
 }
 
@@ -276,6 +300,34 @@ function checkLook(look: Partial<ShowState>, refs: RigReferences, path: string) 
   }
   if (look.motors && Object.keys(look.motors.podTargets).some(id => !refs.pods.has(id)))
     invalid(path + '.motors.podTargets', 'contains an unknown pod ID');
+  if (look.audioMap) {
+    const seen = new Set<string>();
+    look.audioMap.mappings.forEach((m, i) => {
+      const mp = `${path}.audioMap.mappings[${i}]`;
+      if (seen.has(m.id)) invalid(`${mp}.id`, 'duplicates another audio mapping');
+      seen.add(m.id);
+      if (m.bands && m.bands[0] > m.bands[1]) {
+        invalid(`${mp}.bands`, 'must have start band <= end band');
+      }
+      if (!isValidAudioTargetParam(m.target.group, m.target.param)) {
+        invalid(`${mp}.target.param`, `is not valid for target group "${m.target.group}"`);
+      }
+      if (m.target.projectorKey !== undefined) {
+        if (m.target.group !== 'laser') {
+          invalid(`${mp}.target.projectorKey`, 'is only allowed on laser targets');
+        }
+        if (!refs.lasers.has(m.target.projectorKey)) {
+          invalid(`${mp}.target.projectorKey`, 'contains an unknown laser projector');
+        }
+      }
+      if (!allowsNegativeAmount(m.target.group, m.target.param) && m.amount < 0) {
+        invalid(`${mp}.amount`, `cannot be negative for ${m.target.group}.${m.target.param}`);
+      }
+      if (m.target.group === 'haze' && (m.attackMs < HAZE_MIN_ATTACK_MS || m.releaseMs < HAZE_MIN_RELEASE_MS)) {
+        invalid(`${mp}`, `haze requires attackMs >= ${HAZE_MIN_ATTACK_MS} and releaseMs >= ${HAZE_MIN_RELEASE_MS}`);
+      }
+    });
+  }
 }
 
 const ILLEGAL_XML_FRAGMENT_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/;
@@ -402,7 +454,7 @@ export function pruneInterchangeFixtureSpecs(
 
 function decode(value: unknown, writing: boolean): StageForgeShowFile {
   const version = value && typeof value === 'object' && 'version' in value ? value.version : undefined;
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) invalid('show.version', 'has an unsupported value');
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8) invalid('show.version', 'has an unsupported value');
   const schema = versions[version];
   const show = read(value, schema, 'show', writing, schema) as StageForgeShowFile;
   // Share ID, geometry, patch count and motor-range checks with the legacy rig reader.
@@ -462,6 +514,24 @@ export function makeShowFile(
       ...(timeline?.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: timeline.timecodeOffsetMs } : {}),
     };
   }
+  const cleanCues = cues.map(cue => ({
+    ...cue, state: portableLook(cue.state, refs), screen: cue.screen && portableMedia(cue.screen),
+  }));
+  const cleanLook = portableLook(look, refs);
+  const cleanTimeline = timeline && {
+    durationMs: timeline.durationMs,
+    ...(timeline.frameRate !== undefined ? { frameRate: timeline.frameRate } : {}),
+    ...(timeline.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: timeline.timecodeOffsetMs } : {}),
+    events: timeline.events.map(event => ({
+      ...event, look: event.look && portableLook(event.look, refs),
+      music: event.music && portableMedia(event.music), screen: event.screen && portableMedia(event.screen),
+    })),
+  };
+  const hasAudioMappings = (s?: Partial<ShowState>) => (s?.audioMap?.mappings?.length ?? 0) > 0;
+  const hasV8 =
+    hasAudioMappings(cleanLook) ||
+    cleanCues.some((c) => hasAudioMappings(c.state)) ||
+    (cleanTimeline?.events.some((e) => hasAudioMappings(e.look)) ?? false);
   const hasV7 =
     rig.power !== undefined ||
     rig.trussPods.some(
@@ -476,27 +546,17 @@ export function makeShowFile(
     rig.trussPods.some((pod) => pod.fixtures.some((f) => f.catalogId !== undefined || f.dmxMode !== undefined || f.dmxChannels !== undefined)) ||
     rig.floorFx.some((f) => f.catalogId !== undefined || f.dmxMode !== undefined || f.dmxChannels !== undefined) ||
     rig.ledWall.cabinets?.cabinetId !== undefined;
-  const hasV5Timeline = timeline?.frameRate !== undefined || timeline?.timecodeOffsetMs !== undefined;
-  const version = hasV7 ? 7 : hasV6 ? 6 : hasV5Timeline ? 5 : cleanInterchange ? 4 : stage ? 3 : 2;
-  const $schema = version === 7 ? V7_SCHEMA_URL : version === 6 ? V6_SCHEMA_URL : version === 5 ? V5_SCHEMA_URL : version === 4 ? V4_SCHEMA_URL : version === 3 ? V3_SCHEMA_URL : V2_SCHEMA_URL;
+  const hasV5Timeline = cleanTimeline?.frameRate !== undefined || cleanTimeline?.timecodeOffsetMs !== undefined;
+  const version = hasV8 ? 8 : hasV7 ? 7 : hasV6 ? 6 : hasV5Timeline ? 5 : cleanInterchange ? 4 : stage ? 3 : 2;
+  const $schema = version === 8 ? V8_SCHEMA_URL : version === 7 ? V7_SCHEMA_URL : version === 6 ? V6_SCHEMA_URL : version === 5 ? V5_SCHEMA_URL : version === 4 ? V4_SCHEMA_URL : version === 3 ? V3_SCHEMA_URL : V2_SCHEMA_URL;
   const show = decode({
     $schema, format: 'stageforge-show', version, rig, stage, interchange: cleanInterchange,
-    cues: cues.map(cue => ({
-      ...cue, state: portableLook(cue.state, refs), screen: cue.screen && portableMedia(cue.screen),
-    })),
-    look: portableLook(look, refs), activeCueId, controls,
-    timeline: timeline && {
-      durationMs: timeline.durationMs,
-      ...(timeline.frameRate !== undefined ? { frameRate: timeline.frameRate } : {}),
-      ...(timeline.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: timeline.timecodeOffsetMs } : {}),
-      events: timeline.events.map(event => ({
-        ...event, look: event.look && portableLook(event.look, refs),
-        music: event.music && portableMedia(event.music), screen: event.screen && portableMedia(event.screen),
-      })),
-    },
+    cues: cleanCues,
+    look: cleanLook, activeCueId, controls,
+    timeline: cleanTimeline,
     media: media && { music: portableMedia(media.music), screen: portableMedia(media.screen) },
   }, true);
-  if (hasV7 || hasV6 || hasV5Timeline || cleanInterchange || stage) return show;
+  if (hasV8 || hasV7 || hasV6 || hasV5Timeline || cleanInterchange || stage) return show;
   // Emit the oldest schema that represents every field, including saved cues and takes.
   const legacy = { ...show, version: 1 as const, $schema: SHOW_SCHEMA_URL as typeof SHOW_SCHEMA_URL };
   try {

@@ -98,9 +98,10 @@ type ShowControlEventBridge =
   | {
       source: 'osc' | 'msc';
       kind: 'trigger';
-      command: 'go' | 'back' | 'stop' | 'resume' | 'reset' | 'blackout' | 'master' | 'bump' | 'tempo_tap' | 'tempo_bpm' | 'tempo_half' | 'tempo_double';
+      command: 'go' | 'back' | 'stop' | 'resume' | 'reset' | 'blackout' | 'master' | 'bump' | 'tempo_tap' | 'tempo_bpm' | 'tempo_half' | 'tempo_double' | 'audio_reactive' | 'audio_mapping_amount';
       cue?: { index?: number; ref?: string };
       bumpKey?: 'blinder' | 'strobe' | 'co2' | 'smoke' | 'laser' | 'motorDrop';
+      mappingId?: string;
       value?: number;
       at: number;
     }

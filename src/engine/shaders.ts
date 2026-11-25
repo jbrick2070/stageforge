@@ -168,13 +168,13 @@ const LASER_GLSL = /* glsl */ `
 `;
 
 export const LASER_SHEET_VERT = /* glsl */ `
-  uniform float uTime, uPattern, uSpeed, uSpreadX, uSpreadY, uAudioPulse, uSeed;
+  uniform float uTime, uPhaseOffset, uPattern, uSpeed, uSpreadX, uSpreadY, uAudioPulse, uSeed;
   varying vec2 vUv;
   varying vec3 vWorld;
 
   void main() {
     vUv = uv;
-    float t = uTime * (0.45 + uSpeed * 2.6);
+    float t = uTime * (0.45 + uSpeed * 2.6) + uPhaseOffset;
     float reach = uv.y;
     float x = uv.x * 2.0 - 1.0;
     float width = ${glslFloat(LASER_SHEET_WIDTH_BASE)} + uSpreadX * ${glslFloat(LASER_SHEET_WIDTH_SCALE)};
@@ -207,14 +207,14 @@ export const LASER_SHEET_VERT = /* glsl */ `
 `;
 
 export const LASER_SHEET_FRAG = /* glsl */ `
-  uniform float uPattern;
+  uniform float uPattern, uPhaseOffset;
   ${LASER_GLSL}
 
   void main() {
     if (blanked()) discard;
     float reach = vUv.y;
     float x = vUv.x;
-    float t = uTime * (0.45 + uSpeed * 2.6);
+    float t = uTime * (0.45 + uSpeed * 2.6) + uPhaseOffset;
     float phase = x * max(1.0, uBeamCount);
     float rays = rayMask(phase, 0.105);
     float sheet = 0.0;
@@ -242,7 +242,7 @@ export const LASER_SHEET_FRAG = /* glsl */ `
 `;
 
 export const LASER_CONE_VERT = /* glsl */ `
-  uniform float uTime, uSpeed, uSpreadX, uSpreadY, uAudioPulse, uSeed;
+  uniform float uTime, uPhaseOffset, uSpeed, uSpreadX, uSpreadY, uAudioPulse, uSeed;
   varying vec2 vUv;
   varying vec3 vWorld;
 
@@ -251,7 +251,7 @@ export const LASER_CONE_VERT = /* glsl */ `
     vec3 pos = position;
     // The cone already points along +Z. Its circular aperture is in XY.
     float angle = uv.x * 6.2831853;
-    float t = uTime * (0.45 + uSpeed * 2.6);
+    float t = uTime * (0.45 + uSpeed * 2.6) + uPhaseOffset;
     float reach = 1.0 - uv.y;
     float morph = 1.0 + reach * (0.09 * sin(4.0 * angle + t + uSeed) + 0.08 * uAudioPulse);
     pos.xy *= vec2(${glslFloat(LASER_CONE_SPREAD_BASE)} + uSpreadX * ${glslFloat(LASER_CONE_SPREAD_SCALE)}, ${glslFloat(LASER_CONE_SPREAD_BASE)} + uSpreadY * ${glslFloat(LASER_CONE_SPREAD_SCALE)}) * morph;
@@ -262,14 +262,14 @@ export const LASER_CONE_VERT = /* glsl */ `
 `;
 
 export const LASER_CONE_FRAG = /* glsl */ `
-  uniform float uRotation;
+  uniform float uRotation, uPhaseOffset, uRotOffset;
   ${LASER_GLSL}
 
   void main() {
     if (blanked()) discard;
     float reach = 1.0 - vUv.y;
-    float t = uTime * (0.45 + uSpeed * 2.6);
-    float around = vUv.x + uTime * uRotation * 0.09 + uSeed;
+    float t = uTime * (0.45 + uSpeed * 2.6) + uPhaseOffset;
+    float around = vUv.x + (uTime * uRotation + uRotOffset) * 0.09 + uSeed;
     float rays = rayMask(around * max(1.0, uBeamCount), 0.10);
     vec3 rawNormal = cross(dFdx(vWorld), dFdy(vWorld));
     vec3 surfaceNormal = dot(rawNormal, rawNormal) > 1e-10 ? normalize(rawNormal) : vec3(0.0, 1.0, 0.0);
@@ -294,6 +294,7 @@ export const LED_WALL_VERT = /* glsl */ `
 
 export const LED_WALL_FRAG = /* glsl */ `
   uniform float uTime;
+  uniform float uPhaseOffset;
   uniform float uMode; // 0=tunnel, 1=cybergrid, 2=spectrum, 3=plasma, 4=strobe_bars, 5=mandala, 6=tour_text, 7=custom
   uniform float uBrightness;
   uniform float uSpeed;
@@ -347,7 +348,7 @@ export const LED_WALL_FRAG = /* glsl */ `
       uv = mix(uv, center, resolve);
     }
     vec2 p = (uv - 0.5) * vec2(uAspect, 1.0);
-    float t = uTime * (0.4 + uSpeed * 2.2);
+    float t = uTime * (0.4 + uSpeed * 2.2) + uPhaseOffset;
     vec3 col = vec3(0.0);
 
     if (uMode < 0.5) {

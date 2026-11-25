@@ -53,6 +53,7 @@ export function ShowOverlay({ audioStore, controller, cinema, showControllerGuid
           <dt>Right stick</dt><dd>Orbit camera</dd>
           <dt>B / X / Y</dt><dd>Hold blinders / laser / CO₂</dd>
           <dt>LT / RT</dt><dd>Hold smoke / strobe</dd>
+          <dt>L3 (hold)</dt><dd>Toggle Beat sync</dd>
           <dt>View / Menu</dt><dd>Auto-LD / cinema</dd>
         </dl>
       </div>

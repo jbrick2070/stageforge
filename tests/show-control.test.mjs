@@ -94,6 +94,47 @@ test('CJS and TS OSC 1.0 codecs agree byte-for-byte on all golden vectors and re
     tsOsc.normalizeOscMessage({ address: '/stageforge/bump/1', args: [{ type: 'f', value: 0 }] }, 100),
     { source: 'osc', kind: 'trigger', command: 'bump', bumpKey: 'blinder', value: 0, at: 100 },
   );
+
+  // Audio-reactive OSC endpoints agree across CJS and TS codecs and reject unsafe mapping IDs.
+  for (const codec of [cjsOsc, tsOsc]) {
+    assert.deepEqual(
+      codec.normalizeOscMessage({ address: '/stageforge/audio/reactive', args: [] }, 199),
+      { source: 'osc', kind: 'trigger', command: 'audio_reactive', value: 1, at: 199 },
+    );
+    assert.deepEqual(
+      codec.normalizeOscMessage({ address: '/stageforge/audio/reactive', args: [{ type: 'T', value: true }] }, 198),
+      { source: 'osc', kind: 'trigger', command: 'audio_reactive', value: 1, at: 198 },
+    );
+    assert.deepEqual(
+      codec.normalizeOscMessage({ address: '/stageforge/audio/reactive', args: [{ type: 'F', value: false }] }, 197),
+      { source: 'osc', kind: 'trigger', command: 'audio_reactive', value: 0, at: 197 },
+    );
+    assert.deepEqual(
+      codec.normalizeOscMessage({ address: '/stageforge/audio/reactive', args: [{ type: 'i', value: 1 }] }, 200),
+      { source: 'osc', kind: 'trigger', command: 'audio_reactive', value: 1, at: 200 },
+    );
+    assert.deepEqual(
+      codec.normalizeOscMessage({ address: '/stageforge/audio/reactive', args: [{ type: 'f', value: 0 }] }, 201),
+      { source: 'osc', kind: 'trigger', command: 'audio_reactive', value: 0, at: 201 },
+    );
+    assert.deepEqual(
+      codec.normalizeOscMessage({ address: '/stageforge/audio/mapping/kick-wash/amount', args: [{ type: 'f', value: 0.75 }] }, 202),
+      { source: 'osc', kind: 'trigger', command: 'audio_mapping_amount', mappingId: 'kick-wash', value: 0.75, at: 202 },
+    );
+    assert.deepEqual(
+      codec.normalizeOscMessage({ address: '/stageforge/audio/mapping/kick-wash/amount', args: [{ type: 'f', value: -2.5 }] }, 203),
+      { source: 'osc', kind: 'trigger', command: 'audio_mapping_amount', mappingId: 'kick-wash', value: -1, at: 203 },
+    );
+    assert.equal(codec.normalizeOscMessage({ address: '/stageforge/audio/mapping/__proto__/amount', args: [{ type: 'f', value: 0.5 }] }), null);
+    assert.equal(codec.normalizeOscMessage({ address: '/stageforge/audio/mapping/bad/slash/amount', args: [{ type: 'f', value: 0.5 }] }), null);
+    assert.equal(codec.normalizeOscMessage({ address: '/stageforge/audio/mapping/kick-wash/amount', args: [] }), null);
+  }
+  assert.equal(tsClock.allows('caller', 'osc', 'audio'), true);
+  assert.equal(tsClock.allows('master', 'osc', 'audio'), false);
+  assert.equal(tsClock.allows('chase', 'osc', 'audio'), false);
+  assert.equal(tsClock.allows('chase', 'manual', 'audio'), true);
+  assert.equal(tsClock.allows('master', 'manual', 'audio'), true);
+  assert.equal(tsClock.allows('caller', 'manual', 'audio'), true);
 });
 
 test('SMPTE timecode math (24/25/29.97DF/30) and Art-Net OpTimeCode 0x9700 layout match spec', () => {

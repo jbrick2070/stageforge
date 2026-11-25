@@ -154,6 +154,8 @@ export interface ShowControlCallbacks {
   onTempoSetBpm: (bpm: number) => void;
   onTempoHalf: () => void;
   onTempoDouble: () => void;
+  onSetAudioReactive?: (active: boolean) => void;
+  onSetAudioMappingAmount?: (mappingId: string, amount: number) => void;
   onChaseSeek: (takeMs: number, running: boolean, resyncMusic: boolean) => void;
   onChaseAdvance: (takeMs: number) => void;
   onChaseStop: () => void;
@@ -257,6 +259,7 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
     timecodeOffsetMs: settings.timecodeOffsetMs,
   }));
   const dedupeRef = useRef(new CallerDedupe());
+  const lastAudioAmtLogRef = useRef(0);
   const oscWsRef = useRef<OscWebSocketClient | null>(null);
   const midiRef = useRef<MidiShowControlClient | null>(null);
   const flagsRef = useRef({ oscRxEnabled, oscTxActive, artnetTcRxEnabled, artnetTcTxEnabled });
@@ -393,6 +396,22 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
       case 'tempo_double':
         cb.onTempoDouble();
         appendLog(event.source.toUpperCase(), 'BPM 2×');
+        break;
+      case 'audio_reactive': {
+        const active = (event.value ?? 1) >= 0.5;
+        cb.onSetAudioReactive?.(active);
+        appendLog(event.source.toUpperCase(), active ? 'BEAT SYNC ON' : 'BEAT SYNC OFF');
+        break;
+      }
+      case 'audio_mapping_amount':
+        if (event.mappingId && event.value !== undefined) {
+          cb.onSetAudioMappingAmount?.(event.mappingId, event.value);
+          const nowLog = performance.now();
+          if (nowLog - lastAudioAmtLogRef.current >= 500) {
+            lastAudioAmtLogRef.current = nowLog;
+            appendLog(event.source.toUpperCase(), `AUDIO ${event.mappingId} ${Math.round(event.value * 100)}%`);
+          }
+        }
         break;
     }
   }, [appendLog, syncLockState, tcStore]);

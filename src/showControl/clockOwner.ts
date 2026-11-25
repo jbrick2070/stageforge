@@ -34,6 +34,7 @@ export type ClockAction =
   | 'master'
   | 'bump'
   | 'tempo'
+  | 'audio'
   | 'timecode_transport'
   | 'outbound_timecode'
   | 'outbound_osc_feedback'
@@ -71,8 +72,8 @@ export function allows(mode: ClockMode, source: ClockSource, action: ClockAction
     if (action === 'blackout' && (source === 'osc' || source === 'msc')) {
       return true;
     }
-    // Tempo adjustments & manual bumps remain usable; internal take play, follows, Auto-LD, and GO are blocked.
-    if (source === 'manual' && (action === 'bump' || action === 'tempo')) {
+    // Tempo adjustments, manual audio toggle, & manual bumps remain usable; internal take play, follows, Auto-LD, and GO are blocked.
+    if (source === 'manual' && (action === 'bump' || action === 'tempo' || action === 'audio')) {
       return true;
     }
     return false;
@@ -535,5 +536,8 @@ export function triggerToAction(ev: NormalizedTriggerEvent): ClockAction {
     case 'tempo_half':
     case 'tempo_double':
       return 'tempo';
+    case 'audio_reactive':
+    case 'audio_mapping_amount':
+      return 'audio';
   }
 }

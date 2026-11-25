@@ -39,6 +39,8 @@ Open **Sync** in the top bar to open the **Show Control & Sync** drawer. StageFo
 | `/stageforge/tempo/tap` | *(none)* or `≥ 0.5` | Tap tempo |
 | `/stageforge/tempo/bpm` | `f` | Set desk BPM (octave-folded into `70..180`) |
 | `/stageforge/tempo/half`, `/stageforge/tempo/double` | *(none)* or `≥ 0.5` | Half-time / double-time (within `70..180`) |
+| `/stageforge/audio/reactive` | *(none)* or `i/f/T/F` (`0`/`1`) | Enable (`≥ 0.5`) or disable (`< 0.5`) master Beat sync |
+| `/stageforge/audio/mapping/<id>/amount` | `f` (`-1..1`) | Set audio-mapping amount for mapping `<id>` (clamped to valid range for the target) |
 
 ### Outbound OSC state feedback (opt-in)
 
@@ -75,6 +77,20 @@ Available in the Electron desktop app on UDP `6454`:
 - **Half / Double Time (`½×` / `2×`):** halves or doubles the desk BPM without folding; disabled with a tooltip when the result would leave `70..180` BPM.
 - **Offline Beat Grid (`web-audio-beat-detector`):** when you load an audio track (`≤ 64 MiB` and `≤ 15 min`), StageForge decodes it at mono 22.05 kHz and computes a phase-locked `{ bpm, offsetMs }` grid in a Web Worker. Use **`−50 / −10 / +10 / +50`** to nudge the phase or **`Downbeat` / `1!`** to lock Beat 1 to the current track position.
 - **Live Tempo (`realtime-bpm-analyzer`):** enable **Live BPM** to run an AudioWorklet tempo tracker on live mic or playing audio (served from `'self'` to stay compatible with strict CSP). Applies automatically only after 4 seconds of stability within ±1.5 BPM when the tempo differs by more than 1 BPM.
+
+## Audio-Reactive Mappings
+
+StageForge's lighting engine acts as a virtual audio-reactive lighting controller. Open **Show cues → Audio** at the bottom of the desk to map live FFT/audio features to fixture groups, LED walls, haze, and laser projectors:
+
+- **Master Beat sync & source:** **Beat sync** (`look.audioReactive`, also toggleable via Xbox gamepad **L3 (hold 250 ms)** or OSC `/stageforge/audio/reactive`) is the master enable. Drive analysis from a loaded audio track, the demo synth, or **Mic** (live microphone / line-in, opened with echo cancellation, noise suppression and auto-gain disabled for accurate music analysis).
+- **32-band FFT range picker:** Drag across the live 32-band spectrum meter (or use the keyboard `Lo`/`Hi` inputs) to choose any FFT band range (`0..31`) and add a band mapping.
+- **Presets & custom rows:** One-click presets include **Kick → wash dimmer**, **Hats → beam strobe**, **Bass → LED wall**, and **Energy → beam zoom**. Up to 16 mappings can be active at once, each with source, target group/parameter (plus optional per-projector selector on lasers), amount (`-1..1`, negative ducks), attack/release envelope times, threshold gate, curve (`linear`, `square`, `sqrt`), enable toggle, and a live level meter.
+- **Cues, replay & live DMX:** Mappings live in `look.audioMap` (saved additively in [Show format v8](show-format.md)) so **Store cue** captures and recalls them. Modulation runs once per frame in `StageEngine` before both 3D rendering and live DMX frame emission, so physical fixtures over sACN, Art-Net or Enttec USB Pro follow the exact same envelope. Modulation is never baked into recorded takes, keeping seek and replay deterministic.
+- **Built-in safety:**
+  - **Blackout and Master dimmer always win.**
+  - **Photosensitivity flash limiter:** All audio-mapped strobe triggers share a combined room refractory window (`≥ 334 ms` between staggered flashes, `≤ 3` flashes/s across the rig; simultaneous hits on the same beat frame fire together as one flash), and all audio-mapped dimmer, brightness, and laser-intensity targets enforce a fall-rate cap on the combined target output (`≤ 3` full-intensity flashes/s). Refractory timing persists across Beat sync toggles and cue switches. Mapped strobe targets write `0` on the DMX strobe-rate channel and flash through the dimmer channel so physical fixtures obey the same cap. An amber **Flash limiter active (≤ 3/s)** live-region notice appears whenever the limiter engages.
+  - **Laser safety:** Laser mappings can only scale intensity, spread, and rotation at or below the look's set levels, and can only increase scan speed (`[base, 1]`). They can never enable a disabled laser, enable audience scanning, or pitch beams downward.
+  - **Haze inertia:** Haze mappings enforce slow envelope limits (`attackMs ≥ 1000`, `releaseMs ≥ 2000`).
 
 ## Manual Hardware & Cross-Tool Verification Checklist
 

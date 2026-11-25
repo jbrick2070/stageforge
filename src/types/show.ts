@@ -42,6 +42,46 @@ export type HeadLook = Pick<ShowState, 'movementMode' | 'movementSpeed' | 'movem
   'manualPan' | 'manualTilt' | 'focusMarkId' | 'primaryColor' | 'accentColor' | 'colorSplitMode'>;
 export type MovingGroups = Partial<Record<HeadGroup, Partial<HeadLook>>>;
 
+export type AudioMappingSource = 'bass' | 'mid' | 'high' | 'energy' | 'beat' | 'drop' | 'band';
+export type AudioMappingCurve = 'linear' | 'square' | 'sqrt';
+export type AudioTargetGroup = HeadGroup | 'blinder' | 'strobe' | 'ledWall' | 'laser' | 'haze';
+export type AudioTargetParam =
+  | 'dimmer'
+  | 'zoom'
+  | 'colorMix'
+  | 'strobe'
+  | 'speed'
+  | 'tilt'
+  | 'brightness'
+  | 'intensity'
+  | 'rotation'
+  | 'spread';
+
+export interface AudioMappingTarget {
+  group: AudioTargetGroup;
+  param: AudioTargetParam;
+  /** Optional laser projector key (valid only when group === 'laser'). */
+  projectorKey?: string;
+}
+
+export interface AudioMapping {
+  id: string;
+  name: string;
+  enabled: boolean;
+  source: AudioMappingSource;
+  bands?: [number, number]; // 0..31, required when source === 'band'
+  target: AudioMappingTarget;
+  amount: number; // -1..1; negative ducks
+  attackMs: number;
+  releaseMs: number;
+  threshold: number; // 0..1 gate
+  curve: AudioMappingCurve;
+}
+
+export interface AudioMapConfig {
+  mappings: AudioMapping[];
+}
+
 export type LaserPattern =
   | 'liquid_sky'
   | 'tunnel'
@@ -310,6 +350,9 @@ export interface ShowState {
 
   // Quality & Atmosphere
   bloomStrength: number; // 0..2
+
+  // Audio-reactive fixture & control mappings (Show v8, optional)
+  audioMap?: AudioMapConfig;
 }
 
 export interface BumpState {

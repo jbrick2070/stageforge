@@ -16,6 +16,8 @@ import {
   Check,
 } from 'lucide-react';
 import {
+  AudioMapConfig,
+  AudioMetrics,
   BumpState,
   ColorSplitMode,
   HeadGroup,
@@ -28,6 +30,8 @@ import {
   ShowCue,
   ShowState,
 } from '../types/show';
+import type { LiveStore } from '../state/liveTelemetry';
+import { AudioMappingSection, type AudioModulationTelemetry } from './AudioMappingSection';
 import { headLook } from '../data/movingGroups';
 import { COLOR_PALETTES } from '../data/presets';
 import { FOCUS_NUDGE_RANGE, focusMarks } from '../engine/focusAim';
@@ -108,6 +112,12 @@ interface BottomConsoleProps {
   };
   clockMode: ClockMode;
   tempo: TempoControlProps;
+  audioStore: LiveStore<AudioMetrics>;
+  audioModStore: LiveStore<AudioModulationTelemetry>;
+  onToggleAudioReactive: () => void;
+  onChangeAudioMap: (next?: AudioMapConfig) => void;
+  onUploadAudio: (file: File) => void;
+  onToggleMic: () => void;
   ilda: Omit<IldaControlProps, 'allBeamOnly'>;
   onSetBump: (key: keyof BumpState, active: boolean) => void;
 }
@@ -280,7 +290,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   captureVideoPosition, onCaptureVideoPosition,
   onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onResetCue, onHold, follow,
   stage, mainScreen, missingMedia, onApplyWallCue, onRemoveWallCue, take,
-  clockMode, tempo, ilda,
+  clockMode, tempo, audioStore, audioModStore, onToggleAudioReactive, onChangeAudioMap, onUploadAudio, onToggleMic, ilda,
   onSetBump,
 }) => {
   const [tab, setTab] = useState<ConsoleTab>('show');
@@ -625,6 +635,21 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                       </span>
                     )}
                   </div>
+                </div>
+
+                {/* Audio-Reactive Mappings Section (Show tab) */}
+                <div className="md:col-span-2">
+                  <AudioMappingSection
+                    rig={rig}
+                    audioReactive={state.audioReactive}
+                    audioMap={state.audioMap}
+                    audioStore={audioStore}
+                    audioModStore={audioModStore}
+                    onToggleAudioReactive={onToggleAudioReactive}
+                    onChangeAudioMap={onChangeAudioMap}
+                    onUploadAudio={onUploadAudio}
+                    onToggleMic={onToggleMic}
+                  />
                 </div>
               </div>
             )}

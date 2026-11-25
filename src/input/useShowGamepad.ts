@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BumpState } from '../types/show';
 
-type Command = 'play' | 'prevCue' | 'nextCue' | 'prevCamera' | 'nextCamera' | 'masterUp' | 'masterDown' | 'auto' | 'cinema';
+type Command = 'play' | 'prevCue' | 'nextCue' | 'prevCamera' | 'nextCamera' | 'masterUp' | 'masterDown' | 'auto' | 'cinema' | 'audioReactive';
 const taps: [number, Command][] = [
   [0, 'play'], [4, 'prevCamera'], [5, 'nextCamera'], [8, 'auto'], [9, 'cinema'],
   [12, 'masterUp'], [13, 'masterDown'], [14, 'prevCue'], [15, 'nextCue'],
 ];
+const AUDIO_REACTIVE_BUTTON = 10; // L3 (left stick click): require a brief 250 ms hold to prevent accidental clicks while orbiting.
+const AUDIO_REACTIVE_HOLD_MS = 250;
 const holds: [number, keyof BumpState][] = [
   [1, 'blinder'], [2, 'laser'], [3, 'co2'], [6, 'smoke'], [7, 'strobe'],
 ];
@@ -40,12 +42,16 @@ export function useShowGamepad(handlers: Handlers) {
     let stickReady = false;
     let activeWindow = document.hasFocus();
     const held = new Set<keyof BumpState>();
+    let audioHoldStart: number | null = null;
+    let audioHoldFired = false;
     const reset = () => {
       held.forEach(effect => latest.current.hold(effect, false));
       held.clear();
       current = '';
       previous = [];
       stickReady = false;
+      audioHoldStart = null;
+      audioHoldFired = false;
     };
     const poll = (now: number) => {
       const dt = Math.min(0.05, (now - previousTime) / 1000);
@@ -74,6 +80,16 @@ export function useShowGamepad(handlers: Handlers) {
           report('connected');
         } else {
           for (const [i, action] of taps) if (buttons[i] && !previous[i]) latest.current.command(action);
+          if (buttons[AUDIO_REACTIVE_BUTTON]) {
+            if (audioHoldStart === null) audioHoldStart = now;
+            else if (!audioHoldFired && now - audioHoldStart >= AUDIO_REACTIVE_HOLD_MS) {
+              audioHoldFired = true;
+              latest.current.command('audioReactive');
+            }
+          } else {
+            audioHoldStart = null;
+            audioHoldFired = false;
+          }
           for (const [i, effect] of holds) {
             if (buttons[i] && !previous[i]) {
               held.add(effect);

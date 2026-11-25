@@ -11,10 +11,11 @@ const compiler = await createServer({
   appType: 'custom', optimizeDeps: { noDiscovery: true },
 });
 after(() => compiler.close());
-const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL, V6_SCHEMA_URL, V7_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL, V6_SCHEMA_URL, V7_SCHEMA_URL, V8_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
 const { RIG_TEMPLATES, INITIAL_SHOW_STATE, SHOW_CUES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { cueLook, differsFromCue } = await compiler.ssrLoadModule('/src/data/cueLook.ts');
 const { frameDelta } = await compiler.ssrLoadModule('/src/input/useShowTimeline.ts');
+const { laserProjectors } = await compiler.ssrLoadModule('/src/data/laserProjectors.ts');
 const example = JSON.parse(await readFile(new URL('../public/examples/amber-walk-on.stageforge.show.json', import.meta.url), 'utf8'));
 const parse = value => parseShowFile(JSON.stringify(value));
 const write = show => makeShowFile(show.rig, show.cues, show.look, show.activeCueId, show.controls, show.timeline, show.media, show.stage, show.interchange);
@@ -228,6 +229,7 @@ test('frozen v1, v2 and v3 show fixtures load cleanly and published schema hashe
     5: '9cbf644005c09bd1ec92be20aad348fe0f8a7377134ae05c9e5826bdf5b0350f',
     6: '6db46f168be983490fb5f226ad375df55881800304a872471583c3719e9ba2e2',
     7: '3477be940a11c56d4a7c121903cd63e966be2110f2db0d3b120693e24fe9d98e',
+    8: 'c6181276d26ff987127873e86c5f1d800b855ede1ab9770ebaa9ddaf351fe59e',
   };
   for (const [ver, hash] of Object.entries(expectedHashes)) {
     const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));
@@ -449,9 +451,9 @@ test('show v6 catalogue fields are additive, round-trip each field independently
   );
   // 7. Unknown future version fails with a readable Error.
   assert.throws(
-    () => parse({ ...savedOverhead, version: 8 }),
+    () => parse({ ...savedOverhead, version: 9 }),
     isReadableError,
-    'unsupported version 8 fails cleanly',
+    'unsupported version 9 fails cleanly',
   );
 });
 
@@ -538,4 +540,160 @@ test('show v7 rigging and power fields are additive, round-trip each field indep
   const protoJson = JSON.stringify({ ...baseV7, rig: { ...baseV7.rig, power: { system: 'us_208_3p' } } })
     .replace('"system":"us_208_3p"', '"system":"us_208_3p","__proto__":{"polluted":true}');
   assert.throws(() => parseShowFile(protoJson), isReadableError, '__proto__ in rig.power');
+});
+
+test('show v8 audioMap is additive, round-trips in look/cues/timeline, clears cleanly in cues, and rejects hostile inputs', () => {
+  const kickMapping = {
+    id: 'kick-wash',
+    name: 'Kick → wash dimmer',
+    enabled: true,
+    source: 'band',
+    bands: [0, 1],
+    target: { group: 'wash', param: 'dimmer' },
+    amount: 0.75,
+    attackMs: 12,
+    releaseMs: 140,
+    threshold: 0.12,
+    curve: 'linear',
+  };
+  const laserMapping = {
+    id: 'band-laser-rot',
+    name: 'Band 8–14 → laser rotation',
+    enabled: true,
+    source: 'band',
+    bands: [8, 14],
+    target: { group: 'laser', param: 'rotation' },
+    amount: 0.85,
+    attackMs: 25,
+    releaseMs: 180,
+    threshold: 0.1,
+    curve: 'sqrt',
+  };
+
+  // 1. Empty audioMap collapses cleanly and does NOT bump to v8.
+  const emptyAudio = structuredClone(example);
+  emptyAudio.look.audioMap = { mappings: [] };
+  const savedEmpty = write(emptyAudio);
+  assert.equal(savedEmpty.version, 1);
+  assert.equal(savedEmpty.look.audioMap, undefined);
+
+  // 2. Look, cue, and timeline audioMap round-trip as v8.
+  const withAudio = structuredClone(example);
+  withAudio.look.audioMap = { mappings: [kickMapping, laserMapping] };
+  withAudio.cues[0].state.audioMap = { mappings: [kickMapping] };
+  withAudio.timeline.events[1].look = { audioMap: { mappings: [laserMapping] } };
+  const savedV8 = write(withAudio);
+  assert.equal(savedV8.version, 8);
+  assert.equal(savedV8.$schema, V8_SCHEMA_URL);
+  assert.deepEqual(parse(savedV8), savedV8);
+
+  // 3. Removing mappings drops cleanly back to v1.
+  const stripped = structuredClone(savedV8);
+  delete stripped.look.audioMap;
+  delete stripped.cues[0].state.audioMap;
+  delete stripped.timeline.events[1].look;
+  stripped.timeline.events[1].cueId = stripped.cues[0].id;
+  assert.equal(write(stripped).version, 1);
+
+  // 4. Per-projector laser mapping is preserved when projector exists, and pruned (dropping the mapping) when removed.
+  const arenaShow = makeShowFile(RIG_TEMPLATES.arena_mainstage, SHOW_CUES, INITIAL_SHOW_STATE, SHOW_CUES[0].id);
+  const validProjKey = laserProjectors(RIG_TEMPLATES.arena_mainstage)[0].key;
+  arenaShow.look.audioMap = {
+    mappings: [{
+      ...laserMapping,
+      id: 'proj-1',
+      target: { group: 'laser', param: 'intensity', projectorKey: validProjKey },
+    }],
+  };
+  const savedProj = write(arenaShow);
+  assert.equal(savedProj.version, 8);
+  assert.equal(parse(savedProj).look.audioMap.mappings[0].target.projectorKey, validProjKey);
+
+  const missingProj = structuredClone(savedProj);
+  missingProj.look.audioMap.mappings[0].target.projectorKey = '["pod-missing","f-lasers",9]';
+  assert.throws(() => parse(missingProj), isReadableError, 'unknown laser projectorKey rejected on parse');
+  const prunedProj = write(missingProj);
+  assert.ok(prunedProj.version <= 2, 'pruning last mapping drops back below v8');
+  assert.equal(prunedProj.look.audioMap, undefined);
+
+  // 5. cueLook recalls mappings and clears them cleanly on full cue capture without audioMap (no undefined key).
+  const screen = { kind: 'none', target: 'main-led', playing: false, name: '' };
+  const liveWithMap = { ...structuredClone(INITIAL_SHOW_STATE), audioMap: { mappings: [kickMapping] } };
+  const fullCueNoMap = { id: 'c-clean', name: 'Clean', tag: 'USER', accent: '#ffffff', state: structuredClone(INITIAL_SHOW_STATE) };
+  const recalledClean = cueLook(liveWithMap, fullCueNoMap);
+  assert.equal(Object.hasOwn(recalledClean, 'audioMap'), false, 'audioMap key deleted on full cue without mappings');
+  assert.equal(differsFromCue(recalledClean, fullCueNoMap, screen), false);
+  const fullCueWithMap = { id: 'c-map', name: 'Mapped', tag: 'USER', accent: '#ffffff', state: structuredClone(liveWithMap) };
+  const recalledMap = cueLook(structuredClone(INITIAL_SHOW_STATE), fullCueWithMap);
+  assert.deepEqual(recalledMap.audioMap, { mappings: [kickMapping] });
+  assert.equal(differsFromCue(recalledMap, fullCueWithMap, screen), false);
+  // Built-in full scene cue (no masterDimmer, no audioMap) clears live audioMap and flags differsFromCue when live has mappings.
+  const builtInArena = SHOW_CUES[3];
+  const recalledBuiltIn = cueLook(liveWithMap, builtInArena);
+  assert.equal(Object.hasOwn(recalledBuiltIn, 'audioMap'), false, 'built-in full scene cue clears live audioMap');
+  assert.equal(differsFromCue({ ...recalledBuiltIn, audioMap: { mappings: [kickMapping] } }, builtInArena, screen), true);
+  // True partial cue (lighting-only delta) preserves live audioMap and reports no spurious diff.
+  const partialCue = { id: 'c-part', name: 'Dimmer Bump', tag: 'PART', accent: '#ffffff', state: { beamIntensity: 0.9 } };
+  const recalledPartial = cueLook(liveWithMap, partialCue);
+  assert.deepEqual(recalledPartial.audioMap, { mappings: [kickMapping] });
+  assert.equal(differsFromCue(recalledPartial, partialCue, screen), false);
+
+  // 6. v7 rejects audioMap; hostile v8 inputs fail with readable Errors.
+  assert.throws(
+    () => parse({ ...savedV8, version: 7, $schema: V7_SCHEMA_URL }),
+    isReadableError,
+    'v7 rejects audioMap',
+  );
+  const badV8 = [
+    ['> 16 mappings', (s) => {
+      s.look.audioMap.mappings = Array.from({ length: 17 }, (_, i) => ({ ...kickMapping, id: `m-${i}` }));
+    }],
+    ['duplicate mapping id', (s) => {
+      s.look.audioMap.mappings = [kickMapping, { ...laserMapping, id: kickMapping.id }];
+    }],
+    ['__proto__ mapping id', (s) => {
+      s.look.audioMap.mappings[0].id = '__proto__';
+    }],
+    ['band source missing bands', (s) => {
+      delete s.look.audioMap.mappings[0].bands;
+    }],
+    ['reversed bands [14, 8]', (s) => {
+      s.look.audioMap.mappings[0].bands = [14, 8];
+    }],
+    ['out-of-range band 32', (s) => {
+      s.look.audioMap.mappings[0].bands = [0, 32];
+    }],
+    ['invalid group/param pair haze.rotation', (s) => {
+      s.look.audioMap.mappings[0].target = { group: 'haze', param: 'rotation' };
+    }],
+    ['projectorKey on non-laser group', (s) => {
+      s.look.audioMap.mappings[0].target = { group: 'wash', param: 'dimmer', projectorKey: validProjKey };
+    }],
+    ['negative amount on strobe', (s) => {
+      s.look.audioMap.mappings[0].target = { group: 'beam', param: 'strobe' };
+      s.look.audioMap.mappings[0].amount = -0.5;
+    }],
+    ['negative amount on laser speed', (s) => {
+      s.look.audioMap.mappings[0].target = { group: 'laser', param: 'speed' };
+      s.look.audioMap.mappings[0].amount = -0.2;
+    }],
+    ['haze attackMs < 1000', (s) => {
+      s.look.audioMap.mappings[0].target = { group: 'haze', param: 'dimmer' };
+      s.look.audioMap.mappings[0].attackMs = 200;
+      s.look.audioMap.mappings[0].releaseMs = 2500;
+    }],
+    ['haze releaseMs < 2000', (s) => {
+      s.look.audioMap.mappings[0].target = { group: 'haze', param: 'dimmer' };
+      s.look.audioMap.mappings[0].attackMs = 1500;
+      s.look.audioMap.mappings[0].releaseMs = 500;
+    }],
+    ['extra unknown property on mapping', (s) => {
+      s.look.audioMap.mappings[0].extra = true;
+    }],
+  ];
+  for (const [label, mutate] of badV8) {
+    const draft = structuredClone(savedV8);
+    mutate(draft);
+    assert.throws(() => parse(draft), isReadableError, label);
+  }
 });

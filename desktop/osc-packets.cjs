@@ -503,7 +503,27 @@ function normalizeOscMessage(msg, at = Date.now()) {
       return isRisingEdge(args) ? { source: 'osc', kind: 'trigger', command: 'tempo_half', at } : null;
     case '/stageforge/tempo/double':
       return isRisingEdge(args) ? { source: 'osc', kind: 'trigger', command: 'tempo_double', at } : null;
+    case '/stageforge/audio/reactive': {
+      if (args.length === 0) return { source: 'osc', kind: 'trigger', command: 'audio_reactive', value: 1, at };
+      const n = toNumberArg(args[0]);
+      if (n === null) return null;
+      return { source: 'osc', kind: 'trigger', command: 'audio_reactive', value: n >= 0.5 ? 1 : 0, at };
+    }
     default: {
+      if (address.startsWith('/stageforge/audio/mapping/') && address.endsWith('/amount')) {
+        const id = address.slice('/stageforge/audio/mapping/'.length, -'/amount'.length);
+        if (!/^(?!(?:__proto__|prototype|constructor)$)[A-Za-z0-9_-]{1,32}$/.test(id)) return null;
+        const n = toNumberArg(args[0]);
+        if (n === null) return null;
+        return {
+          source: 'osc',
+          kind: 'trigger',
+          command: 'audio_mapping_amount',
+          mappingId: id,
+          value: Math.max(-1, Math.min(1, n)),
+          at,
+        };
+      }
       if (address.startsWith('/stageforge/bump/')) {
         const key = address.slice('/stageforge/bump/'.length);
         const bumpKey = Object.hasOwn(BUMP_ALIASES, key) ? BUMP_ALIASES[key] : null;

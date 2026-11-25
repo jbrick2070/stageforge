@@ -38,6 +38,8 @@ import { useShowTimeline } from './input/useShowTimeline';
 import { useWallClock } from './input/useWallClock';
 import { patchCsv } from './data/patchCsv';
 import { BottomConsole } from './components/BottomConsole';
+import { EMPTY_AUDIO_MOD_TELEMETRY, type AudioModulationTelemetry } from './components/AudioMappingSection';
+import { allowsNegativeAmount } from './engine/audioModulation';
 import { PitchViewer } from './components/PitchViewer';
 import type { DmxSnapshot } from './components/DmxMonitorDrawer';
 import { LiveDmxBadge } from './components/LiveDmxBadge';
@@ -76,7 +78,9 @@ import { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } from './data/presets';
 import { calculateProductionEstimate, formatUSD } from './data/productionEstimator';
 import { applyDeskPatch } from './data/movingGroups';
 import {
+  AudioMapConfig,
   AudioMetrics,
+  AudioTargetGroup,
   BumpState,
   CameraPreset,
   RigConfig,
@@ -244,6 +248,7 @@ export const App: React.FC = () => {
   const live = useMemo(() => ({
     fps: createLiveStore(60),
     audio: createLiveStore<AudioMetrics>(EMPTY_AUDIO),
+    audioMod: createLiveStore<AudioModulationTelemetry>(EMPTY_AUDIO_MOD_TELEMETRY),
     dmx: createLiveStore<DmxSnapshot>(EMPTY_DMX),
   }), []);
   const [audioDiscrete, setAudioDiscrete] = useState(INITIAL_DISCRETE_AUDIO);
@@ -691,6 +696,12 @@ export const App: React.FC = () => {
     });
   }, [applyDeskBpm, showToast]);
 
+  const pendingOscAmountsRef = useRef<Map<string, number>>(new Map());
+  const oscAmountRafRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (oscAmountRafRef.current !== null) cancelAnimationFrame(oscAmountRafRef.current);
+  }, []);
+
   const showControl = useShowControl({
     getCues: () => cuesRef.current,
     getActiveCueId: () => activeCueIdRef.current,
@@ -777,6 +788,50 @@ export const App: React.FC = () => {
     },
     onTempoHalf: handleHalfTime,
     onTempoDouble: handleDoubleTime,
+    onSetAudioReactive: (active) => {
+      if (!capabilitiesRef.current.edit) return;
+      if (showStateRef.current.audioReactive === active) return;
+      previewRig();
+      setCueModified(true);
+      setShowState((s) => (s.audioReactive === active ? s : { ...s, audioReactive: active }));
+    },
+    onSetAudioMappingAmount: (mappingId, amount) => {
+      if (!capabilitiesRef.current.edit) return;
+      const curList = showStateRef.current.audioMap?.mappings;
+      if (!curList) return;
+      const existing = curList.find((m) => m.id === mappingId);
+      if (!existing) return;
+      const min = allowsNegativeAmount(existing.target.group, existing.target.param) ? -1 : 0;
+      const clamped = Math.max(min, Math.min(1, amount));
+      if (Math.abs(existing.amount - clamped) < 1e-6 && !pendingOscAmountsRef.current.has(mappingId)) return;
+      pendingOscAmountsRef.current.set(mappingId, clamped);
+      if (oscAmountRafRef.current !== null) return;
+      oscAmountRafRef.current = requestAnimationFrame(() => {
+        oscAmountRafRef.current = null;
+        if (!capabilitiesRef.current.edit || pendingOscAmountsRef.current.size === 0) {
+          pendingOscAmountsRef.current.clear();
+          return;
+        }
+        const batch = new Map(pendingOscAmountsRef.current);
+        pendingOscAmountsRef.current.clear();
+        const latestList = showStateRef.current.audioMap?.mappings;
+        if (!latestList) return;
+        let changed = false;
+        const nextMappings = latestList.map((m) => {
+          const rawNext = batch.get(m.id);
+          if (rawNext === undefined) return m;
+          const mMin = allowsNegativeAmount(m.target.group, m.target.param) ? -1 : 0;
+          const nextClamped = Math.max(mMin, Math.min(1, rawNext));
+          if (Math.abs(m.amount - nextClamped) < 1e-6) return m;
+          changed = true;
+          return { ...m, amount: nextClamped };
+        });
+        if (!changed) return;
+        previewRig();
+        setCueModified(true);
+        setShowState((s) => (s.audioMap ? { ...s, audioMap: { mappings: nextMappings } } : s));
+      });
+    },
     onChaseSeek: (takeMs, running, _resyncMusic) => {
       const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
       setFollow(null);
@@ -883,6 +938,10 @@ export const App: React.FC = () => {
               u2: new Uint8Array(engine.dmxUniverse2),
             });
           }
+          const modSnap = engine.getAudioModulationSnapshot();
+          if (modSnap.active || live.audioMod.get().active) {
+            live.audioMod.set(modSnap);
+          }
           if (replaying.current || !directorArmed.current || !allows(clockModeRef.current, 'autoLD', 'auto_ld')) return;
           if (metrics.demo) {
             const position = metrics.demo;
@@ -914,6 +973,10 @@ export const App: React.FC = () => {
     const probe = new URLSearchParams(window.location.search).has('probe');
     if (probe) (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe = {
       beamAxes: () => engine.beamAxes(),
+      audioModulation: () => engine.getAudioModulationSnapshot(),
+      fixtureParams: (group?: AudioTargetGroup) => engine.getFixtureParams(group),
+      dmxSnapshot: () => ({ u1: Array.from(engine.dmxUniverse1), u2: Array.from(engine.dmxUniverse2) }),
+      audioPlaybackTime: () => (audioEngineRef.current?.getPlaybackMs() ?? 0) / 1000,
       screens: () => engine.screenDiagnostics(),
       primaryScreen: () => engine.screenTransport(),
       hangs: () => engine.hangDiagnostics(),
@@ -1971,6 +2034,16 @@ export const App: React.FC = () => {
           break;
         case 'auto': toggleDirector(); break;
         case 'cinema': setCinemaMode(v => !v); break;
+        case 'audioReactive':
+          if (!capabilitiesRef.current.edit) break;
+          previewRig();
+          setCueModified(true);
+          setShowState(s => {
+            const next = !s.audioReactive;
+            showToast(next ? 'Beat sync on' : 'Beat sync off');
+            return { ...s, audioReactive: next };
+          });
+          break;
       }
     },
     hold: (key, active) => {
@@ -2497,6 +2570,29 @@ export const App: React.FC = () => {
           }}
           clockMode={showControl.clockMode}
           tempo={tempoProps}
+          audioStore={live.audio}
+          audioModStore={live.audioMod}
+          onToggleAudioReactive={() => {
+            if (!capabilitiesRef.current.edit) return;
+            previewRig();
+            setCueModified(true);
+            setShowState((s) => ({ ...s, audioReactive: !s.audioReactive }));
+          }}
+          onChangeAudioMap={(next?: AudioMapConfig) => {
+            if (!capabilitiesRef.current.edit) return;
+            takeDesk();
+            setShowState((s) => {
+              const copy = { ...s };
+              if (next && next.mappings.length > 0) {
+                copy.audioMap = next;
+              } else {
+                delete copy.audioMap;
+              }
+              return copy;
+            });
+          }}
+          onUploadAudio={(file) => { void handleUploadAudio(file); }}
+          onToggleMic={() => { void handleToggleMic(); }}
           ilda={{
             clip: ildaClip,
             mode: ildaMode,

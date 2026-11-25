@@ -4,7 +4,7 @@ import { applyDeskPatch } from './movingGroups';
 export function cueLook(previous: ShowState, cue: ShowCue, automatic = false): ShowState {
   const state = cue.state;
   const captured = state.masterDimmer !== undefined;
-  return {
+  const next: ShowState = {
     ...applyDeskPatch(previous, state),
     ...(state.movementMode !== undefined && state.masterDimmer !== undefined && state.motors && !state.movingGroups
       && previous.movingGroups ? { movingGroups: {} } : {}),
@@ -25,6 +25,23 @@ export function cueLook(previous: ShowState, cue: ShowCue, automatic = false): S
       customMediaType: previous.led.customMediaType,
     } : previous.led,
   };
+  const fullScene = captured || (
+    state.laser !== undefined &&
+    state.motors !== undefined &&
+    state.atmo !== undefined &&
+    state.led !== undefined
+  );
+  if (state.audioMap !== undefined) {
+    if (state.audioMap.mappings.length > 0) {
+      next.audioMap = structuredClone(state.audioMap);
+    } else {
+      delete next.audioMap;
+    }
+  } else if (fullScene && 'audioMap' in next) {
+    // Full cues (captured or built-in presets) without audioMap clear previous live mappings (delete key so sameValue matches).
+    delete next.audioMap;
+  }
+  return next;
 }
 
 function sameValue(a: unknown, b: unknown): boolean {

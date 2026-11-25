@@ -7,6 +7,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 import {
   AudioMetrics,
+  AudioTargetGroup,
   BumpState,
   CameraPreset,
   LaserColorMode,
@@ -73,6 +74,13 @@ import { RenderBatcher } from './renderBatcher';
 import { VOLUMETRIC_BEAM_VARIANT, volumetricBeamProxy } from './beamProxy';
 import { createMissingMediaSlate, WallPlayer, type SecondaryScreenState, type StageScreen } from './StageScreens';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS, demoFade } from '../data/demoLighting';
+import {
+  createAudioModulationFrame,
+  createAudioModulationState,
+  evaluateAudioModulation,
+  type AudioModulationFrame,
+  type AudioModulationState,
+} from './audioModulation';
 
 interface MovingFixtureInstance {
   type: 'beam' | 'wash';
@@ -292,6 +300,56 @@ export class StageEngine {
   private dmxAccum = 0;
   private lastDmxU1 = new Uint8Array(512);
   private lastDmxU2 = new Uint8Array(512);
+
+  // Audio-reactive modulation state (preallocated for zero per-frame allocations)
+  private audioModState: AudioModulationState = createAudioModulationState();
+  private audioModFrame: AudioModulationFrame = createAudioModulationFrame();
+  private beamPhaseOffset = 0;
+  private washPhaseOffset = 0;
+  private ledPhaseOffset = 0;
+  private laserSpeedPhaseOffsets: number[] = [];
+  private laserRotPhaseOffsets: number[] = [];
+  private appliedLaserProjectorKeys: string[] = [];
+  private appliedLaserProjectorCount = 0;
+  private appliedParams = {
+    master: 0,
+    legacyBoost: 0,
+    beam: {
+      dimmer: 0,
+      zoom: 0,
+      colorMix: 0,
+      speed: 0,
+      tiltOffset: 0,
+      strobe: { mode: 'unmapped' as 'unmapped' | 'mapped', rate: 0, envelope: 0, gateOn: false, lastFlashMs: -Infinity, limited: false },
+    },
+    wash: {
+      dimmer: 0,
+      zoom: 0,
+      colorMix: 0,
+      speed: 0,
+      tiltOffset: 0,
+      strobe: { mode: 'unmapped' as 'unmapped' | 'mapped', rate: 0, envelope: 0, gateOn: false, lastFlashMs: -Infinity, limited: false },
+    },
+    blinder: { dimmer: 0, limited: false },
+    strobe: {
+      dimmer: 0,
+      limited: false,
+      strobe: { mode: 'unmapped' as 'unmapped' | 'mapped', rate: 0, envelope: 0, gateOn: false, lastFlashMs: -Infinity, limited: false },
+    },
+    ledWall: { enabled: false, brightness: 0, speed: 0 },
+    laser: {
+      enabled: false,
+      audienceScan: false,
+      intensity: 0,
+      speed: 0,
+      rotation: 0,
+      spreadX: 0,
+      spreadY: 0,
+      strobe: { mode: 'unmapped' as 'unmapped' | 'mapped', rate: 0, envelope: 0, gateOn: false, lastFlashMs: -Infinity, limited: false },
+      projectors: Object.create(null) as Record<string, { intensity: number; speed: number; rotation: number; spreadX: number; spreadY: number; strobeGateOn: boolean }>,
+    },
+    haze: { level: 0 },
+  };
 
   // Animation loop state
   private rafId: number | null = null;
@@ -665,6 +723,56 @@ export class StageEngine {
     if (!rig) return [];
     if (this.focusMarkCache?.rig !== rig) this.focusMarkCache = { rig, marks: focusMarks(rig) };
     return this.focusMarkCache.marks;
+  }
+
+  /** Test probe & UI telemetry: current audio-modulation envelopes, values and flash-limiter state. */
+  public getAudioModulationSnapshot() {
+    const f = this.audioModFrame;
+    const entries = [];
+    for (let i = 0; i < f.entryCount; i++) {
+      const e = f.entries[i];
+      entries.push({
+        id: e.id,
+        name: e.name,
+        enabled: e.enabled,
+        group: e.group,
+        param: e.param,
+        ...(e.projectorKey ? { projectorKey: e.projectorKey } : {}),
+        raw: e.raw,
+        envelope: e.envelope,
+        modulatedValue: e.modulatedValue,
+      });
+    }
+    return {
+      active: f.active,
+      flashLimited: f.flashLimited,
+      entries,
+    };
+  }
+
+  /** Test probe: effective parameters applied by the engine on the last frame (per group or all groups). */
+  public getFixtureParams(group?: AudioTargetGroup) {
+    const p = this.appliedParams;
+    const copyAll = () => ({
+      master: p.master,
+      legacyBoost: p.legacyBoost,
+      beam: { ...p.beam, strobe: { ...p.beam.strobe } },
+      wash: { ...p.wash, strobe: { ...p.wash.strobe } },
+      blinder: { ...p.blinder },
+      strobe: { ...p.strobe, strobe: { ...p.strobe.strobe } },
+      ledWall: { ...p.ledWall },
+      laser: {
+        ...p.laser,
+        strobe: { ...p.laser.strobe },
+        projectors: Object.fromEntries(
+          Object.entries(p.laser.projectors).map(([k, v]) => [k, { ...v }]),
+        ),
+      },
+      haze: { ...p.haze },
+    });
+    if (!group) return copyAll();
+    const all = copyAll();
+    return { master: all.master, legacyBoost: all.legacyBoost, ...all[group] };
   }
 
   /** Test probe: each moving head's beam axis in world space (origin at the tilt pivot). */
@@ -1572,6 +1680,8 @@ export class StageEngine {
     }
 
     this.assignOpeningGroups(rig.stageWidth);
+    this.laserSpeedPhaseOffsets = new Array(this.laserUnits.length).fill(0);
+    this.laserRotPhaseOffsets = new Array(this.laserUnits.length).fill(0);
     if (this.activeIldaClip) this.attachIldaToLaserUnits();
     this.particles.setEmitters(smokeEmitters, co2Emitters);
     this.beamPools = new BeamPools(this.movingFixtures.length, rig.stageWidth, rig.stageDepth, rig.stageHeight, rig.platforms);
@@ -1622,6 +1732,7 @@ export class StageEngine {
       fragmentShader: LED_WALL_FRAG,
       uniforms: {
         uTime: { value: 0 },
+        uPhaseOffset: { value: 0 },
         uMode: { value: 0 },
         uBrightness: { value: 0.85 },
         uSpeed: { value: 0.5 },
@@ -1869,6 +1980,7 @@ export class StageEngine {
         uIntensity: { value: 0.9 },
         uHaze: { value: 0.8 },
         uTime: { value: 0 },
+        uPhaseOffset: { value: 0 },
         uPattern: { value: 0 },
         uBeamCount: { value: 18 },
         uSpeed: { value: 0.5 },
@@ -1898,6 +2010,8 @@ export class StageEngine {
           uIntensity: { value: 0.9 },
           uHaze: { value: 0.8 },
           uTime: { value: 0 },
+          uPhaseOffset: { value: 0 },
+          uRotOffset: { value: 0 },
           uBeamCount: { value: 20 },
           uSpeed: { value: 0.5 },
           uSpreadX: { value: 0.78 },
@@ -2106,6 +2220,8 @@ export class StageEngine {
       const elapsed = this.lastFrameTime ? (now - this.lastFrameTime) / 1000 : 1 / 60;
       this.lastFrameTime = now;
       const dt = Math.min(0.08, elapsed);
+      // Audio analysis, envelopes, and the <= 3/s flash timer track real elapsed time (capped at 0.5 s across tab stalls).
+      const audioDt = Math.min(0.5, Math.max(0, elapsed));
       this.elapsed += dt;
 
       this.frameCounter++;
@@ -2116,9 +2232,9 @@ export class StageEngine {
         this.fpsAccum = 0;
       }
 
-      const audio = this.audioGetter(dt);
+      const audio = this.audioGetter(audioDt);
       this.renderer.info.reset();
-      if (this.updateScene(dt, audio)) this.composer.render();
+      if (this.updateScene(dt, audio, audioDt)) this.composer.render();
       else this.clearStage();
 
       this.pushDmxFrame(dt);
@@ -2132,7 +2248,7 @@ export class StageEngine {
     this.rafId = requestAnimationFrame(animate);
   }
 
-  private updateScene(dt: number, audio: AudioMetrics) {
+  private updateScene(dt: number, audio: AudioMetrics, audioDt = dt) {
     // The frame loop still clears the canvas and publishes telemetry while the desk is idle.
     if (this.standby) return false;
     const demo = this.currentState.autoDirector ? audio.demo : undefined;
@@ -2157,8 +2273,16 @@ export class StageEngine {
     (this.scene.background as THREE.Color).copy(this.backgroundColor).multiplyScalar(roomGain);
     (this.scene.fog as THREE.FogExp2).color.copy(this.fogColor).multiplyScalar(roomGain);
     for (const lamp of this.houseColors) lamp.color.copy(lamp.full).multiplyScalar(roomGain);
-    const audioBoost = s.audioReactive && audio.playing ? audio.beatPulse * 0.45 + audio.bass * 0.35 : 0;
+
+    // Evaluate per-mapping audio modulation once per frame BEFORE rendering and DMX output.
+    const mod = evaluateAudioModulation(s, audio, this.audioModState, audioDt, this.audioModFrame);
+    // Keep accumulated phase offsets intact across disables/cue switches so animations never jump;
+    // when never mapped they remain 0 (exact + 0.0 parity).
+    // Suppress legacy global boost whenever explicit audio mappings are active so targets don't double-react
+    // and laser intensity stays strictly <= look.laser.intensity.
+    const audioBoost = mod.active ? 0 : (s.audioReactive && audio.playing ? audio.beatPulse * 0.45 + audio.bass * 0.35 : 0);
     const beatPulse = s.audioReactive && audio.playing ? audio.beatPulse : 0.15 * Math.max(0, Math.sin(t * (s.bpm / 60) * Math.PI));
+    const effHaze = mod.active && mod.haze.mapped ? mod.haze.level : s.atmo.hazeLevel;
 
     const primaryColor = new THREE.Color(s.primaryColor);
     const accentColor = new THREE.Color(s.accentColor);
@@ -2242,8 +2366,26 @@ export class StageEngine {
       const look = headLook(s, kind);
       const focus = look.movementMode === 'manual'
         ? focusPoint(this.getFocusMarks(), look.focusMarkId, look.manualPan, look.manualTilt) : null;
+      const gMod = mod.active ? (kind === 'beam' ? mod.beam : mod.wash) : null;
+      const baseMoveSpd = 0.35 + look.movementSpeed * 3.1;
+      const effSpeedNorm = gMod?.speedMapped ? gMod.speed : look.movementSpeed;
+      const effMoveSpd = 0.35 + effSpeedNorm * 3.1;
+      if (gMod?.speedMapped) {
+        if (kind === 'beam') this.beamPhaseOffset += dt * (effMoveSpd - baseMoveSpd);
+        else this.washPhaseOffset += dt * (effMoveSpd - baseMoveSpd);
+      }
+      const phaseOffset = kind === 'beam' ? this.beamPhaseOffset : this.washPhaseOffset;
+      const effZoom = gMod?.zoomMapped ? gMod.zoom : s.beamZoom;
+      const colorMix = gMod?.colorMixMapped ? gMod.colorMix : 0;
+      const tiltOffset = gMod?.tiltMapped ? gMod.tiltOffset : 0;
+      const strobeMapped = Boolean(gMod?.strobe.mapped);
+      const groupStrobeGate = strobeMapped
+        ? (b.strobe ? strobeGate : (gMod!.strobe.gateOn ? 1.35 : 0.06))
+        : strobeGate;
+      const groupDmxStrobe = strobeMapped && !b.strobe ? 0 : Math.round(effectiveStrobe * 255);
       return {
-        look, focus, moveSpd: 0.35 + look.movementSpeed * 3.1, spread: 0.25 + look.movementSpread * 1.15,
+        look, focus, moveSpd: baseMoveSpd, phaseOffset, effSpeedNorm, spread: 0.25 + look.movementSpread * 1.15,
+        effZoom, colorMix, tiltOffset, gMod, strobeMapped, groupStrobeGate, groupDmxStrobe,
         primary: look.primaryColor === s.primaryColor ? primaryColor : new THREE.Color(look.primaryColor),
         accent: look.accentColor === s.accentColor ? accentColor : new THREE.Color(look.accentColor),
       };
@@ -2251,10 +2393,14 @@ export class StageEngine {
     const groups = { beam: opticsLook('beam'), wash: opticsLook('wash') };
     this.beamPools?.begin();
     for (const fx of this.movingFixtures) {
-      const { look, focus, moveSpd, spread, primary, accent } = groups[fx.type];
+      const {
+        look, focus, moveSpd, phaseOffset, spread, effZoom, colorMix, tiltOffset,
+        gMod, groupStrobeGate, groupDmxStrobe, primary, accent,
+      } = groups[fx.type];
       const i = fx.index;
       const count = Math.max(1, this.movingFixtures.length);
       const norm = i / count;
+      const movePhase = t * moveSpd + phaseOffset;
 
       let targetPan = 0;
       let targetTilt = 0.28;
@@ -2287,35 +2433,37 @@ export class StageEngine {
         case 'fan':
           // Fan each bar symmetrically using its physical mounting position.
           targetPan = Math.PI * 0.5;
-          targetTilt = -fx.fanPosition * (0.48 + Math.sin(t * moveSpd * 0.55) * 0.24) * spread;
+          targetTilt = -fx.fanPosition * (0.48 + Math.sin(movePhase * 0.55) * 0.24) * spread;
           break;
         case 'sweep':
-          targetPan = Math.sin(t * moveSpd + i * 0.22) * 1.1 * spread;
-          targetTilt = 0.42 + Math.cos(t * moveSpd * 0.5) * 0.35 * spread;
+          targetPan = Math.sin(movePhase + i * 0.22) * 1.1 * spread;
+          targetTilt = 0.42 + Math.cos(movePhase * 0.5) * 0.35 * spread;
           break;
         case 'circle':
-          targetPan = Math.sin(t * moveSpd + i * 0.35) * 0.95 * spread;
-          targetTilt = 0.45 + Math.cos(t * moveSpd + i * 0.35) * 0.48 * spread;
+          targetPan = Math.sin(movePhase + i * 0.35) * 0.95 * spread;
+          targetTilt = 0.45 + Math.cos(movePhase + i * 0.35) * 0.48 * spread;
           break;
         case 'figure8':
-          targetPan = Math.sin(t * moveSpd + i * 0.25) * 1.15 * spread;
-          targetTilt = 0.4 + Math.sin(t * moveSpd * 2.0 + i * 0.25) * 0.42 * spread;
+          targetPan = Math.sin(movePhase + i * 0.25) * 1.15 * spread;
+          targetTilt = 0.4 + Math.sin(movePhase * 2.0 + i * 0.25) * 0.42 * spread;
           break;
-        case 'flyout':
+        case 'flyout': {
           targetPan = ((i % 2 === 0 ? -1 : 1) * 0.4 + (norm - 0.5)) * spread;
-          targetTilt = 0.1 + ((t * moveSpd * 0.55 + (i % 4) * 0.25) % 1.0) * 1.15;
+          const rawFly = (movePhase * 0.55 + (i % 4) * 0.25) % 1.0;
+          targetTilt = 0.1 + (rawFly < 0 ? rawFly + 1.0 : rawFly) * 1.15;
           break;
+        }
         case 'wave':
           targetPan = (norm - 0.5) * 1.4 * spread;
-          targetTilt = 0.42 + Math.sin(t * moveSpd * 1.4 - norm * 5.2) * 0.58 * spread;
+          targetTilt = 0.42 + Math.sin(movePhase * 1.4 - norm * 5.2) * 0.58 * spread;
           break;
         case 'ballyhoo':
-          targetPan = Math.sin(t * moveSpd * 1.3 + i * 1.7) * 1.35 * spread;
-          targetTilt = 0.35 + Math.cos(t * moveSpd * 1.7 + i * 2.3) * 0.65 * spread;
+          targetPan = Math.sin(movePhase * 1.3 + i * 1.7) * 1.35 * spread;
+          targetTilt = 0.35 + Math.cos(movePhase * 1.7 + i * 2.3) * 0.65 * spread;
           break;
         case 'crowd_scan':
-          targetPan = Math.sin(t * moveSpd * 0.9 + i * 0.4) * 0.85 * spread;
-          targetTilt = 0.72 + Math.sin(t * moveSpd * 1.8 + i * 0.3) * 0.26 * spread;
+          targetPan = Math.sin(movePhase * 0.9 + i * 0.4) * 0.85 * spread;
+          targetTilt = 0.72 + Math.sin(movePhase * 1.8 + i * 0.3) * 0.26 * spread;
           break;
       }
 
@@ -2333,6 +2481,9 @@ export class StageEngine {
           else if (look.movementMode !== 'manual') targetTilt = Math.abs(targetTilt) * 0.65 + 0.15;
         }
       }
+      }
+      if (tiltOffset !== 0 && fx.motion !== 'fixed') {
+        targetTilt = THREE.MathUtils.clamp(targetTilt + tiltOffset, -TILT_LIMIT, TILT_LIMIT);
       }
 
       const moveFraction = Math.min(1, dt * 8);
@@ -2353,23 +2504,28 @@ export class StageEngine {
       } else {
         tempCol.setHSL((norm + t * 0.12) % 1, 0.96, 0.55);
       }
+      if (colorMix > 0) {
+        tempCol.lerp(accent, colorMix);
+      }
 
       const firstPair = fx.openingStep === DEMO_BLACKOUT_STEPS;
       const groupGain = demo && !firstPair ? demoFade(demo.step, fx.openingStep, fx.openingStep + 12) : 1;
-      let baseInt = fx.type === 'beam' ? s.beamIntensity : s.washIntensity;
+      let baseInt = gMod?.dimmerMapped
+        ? gMod.dimmer
+        : (fx.type === 'beam' ? s.beamIntensity : s.washIntensity);
       if (demo && firstPair && fx.type === 'wash' && demo.step < 128) {
-        baseInt = THREE.MathUtils.lerp(s.beamIntensity, s.washIntensity, demoFade(demo.step, 96, 128));
+        baseInt = THREE.MathUtils.lerp(s.beamIntensity, baseInt, demoFade(demo.step, 96, 128));
       }
       // Release each lantern from its last rendered level, including fixtures still out.
       if (demo) fx.directedDimmer = groupGain * baseInt;
       const dimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, baseInt, manualMix) : baseInt;
-      const finalInt = Math.min(1.6, dimmer * master * strobeGate * (1.0 + audioBoost * 0.48));
+      const finalInt = Math.min(1.6, dimmer * master * groupStrobeGate * (1.0 + audioBoost * 0.48));
 
       fx.beamMat.uniforms.uColor.value.copy(tempCol);
-      const zoomScale = fx.type === 'wash' ? 0.75 + s.beamZoom * 0.85 : 0.42 + s.beamZoom * 1.35;
+      const zoomScale = fx.type === 'wash' ? 0.75 + effZoom * 0.85 : 0.42 + effZoom * 1.35;
       const emitted = finalInt * aerialGain(fx.optics, zoomScale);
       fx.beamMat.uniforms.uIntensity.value = emitted;
-      fx.beamMat.uniforms.uHaze.value = s.atmo.hazeLevel;
+      fx.beamMat.uniforms.uHaze.value = effHaze;
       fx.beamMat.uniforms.uTime.value = t;
       fx.beamMat.uniforms.uPrism.value = s.goboPrism && fx.type === 'beam' ? 1.0 : 0.0;
 
@@ -2393,8 +2549,8 @@ export class StageEngine {
           Math.round(tempCol.r * 255),
           Math.round(tempCol.g * 255),
           Math.round(tempCol.b * 255),
-          Math.round(s.beamZoom * 255),
-          Math.round(effectiveStrobe * 255),
+          Math.round(effZoom * 255),
+          groupDmxStrobe,
         ]);
       }
     }
@@ -2403,8 +2559,10 @@ export class StageEngine {
 
     // 3. Update Volumetric RGB / Single-Color Laser Projectors & ILDA Playback
     const laserEnabled = (s.laser.enabled || b.laser) && master > 0.01;
+    const globalLaserStrobeGate = mod.active && mod.laser.strobe.mapped ? (mod.laser.strobe.gateOn ? 1 : 0) : 1;
+    const globalLaserBaseInt = mod.active && mod.laser.intensityMapped ? mod.laser.intensity : s.laser.intensity;
     const baseLaserInt = laserEnabled
-      ? Math.min(1.5, (b.laser ? 1.0 : s.laser.intensity) * master * (1.0 + audioBoost * 0.38))
+      ? Math.min(1.5, (b.laser ? 1.0 : globalLaserBaseInt) * master * (1.0 + audioBoost * 0.38) * (b.laser ? 1 : globalLaserStrobeGate))
       : 0;
     const patIdx = PATTERN_INDEX[s.laser.pattern];
     const isConePattern = s.laser.pattern === 'tunnel' || s.laser.pattern === 'dual_cones';
@@ -2417,13 +2575,56 @@ export class StageEngine {
       : 0;
 
     let maxLaserInt = 0;
-    for (const l of this.laserUnits) {
+    const appliedLaserProjectors = this.appliedParams.laser.projectors;
+    if (this.appliedLaserProjectorCount > 0) {
+      for (let pk = 0; pk < this.appliedLaserProjectorCount; pk++) {
+        delete appliedLaserProjectors[this.appliedLaserProjectorKeys[pk]];
+      }
+      this.appliedLaserProjectorCount = 0;
+    }
+
+    for (let ui = 0; ui < this.laserUnits.length; ui++) {
+      const l = this.laserUnits[ui];
       const override = s.laser.projectors?.[l.key];
       const count = override?.beamCount ?? s.laser.beamCount;
-      const unitInt = Math.min(1.5, baseLaserInt * laserPowerPresence(l.laserSpec));
+      const lMod = mod.active ? (mod.laser.projectors[l.key] ?? mod.laser) : null;
+      const unitStrobeGate = lMod?.strobe.mapped && !b.laser ? (lMod.strobe.gateOn ? 1 : 0) : 1;
+      const unitEffIntBase = lMod?.intensityMapped ? lMod.intensity : s.laser.intensity;
+      const unitBaseLaserInt = laserEnabled
+        ? Math.min(1.5, (b.laser ? 1.0 : unitEffIntBase) * master * (1.0 + audioBoost * 0.38) * unitStrobeGate)
+        : 0;
+      const unitInt = Math.min(1.5, unitBaseLaserInt * laserPowerPresence(l.laserSpec));
       if (unitInt > maxLaserInt) maxLaserInt = unitInt;
 
-      // Single source of truth for laser pitch (shared with laserSafety.ts).
+      const effSpreadX = lMod?.spreadMapped ? lMod.spreadX : s.laser.spreadX;
+      const effSpreadY = lMod?.spreadMapped ? lMod.spreadY : s.laser.spreadY;
+      const effSpeed = lMod?.speedMapped ? lMod.speed : s.laser.speed;
+      const effRotation = lMod?.rotationMapped ? lMod.rotation : s.laser.rotation;
+      // Never write shader uStrobe when laser strobe is audio-mapped (shader strobe runs 4–30 Hz); gate intensity instead.
+      const effLaserStrobe = lMod?.strobe.mapped ? 0 : s.laser.strobe;
+
+      if (lMod?.speedMapped) {
+        this.laserSpeedPhaseOffsets[ui] = (this.laserSpeedPhaseOffsets[ui] ?? 0) + dt * ((0.45 + effSpeed * 2.6) - (0.45 + s.laser.speed * 2.6));
+      }
+      if (lMod?.rotationMapped) {
+        this.laserRotPhaseOffsets[ui] = (this.laserRotPhaseOffsets[ui] ?? 0) + dt * (effRotation - s.laser.rotation);
+      }
+      const speedPhaseOff = this.laserSpeedPhaseOffsets[ui] ?? 0;
+      const rotPhaseOff = this.laserRotPhaseOffsets[ui] ?? 0;
+
+      if (mod.active && mod.laser.projectors[l.key]) {
+        appliedLaserProjectors[l.key] = {
+          intensity: Math.min(1, unitBaseLaserInt),
+          speed: effSpeed,
+          rotation: effRotation,
+          spreadX: effSpreadX,
+          spreadY: effSpreadY,
+          strobeGateOn: unitStrobeGate > 0,
+        };
+        this.appliedLaserProjectorKeys[this.appliedLaserProjectorCount++] = l.key;
+      }
+
+      // Single source of truth for laser pitch (shared with laserSafety.ts; always uses base s.laser).
       l.root.rotation.x = laserPitch(l.isFloor, s.laser, t, l.index);
 
       // Single-color diode constraints enforced in engine with zero per-frame allocations.
@@ -2456,12 +2657,12 @@ export class StageEngine {
         const flicker = flickerIntensityMultiplier(refreshHz, t);
 
         l.ildaMesh.geometry.setDrawRange(dr.start, dr.count);
-        const tangents = ildaScanTangents(l.laserSpec?.maxScanAngleDeg, s.laser.spreadX, s.laser.spreadY);
+        const tangents = ildaScanTangents(l.laserSpec?.maxScanAngleDeg, effSpreadX, effSpreadY);
         l.ildaMesh.scale.set(tangents.scaleX, tangents.scaleY, 1);
-        l.ildaMesh.rotation.z = s.laser.rotation * Math.sin(t * (0.4 + s.laser.speed * 1.4) + l.index) * LASER_ILDA_ROLL_SCALE;
-        l.ildaMesh.visible = laserEnabled && dr.count > 0;
+        l.ildaMesh.rotation.z = effRotation * Math.sin(t * (0.4 + s.laser.speed * 1.4) + speedPhaseOff * 0.54 + l.index) * LASER_ILDA_ROLL_SCALE;
+        l.ildaMesh.visible = laserEnabled && unitBaseLaserInt > 0.001 && dr.count > 0;
 
-        const hazeGain = 0.35 + 0.65 * s.atmo.hazeLevel;
+        const hazeGain = 0.35 + 0.65 * effHaze;
         const ildaGain = Math.min(1.5, unitInt * flicker * hazeGain);
         if (l.singleColor) {
           l.ildaMat.color.copy(l.singleColor).multiplyScalar(ildaGain);
@@ -2479,24 +2680,26 @@ export class StageEngine {
         l.coneMesh.visible = laserEnabled && isConePattern;
         l.innerConeMesh.visible = laserEnabled && s.laser.pattern === 'dual_cones' && count > 1;
 
-        // Subtle roll rotation on sheet patterns when rotation slider > 0
+        // Subtle roll rotation on sheet patterns when rotation slider > 0 (phase-continuous under modulation)
+        const rotPhase = t * s.laser.rotation + rotPhaseOff;
         const rollAngle = isConePattern
           ? 0
           : s.laser.pattern === 'matrix'
-            ? (l.index % 2 === 0 ? 0.0 : Math.PI / 2) + t * s.laser.rotation * 0.65
-            : Math.sin(t * s.laser.rotation * 1.4 + l.index) * s.laser.rotation * LASER_SHEET_ROLL_SCALE;
+            ? (l.index % 2 === 0 ? 0.0 : Math.PI / 2) + rotPhase * 0.65
+            : Math.sin(rotPhase * 1.4 + l.index) * effRotation * LASER_SHEET_ROLL_SCALE;
         l.sheetMesh.rotation.z = rollAngle;
 
         // Update sheet uniforms
         su.uIntensity.value = unitInt;
-        su.uHaze.value = s.atmo.hazeLevel;
+        su.uHaze.value = effHaze;
         su.uTime.value = t;
+        su.uPhaseOffset.value = speedPhaseOff;
         su.uPattern.value = patIdx;
         su.uBeamCount.value = count;
         su.uSpeed.value = s.laser.speed;
-        su.uSpreadX.value = s.laser.spreadX;
-        su.uSpreadY.value = s.laser.spreadY;
-        su.uStrobe.value = s.laser.strobe;
+        su.uSpreadX.value = effSpreadX;
+        su.uSpreadY.value = effSpreadY;
+        su.uStrobe.value = effLaserStrobe;
         su.uAudioPulse.value = beatPulse;
 
         // Update cone / dual cone uniforms
@@ -2509,36 +2712,38 @@ export class StageEngine {
           cu.uColorB.value.copy(dirMult < 0 ? su.uColorA.value : su.uColorB.value);
           cu.uColorMode.value = su.uColorMode.value;
           cu.uIntensity.value = unitInt;
-          cu.uHaze.value = s.atmo.hazeLevel;
+          cu.uHaze.value = effHaze;
           cu.uTime.value = t;
+          cu.uPhaseOffset.value = speedPhaseOff;
+          cu.uRotOffset.value = rotPhaseOff * dirMult;
           cu.uBeamCount.value = s.laser.pattern === 'dual_cones'
             ? (dirMult < 0 ? Math.floor(count / 2) : Math.ceil(count / 2)) : count;
           cu.uSpeed.value = s.laser.speed;
-          cu.uSpreadX.value = s.laser.spreadX;
-          cu.uSpreadY.value = s.laser.spreadY;
+          cu.uSpreadX.value = effSpreadX;
+          cu.uSpreadY.value = effSpreadY;
           cu.uRotation.value = s.laser.rotation * dirMult;
-          cu.uStrobe.value = s.laser.strobe;
+          cu.uStrobe.value = effLaserStrobe;
           cu.uAudioPulse.value = beatPulse;
         }
 
         l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(unitInt * 2.6);
       }
 
-      // Write Laser DMX Universe channels using unscaled baseLaserInt (never visual power presence),
+      // Write Laser DMX Universe channels using unscaled unitBaseLaserInt (never visual power presence),
       // clamped strictly to l.dmxWidth.
       const uBuf = l.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
       if (l.dmxStart > 0) {
         const dv = this.laserDmxScratchValues;
         dv.enabled = laserEnabled;
-        dv.intensity = Math.min(1, baseLaserInt);
+        dv.intensity = Math.min(1, unitBaseLaserInt);
         dv.patternIndex = patIdx;
-        dv.spreadX = s.laser.spreadX;
-        dv.spreadY = s.laser.spreadY;
-        dv.speed = s.laser.speed;
-        dv.rotation = s.laser.rotation;
+        dv.spreadX = effSpreadX;
+        dv.spreadY = effSpreadY;
+        dv.speed = effSpeed;
+        dv.rotation = effRotation;
         dv.tilt = s.laser.tilt;
         dv.beamCount = count;
-        dv.strobe = s.laser.strobe;
+        dv.strobe = effLaserStrobe;
         dv.colorR = su.uColorA.value.r;
         dv.colorG = su.uColorA.value.g;
         dv.colorB = su.uColorA.value.b;
@@ -2551,7 +2756,7 @@ export class StageEngine {
     const laserInt = this.laserUnits.length ? maxLaserInt : baseLaserInt;
 
     // 4. Update Audience Blinders & LED Strobes
-    const effBlinder = (b.blinder ? 1.0 : s.blinderLevel) * master;
+    const effBlinder = (b.blinder ? 1.0 : (mod.active && mod.blinder.mapped ? mod.blinder.dimmer : s.blinderLevel)) * master;
     const warmAmber = new THREE.Color(0xffbe55);
     for (const bl of this.blinders) {
       bl.lensMat.color.copy(warmAmber).multiplyScalar(effBlinder * 4.2);
@@ -2559,31 +2764,46 @@ export class StageEngine {
     }
     this.blinderLight.intensity = effBlinder * 75;
 
-    const strobeBarBright =
-      effectiveStrobe > 0.03 && strobeFlashOn
-        ? 3.8 * master
-        : s.audioReactive && audio.beat && master > 0.2
-          ? 2.2 * master * (openingStep === undefined ? 1 : THREE.MathUtils.lerp(demoFade(openingStep, 256, 384), 1, manualMix))
-          : 0;
+    const strobeBarAudioMapped = mod.active && (mod.strobeBar.strobe.mapped || mod.strobeBar.dimmerMapped);
+    const strobeBarBright = strobeBarAudioMapped
+      ? (b.strobe && strobeFlashOn
+          ? 3.8 * master
+          : Math.max(mod.strobeBar.strobe.mapped && mod.strobeBar.strobe.gateOn ? 1 : 0, mod.strobeBar.dimmerMapped ? mod.strobeBar.dimmer : 0) * 3.8 * master)
+      : (effectiveStrobe > 0.03 && strobeFlashOn
+          ? 3.8 * master
+          : s.audioReactive && audio.beat && master > 0.2
+            ? 2.2 * master * (openingStep === undefined ? 1 : THREE.MathUtils.lerp(demoFade(openingStep, 256, 384), 1, manualMix))
+            : 0);
+    const strobeBarDmxRate = strobeBarAudioMapped && !b.strobe ? 0 : Math.round(255 * effectiveStrobe);
+    const strobeBarFlash = strobeBarAudioMapped ? strobeBarBright > 0.01 : (effectiveStrobe > 0.03 && strobeFlashOn);
     for (const st of this.strobes) {
       if (st.start) {
         writeDmxChannels(st.buffer, st.start, st.width ?? 2, [
           Math.round(255 * strobeBarBright / 3.8),
-          Math.round(255 * effectiveStrobe),
+          strobeBarDmxRate,
         ]);
       }
+      const strobeLensWhite = strobeBarAudioMapped
+        ? (b.strobe && strobeFlashOn) || (mod.strobeBar.strobe.mapped && mod.strobeBar.strobe.gateOn)
+        : strobeFlashOn;
       st.lensMat.color
-        .copy(strobeFlashOn ? new THREE.Color(0xffffff) : primaryColor)
+        .copy(strobeLensWhite ? new THREE.Color(0xffffff) : primaryColor)
         .multiplyScalar(strobeBarBright);
     }
-    this.strobeLight.intensity = effectiveStrobe > 0.03 && strobeFlashOn ? 65 * master : 0;
+    this.strobeLight.intensity = strobeBarFlash ? 65 * master * Math.min(1, strobeBarBright / Math.max(0.01, 3.8 * master)) : 0;
 
     // 5. Update Concert LED Video Wall Shaders
-    const ledBright = s.led.enabled ? s.led.brightness * master : 0;
+    const effLedBright = mod.active && mod.ledWall.brightnessMapped ? mod.ledWall.brightness : s.led.brightness;
+    const ledBright = s.led.enabled ? effLedBright * master : 0;
+    const effLedSpeed = mod.active && mod.ledWall.speedMapped ? mod.ledWall.speed : s.led.speed;
+    if (mod.active && mod.ledWall.speedMapped) {
+      this.ledPhaseOffset += dt * ((0.4 + effLedSpeed * 2.2) - (0.4 + s.led.speed * 2.2));
+    }
     for (const player of this.secondaryPlayers.values()) player.setMaster(master);
     const ledModeNum = LED_MODE_INDEX[s.led.visualMode];
     for (const m of this.ledWallMats) {
       m.uniforms.uTime.value = t;
+      m.uniforms.uPhaseOffset.value = this.ledPhaseOffset;
       m.uniforms.uMode.value = ledModeNum;
       m.uniforms.uBrightness.value = ledBright;
       m.uniforms.uSpeed.value = s.led.speed;
@@ -2597,8 +2817,18 @@ export class StageEngine {
 
     // 6. Stage Dynamic Spill Lights & DJ Booth Strip
     const rigHasLight = this.movingFixtures.length > 0;
-    const activeLightPower = ((rigHasLight ? (s.beamIntensity * 0.55 + s.washIntensity * 0.72) * this.spillFluxGain : 0) +
-      (this.laserUnits.length ? laserInt * 0.09 : 0)) * master * strobeGate * roomGain;
+    const effBeamIntSpill = mod.active && mod.beam.dimmerMapped ? mod.beam.dimmer : s.beamIntensity;
+    const effWashIntSpill = mod.active && mod.wash.dimmerMapped ? mod.wash.dimmer : s.washIntensity;
+    const spillStrobeGate =
+      !b.strobe && mod.active && (mod.strobeBar.strobe.mapped || mod.strobeBar.dimmerMapped || (mod.beam.strobe.mapped && mod.wash.strobe.mapped))
+        ? (mod.strobeBar.strobe.mapped
+            ? (mod.strobeBar.strobe.gateOn ? 1.35 : 0.06)
+            : (mod.beam.strobe.mapped && mod.wash.strobe.mapped
+                ? (mod.beam.strobe.gateOn || mod.wash.strobe.gateOn ? 1.35 : 0.06)
+                : 1.0))
+        : strobeGate;
+    const activeLightPower = ((rigHasLight ? (effBeamIntSpill * 0.55 + effWashIntSpill * 0.72) * this.spillFluxGain : 0) +
+      (this.laserUnits.length ? laserInt * 0.09 : 0)) * master * spillStrobeGate * roomGain;
     this.stagePrimaryLight.color.copy(primaryColor);
     this.stagePrimaryLight.intensity = activeLightPower * (24 + beatPulse * 14);
     this.stageAccentLight.color.copy(accentColor);
@@ -2644,15 +2874,77 @@ export class StageEngine {
     const effSmoke = b.smoke ? 1.0 : s.atmo.smokeOutput;
     const effCo2 = b.co2 || s.atmo.co2Active || (s.atmo.co2AutoOnDrop && audio.drop && s.audioReactive);
     for (const fx of this.atmosphereDmx) {
-      const output = fx.type === 'co2' ? Number(effCo2) : fx.type === 'smoke' ? effSmoke : s.atmo.hazeLevel;
+      const output = fx.type === 'co2' ? Number(effCo2) : fx.type === 'smoke' ? effSmoke : effHaze;
       fx.buffer[fx.start - 1] = Math.round(output * 255);
     }
     const stageTint = primaryColor.clone().lerp(accentColor, 0.35);
     this.particles.group.visible = roomGain > 0 || b.smoke || b.co2;
-    this.particles.update(dt, t, s.atmo.hazeLevel, effSmoke, effCo2, stageTint, activeLightPower);
+    this.particles.update(dt, t, effHaze, effSmoke, effCo2, stageTint, activeLightPower);
 
     // Update arena fog slightly with haze density for rich depth
-    (this.scene.fog as THREE.FogExp2).density = 0.008 + s.atmo.hazeLevel * 0.015;
+    (this.scene.fog as THREE.FogExp2).density = 0.008 + effHaze * 0.015;
+
+    // Record applied per-group parameters for `?probe` `fixtureParams(group)` (zero per-frame allocations).
+    const ap = this.appliedParams;
+    ap.master = master;
+    ap.legacyBoost = audioBoost;
+    const bGrp = groups.beam;
+    ap.beam.dimmer = Math.min(1.6, (bGrp.gMod?.dimmerMapped ? bGrp.gMod.dimmer : s.beamIntensity) * master * bGrp.groupStrobeGate * (1.0 + audioBoost * 0.48));
+    ap.beam.zoom = bGrp.effZoom;
+    ap.beam.colorMix = bGrp.colorMix;
+    ap.beam.speed = bGrp.effSpeedNorm;
+    ap.beam.tiltOffset = bGrp.tiltOffset;
+    ap.beam.strobe.mode = bGrp.strobeMapped ? 'mapped' : 'unmapped';
+    ap.beam.strobe.rate = bGrp.strobeMapped ? 0 : effectiveStrobe;
+    ap.beam.strobe.envelope = bGrp.gMod?.strobe.envelope ?? 0;
+    ap.beam.strobe.gateOn = bGrp.strobeMapped ? (bGrp.gMod?.strobe.gateOn ?? false) : strobeFlashOn;
+    ap.beam.strobe.lastFlashMs = bGrp.gMod?.strobe.lastFlashMs ?? -Infinity;
+    ap.beam.strobe.limited = bGrp.gMod?.strobe.limited ?? false;
+
+    const wGrp = groups.wash;
+    ap.wash.dimmer = Math.min(1.6, (wGrp.gMod?.dimmerMapped ? wGrp.gMod.dimmer : s.washIntensity) * master * wGrp.groupStrobeGate * (1.0 + audioBoost * 0.48));
+    ap.wash.zoom = wGrp.effZoom;
+    ap.wash.colorMix = wGrp.colorMix;
+    ap.wash.speed = wGrp.effSpeedNorm;
+    ap.wash.tiltOffset = wGrp.tiltOffset;
+    ap.wash.strobe.mode = wGrp.strobeMapped ? 'mapped' : 'unmapped';
+    ap.wash.strobe.rate = wGrp.strobeMapped ? 0 : effectiveStrobe;
+    ap.wash.strobe.envelope = wGrp.gMod?.strobe.envelope ?? 0;
+    ap.wash.strobe.gateOn = wGrp.strobeMapped ? (wGrp.gMod?.strobe.gateOn ?? false) : strobeFlashOn;
+    ap.wash.strobe.lastFlashMs = wGrp.gMod?.strobe.lastFlashMs ?? -Infinity;
+    ap.wash.strobe.limited = wGrp.gMod?.strobe.limited ?? false;
+
+    ap.blinder.dimmer = effBlinder;
+    ap.blinder.limited = mod.active && mod.blinder.limited;
+
+    ap.strobe.dimmer = strobeBarBright / 3.8;
+    ap.strobe.limited = mod.active && (mod.strobeBar.dimmerLimited || mod.strobeBar.strobe.limited);
+    ap.strobe.strobe.mode = mod.active && mod.strobeBar.strobe.mapped ? 'mapped' : 'unmapped';
+    ap.strobe.strobe.rate = strobeBarDmxRate / 255;
+    ap.strobe.strobe.envelope = mod.active ? mod.strobeBar.strobe.envelope : 0;
+    ap.strobe.strobe.gateOn = mod.active && mod.strobeBar.strobe.mapped ? mod.strobeBar.strobe.gateOn : strobeFlashOn;
+    ap.strobe.strobe.lastFlashMs = mod.active ? mod.strobeBar.strobe.lastFlashMs : -Infinity;
+    ap.strobe.strobe.limited = mod.active && mod.strobeBar.strobe.limited;
+
+    ap.ledWall.enabled = s.led.enabled;
+    ap.ledWall.brightness = ledBright;
+    ap.ledWall.speed = effLedSpeed;
+
+    ap.laser.enabled = laserEnabled;
+    ap.laser.audienceScan = s.laser.audienceScan;
+    ap.laser.intensity = Math.min(1, baseLaserInt);
+    ap.laser.speed = mod.active && mod.laser.speedMapped ? mod.laser.speed : s.laser.speed;
+    ap.laser.rotation = mod.active && mod.laser.rotationMapped ? mod.laser.rotation : s.laser.rotation;
+    ap.laser.spreadX = mod.active && mod.laser.spreadMapped ? mod.laser.spreadX : s.laser.spreadX;
+    ap.laser.spreadY = mod.active && mod.laser.spreadMapped ? mod.laser.spreadY : s.laser.spreadY;
+    ap.laser.strobe.mode = mod.active && mod.laser.strobe.mapped ? 'mapped' : 'unmapped';
+    ap.laser.strobe.rate = mod.active && mod.laser.strobe.mapped ? 0 : s.laser.strobe;
+    ap.laser.strobe.envelope = mod.active ? mod.laser.strobe.envelope : 0;
+    ap.laser.strobe.gateOn = mod.active && mod.laser.strobe.mapped ? mod.laser.strobe.gateOn : false;
+    ap.laser.strobe.lastFlashMs = mod.active ? mod.laser.strobe.lastFlashMs : -Infinity;
+    ap.laser.strobe.limited = mod.active && mod.laser.strobe.limited;
+
+    ap.haze.level = effHaze;
 
     // 10. Camera Smooth Transitions & Arena Drone Orbit
     if (this.orbitAuto) {

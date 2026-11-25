@@ -128,6 +128,9 @@ export class AudioEngine {
       };
     }
 
+    // Keep AnalyserNode decay consistent in real time across variable frame rates (exact 0.78 at 60 fps).
+    const smoothFrames = Number.isFinite(dt) && dt > 0 ? Math.max(0.5, dt * 60) : 1;
+    this.analyser.smoothingTimeConstant = Math.max(0.05, Math.min(0.9, Math.pow(0.78, smoothFrames)));
     this.analyser.getByteFrequencyData(this.freqData);
     const len = this.freqData.length;
 
@@ -610,7 +613,13 @@ export class AudioEngine {
     let stream: MediaStream | undefined;
     let node: MediaStreamAudioSourceNode | undefined;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
       if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
       if (!stream.getAudioTracks().some(track => track.readyState === 'live')) {
         throw new DOMException('Microphone disconnected', 'NotReadableError');
