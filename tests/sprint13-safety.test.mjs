@@ -714,18 +714,32 @@ test('QA M-3 & M-4: legacy full snapshots preserve omitted ShowState fields, and
     audioMap: { mappings: [mapping] },
   };
 
-  // M-3: legacy full timeline snapshot with laser/motors/atmo/led but omitted bpm must keep prior.bpm AND clear stale optional fields
-  const legacyFullPatch = {
-    laser: structuredClone(baseLook.laser),
-    motors: structuredClone(baseLook.motors),
-    atmo: structuredClone(baseLook.atmo),
-    led: structuredClone(baseLook.led),
-  };
+  // M-3: legacy full timeline snapshot with core scalar fields + laser/motors/atmo/led but omitted bpm
+  // must keep prior.bpm AND clear stale optional fields.
+  const legacyFullPatch = structuredClone(baseLook);
+  delete legacyFullPatch.bpm;
+  delete legacyFullPatch.audioMap;
+  delete legacyFullPatch.movingGroups;
+  delete legacyFullPatch.focusMarkId;
   const applied = cueLookMod.applyTimelineLookPatch(liveWithMap, legacyFullPatch);
   assert.equal(applied.bpm, 132, 'legacy full snapshot missing bpm must inherit prior.bpm');
   assert.equal(Object.hasOwn(applied, 'audioMap'), false, 'full snapshot without audioMap still clears stale audioMap');
   assert.equal(Object.hasOwn(applied, 'movingGroups'), false, 'full snapshot without movingGroups clears stale movingGroups');
   assert.equal(Object.hasOwn(applied, 'focusMarkId'), false, 'full snapshot without focusMarkId clears stale focusMarkId');
+
+  // Codex review-03 Previous R5 regression: an already-saved ambiguous 4-subsystem delta `{ laser, motors, atmo, led }`
+  // without full-snapshot scalar fields MUST preserve unchanged optional fields (`movingGroups`, `focusMarkId`, `audioMap`).
+  const savedFourSubsystemDelta = {
+    laser: structuredClone(baseLook.laser),
+    motors: structuredClone(baseLook.motors),
+    atmo: structuredClone(baseLook.atmo),
+    led: structuredClone(baseLook.led),
+  };
+  const afterSavedDelta = cueLookMod.applyTimelineLookPatch(liveWithMap, savedFourSubsystemDelta);
+  assert.equal(afterSavedDelta.bpm, 132);
+  assert.deepEqual(afterSavedDelta.movingGroups, liveWithMap.movingGroups, 'saved 4-subsystem delta must preserve movingGroups');
+  assert.equal(afterSavedDelta.focusMarkId, 'mark-center', 'saved 4-subsystem delta must preserve focusMarkId');
+  assert.equal(afterSavedDelta.audioMap?.mappings?.length, 1, 'saved 4-subsystem delta must preserve audioMap');
 
   // M-4: legacy cue with masterDimmer + motors (no led/atmo) still replaces podTargets (captured=true) AND preserves live audioMap!
   const withPodTarget = {
@@ -1103,5 +1117,148 @@ test('QA H2 regression: evaluateAudioModulation followed by stepCombinedStrobeGa
   }
   for (let i = 1; i < edgeTimesMs.length; i++) {
     assert.ok(edgeTimesMs[i] - edgeTimesMs[i - 1] >= audioMod.FLASH_REFRACTORY_MS - 1);
+  }
+});
+
+test('Codex review-03 R1 regression: rapid 50 ms strobe press/release cycles cannot exceed 3 physical ETC PAR dimmer flashes/s', () => {
+  const state = audioMod.createAudioModulationState();
+  const frame = audioMod.createAudioModulationFrame();
+  const look = {
+    ...presets.INITIAL_SHOW_STATE,
+    masterDimmer: 1,
+    washIntensity: 0.9,
+    strobeRate: 0,
+    audioReactive: false,
+  };
+  const metrics = {
+    playing: false,
+    bass: 0,
+    mid: 0,
+    high: 0,
+    energy: 0,
+    beat: false,
+    beatPulse: 0,
+    drop: false,
+    spectrum: new Float32Array(32),
+  };
+  const parClass = physicalDmx.classifyPhysicalGroup({
+    id: 'par-1ch',
+    type: 'wash',
+    catalogId: 'etc-colorsource-par',
+    dmxModeName: '1-Ch',
+    count: 1,
+    dmxUniverse: 1,
+    dmxStartChannel: 1,
+  });
+  const physBuf = new Uint8Array(512);
+  const simBuf = new Uint8Array(512);
+
+  // Alternate 50 ms strobe bump held / 50 ms released across 2.0 seconds at 10 ms steps.
+  const dt = 0.01;
+  const risingEdgeTimesMs = [];
+  let prevBright = true; // starts steady at 0.9 * 255 = 230
+  for (let step = 0; step < 200; step++) {
+    const tMs = step * 10;
+    const held = Math.floor(tMs / 50) % 2 === 0;
+    const effectiveStrobe = held ? 0.92 : 0;
+    audioMod.evaluateAudioModulation(look, metrics, state, dt, frame);
+    const combined = audioMod.stepCombinedStrobeGate(state, effectiveStrobe, tMs / 1000, false);
+    const finalInt = Math.max(0, Math.min(1, look.washIntensity * look.masterDimmer * combined.gate));
+    physBuf.fill(0);
+    physicalDmx.writePhysicalUnitBytes(physBuf, simBuf, 1, 1, parClass, {
+      blackout: false,
+      dimmer: finalInt,
+      r: 1,
+      g: 1,
+      b: 1,
+    });
+    const dmxByte = physBuf[0];
+    const bright = dmxByte >= 180;
+    if (bright && !prevBright) {
+      risingEdgeTimesMs.push(state.clockMs);
+    }
+    prevBright = bright;
+  }
+
+  // Over any rolling 1.0 s window, delivered physical bright rising edges must stay <= 3/s.
+  for (let i = 0; i < risingEdgeTimesMs.length; i++) {
+    const inWindow = risingEdgeTimesMs.filter((t) => t >= risingEdgeTimesMs[i] && t < risingEdgeTimesMs[i] + 1000);
+    assert.ok(inWindow.length <= 3, `rolling 1 s window had ${inWindow.length} bright rising edges (must be <= 3): ${JSON.stringify(risingEdgeTimesMs)}`);
+  }
+  assert.ok(risingEdgeTimesMs.length <= 6, `expected <= 6 bright rising edges over 2 s, got ${risingEdgeTimesMs.length}`);
+
+  // Once strobe stays released past the 334 ms refractory window, normal steady brightness restores cleanly.
+  for (let i = 0; i < 40; i++) {
+    audioMod.evaluateAudioModulation(look, metrics, state, dt, frame);
+    audioMod.stepCombinedStrobeGate(state, 0, 2.0 + i * dt, false);
+  }
+  const settled = audioMod.stepCombinedStrobeGate(state, 0, 2.5, false);
+  assert.equal(settled.gate, 1.0, 'after refractory elapses with strobe released, steady gate restores to 1.0');
+
+  // QA M2 regression: cloneAudioModulationState preserves manualStrobeGate trough hold across clones.
+  const s2 = audioMod.createAudioModulationState();
+  const f2 = audioMod.createAudioModulationFrame();
+  audioMod.evaluateAudioModulation(look, metrics, s2, 0.01, f2);
+  audioMod.stepCombinedStrobeGate(s2, 0.92, 0.01, false); // fires flash at t=10 ms
+  for (let k = 0; k < 8; k++) {
+    audioMod.evaluateAudioModulation(look, metrics, s2, 0.01, f2);
+    audioMod.stepCombinedStrobeGate(s2, 0.92, 0.02 + k * 0.01, false); // enters 0.06 trough by t=90 ms
+  }
+  assert.ok(s2.manualStrobeGate < 0.5, 'state must be inside strobe trough');
+  const cloned = audioMod.cloneAudioModulationState(s2);
+  assert.equal(cloned.manualStrobeGate, s2.manualStrobeGate, 'cloneAudioModulationState must copy manualStrobeGate');
+  const clonedRelease = audioMod.stepCombinedStrobeGate(cloned, 0, 0.1, false);
+  assert.equal(clonedRelease.gate, 0.06, 'cloned state must still hold dark during refractory on release');
+
+  // QA M3 regression: toggling blackout on/off inside a strobe trough cannot bypass the 334 ms refractory window.
+  audioMod.evaluateAudioModulation(look, metrics, s2, 0.01, f2); // t=100 ms (< 344 ms)
+  audioMod.stepCombinedStrobeGate(s2, 0, 0.1, true); // blackout ON
+  audioMod.evaluateAudioModulation(look, metrics, s2, 0.01, f2); // t=110 ms (< 344 ms)
+  const afterBlackoutOff = audioMod.stepCombinedStrobeGate(s2, 0, 0.11, false); // blackout OFF while strobe released
+  assert.equal(afterBlackoutOff.gate, 0.06, 'exiting blackout inside strobe refractory trough must hold dark');
+  assert.equal(afterBlackoutOff.limited, true);
+
+  // QA L1 + cue-switch regression: audio-mapped strobe mixed with manual press/release stays <= 3 edges/s.
+  const s3 = audioMod.createAudioModulationState();
+  const f3 = audioMod.createAudioModulationFrame();
+  const mappedLook = {
+    ...look,
+    audioReactive: true,
+    audioMap: {
+      mappings: [{
+        id: 'b-strobe',
+        name: 'Energy -> beam strobe',
+        enabled: true,
+        source: 'energy',
+        target: { group: 'beam', param: 'strobe' },
+        amount: 1,
+        attackMs: 0,
+        releaseMs: 10,
+        threshold: 0.2,
+        curve: 'linear',
+      }],
+    },
+  };
+  const mixedEdges = [];
+  let prevMixedBright = true;
+  for (let step = 0; step < 200; step++) {
+    const tMs = step * 10;
+    const pulseAudio = (tMs % 100) < 20 ? 0.95 : 0;
+    const manualOn = (tMs % 120) < 60;
+    audioMod.evaluateAudioModulation(
+      mappedLook,
+      { ...metrics, playing: true, energy: pulseAudio },
+      s3,
+      0.01,
+      f3,
+    );
+    const comb = audioMod.stepCombinedStrobeGate(s3, manualOn ? 0.92 : 0, tMs / 1000, false);
+    const bright = comb.gate >= 0.8;
+    if (bright && !prevMixedBright) mixedEdges.push(s3.clockMs);
+    prevMixedBright = bright;
+  }
+  for (let i = 0; i < mixedEdges.length; i++) {
+    const inWin = mixedEdges.filter((t) => t >= mixedEdges[i] && t < mixedEdges[i] + 1000);
+    assert.ok(inWin.length <= 3, `mixed audio+manual strobe exceeded 3 edges/s: ${JSON.stringify(mixedEdges)}`);
   }
 });

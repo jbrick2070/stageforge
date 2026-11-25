@@ -1,4 +1,6 @@
-# Published schemas and frozen test fixtures keep LF everywhere, so a Windows checkout has the
-# same bytes as GitHub's Linux runner (which tests before every Pages deploy).
+# Published schemas, frozen test fixtures, and demo track map keep LF everywhere, so a Windows
+# checkout has the same bytes as GitHub's Linux runner (which tests before every Pages deploy).
 src/schemas/*.json text eol=lf
 tests/fixtures/*.json text eol=lf
+public/demo/*.json text eol=lf
+*.mp3 binary

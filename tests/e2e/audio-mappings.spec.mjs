@@ -290,7 +290,7 @@ test('frozen-frame pixel parity: no mappings and disabled mappings match bit-for
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.redrawAndCapture)).toBe('function');
 
-  await page.getByRole('button', { name: /play demo/i }).click();
+  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await expect.poll(async () => page.evaluate(() =>
     window.stageforgeProbe.beamAxes().filter((b) => b.optics.emitted > 0.001).length
@@ -355,7 +355,7 @@ test('phone-like 4x CPU throttle performance: 16 active audio mappings stay with
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.audioModulation)).toBe('function');
 
-  await page.getByRole('button', { name: /play demo/i }).click();
+  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
 
   const cdp = await page.context().newCDPSession(page);

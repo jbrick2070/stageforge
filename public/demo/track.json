@@ -1,0 +1,65 @@
+{
+  "format": "stageforge-demo-track",
+  "version": 1,
+  "title": "StageForge demo track",
+  "file": "track.mp3",
+  "bpm": 122,
+  "firstDownbeatMs": 96,
+  "sections": [
+    {
+      "role": "intro",
+      "label": "Walk-on",
+      "bars": 8
+    },
+    {
+      "role": "build",
+      "label": "Rising",
+      "bars": 8
+    },
+    {
+      "role": "drop",
+      "label": "Kick enters",
+      "bars": 16
+    },
+    {
+      "role": "groove",
+      "label": "Main groove",
+      "bars": 32
+    },
+    {
+      "role": "build",
+      "label": "Lift",
+      "bars": 8
+    },
+    {
+      "role": "drop",
+      "label": "Main drop",
+      "bars": 36
+    },
+    {
+      "role": "breakdown",
+      "label": "Breakdown",
+      "bars": 8
+    },
+    {
+      "role": "rebuild",
+      "label": "Rebuild",
+      "bars": 12
+    },
+    {
+      "role": "drop",
+      "label": "Second drop",
+      "bars": 12
+    },
+    {
+      "role": "finale",
+      "label": "Finale",
+      "bars": 8
+    },
+    {
+      "role": "outro",
+      "label": "Curtain call",
+      "bars": 10
+    }
+  ]
+}

@@ -25,7 +25,7 @@ test('a touch phone opens on playback and can switch to the desk', async ({ brow
   try {
     const page = await context.newPage();
     await page.goto('/');
-    await expect(page.getByRole('button', { name: 'Play demo' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Play demo', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Show desk' }).click();
     await expect(page.getByRole('button', { name: 'Design stage' })).toBeVisible();
   } finally {

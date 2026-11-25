@@ -114,6 +114,8 @@ test('reopening a paused bundle holds the main LED offset, and removing wall-onl
   const dl = await dlPromise;
   const bundlePath = info.outputPath(dl.suggestedFilename());
   await dl.saveAs(bundlePath);
+  // Close the authoring tab before opening a second WebGL context so SwiftShader doesn't contend across two tabs.
+  await page.close();
 
   const fresh = await browser.newContext({ baseURL: test.info().project.use.baseURL });
   try {

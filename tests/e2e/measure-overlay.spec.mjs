@@ -19,7 +19,7 @@ test('Measure overlay is off and zero-cost by default, matches live ?probe aim v
 
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.measureSnapshot)).toBe('function');
-  await page.getByRole('button', { name: /play demo/i }).click();
+  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
 
   // 1. Measure is off by default; capture exact off-by-default renderStats.

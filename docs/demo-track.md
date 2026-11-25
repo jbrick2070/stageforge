@@ -1,8 +1,21 @@
 # Demo Track & Per-Track Section Map
 
-StageForge ships with a built-in 64-bar procedural synth demo (`Play demo`). You can complement it with your own recorded demo track of any length and arrangement by dropping an audio file and a JSON section map into `public/demo/`.
+StageForge ships with both a built-in 64-bar procedural synth demo (`Play demo`) and a bundled recorded demo track (`Play demo track`, in `public/demo/`). You can also replace the bundled track with your own recorded track of any length and arrangement by editing `public/demo/track.json` and swapping the audio file, or remove `public/demo/` to hide the demo-track control completely.
 
-When `public/demo/track.json` is absent, StageForge behaves identically to today and renders no extra demo-track controls. When `public/demo/track.json` is present, StageForge checks it once when idle (~1 KB) without downloading the audio file until the user chooses **Play demo track**.
+When `public/demo/track.json` is present, StageForge checks it once when idle (~1 KB) and makes **zero audio requests** on first page load; the audio file is fetched only when the user clicks **Play demo track**. When `public/demo/track.json` is absent, StageForge renders no extra demo-track controls.
+
+---
+
+## Shipped Demo Track
+
+StageForge ships with the following mapped track in `public/demo/`:
+
+- **Audio:** `public/demo/track.mp3` — 96 kbps constant-bitrate (CBR) stereo MP3, 3,715,925 bytes (~3.72 MB, under the 4 MB mobile budget), duration 5:09.6 (309.6 s).
+- **Section map:** `public/demo/track.json` — **122 BPM**, `firstDownbeatMs: 96`, **11 sections**, **158 bars** total:
+  - `Walk-on` (`intro`, 8) → `Rising` (`build`, 8) → `Kick enters` (`drop`, 16, bar 17 at `0:31.6`) → `Main groove` (`groove`, 32) → `Lift` (`build`, 8) → `Main drop` (`drop`, 36) → `Breakdown` (`breakdown`, 8, bar 109 at `3:32.6`) → `Rebuild` (`rebuild`, 12) → `Second drop` (`drop`, 12) → `Finale` (`finale`, 8) → `Curtain call` (`outro`, 10).
+- **Trailing margin:** 158 bars at 122 BPM plus the 96 ms first downbeat spans 310.92 s, running 1.32 s past the 309.6 s audio file on purpose so the measured bar lines stay exact. When the audio reaches the end of its trailing silence, playback finishes cleanly through the audio element's `ended` event and switches the transport button to **Replay track**.
+- **Replacing or removing:** to use a different track, replace `public/demo/track.mp3` (or point `"file"` at another plain basename in `public/demo/`) and update `public/demo/track.json` + [`docs/assets.md`](assets.md). To disable the feature in a custom build, delete `public/demo/`.
+- **Provenance & licence:** see **Demo Track Provenance** in [`docs/assets.md`](assets.md). `public/demo/track.mp3` is not covered by this repository's MIT licence (licence terms pending owner decision).
 
 ---
 
@@ -105,9 +118,9 @@ Before committing a real demo track into `public/demo/`:
 
 - [ ] **Steady 4/4 at a fixed tempo:** no tempo ramps, rubato, or odd-meter bars (Section maps assume constant BPM in 4/4).
 - [ ] **Trim leading silence:** align Bar 1 Beat 1 to `0:00.000` so `firstDownbeatMs` is `0` (or note the exact millisecond offset if a count-in is intentional).
-- [ ] **Encode as CBR 128 kbps stereo MP3 under 4 MB:** use **CBR** (constant bitrate), not VBR, because VBR frame tables can drift by tens of milliseconds on browser seeks. Example with `ffmpeg`:
+- [ ] **Encode as CBR stereo MP3 under 4 MB (96–128 kbps):** use **CBR** (constant bitrate), not VBR, because VBR frame tables can drift by tens of milliseconds on browser seeks. Example with `ffmpeg`:
   ```bash
   ffmpeg -i master.wav -vn -codec:a libmp3lame -b:a 128k -ac 2 -ar 44100 public/demo/track.mp3
   ```
 - [ ] **Verify the beat grid in StageForge:** open Audio settings, click **Play demo track**, confirm the Track grid shows your exact BPM and downbeat offset, and use **Prev / Next section** to verify every section transition lands cleanly on the bar line.
-- [ ] **Record provenance in [`docs/assets.md`](assets.md):** fill in the Demo Track Provenance table (which parts are your own recordings vs generated, tool, plan, date, and prompt) and update the opening third-party note in `docs/assets.md` when a real track is committed.
+- [ ] **Record provenance in [`docs/assets.md`](assets.md):** update the Demo Track Provenance table (which parts are your own recordings vs generated, tool, plan, date, prompt, and licence terms) whenever the bundled track changes.

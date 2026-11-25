@@ -112,4 +112,4 @@ Live output to real lights is experimental. It has only been tested against a lo
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) for all source code and documentation. The optional bundled demo audio file (`public/demo/track.mp3`) is not covered by the MIT licence (licence terms pending owner decision; see [`docs/assets.md`](docs/assets.md#demo-track-provenance)).

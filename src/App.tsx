@@ -58,6 +58,7 @@ import {
   AUDIENCE_SCAN_ERROR,
   cueEnablesAudienceScan,
   cueOrFollowChainEnablesAudienceScan,
+  resolveAcceptedCueActiveId,
   timelineEnablesAudienceScan,
   type AiProposalCandidate,
 } from './aiBridge/aiBridgeProtocol';
@@ -974,6 +975,7 @@ export const App: React.FC = () => {
       ? performance.now() + cue.followSeconds! * 1000 : null);
     if (cue.screen) setScreen({ ...cue.screen });
     if (cue.state.bpm !== undefined) audioEngineRef.current?.setBpm(cue.state.bpm);
+    activeCueIdRef.current = cue.id;
     setActiveCueId(cue.id);
     setCueModified(false);
     setShowState((prev) => {
@@ -1155,6 +1157,17 @@ export const App: React.FC = () => {
     },
   });
 
+  const stopDeskPlayback = () => {
+    setFollow(null);
+    followInitiatedByAiRef.current = false;
+    // Call timeline.stop() unconditionally (not gated on React `mode` state which can lag a render; QA M4).
+    timelineRef.current.stop();
+    replaying.current = false;
+    wallClock.set(timelineRef.current.playhead(), false);
+    audioEngineRef.current?.stopAll();
+    engineRef.current?.restoreScreenTransport(false);
+  };
+
   const showControl = useShowControl({
     getCues: () => cuesRef.current,
     getActiveCueId: () => activeCueIdRef.current,
@@ -1209,13 +1222,7 @@ export const App: React.FC = () => {
       }
     },
     onStopPlayback: () => {
-      setFollow(null);
-      if (timeline.mode === 'playing') {
-        timeline.stop();
-        replaying.current = false;
-        wallClock.set(timeline.playhead(), false);
-      }
-      audioEngineRef.current?.stopAll();
+      stopDeskPlayback();
     },
     onResumePlayback: () => {
       if (audioEngineRef.current && !audioEngineRef.current.getStatus().playing) {
@@ -2853,16 +2860,21 @@ export const App: React.FC = () => {
     }
     if (candidate.kind === 'propose_cue' && candidate.cues) {
       const nextCues = structuredClone(candidate.cues);
+      const prevOrder = cuesRef.current.map((c) => c.id).join('\0');
+      const nextOrder = nextCues.map((c) => c.id).join('\0');
+      const nextActiveId = resolveAcceptedCueActiveId(activeCueIdRef.current, nextCues);
+      if (nextActiveId !== activeCueIdRef.current || prevOrder !== nextOrder) {
+        setFollow(null);
+        followInitiatedByAiRef.current = false;
+      }
       cuesRef.current = nextCues;
       setCues(nextCues);
-      if (candidate.activeCueId !== undefined) {
-        activeCueIdRef.current = candidate.activeCueId;
-        setActiveCueId(candidate.activeCueId);
-      }
+      activeCueIdRef.current = nextActiveId;
+      setActiveCueId(nextActiveId);
       aiDeskRefs.current = {
         ...aiDeskRefs.current,
         cues: nextCues,
-        activeCueId: candidate.activeCueId !== undefined ? candidate.activeCueId : aiDeskRefs.current.activeCueId,
+        activeCueId: nextActiveId,
       };
       return true;
     }
@@ -2922,7 +2934,7 @@ export const App: React.FC = () => {
     engineRef.current?.restoreScreenTransport(false);
     clearAllBumps();
     installStage(snap.stage);
-    installInterchange(snap.interchange);
+    installInterchange(snap.interchange, snap.mvrResources ? new Map(snap.mvrResources) : undefined);
     takeMetaExplicitRef.current = Boolean(snap.takeMetaExplicit);
     expectedMusic.current = nextExpectedMusic;
     timelineRef.current.replace(snap.timeline, {
@@ -2972,6 +2984,7 @@ export const App: React.FC = () => {
           rig: cur.rig,
           stage: cur.studioStage,
           interchange: interchangeRef.current,
+          mvrResources: mvrResourcesRef.current,
           cues: cur.cues,
           look: cur.showState,
           activeCueId: cur.activeCueId,
@@ -3030,9 +3043,7 @@ export const App: React.FC = () => {
         return { ok: true, activeCueId: target.id };
       },
       onStop: () => {
-        aiDeskRefs.current.stopTake();
-        audioEngineRef.current?.stopAll();
-        engineRef.current?.restoreScreenTransport(false);
+        stopDeskPlayback();
       },
       onResume: () => {
         // Guard take resume against audienceScan events (M3).

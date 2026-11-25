@@ -151,6 +151,7 @@ export interface AudioFollowerSlot {
 export interface AudioModulationState {
   clockMs: number;
   lastGlobalStrobeEdgeMs: number;
+  manualStrobeGate: number;
   slots: AudioFollowerSlot[];
   manualStrobe: StrobeGateState;
   beamStrobe: StrobeGateState;
@@ -330,6 +331,7 @@ export function createAudioModulationState(): AudioModulationState {
   return {
     clockMs: 0,
     lastGlobalStrobeEdgeMs: -Infinity,
+    manualStrobeGate: 1.0,
     slots,
     manualStrobe: createStrobeGateState(),
     beamStrobe: createStrobeGateState(),
@@ -362,6 +364,7 @@ export function cloneAudioModulationState(src: AudioModulationState): AudioModul
   const copy = createAudioModulationState();
   copy.clockMs = src.clockMs;
   copy.lastGlobalStrobeEdgeMs = src.lastGlobalStrobeEdgeMs;
+  copy.manualStrobeGate = src.manualStrobeGate;
   for (let i = 0; i < MAX_AUDIO_MAPPINGS; i++) {
     copy.slots[i].id = src.slots[i]?.id ?? '';
     copy.slots[i].envelope = src.slots[i]?.envelope ?? 0;
@@ -624,8 +627,34 @@ export function stepCombinedStrobeGate(
 ): CombinedStrobeGateResult {
   const res: CombinedStrobeGateResult = out ?? { gate: 1.0, flashOn: false, limited: false };
   const tMs = state.clockMs;
-  if (blackout || !Number.isFinite(effectiveStrobe) || effectiveStrobe <= 0.03) {
+  if (blackout) {
     disarmStrobeGate(state.manualStrobe);
+    // Preserve manualStrobeGate across blackout (do not reset 0.06 -> 1.0) so toggling blackout
+    // on/off inside a strobe trough cannot bypass the <= 3 flashes/s refractory window (QA M3).
+    res.gate = 1.0;
+    res.flashOn = false;
+    res.limited = tMs < state.manualStrobe.limitedUntilMs;
+    return res;
+  }
+  if (!Number.isFinite(effectiveStrobe) || effectiveStrobe <= 0.03) {
+    disarmStrobeGate(state.manualStrobe);
+    // Restoring from a strobe dark trough (< 0.5) back to full brightness (1.0) is a bright
+    // rising edge; hold dark until the shared <= 3 flashes/s refractory window has elapsed so
+    // rapid strobe press/release cycles cannot bypass the photosensitivity ceiling (Codex R1).
+    if (state.manualStrobeGate < 0.5) {
+      const gateReady = tMs - state.manualStrobe.lastEdgeMs >= FLASH_REFRACTORY_MS;
+      const globalReady = tMs - state.lastGlobalStrobeEdgeMs >= FLASH_REFRACTORY_MS;
+      if (!gateReady || !globalReady) {
+        state.manualStrobe.limitedUntilMs = tMs + FLASH_LIMITED_HOLD_MS;
+        res.gate = 0.06;
+        res.flashOn = false;
+        res.limited = true;
+        return res;
+      }
+      state.manualStrobe.lastEdgeMs = tMs;
+      state.lastGlobalStrobeEdgeMs = tMs;
+    }
+    state.manualStrobeGate = 1.0;
     res.gate = 1.0;
     res.flashOn = false;
     res.limited = tMs < state.manualStrobe.limitedUntilMs;
@@ -636,6 +665,7 @@ export function stepCombinedStrobeGate(
   const limited = stepStrobeGate(state.manualStrobe, oscSignal, tMs, MANUAL_STROBE_SCRATCH, state);
   res.flashOn = state.manualStrobe.gateOn;
   res.gate = res.flashOn ? 1.35 : 0.06;
+  state.manualStrobeGate = res.gate;
   res.limited = limited;
   return res;
 }

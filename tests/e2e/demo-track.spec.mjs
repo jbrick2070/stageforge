@@ -243,3 +243,66 @@ test('when no demo track map exists (HTML fallback), Play demo track is absent a
   expect(audioRequests).toBe(0);
   expect(await page.evaluate(() => window.stageforgeProbe.demoTrackAvailable())).toBeNull();
 });
+
+test('shipped public/demo/track.mp3 is lazy-loaded (0 audio requests on boot), fits 390px and 393px phones, and plays through real sections', async ({ page }) => {
+  const mp3Requests = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/demo/track.mp3')) mp3Requests.push(req.url());
+  });
+
+  await page.goto('/?probe');
+  const playTrackBtn = page.getByRole('button', { name: 'Play demo track', exact: true });
+  await expect(playTrackBtn).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole('button', { name: 'Play demo', exact: true })).toBeVisible();
+
+  // Verify the real map metadata loaded from public/demo/track.json and ZERO MP3 requests occurred while idle.
+  const available = await page.evaluate(() => window.stageforgeProbe.demoTrackAvailable());
+  expect(available).toMatchObject({
+    title: 'StageForge demo track',
+    file: 'track.mp3',
+    bpm: 122,
+    firstDownbeatMs: 96,
+  });
+  expect(available.sections).toHaveLength(11);
+  expect(available.timeline.totalBars).toBe(158);
+  await page.waitForTimeout(1500);
+  expect(mp3Requests).toHaveLength(0);
+
+  // Verify phone layouts (390x844 and 393x852) have zero horizontal overflow with Play demo track visible.
+  for (const vp of [{ width: 390, height: 844 }, { width: 393, height: 852 }]) {
+    await page.setViewportSize(vp);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow).toBeLessThanOrEqual(1);
+    const box = await playTrackBtn.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(vp.width);
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  // Clicking "Play demo track" fetches track.mp3 once, locks the beat grid to 122 BPM / 96 ms, and starts playback.
+  await playTrackBtn.click();
+  await expect.poll(() => mp3Requests.length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.audioPlaybackTime()), { timeout: 15_000 }).toBeGreaterThan(0.05);
+
+  await page.getByRole('button', { name: 'Audio settings', exact: true }).click();
+  await expect(page.getByText('122.0 BPM · 96 ms')).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  // Verify measured bar boundaries on the real MP3: Kick enters (~31.6 s) and Breakdown (~212.6 s).
+  await page.evaluate(() => window.stageforgeProbe.seekTrack(32.5));
+  await expect.poll(() => page.evaluate(() => {
+    const p = window.stageforgeProbe.demoPosition();
+    return p ? { role: p.sectionId, label: p.label, totalBars: p.totalBars } : null;
+  })).toEqual({ role: 'drop', label: 'Kick enters', totalBars: 158 });
+
+  await page.evaluate(() => window.stageforgeProbe.seekTrack(213.5));
+  await expect.poll(() => page.evaluate(() => {
+    const p = window.stageforgeProbe.demoPosition();
+    return p ? { role: p.sectionId, label: p.label } : null;
+  })).toEqual({ role: 'breakdown', label: 'Breakdown' });
+
+  // Seek near the end of the 309.6 s audio so the ended event finishes playback cleanly despite the 1.32 s map margin.
+  await page.evaluate(() => window.stageforgeProbe.seekTrack(309.1));
+  await expect(page.getByRole('button', { name: 'Replay track', exact: true })).toBeVisible({ timeout: 8_000 });
+});

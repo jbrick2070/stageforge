@@ -78,6 +78,7 @@ export interface AiDeskSnapshot {
   rig: RigConfig;
   stage?: NativeStage;
   interchange?: ShowInterchange;
+  mvrResources?: Map<string, Uint8Array>;
   cues: ShowCue[];
   look: ShowState;
   activeCueId: string | null;
@@ -94,6 +95,45 @@ export interface AiDeskSnapshot {
     source: string;
     trackName: string;
     bpm: number;
+  };
+}
+
+export interface AiRevertSnapshot {
+  capturedAt: number;
+  rig: RigConfig;
+  stage?: NativeStage;
+  interchange?: ShowInterchange;
+  mvrResources?: Map<string, Uint8Array>;
+  cues: ShowCue[];
+  look: ShowState;
+  activeCueId: string | null;
+  timeline?: ShowTimeline;
+  camera: CameraPreset;
+  volume: number;
+  screen?: ScreenRef;
+  music?: MusicRef;
+  expectedMusic?: MusicRef;
+  takeMetaExplicit?: boolean;
+}
+
+/** Capture an isolated in-memory revert snapshot of the desk, preserving MVR resources (Codex R2). */
+export function createAiRevertSnapshot(desk: AiDeskSnapshot, capturedAt = Date.now()): AiRevertSnapshot {
+  return {
+    capturedAt,
+    rig: structuredClone(desk.rig),
+    stage: desk.stage ? structuredClone(desk.stage) : undefined,
+    interchange: desk.interchange ? structuredClone(desk.interchange) : undefined,
+    mvrResources: desk.mvrResources ? new Map(desk.mvrResources) : undefined,
+    cues: structuredClone(desk.cues),
+    look: structuredClone(desk.look),
+    activeCueId: desk.activeCueId,
+    timeline: desk.timeline ? structuredClone(desk.timeline) : undefined,
+    camera: desk.camera,
+    volume: desk.volume,
+    screen: desk.screen ? structuredClone(desk.screen) : undefined,
+    music: desk.music ? structuredClone(desk.music) : undefined,
+    expectedMusic: desk.expectedMusic ? structuredClone(desk.expectedMusic) : undefined,
+    takeMetaExplicit: desk.takeMetaExplicit,
   };
 }
 
@@ -213,6 +253,18 @@ export function cueOrFollowChainEnablesAudienceScan(cues: readonly ShowCue[], st
 export function timelineEnablesAudienceScan(timeline: ShowTimeline | undefined): boolean {
   if (!timeline) return false;
   return timeline.events.some((ev) => ev.look?.laser?.audienceScan === true);
+}
+
+/**
+ * Resolve the active cue pointer when accepting a `propose_cue` change: preserve the live
+ * active cue during create/edit/reorder, and clear it only if that active cue was removed (Codex R4).
+ */
+export function resolveAcceptedCueActiveId(
+  currentActiveCueId: string | null,
+  nextCues: readonly ShowCue[],
+): string | null {
+  if (currentActiveCueId === null) return null;
+  return nextCues.some((c) => c.id === currentActiveCueId) ? currentActiveCueId : null;
 }
 
 function fnv1aHex(str: string): string {

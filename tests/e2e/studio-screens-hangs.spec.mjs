@@ -90,6 +90,8 @@ test('Studio renders and seeks native v3 hangs and dual screens, then authors an
   const download = await transfer;
   const bundlePath = info.outputPath(download.suggestedFilename());
   await download.saveAs(bundlePath);
+  // Close the authoring tab before opening a second WebGL context so SwiftShader doesn't contend across two tabs.
+  await page.close();
 
   const fresh = await browser.newContext({ baseURL: test.info().project.use.baseURL, acceptDownloads: true });
   try {

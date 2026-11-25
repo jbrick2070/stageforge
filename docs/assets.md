@@ -2,7 +2,7 @@
 
 StageForge renders every real catalogue model across the 3D WebGL view, 2D SVG stage plan, DXF CAD export, GLB export, and equipment picker/manifest using **100% original procedural Three.js geometry and deterministic procedural PBR textures**.
 
-No third-party 3D meshes, photographs, logos, or image textures are bundled.
+No third-party 3D meshes, photographs, logos, or image textures are bundled. An optional recorded audio demo track is bundled separately in `public/demo/track.mp3` (see **Demo Track Provenance** below).
 
 ---
 
@@ -68,10 +68,20 @@ StageForge selects a `RenderTier` (`'high'` vs `'low'`) once at `StageEngine` in
 
 ---
 
-## Optional Demo Track Provenance
+## Demo Track Provenance
 
-No recorded demo track is currently bundled in `public/demo/`. When a real demo track is committed (see [`docs/demo-track.md`](demo-track.md)), update the table below and revise the opening sentence of this document accordingly:
+StageForge bundles a recorded demo track in `public/demo/track.mp3` with its section map `public/demo/track.json` (see [`docs/demo-track.md`](demo-track.md)). The audio file is loaded lazily only when the user clicks **Play demo track** (zero audio network requests on initial page load).
 
-| File / Part | Origin (Own recording vs Generated) | Tool & Plan | Date | Prompt / Session Notes | Licence / Rights |
+> **Licence boundary:** `public/demo/track.mp3` is **not** covered by this repository's MIT licence. Licence terms for the audio file are **pending owner decision** (the repository source code and `public/demo/track.json` stay MIT).
+
+| File / Part | Origin | Tool & Plan | Date | Metadata / Technical Notes | Licence / Rights |
 |---|---|---|---|---|---|
-| *(none bundled yet)* | — | — | — | — | — |
+| `public/demo/track.mp3` | Generated audio (outside DAW edits: **unknown — owner to confirm**) | The owner states the track was generated with Suno while holding a paid Suno Pro subscription (not independently verified against the owner's account; Suno's terms are not asserted here) | `2026-11-25T06:08:53Z` (`2026-11-24` local) | Embedded comment tag reads: `made with suno; created=2026-11-25T06:08:53Z; id=913ef730-c3ed-4acd-b59f-cb50e3816bd0`. Repo copy is a 96 kbps CBR stereo MP3 (3,715,925 bytes, 5:09.6) encoded from the original 48 kHz 16-bit WAV. | **Not covered by repository MIT licence; licence terms pending owner decision.** |
+| `public/demo/track.json` | StageForge section map (122 BPM, 96 ms downbeat, 11 sections, 158 bars) | Measured from the audio and checked in StageForge | `2026-11-24` | Plain JSON metadata describing bar boundaries and lighting roles. | MIT (StageForge original) |
+
+### Open provenance items (to be filled in by the project owner)
+
+- **Prompt, style tags, and lyrics:** to be added by the project owner.
+- **Outside recording, editing, or arrangement:** unknown (owner to confirm whether any part was recorded, edited, or arranged outside Suno, for example in a DAW, and which parts).
+- **Audio file licence inside this MIT repository:** to be decided by the project owner (the code stays MIT; `public/demo/track.mp3` may carry its own terms).
+- **Proof of subscription / generation:** keep the Suno account receipt or plan page for the generation date privately (do not commit it to the repository).

@@ -900,3 +900,79 @@ test('QA regressions: lazy SDK load (M5), authored-only proposal revision (M6), 
   await win1Enable;
   await dmxH.onControl(mkEv(1), { type: 'disable' });
 });
+
+test('Codex review-03 R2 & R4 regressions: AI revert preserves MVR resources and cue acceptance preserves live activeCueId', async () => {
+  // R4: accepting a cue proposal (rename/create/reorder) after advancing activeCueId must NOT rewind activeCueId,
+  // and removing the currently active cue clears it cleanly.
+  const desk = makeFakeDesk();
+  const [cueA, cueB, cueC] = desk.cues;
+  assert.ok(cueA && cueB && cueC, 'stock desk must have at least 3 cues');
+
+  // Propose renaming cue C while cue A is active
+  const renameProp = protocol.compileCueProposal(
+    { action: 'edit', cueId: cueC.id, cue: { name: 'Cue C Renamed' } },
+    { ...desk, activeCueId: cueA.id },
+  );
+  // Operator runs GO to cue B before clicking Accept -> activeCueId must remain cueB.id!
+  assert.equal(
+    protocol.resolveAcceptedCueActiveId(cueB.id, renameProp.candidate.cues),
+    cueB.id,
+    'accepting a cue edit after advancing to cue B must keep cue B active',
+  );
+  // Reorder also preserves cue B
+  const reorderProp = protocol.compileCueProposal(
+    { action: 'reorder', order: [...desk.cues.map((c) => c.id)].reverse() },
+    { ...desk, activeCueId: cueA.id },
+  );
+  assert.equal(
+    protocol.resolveAcceptedCueActiveId(cueB.id, reorderProp.candidate.cues),
+    cueB.id,
+    'accepting a cue reorder must keep live active cue B active',
+  );
+  // Removing cue B clears activeCueId to null, while removing cue C keeps cue B active
+  const removeC = protocol.compileCueProposal(
+    { action: 'remove', cueId: cueC.id },
+    { ...desk, activeCueId: cueA.id },
+  );
+  assert.equal(protocol.resolveAcceptedCueActiveId(cueB.id, removeC.candidate.cues), cueB.id);
+  const removeB = protocol.compileCueProposal(
+    { action: 'remove', cueId: cueB.id },
+    { ...desk, activeCueId: cueA.id },
+  );
+  assert.equal(protocol.resolveAcceptedCueActiveId(cueB.id, removeB.candidate.cues), null);
+
+  // R2: MVR custom foreign GDTF resources survive createAiRevertSnapshot -> AI edit -> revert -> MVR re-export
+  const exportMvrMod = await compiler.ssrLoadModule('/src/interchange/mvr/exportMvr.ts');
+  const archiveMod = await compiler.ssrLoadModule('/src/interchange/mvr/archive.ts');
+
+  const initialExport = exportMvrMod.exportMvrDocument(desk.rig, desk.stage);
+  const firstFixtureKey = Object.keys(initialExport.interchange.mvr.uuids).find((k) => k.startsWith('fixture:'));
+  assert.ok(firstFixtureKey, 'initial MVR export must have at least one fixture UUID key');
+  const customSpec = 'Vendor@CustomSpot.gdtf';
+  const customMarker = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef]);
+  const interchangeWithSpec = structuredClone(initialExport.interchange);
+  interchangeWithSpec.mvr.fixtureSpecs = { [firstFixtureKey]: { spec: customSpec, mode: 'Standard' } };
+  const resources = new Map([[customSpec, customMarker]]);
+
+  // Capture desk snapshot via production helper and verify mvrResources is preserved even if source map is later cleared
+  const deskWithResources = { ...desk, interchange: interchangeWithSpec, mvrResources: resources };
+  const revertSnap = protocol.createAiRevertSnapshot(deskWithResources);
+  resources.clear();
+  assert.ok(revertSnap.mvrResources instanceof Map);
+  assert.deepEqual(revertSnap.mvrResources.get(customSpec), customMarker);
+
+  // Without resources (the old bug), exportMvr substitutes a generic profile instead of bundling customSpec
+  const withoutResources = exportMvrMod.exportMvrDocument(revertSnap.rig, revertSnap.stage, '1', revertSnap.interchange, undefined);
+  assert.equal(archiveMod.readArchive(withoutResources.bytes).has(customSpec.toLowerCase()), false);
+
+  // With the restored resource map from createAiRevertSnapshot, exportMvr preserves the exact custom GDTF bytes
+  const reExport = exportMvrMod.exportMvrDocument(
+    revertSnap.rig,
+    revertSnap.stage,
+    '1',
+    revertSnap.interchange,
+    revertSnap.mvrResources,
+  );
+  const reEntries = archiveMod.readArchive(reExport.bytes);
+  assert.deepEqual(reEntries.get(customSpec.toLowerCase())?.data, customMarker, 'restored MVR resources must survive AI revert into subsequent MVR export');
+});

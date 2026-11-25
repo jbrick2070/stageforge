@@ -30,7 +30,15 @@ export function normalizeLookAudioMap(look: ShowState): ShowState {
  * - Partial patches inherit `audioMap` when omitted, replace it when non-empty, and clear it when `{ mappings: [] }`.
  */
 export function applyTimelineLookPatch(prior: ShowState, patch: Partial<ShowState>): ShowState {
-  const full = isFullLookSnapshot(patch);
+  // Distinguish a genuine full timeline snapshot (which always carries core scalar look keys
+  // alongside the 4 subsystems, even in legacy v1-v7 shows without bpm) from an already-saved
+  // ambiguous 4-subsystem delta `{ laser, motors, atmo, led }` so unchanged optional fields survive.
+  const full =
+    isFullLookSnapshot(patch) &&
+    patch.masterDimmer !== undefined &&
+    patch.primaryColor !== undefined &&
+    patch.beamIntensity !== undefined &&
+    patch.movementMode !== undefined;
   // Always merge over `prior` so legacy v1-v7 snapshots missing required fields (e.g. bpm) never drop them to undefined,
   // while clearing optional top-level fields omitted by a full snapshot so stale live overrides cannot leak across seeks.
   const next: ShowState = { ...prior, ...patch };

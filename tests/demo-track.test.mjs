@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createServer } from 'vite';
@@ -594,4 +595,99 @@ test('probeDemoTrack and fetchDemoTrackAudio handle 404, 204, HTML fallback, UTF
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('shipped public/demo/track.json and track.mp3 parse cleanly, match pinned digests, cover full 309.6 s audio, and preserve measured boundaries', () => {
+  const demoDir = path.join(process.cwd(), 'public', 'demo');
+  const mapRaw = readFileSync(path.join(demoDir, 'track.json'), 'utf8');
+  const mapLf = mapRaw.replace(/\r\n/g, '\n');
+  const mapDigest = createHash('sha256').update(mapLf, 'utf8').digest('hex');
+  const mapCrlfDigest = createHash('sha256').update(mapLf.replace(/\n/g, '\r\n').replace(/\r\n/g, '\n'), 'utf8').digest('hex');
+  assert.equal(mapDigest, '90d70f524b9579fcdb18c94d8010d58594e8273f5ceb5f43fc82a18fcf15c920');
+  assert.equal(mapCrlfDigest, mapDigest);
+
+  const map = parseDemoTrackMap(JSON.parse(mapLf));
+  assert.equal(map.title, 'StageForge demo track');
+  assert.equal(map.file, 'track.mp3');
+  assert.equal(map.bpm, 122);
+  assert.equal(map.firstDownbeatMs, 96);
+  assert.equal(map.sections.length, 11);
+  assert.equal(map.timeline.totalBars, 158);
+  assert.equal(map.timeline.totalSteps, 158 * 16);
+
+  // Verify the audio asset exists, stays under the 4 MB mobile budget, matches its pinned SHA-256, and starts with an ID3/MP3 header.
+  const mp3Bytes = readFileSync(path.join(demoDir, map.file));
+  assert.equal(mp3Bytes.byteLength, 3_715_925);
+  assert.ok(mp3Bytes.byteLength < 4 * 1024 * 1024, 'shipped demo track must stay under 4 MiB');
+  const mp3Digest = createHash('sha256').update(mp3Bytes).digest('hex');
+  assert.equal(mp3Digest, 'f56ef9cea0b9406d694f2555a241072ece91d479bf85bd819ef7faec5841bd8e');
+  const isId3 = mp3Bytes[0] === 0x49 && mp3Bytes[1] === 0x44 && mp3Bytes[2] === 0x33;
+  const isMp3Sync = mp3Bytes[0] === 0xff && (mp3Bytes[1] & 0xe0) === 0xe0;
+  assert.ok(isId3 || isMp3Sync, 'track.mp3 must start with an ID3 tag or MP3 frame sync');
+
+  // Verify measured bar boundaries: Kick enters at bar 17 (0:31.6) and Breakdown at bar 109 (3:32.6).
+  const kickStartMs = demoTrackMsForStep(map, 16 * 16);
+  assert.ok(Math.abs(kickStartMs - 31_571.4) < 1, `expected Kick enters near 31,571 ms, got ${kickStartMs}`);
+  const kickPos = getDemoTrackPosition(map, kickStartMs + 50, false);
+  assert.equal(kickPos.sectionId, 'drop');
+  assert.equal(kickPos.label, 'Kick enters');
+  assert.equal(kickPos.bar, 16);
+
+  const breakdownStartMs = demoTrackMsForStep(map, 108 * 16);
+  assert.ok(Math.abs(breakdownStartMs - 212_555.0) < 1, `expected Breakdown near 212,555 ms, got ${breakdownStartMs}`);
+  const breakdownPos = getDemoTrackPosition(map, breakdownStartMs + 50, false);
+  assert.equal(breakdownPos.sectionId, 'breakdown');
+  assert.equal(breakdownPos.label, 'Breakdown');
+  assert.equal(breakdownPos.bar, 108);
+
+  // The 158-bar map runs ~1.32 s past the 309.6 s audio on purpose so bar lines stay exact;
+  // AudioEngine closes playback cleanly through the audio element's ended flag.
+  const mappedEndMs = demoTrackMsForStep(map, map.timeline.totalSteps);
+  assert.ok(mappedEndMs > 309_600 && mappedEndMs < 312_000, `expected map duration ~310.92 s, got ${mappedEndMs} ms`);
+  const nearEndPlaying = getDemoTrackPosition(map, 309_600, false);
+  assert.equal(nearEndPlaying.sectionId, 'outro');
+  assert.equal(nearEndPlaying.bar, 157);
+  assert.equal(nearEndPlaying.finished, false);
+  const nearEndEnded = getDemoTrackPosition(map, 309_600, true);
+  assert.equal(nearEndEnded.sectionId, 'outro');
+  assert.equal(nearEndEnded.finished, true);
+});
+
+test('Playwright test locators for "Play demo" use exact matching so they never collide with "Play demo track"', () => {
+  const roots = [path.join(process.cwd(), 'tests', 'e2e'), path.join(process.cwd(), 'tests', 'desktop')];
+  const violations = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      if (!/\.(mjs|js|ts|tsx)$/.test(entry.name)) continue;
+      const content = readFileSync(fullPath, 'utf8');
+      const rel = path.relative(process.cwd(), fullPath);
+      // Catch single-line or multi-line getByRole / getByText locators that match "Play demo" non-exactly.
+      const regexCall = /getBy(?:Role|Text)\s*\([\s\S]{0,160}?\/play demo\/i/g;
+      for (const m of content.matchAll(regexCall)) {
+        const lineNo = content.slice(0, m.index).split(/\r?\n/).length;
+        violations.push(`${rel}:${lineNo}: non-exact regex locator for "Play demo"`);
+      }
+      const stringCall = /getByRole\s*\([^)]*?name\s*:\s*['"]Play demo['"]([^)]*)\)/g;
+      for (const m of content.matchAll(stringCall)) {
+        if (!/exact\s*:\s*true/.test(m[1])) {
+          const lineNo = content.slice(0, m.index).split(/\r?\n/).length;
+          violations.push(`${rel}:${lineNo}: getByRole("Play demo") missing exact: true`);
+        }
+      }
+      const textCall = /getByText\s*\(\s*['"]Play demo['"]\s*(?:,\s*\{([^}]*)\})?\s*\)/g;
+      for (const m of content.matchAll(textCall)) {
+        if (!m[1] || !/exact\s*:\s*true/.test(m[1])) {
+          const lineNo = content.slice(0, m.index).split(/\r?\n/).length;
+          violations.push(`${rel}:${lineNo}: getByText("Play demo") missing exact: true`);
+        }
+      }
+    }
+  };
+  for (const dir of roots) walk(dir);
+  assert.deepStrictEqual(violations, []);
 });

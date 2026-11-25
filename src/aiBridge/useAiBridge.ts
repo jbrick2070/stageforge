@@ -19,33 +19,19 @@ import {
   compileTakeProposal,
   compileWallCueProposal,
   computeAuthoredRevision,
+  createAiRevertSnapshot,
   formatToolLogText,
   summarizeToolArgs,
   timelineEnablesAudienceScan,
   type AiDeskSnapshot,
   type AiProposalCandidate,
   type AiProposalRecord,
+  type AiRevertSnapshot,
   type AiToolLogEntry,
 } from './aiBridgeProtocol';
 
 export const DEFAULT_AI_BRIDGE_PORT = 47821;
-
-export interface AiRevertSnapshot {
-  capturedAt: number;
-  rig: RigConfig;
-  stage?: NativeStage;
-  interchange?: ShowInterchange;
-  cues: ShowCue[];
-  look: ShowState;
-  activeCueId: string | null;
-  timeline?: ShowTimeline;
-  camera: CameraPreset;
-  volume: number;
-  screen?: ScreenRef;
-  music?: MusicRef;
-  expectedMusic?: MusicRef;
-  takeMetaExplicit?: boolean;
-}
+export type { AiRevertSnapshot };
 
 export interface AiBridgeCallbacks {
   getDeskSnapshot: () => AiDeskSnapshot;
@@ -168,23 +154,7 @@ export function useAiBridge(
   }, []);
 
   const snapshotCurrentDesk = useCallback((): AiRevertSnapshot => {
-    const desk = cbRef.current.getDeskSnapshot();
-    return {
-      capturedAt: Date.now(),
-      rig: structuredClone(desk.rig),
-      stage: desk.stage ? structuredClone(desk.stage) : undefined,
-      interchange: desk.interchange ? structuredClone(desk.interchange) : undefined,
-      cues: structuredClone(desk.cues),
-      look: structuredClone(desk.look),
-      activeCueId: desk.activeCueId,
-      timeline: desk.timeline ? structuredClone(desk.timeline) : undefined,
-      camera: desk.camera,
-      volume: desk.volume,
-      screen: desk.screen ? structuredClone(desk.screen) : undefined,
-      music: desk.music ? structuredClone(desk.music) : undefined,
-      expectedMusic: desk.expectedMusic ? structuredClone(desk.expectedMusic) : undefined,
-      takeMetaExplicit: desk.takeMetaExplicit,
-    };
+    return createAiRevertSnapshot(cbRef.current.getDeskSnapshot());
   }, []);
 
   const clearPendingAndAutoAccept = useCallback(() => {

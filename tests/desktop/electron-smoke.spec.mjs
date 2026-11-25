@@ -3,8 +3,8 @@
 import { _electron as electron, expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import dgram from 'node:dgram';
-import { existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync, statSync } from 'node:fs';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import os from 'node:os';
@@ -185,20 +185,38 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
   expect(existsSync(path.join(appDir, 'dmx-packets.cjs'))).toBe(true);
   expect(existsSync(path.join(appDir, 'dmx-sender.cjs'))).toBe(true);
   expect(existsSync(path.join(appDir, 'dmx-ipc.cjs'))).toBe(true);
-  for (const v of [1, 2, 3, 4, 5, 6, 7]) {
+  for (const v of [1, 2, 3, 4, 5, 6, 7, 8]) {
     expect(existsSync(path.join(appDir, 'renderer', 'schemas', `show-v${v}.schema.json`))).toBe(true);
   }
+  const demoMapPath = path.join(appDir, 'renderer', 'demo', 'track.json');
+  const demoMp3Path = path.join(appDir, 'renderer', 'demo', 'track.mp3');
+  expect(existsSync(demoMapPath)).toBe(true);
+  expect(existsSync(demoMp3Path)).toBe(true);
+  expect(statSync(demoMp3Path).size).toBe(3_715_925);
   expect(await app.evaluate(({ app }) => app.getPath('userData'))).toBe(path.join(tmp, 'profile'));
   await expect(page).toHaveURL('stageforge://app/');
   await expect(page.getByRole('button', { name: 'Show files', exact: true })).toBeVisible();
-  // Absent demo/track.json returns 204 with CSP and surfaces no "Play demo track" button or console error.
-  const absentDemoRes = await page.evaluate(async () => {
+  // Shipped demo/track.json returns 200 with CSP, surfaces "Play demo track", and fetches ZERO MP3 bytes on boot.
+  await expect(page.getByRole('button', { name: 'Play demo track', exact: true })).toBeVisible({ timeout: 10_000 });
+  const demoCheck = await page.evaluate(async () => {
     const r = await fetch('stageforge://app/demo/track.json');
-    return { status: r.status, csp: r.headers.get('content-security-policy') };
+    const json = await r.json();
+    const mp3Entries = performance.getEntriesByType('resource').filter((e) => e.name.endsWith('/demo/track.mp3'));
+    return {
+      status: r.status,
+      csp: r.headers.get('content-security-policy'),
+      bpm: json.bpm,
+      sectionCount: json.sections.length,
+      totalBars: json.sections.reduce((sum, s) => sum + s.bars, 0),
+      mp3FetchedOnBoot: mp3Entries.length,
+    };
   });
-  expect(absentDemoRes.status).toBe(204);
-  expect(absentDemoRes.csp).toContain("script-src 'self'");
-  await expect(page.getByRole('button', { name: 'Play demo track', exact: true })).toHaveCount(0);
+  expect(demoCheck.status).toBe(200);
+  expect(demoCheck.csp).toContain("script-src 'self'");
+  expect(demoCheck.bpm).toBe(122);
+  expect(demoCheck.sectionCount).toBe(11);
+  expect(demoCheck.totalBars).toBe(158);
+  expect(demoCheck.mp3FetchedOnBoot).toBe(0);
   const headers = await page.evaluate(async () => {
     const rootRes = await fetch(location.href);
     const upperRes = await fetch('stageforge://app/INDEX.HTML');
@@ -607,7 +625,7 @@ test('show control boots offline in Master mode, ignores OSC in Master, and trig
     await scPage.getByRole('button', { name: 'Close show control', exact: true }).click();
     await scPage.getByTestId('clock-badge-master').click();
     await expect(scPage.getByTestId('clock-owner-badge')).toHaveCount(0);
-    await scPage.getByRole('button', { name: 'Play demo' }).click();
+    await scPage.getByRole('button', { name: 'Play demo', exact: true }).click();
     const liveBpmBtn = scPage.getByTestId('desk-live-bpm');
     await liveBpmBtn.click();
     await scPage.waitForTimeout(400);
@@ -902,63 +920,16 @@ test('File → Open in viewer… enters pitch viewer via openViewer IPC, disable
   expectNoProblems();
 });
 
-test('demo track plays from stageforge://app/ under strict CSP when renderer/demo/track.json is present', async () => {
-  // Copy desktop/build/app to an isolated temp folder so desktop/build/app stays untouched.
+test('shipped demo track plays from stageforge://app/ under strict CSP and jumps sections cleanly', async () => {
   const demoTmp = await mkdtemp(path.join(os.tmpdir(), 'stageforge-desktop-demo-'));
+  const packaged = process.env.STAGEFORGE_DESKTOP_EXE;
   let demoApp;
   const demoProblems = [];
   try {
-    const tempAppDir = path.join(demoTmp, 'app');
-    await cp(appDir, tempAppDir, { recursive: true });
-    const demoDir = path.join(tempAppDir, 'renderer', 'demo');
-    await mkdir(demoDir, { recursive: true });
-
-    // Generate a tiny 120 BPM WAV (12 bars = 24 s, 8 kHz mono PCM) and 3-section map.
-    const sampleRate = 8000;
-    const durationSec = 24;
-    const numSamples = sampleRate * durationSec;
-    const dataBytes = numSamples * 2;
-    const wav = Buffer.alloc(44 + dataBytes);
-    wav.write('RIFF', 0, 'ascii');
-    wav.writeUInt32LE(36 + dataBytes, 4);
-    wav.write('WAVE', 8, 'ascii');
-    wav.write('fmt ', 12, 'ascii');
-    wav.writeUInt32LE(16, 16);
-    wav.writeUInt16LE(1, 20);
-    wav.writeUInt16LE(1, 22);
-    wav.writeUInt32LE(sampleRate, 24);
-    wav.writeUInt32LE(sampleRate * 2, 28);
-    wav.writeUInt16LE(2, 32);
-    wav.writeUInt16LE(16, 34);
-    wav.write('data', 36, 'ascii');
-    wav.writeUInt32LE(dataBytes, 40);
-    for (let i = 0; i < numSamples; i++) {
-      const t = i / sampleRate;
-      const sample = Math.sin(2 * Math.PI * 220 * t) * 0.25;
-      wav.writeInt16LE(Math.round(sample * 32767), 44 + i * 2);
-    }
-
-    const trackMap = {
-      format: 'stageforge-demo-track',
-      version: 1,
-      title: 'Desktop Smoke Track',
-      file: 'smoke-demo.wav',
-      bpm: 120,
-      firstDownbeatMs: 0,
-      sections: [
-        { role: 'intro', label: 'Desktop Intro', bars: 4 },
-        { role: 'groove', label: 'Desktop Groove', bars: 4 },
-        { role: 'drop', label: 'Desktop Drop', bars: 4 },
-      ],
-    };
-    await writeFile(path.join(demoDir, 'smoke-demo.wav'), wav);
-    await writeFile(path.join(demoDir, 'track.json'), JSON.stringify(trackMap, null, 2));
-
     const demoProfile = `--user-data-dir=${path.join(demoTmp, 'profile')}`;
-    demoApp = await electron.launch({
-      executablePath: createRequire(import.meta.url)('electron'),
-      args: [tempAppDir, demoProfile],
-    });
+    demoApp = await electron.launch(packaged
+      ? { executablePath: path.resolve(packaged), args: [demoProfile] }
+      : { executablePath: createRequire(import.meta.url)('electron'), args: [appDir, demoProfile] });
     demoApp.process().stderr?.on('data', chunk => {
       const text = String(chunk);
       if (/Uncaught|UnhandledPromiseRejection|TypeError|ReferenceError/.test(text)) demoProblems.push('main: ' + text.trim());
@@ -971,31 +942,88 @@ test('demo track plays from stageforge://app/ under strict CSP when renderer/dem
     await demoPage.waitForLoadState('domcontentloaded');
     await expect(demoPage).toHaveURL('stageforge://app/');
 
-    // Idle discovery surfaces "Play demo track" from stageforge://app/demo/track.json under strict CSP.
+    // Idle discovery surfaces "Play demo track" from stageforge://app/demo/track.json without fetching track.mp3.
     const playTrackBtn = demoPage.getByRole('button', { name: 'Play demo track', exact: true });
     await expect(playTrackBtn).toBeVisible({ timeout: 15_000 });
+    const preClickMp3 = await demoPage.evaluate(() =>
+      performance.getEntriesByType('resource').filter((e) => e.name.endsWith('/demo/track.mp3')).length
+    );
+    expect(preClickMp3).toBe(0);
+
     await playTrackBtn.click();
 
-    // Playing fetches stageforge://app/demo/smoke-demo.wav -> blob and drives the section overlay.
+    // Playing fetches stageforge://app/demo/track.mp3 -> blob and drives the 158-bar section overlay.
     await expect(demoPage.getByRole('button', { name: 'Pause', exact: true })).toBeVisible({ timeout: 15_000 });
     const progress = demoPage.locator('.demo-progress');
     await expect(progress).toHaveAttribute('data-section', 'intro');
-    await expect(progress).toContainText('/ 12');
+    await expect(progress).toContainText('/ 158');
 
-    // Open Audio settings and jump sections to prove seeking works under stageforge://app/ CSP.
+    // Open Audio settings and step across sections to prove seeking works on the real MP3 under strict CSP.
     await demoPage.getByRole('button', { name: 'Audio settings', exact: true }).click();
-    await expect(demoPage.getByText('120.0 BPM · 0 ms')).toBeVisible();
+    await expect(demoPage.getByText('122.0 BPM · 96 ms')).toBeVisible();
     await demoPage.getByRole('button', { name: 'Next section', exact: true }).click();
-    await expect(progress).toHaveAttribute('data-section', 'groove');
-    await expect(progress).toContainText('Desktop Groove');
+    await expect(progress).toHaveAttribute('data-section', 'build');
+    await expect(progress).toContainText('Rising');
     await demoPage.getByRole('button', { name: 'Next section', exact: true }).click();
     await expect(progress).toHaveAttribute('data-section', 'drop');
-    await expect(progress).toContainText('Desktop Drop');
+    await expect(progress).toContainText('Kick enters');
 
     expect(demoProblems, 'desktop demo-track errors').toEqual([]);
   } finally {
     await demoApp?.close().catch(() => {});
     await rm(demoTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('when renderer/demo is absent, stageforge://app/demo/track.json returns 204, hides Play demo track, and Play demo runs the synth', async () => {
+  const absentTmp = await mkdtemp(path.join(os.tmpdir(), 'stageforge-desktop-nodemo-'));
+  let absentApp;
+  const absentProblems = [];
+  try {
+    const tempAppDir = path.join(absentTmp, 'app');
+    await cp(appDir, tempAppDir, { recursive: true });
+    await rm(path.join(tempAppDir, 'renderer', 'demo'), { recursive: true, force: true });
+
+    const absentProfile = `--user-data-dir=${path.join(absentTmp, 'profile')}`;
+    absentApp = await electron.launch({
+      executablePath: createRequire(import.meta.url)('electron'),
+      args: [tempAppDir, absentProfile],
+    });
+    absentApp.process().stderr?.on('data', chunk => {
+      const text = String(chunk);
+      if (/Uncaught|UnhandledPromiseRejection|TypeError|ReferenceError/.test(text)) absentProblems.push('main: ' + text.trim());
+    });
+    const absentPage = await absentApp.firstWindow();
+    absentPage.on('pageerror', err => absentProblems.push('pageerror: ' + err.message));
+    absentPage.on('console', msg => {
+      if (msg.type() === 'error') absentProblems.push('console: ' + msg.text());
+    });
+    await absentPage.waitForLoadState('domcontentloaded');
+    await expect(absentPage).toHaveURL('stageforge://app/');
+    await expect(absentPage.getByRole('button', { name: 'Show files', exact: true })).toBeVisible();
+
+    const absentRes = await absentPage.evaluate(async () => {
+      const r = await fetch('stageforge://app/demo/track.json');
+      return {
+        status: r.status,
+        csp: r.headers.get('content-security-policy'),
+        cacheControl: r.headers.get('cache-control'),
+      };
+    });
+    expect(absentRes.status).toBe(204);
+    expect(absentRes.csp).toContain("script-src 'self'");
+    expect(absentRes.cacheControl).toBe('no-store');
+    await expect(absentPage.getByRole('button', { name: 'Play demo track', exact: true })).toHaveCount(0);
+
+    // Built-in 64-bar synth demo still launches cleanly.
+    await absentPage.getByRole('button', { name: 'Play demo', exact: true }).click();
+    await expect(absentPage.getByRole('button', { name: 'Pause', exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(absentPage.locator('.demo-progress')).toContainText('/ 64');
+
+    expect(absentProblems, 'desktop absent-demo errors').toEqual([]);
+  } finally {
+    await absentApp?.close().catch(() => {});
+    await rm(absentTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
 
@@ -1126,6 +1154,66 @@ test('AI bridge boots off, blocks live DMX arming, serves MCP tools/proposals/re
     const stateAfterRevert = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
     const afterRevertObj = JSON.parse(stateAfterRevert.json.result.content[0].text);
     expect(afterRevertObj.look).toEqual(beforeObj.look);
+
+    // 5b. Codex review-03 R3 & R4 regressions (using audienceScan-free cues so AI safety guards allow them):
+    // - Accepting a cue edit after advancing activeCueId keeps the advanced activeCueId (R4).
+    // - Calling MCP `stop` during an active cue follow countdown cancels the follow timer (R3).
+    const cuesRes = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 51, method: 'tools/call', params: { name: 'get_cues', arguments: {} } }, sid);
+    const initialCues = JSON.parse(cuesRes.json.result.content[0].text).cues;
+    const safeCues = initialCues.filter((c) => c.state?.laser?.audienceScan !== true);
+    expect(safeCues.length).toBeGreaterThanOrEqual(2);
+    const safeA = safeCues[0];
+    const safeB = safeCues[1];
+
+    // Activate safeA, propose renaming safeB, then advance to safeB BEFORE accepting -> activeCueId must stay safeB (R4).
+    const trigA = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 52, method: 'tools/call', params: { name: 'trigger_cue', arguments: { cueId: safeA.id } } }, sid);
+    expect(trigA.json.result.isError).toBeUndefined();
+    const editProp = await postMcp(aiPort, token, {
+      jsonrpc: '2.0',
+      id: 53,
+      method: 'tools/call',
+      params: { name: 'propose_cue', arguments: { action: 'edit', cueId: safeB.id, cue: { name: 'Smoke Renamed Safe' } } },
+    }, sid);
+    expect(editProp.json.result.isError).toBeUndefined();
+    const trigB = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 54, method: 'tools/call', params: { name: 'trigger_cue', arguments: { cueId: safeB.id } } }, sid);
+    expect(trigB.json.result.isError).toBeUndefined();
+    await expect(aiPage.getByTestId('ai-proposal-banner')).toBeVisible();
+    await aiPage.getByTestId('ai-proposal-accept').click();
+    await expect(aiPage.getByTestId('ai-proposal-banner')).toHaveCount(0);
+    const stateAfterCueEdit = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 55, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
+    expect(JSON.parse(stateAfterCueEdit.json.result.content[0].text).cues.activeCueId).toBe(safeB.id);
+
+    // Create two consecutive safe cues at the end of the stack (Follow A -> Follow B with followSeconds: 0.8),
+    // trigger Follow A, immediately send MCP `stop`, wait 1.2 s -> Follow B MUST NOT fire (R3).
+    const createA = await postMcp(aiPort, token, {
+      jsonrpc: '2.0',
+      id: 56,
+      method: 'tools/call',
+      params: { name: 'propose_cue', arguments: { action: 'create', cue: { id: 'smoke-follow-a', name: 'Smoke Follow A', tag: 'TEST', accent: '#38bdf8', followSeconds: 0.8, state: { masterDimmer: 0.5 } } } },
+    }, sid);
+    expect(createA.json.result.isError).toBeUndefined();
+    await expect(aiPage.getByTestId('ai-proposal-banner')).toBeVisible();
+    await aiPage.getByTestId('ai-proposal-accept').click();
+    await expect(aiPage.getByTestId('ai-proposal-banner')).toHaveCount(0);
+
+    const createB = await postMcp(aiPort, token, {
+      jsonrpc: '2.0',
+      id: 57,
+      method: 'tools/call',
+      params: { name: 'propose_cue', arguments: { action: 'create', cue: { id: 'smoke-follow-b', name: 'Smoke Follow B', tag: 'TEST', accent: '#fb7185', state: { masterDimmer: 0.7 } } } },
+    }, sid);
+    expect(createB.json.result.isError).toBeUndefined();
+    await expect(aiPage.getByTestId('ai-proposal-banner')).toBeVisible();
+    await aiPage.getByTestId('ai-proposal-accept').click();
+    await expect(aiPage.getByTestId('ai-proposal-banner')).toHaveCount(0);
+
+    const trigFollow = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 58, method: 'tools/call', params: { name: 'trigger_cue', arguments: { cueId: 'smoke-follow-a' } } }, sid);
+    expect(trigFollow.json.result.isError).toBeUndefined();
+    const stopRes = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 59, method: 'tools/call', params: { name: 'stop', arguments: {} } }, sid);
+    expect(stopRes.json.result.isError).toBeUndefined();
+    await aiPage.waitForTimeout(1200);
+    const stateAfterStop = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 60, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
+    expect(JSON.parse(stateAfterStop.json.result.content[0].text).cues.activeCueId).toBe('smoke-follow-a');
 
     // 6. capture_frame returns a real decodable JPEG image block (SOI FF D8 FF).
     const capRes = await postMcp(aiPort, token, {
