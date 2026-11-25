@@ -12,7 +12,7 @@ const LEVEL_META: Record<
   { label: string; chipClass: string; panelClass: string }
 > = {
   ok: {
-    label: 'Safe overhead',
+    label: 'Overhead ≥ 3 m (est.)',
     chipClass: 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200',
     panelClass: 'bg-emerald-950/35 border-emerald-500/35 text-emerald-100',
   },
@@ -23,10 +23,14 @@ const LEVEL_META: Record<
   },
   danger: {
     label: 'Danger',
-    chipClass: 'bg-rose-500/25 border-rose-400/70 text-rose-100',
+    chipClass: 'bg-rose-500/25 border-rose-400/70 text-rose-200',
     panelClass: 'bg-rose-950/55 border-rose-500/60 text-rose-100',
   },
 };
+
+function okLabelForSummary(summary: RigLaserSafetySummary): string {
+  return summary.minClearanceM === null ? 'No audience-zone hit (est.)' : 'Overhead ≥ 3 m (est.)';
+}
 
 function LevelIcon({ level, className }: { level: LaserSafetyLevel; className?: string }) {
   if (level === 'danger') return <ShieldAlert className={className} aria-hidden="true" />;
@@ -38,6 +42,7 @@ function LevelIcon({ level, className }: { level: LaserSafetyLevel; className?: 
 export const LaserSafetyChip: React.FC<{ summary: RigLaserSafetySummary }> = ({ summary }) => {
   if (summary.projectorCount === 0) return null;
   const meta = LEVEL_META[summary.level];
+  const label = summary.level === 'ok' ? okLabelForSummary(summary) : meta.label;
   return (
     <span
       data-testid="laser-safety-chip"
@@ -45,7 +50,7 @@ export const LaserSafetyChip: React.FC<{ summary: RigLaserSafetySummary }> = ({ 
       className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-mono-tech text-[9px] uppercase tracking-wider ${meta.chipClass}`}
     >
       <LevelIcon level={summary.level} className="w-3 h-3 shrink-0" />
-      <span>{meta.label}</span>
+      <span>{label}</span>
     </span>
   );
 };
@@ -70,6 +75,7 @@ export const LaserSafetyPanel: React.FC<LaserSafetyPanelProps> = ({ summary, fli
   }
 
   const meta = LEVEL_META[summary.level];
+  const statusLabel = summary.level === 'ok' ? okLabelForSummary(summary) : meta.label;
   const uniqueHazardMessages: string[] = [];
   const seen = new Set<string>();
   for (const p of summary.projectors) {
@@ -84,15 +90,17 @@ export const LaserSafetyPanel: React.FC<LaserSafetyPanelProps> = ({ summary, fli
   // Discrete status text for assistive tech: only changes when level or hazard flags change.
   const statusAnnouncement =
     summary.level === 'danger'
-      ? `Laser safety danger: ${[
+      ? `Laser guidance danger: ${[
           summary.audienceHazardCount > 0 ? 'beam in audience zone' : null,
           summary.stationaryHazardCount > 0 ? 'stationary beam hazard' : null,
         ]
           .filter(Boolean)
           .join(', ') || 'audience scanning active'}`
       : summary.level === 'caution'
-        ? 'Laser safety caution'
-        : 'Laser safety safe overhead';
+        ? 'Laser guidance caution'
+        : summary.minClearanceM === null
+          ? 'Laser guidance: no estimated audience-zone hit'
+          : 'Laser guidance: estimated overhead clearance at least 3 meters';
 
   const clearsThreshold =
     summary.minClearanceM !== null && summary.minClearanceM >= MIN_AUDIENCE_CLEARANCE_M - 1e-6;
@@ -100,10 +108,10 @@ export const LaserSafetyPanel: React.FC<LaserSafetyPanelProps> = ({ summary, fli
     summary.minClearanceM === null ? null : formatClearanceM(summary.minClearanceM);
   const clearanceText =
     formattedClearance === null
-      ? 'No ray enters audience zone'
+      ? 'No ray enters audience zone (est.)'
       : `Min. clearance ${formattedClearance} m (${
           clearsThreshold ? '≥' : 'needs ≥'
-        } ${MIN_AUDIENCE_CLEARANCE_M.toFixed(1)} m · ${summary.lateralGuidanceM.toFixed(1)} m lateral)`;
+        } ${MIN_AUDIENCE_CLEARANCE_M.toFixed(1)} m · ${summary.lateralGuidanceM.toFixed(1)} m lateral guidance)`;
 
   return (
     <div
@@ -120,7 +128,7 @@ export const LaserSafetyPanel: React.FC<LaserSafetyPanelProps> = ({ summary, fli
           className="inline-flex items-center gap-1.5 font-mono-tech font-bold uppercase tracking-wider text-[10px]"
         >
           <LevelIcon level={summary.level} className="w-3.5 h-3.5 shrink-0" />
-          <span>{meta.label}</span>
+          <span>{statusLabel}</span>
           <span className="sr-only"> — {statusAnnouncement}</span>
         </div>
 

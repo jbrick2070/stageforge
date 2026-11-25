@@ -1,11 +1,25 @@
 import * as THREE from 'three';
 import { FLASH_REFRACTORY_MS, rawManualStrobeOscillator } from './audioModulation';
+import {
+  canAdmitFlashRise,
+  createFlashBudgetClock,
+  createRgbGovernorState,
+  createScalarGovernorState,
+  recordFlashFall,
+  recordFlashRise,
+  stepGovernedRgb,
+  stepGovernedScalar,
+  type FlashBudgetClock,
+  type RgbGovernorState,
+  type RgbStepResult,
+  type ScalarGovernorState,
+} from './flashGovernor';
 
 export { rawManualStrobeOscillator };
 export const PREVIEW_REFRACTORY_MS = 380;
 export const PREVIEW_STROBE_HOLD_MS = 140;
-/** Minimum scalar delta considered a flash edge (strictly below WCAG 0.10 luminance step). */
-export const PREVIEW_EDGE_THRESHOLD = 0.06;
+/** Minimum scalar excursion considered a flash edge (strictly below WCAG 0.10 luminance step). */
+export const PREVIEW_EDGE_THRESHOLD = 0.02;
 export const PREVIEW_FLASH_LIMITED_HOLD_MS = 650;
 
 /**
@@ -20,11 +34,18 @@ export function rawLaserStrobeOscillator(laserStrobe: number, tSec: number): boo
   return frac >= 0.45;
 }
 
+export interface PreviewLaserGovernorEntry {
+  intensityGov: ScalarGovernorState;
+  colorAGov: RgbGovernorState;
+  colorBGov: RgbGovernorState;
+}
+
 export interface PreviewFlashState {
   clockMs: number;
   lastGlobalEdgeMs: number;
   limitedUntilMs: number;
-  // Unified preview-only delivered gates so strobe bars, beams, washes, lasers, and blinders share ONE refractory clock
+  budgetClock: FlashBudgetClock;
+  // Unified preview-only delivered gates so strobe bars, beams, washes, lasers, and blinders share ONE refractory + 1 s reversal ring
   deliveredBeamBright: boolean;
   deliveredWashBright: boolean;
   deliveredBarBright: boolean;
@@ -32,60 +53,62 @@ export interface PreviewFlashState {
   laserArmed: boolean;
   laserGateOn: boolean;
   laserOnUntilMs: number;
-  // Full-frame & look slew followers
-  masterInitialized: boolean;
-  masterValue: number;
-  blinderInitialized: boolean;
-  blinderValue: number;
-  ledBrightInitialized: boolean;
-  ledBrightValue: number;
-  beatPulseInitialized: boolean;
-  beatPulseValue: number;
-  beamIntInitialized: boolean;
-  beamIntValue: number;
-  washIntInitialized: boolean;
-  washIntValue: number;
-  primaryInitialized: boolean;
-  primaryR: number;
-  primaryG: number;
-  primaryB: number;
-  accentInitialized: boolean;
-  accentR: number;
-  accentG: number;
-  accentB: number;
+  // Ramp-safe excursion + rolling reversal scalar governors
+  masterGov: ScalarGovernorState;
+  blinderGov: ScalarGovernorState;
+  ledBrightGov: ScalarGovernorState;
+  beatPulseGov: ScalarGovernorState;
+  bassGov: ScalarGovernorState;
+  midGov: ScalarGovernorState;
+  highGov: ScalarGovernorState;
+  beamIntGov: ScalarGovernorState;
+  washIntGov: ScalarGovernorState;
+  beamColorMixGov: ScalarGovernorState;
+  washColorMixGov: ScalarGovernorState;
+  // Ramp-safe RGB governors (global + movingGroups overrides)
+  primaryGov: RgbGovernorState;
+  accentGov: RgbGovernorState;
+  beamPrimaryGov: RgbGovernorState;
+  beamAccentGov: RgbGovernorState;
+  washPrimaryGov: RgbGovernorState;
+  washAccentGov: RgbGovernorState;
+  // Per-fixture & per-laser-projector final preview emission governors (Codex review-06 R4 & R5)
+  unitRgbGovernors: Map<string, RgbGovernorState>;
+  laserProjectorGovernors: Map<string, PreviewLaserGovernorEntry>;
 }
 
 export function createPreviewFlashState(): PreviewFlashState {
+  const spacing = Math.max(FLASH_REFRACTORY_MS, PREVIEW_REFRACTORY_MS);
   return {
     clockMs: 0,
     lastGlobalEdgeMs: -Infinity,
     limitedUntilMs: -Infinity,
+    budgetClock: createFlashBudgetClock(spacing, PREVIEW_FLASH_LIMITED_HOLD_MS),
     deliveredBeamBright: true,
     deliveredWashBright: true,
     deliveredBarBright: false,
     laserArmed: true,
     laserGateOn: false,
     laserOnUntilMs: -Infinity,
-    masterInitialized: false,
-    masterValue: 0,
-    blinderInitialized: false,
-    blinderValue: 0,
-    ledBrightInitialized: false,
-    ledBrightValue: 0,
-    beatPulseInitialized: false,
-    beatPulseValue: 0,
-    beamIntInitialized: false,
-    beamIntValue: 0,
-    washIntInitialized: false,
-    washIntValue: 0,
-    primaryInitialized: false,
-    primaryR: 0,
-    primaryG: 0,
-    primaryB: 0,
-    accentInitialized: false,
-    accentR: 0,
-    accentG: 0,
-    accentB: 0,
+    masterGov: createScalarGovernorState(),
+    blinderGov: createScalarGovernorState(),
+    ledBrightGov: createScalarGovernorState(),
+    beatPulseGov: createScalarGovernorState(),
+    bassGov: createScalarGovernorState(),
+    midGov: createScalarGovernorState(),
+    highGov: createScalarGovernorState(),
+    beamIntGov: createScalarGovernorState(),
+    washIntGov: createScalarGovernorState(),
+    beamColorMixGov: createScalarGovernorState(),
+    washColorMixGov: createScalarGovernorState(),
+    primaryGov: createRgbGovernorState(),
+    accentGov: createRgbGovernorState(),
+    beamPrimaryGov: createRgbGovernorState(),
+    beamAccentGov: createRgbGovernorState(),
+    washPrimaryGov: createRgbGovernorState(),
+    washAccentGov: createRgbGovernorState(),
+    unitRgbGovernors: new Map(),
+    laserProjectorGovernors: new Map(),
   };
 }
 
@@ -99,11 +122,20 @@ export interface PreviewFlashInput {
   blinder: number;
   ledBright: number;
   beatPulse: number;
+  bass?: number;
+  mid?: number;
+  high?: number;
   beamIntensity: number;
   washIntensity: number;
+  beamColorMix?: number;
+  washColorMix?: number;
   laserStrobe: number;
   primaryColor: THREE.Color;
   accentColor: THREE.Color;
+  beamPrimaryColor?: THREE.Color;
+  beamAccentColor?: THREE.Color;
+  washPrimaryColor?: THREE.Color;
+  washAccentColor?: THREE.Color;
 }
 
 export interface PreviewFlashOutput {
@@ -111,8 +143,13 @@ export interface PreviewFlashOutput {
   blinder: number;
   ledBright: number;
   beatPulse: number;
+  bass: number;
+  mid: number;
+  high: number;
   beamIntensity: number;
   washIntensity: number;
+  beamColorMix: number;
+  washColorMix: number;
   /** Preview multiplier for unmapped laser strobe (1 = lit, 0 = blanked). Shader uStrobe is set to 0 when limited. */
   laserStrobeMultiplier: number;
   /** True when shader `uStrobe` should be bypassed in favor of `laserStrobeMultiplier`. */
@@ -123,6 +160,10 @@ export interface PreviewFlashOutput {
   activeLimiting: boolean;
   primaryColor: THREE.Color;
   accentColor: THREE.Color;
+  beamPrimaryColor: THREE.Color;
+  beamAccentColor: THREE.Color;
+  washPrimaryColor: THREE.Color;
+  washAccentColor: THREE.Color;
 }
 
 export function createPreviewFlashOutput(): PreviewFlashOutput {
@@ -131,28 +172,42 @@ export function createPreviewFlashOutput(): PreviewFlashOutput {
     blinder: 0,
     ledBright: 0,
     beatPulse: 0,
+    bass: 0,
+    mid: 0,
+    high: 0,
     beamIntensity: 0,
     washIntensity: 0,
+    beamColorMix: 0,
+    washColorMix: 0,
     laserStrobeMultiplier: 1,
     bypassLaserShaderStrobe: false,
     ledFlashLimited: false,
     activeLimiting: false,
     primaryColor: new THREE.Color(),
     accentColor: new THREE.Color(),
+    beamPrimaryColor: new THREE.Color(),
+    beamAccentColor: new THREE.Color(),
+    washPrimaryColor: new THREE.Color(),
+    washAccentColor: new THREE.Color(),
   };
 }
 
+function syncPreviewClockEdges(state: PreviewFlashState): void {
+  if (state.budgetClock.lastAdmittedRiseMs > state.lastGlobalEdgeMs) {
+    state.lastGlobalEdgeMs = state.budgetClock.lastAdmittedRiseMs;
+  } else if (state.lastGlobalEdgeMs > state.budgetClock.lastAdmittedRiseMs) {
+    state.budgetClock.lastAdmittedRiseMs = state.lastGlobalEdgeMs;
+  }
+}
+
 function canAdmitPreviewEdge(state: PreviewFlashState): boolean {
-  const tMs = state.clockMs;
-  return (
-    tMs === state.lastGlobalEdgeMs ||
-    tMs - state.lastGlobalEdgeMs >= Math.max(FLASH_REFRACTORY_MS, PREVIEW_REFRACTORY_MS)
-  );
+  syncPreviewClockEdges(state);
+  return canAdmitFlashRise(state.budgetClock, state.clockMs);
 }
 
 /**
  * Unified preview-only strobe gate arbiter for beams, washes, and strobe bars.
- * Ensures preview strobe gates share the exact same refractory clock as laser blanking,
+ * Shares the exact same spacing + rolling 1,000 ms reversal ring as laser blanking,
  * blinders, blackout recovery, and rapid cue flips so two sources can never interleave above 3/s.
  * Never touches `AudioModulationState` or DMX buffers.
  */
@@ -171,6 +226,15 @@ export function stepPreviewDeliveredGate(
     return desiredGate;
   }
   if (blackout) {
+    const prevWasBright =
+      channel === 'beam'
+        ? state.deliveredBeamBright
+        : channel === 'wash'
+          ? state.deliveredWashBright
+            : state.deliveredBarBright;
+    if (prevWasBright) {
+      recordFlashFall(state.budgetClock, state.clockMs);
+    }
     return desiredGate;
   }
   const prevBright =
@@ -183,11 +247,14 @@ export function stepPreviewDeliveredGate(
   let delivered = desiredGate;
   if (!prevBright && desiredBright) {
     if (canAdmitPreviewEdge(state)) {
+      recordFlashRise(state.budgetClock, state.clockMs);
       state.lastGlobalEdgeMs = state.clockMs;
     } else {
       state.limitedUntilMs = Math.max(state.limitedUntilMs, state.clockMs + PREVIEW_FLASH_LIMITED_HOLD_MS);
       delivered = 0.06;
     }
+  } else if (prevBright && !desiredBright) {
+    recordFlashFall(state.budgetClock, state.clockMs);
   }
   const nextBright = delivered >= 0.5;
   if (channel === 'beam') state.deliveredBeamBright = nextBright;
@@ -196,38 +263,221 @@ export function stepPreviewDeliveredGate(
   return delivered;
 }
 
-function stepScalarPreview(
-  state: PreviewFlashState,
-  initialized: boolean,
-  prev: number,
-  target: number,
-  instantFall: boolean,
-  edgeThreshold: number,
-): number {
-  const safeTarget = Number.isFinite(target) ? target : 0;
-  if (!initialized) return safeTarget;
-  const delta = safeTarget - prev;
-  if (Math.abs(delta) <= 1e-6) return safeTarget;
+const RGB_OUT_SCRATCH: RgbStepResult = { r: 0, g: 0, b: 0, limited: false };
 
-  // Blackout / downward transitions are immediate when instantFall is set.
-  if (delta < 0 && instantFall) return safeTarget;
+function syncScalarPassthrough(gov: ScalarGovernorState, v: number): void {
+  const sv = Number.isFinite(v) ? Math.max(0, v) : 0;
+  gov.initialized = true;
+  gov.delivered = sv;
+  gov.anchor = sv;
+  gov.peak = sv;
+  gov.edgeStep = sv;
+}
 
-  // Tiny frame-to-frame changes below flash threshold follow smoothly (e.g., slow fades).
-  if (Math.abs(delta) < edgeThreshold) return safeTarget;
-
-  if (canAdmitPreviewEdge(state)) {
-    state.lastGlobalEdgeMs = state.clockMs;
-    return safeTarget;
-  }
-
-  // Hold the last delivered value inside the refractory window so rapid on/off cycling
-  // cannot leak a high-frequency sawtooth above the WCAG 0.10 luminance step.
-  state.limitedUntilMs = Math.max(state.limitedUntilMs, state.clockMs + PREVIEW_FLASH_LIMITED_HOLD_MS);
-  return prev;
+function syncRgbPassthrough(gov: RgbGovernorState, c: THREE.Color): void {
+  const r = Math.max(0, c.r);
+  const g = Math.max(0, c.g);
+  const b = Math.max(0, c.b);
+  const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const sum = r + g + b;
+  const redRatio = sum > 1e-6 ? r / sum : 0;
+  const redMetric = Math.max(0, (r - g - b) * 320);
+  gov.initialized = true;
+  gov.r = r;
+  gov.g = g;
+  gov.b = b;
+  gov.genAnchorR = r;
+  gov.genAnchorG = g;
+  gov.genAnchorB = b;
+  gov.genAnchorY = y;
+  gov.peakR = r;
+  gov.peakG = g;
+  gov.peakB = b;
+  gov.stepR = r;
+  gov.stepG = g;
+  gov.stepB = b;
+  gov.redAnchorRatio = redRatio;
+  gov.redAnchorMetric = redMetric;
+  gov.peakRedMetric = redMetric;
+  gov.stepRedMetric = redMetric;
 }
 
 /**
- * Zero-allocation preview-only flash governor (Sprint 15).
+ * Per-fixture final preview RGB/intensity clamp (Codex review-06 R4).
+ * Catches per-fixture `colorSplitMode` flips (`solid` <-> `alternate` / `rainbow`) and demo fades
+ * without coupling slow per-fixture rainbow hue phases onto the global clock.
+ */
+export function stepPreviewFixtureUnit(
+  state: PreviewFlashState,
+  unitKey: string,
+  limited: boolean,
+  blackout: boolean,
+  rawIntensity: number,
+  rawColor: THREE.Color,
+  outColor: THREE.Color,
+): number {
+  const safeInt = Number.isFinite(rawIntensity) && rawIntensity > 0 ? rawIntensity : 0;
+  let gov = state.unitRgbGovernors.get(unitKey);
+  if (!gov) {
+    if (state.unitRgbGovernors.size > 512) state.unitRgbGovernors.clear();
+    gov = createRgbGovernorState();
+    state.unitRgbGovernors.set(unitKey, gov);
+  }
+  if (!limited) {
+    gov.initialized = true;
+    gov.r = rawColor.r * safeInt;
+    gov.g = rawColor.g * safeInt;
+    gov.b = rawColor.b * safeInt;
+    outColor.copy(rawColor);
+    return safeInt;
+  }
+  const er = rawColor.r * safeInt;
+  const eg = rawColor.g * safeInt;
+  const eb = rawColor.b * safeInt;
+  const res = stepGovernedRgb(
+    gov,
+    null,
+    state.clockMs,
+    er,
+    eg,
+    eb,
+    blackout,
+    PREVIEW_EDGE_THRESHOLD,
+    undefined,
+    undefined,
+    PREVIEW_REFRACTORY_MS,
+    RGB_OUT_SCRATCH,
+  );
+  if (res.limited) {
+    state.limitedUntilMs = Math.max(state.limitedUntilMs, state.clockMs + PREVIEW_FLASH_LIMITED_HOLD_MS);
+  }
+  const maxComp = Math.max(res.r, res.g, res.b);
+  if (maxComp <= 1e-6) {
+    outColor.setRGB(0, 0, 0);
+    return 0;
+  }
+  const rawMax = Math.max(rawColor.r, rawColor.g, rawColor.b);
+  if (rawMax > 1e-6 && safeInt > 1e-6) {
+    // Preserve >1.0 HDR intensity scaling while keeping hue & brightness strictly governed.
+    const nextInt = maxComp / rawMax;
+    const inv = 1 / Math.max(1e-6, nextInt);
+    outColor.setRGB(Math.min(1, res.r * inv), Math.min(1, res.g * inv), Math.min(1, res.b * inv));
+    return nextInt;
+  }
+  outColor.setRGB(res.r / maxComp, res.g / maxComp, res.b / maxComp);
+  return maxComp;
+}
+
+export interface PreviewLaserUnitResult {
+  intensity: number;
+  limited: boolean;
+}
+
+const LASER_UNIT_SCRATCH: PreviewLaserUnitResult = { intensity: 0, limited: false };
+
+/**
+ * Per-projector preview laser emission governor (Codex review-06 R5).
+ * Governs final per-projector preview intensity (after `s.laser.enabled`, `b.laser`, `s.laser.intensity`,
+ * audio modulation, and strobe gates) plus resolved `colorA` and `colorB` (including custom colours)
+ * through the shared preview `budgetClock`, keeping blackout / laser-off immediate.
+ */
+export function stepPreviewLaserUnit(
+  state: PreviewFlashState,
+  projectorKey: string,
+  limited: boolean,
+  blackout: boolean,
+  rawIntensity: number,
+  rawColorA: THREE.Color,
+  rawColorB: THREE.Color,
+  outColorA: THREE.Color,
+  outColorB: THREE.Color,
+  out: PreviewLaserUnitResult = LASER_UNIT_SCRATCH,
+): PreviewLaserUnitResult {
+  const safeInt = Number.isFinite(rawIntensity) && rawIntensity > 0 ? rawIntensity : 0;
+  let entry = state.laserProjectorGovernors.get(projectorKey);
+  if (!entry) {
+    if (state.laserProjectorGovernors.size > 128) state.laserProjectorGovernors.clear();
+    entry = {
+      intensityGov: createScalarGovernorState(),
+      colorAGov: createRgbGovernorState(),
+      colorBGov: createRgbGovernorState(),
+    };
+    state.laserProjectorGovernors.set(projectorKey, entry);
+  }
+
+  if (!limited) {
+    syncScalarPassthrough(entry.intensityGov, safeInt);
+    syncRgbPassthrough(entry.colorAGov, rawColorA);
+    syncRgbPassthrough(entry.colorBGov, rawColorB);
+    outColorA.copy(rawColorA);
+    outColorB.copy(rawColorB);
+    out.intensity = safeInt;
+    out.limited = false;
+    return out;
+  }
+
+  syncPreviewClockEdges(state);
+  const tMs = state.clockMs;
+  const isOff = blackout || safeInt <= 1e-4;
+
+  const intStep = stepGovernedScalar(
+    entry.intensityGov,
+    state.budgetClock,
+    tMs,
+    isOff ? 0 : safeInt,
+    isOff,
+    true,
+    PREVIEW_EDGE_THRESHOLD,
+    PREVIEW_REFRACTORY_MS,
+  );
+  syncPreviewClockEdges(state);
+  const nextInt = intStep.value;
+
+  const colAStep = stepGovernedRgb(
+    entry.colorAGov,
+    state.budgetClock,
+    tMs,
+    rawColorA.r,
+    rawColorA.g,
+    rawColorA.b,
+    blackout,
+    PREVIEW_EDGE_THRESHOLD,
+    undefined,
+    undefined,
+    PREVIEW_REFRACTORY_MS,
+    RGB_OUT_SCRATCH,
+  );
+  outColorA.setRGB(colAStep.r, colAStep.g, colAStep.b);
+  syncPreviewClockEdges(state);
+
+  const colBStep = stepGovernedRgb(
+    entry.colorBGov,
+    state.budgetClock,
+    tMs,
+    rawColorB.r,
+    rawColorB.g,
+    rawColorB.b,
+    blackout,
+    PREVIEW_EDGE_THRESHOLD,
+    undefined,
+    undefined,
+    PREVIEW_REFRACTORY_MS,
+    RGB_OUT_SCRATCH,
+  );
+  outColorB.setRGB(colBStep.r, colBStep.g, colBStep.b);
+  syncPreviewClockEdges(state);
+
+  const anyLimited = intStep.limited || colAStep.limited || colBStep.limited;
+  if (anyLimited) {
+    state.limitedUntilMs = Math.max(state.limitedUntilMs, tMs + PREVIEW_FLASH_LIMITED_HOLD_MS);
+  }
+  out.intensity = nextInt;
+  out.limited = anyLimited;
+  return out;
+}
+
+/**
+ * Zero-allocation preview-only flash governor (Sprint 15 + Sprint 24 hardening).
  * Operates exclusively on preview state and never mutates `AudioModulationState` or DMX buffers.
  */
 export function evaluatePreviewFlash(
@@ -237,33 +487,38 @@ export function evaluatePreviewFlash(
 ): PreviewFlashOutput {
   const safeDt = Number.isFinite(input.dtSec) && input.dtSec > 0 ? input.dtSec : 0;
   state.clockMs += safeDt * 1000;
-  // Preview emitters (beams, washes, strobe bars, lasers, blinders, cues) share state.lastGlobalEdgeMs
-  // exclusively via evaluatePreviewFlash & stepPreviewDeliveredGate so no two sources can interleave above 3/s.
+  state.budgetClock.clockMs = state.clockMs;
+  syncPreviewClockEdges(state);
   const tMs = state.clockMs;
 
+  const beamPrimaryIn = input.beamPrimaryColor ?? input.primaryColor;
+  const beamAccentIn = input.beamAccentColor ?? input.accentColor;
+  const washPrimaryIn = input.washPrimaryColor ?? input.primaryColor;
+  const washAccentIn = input.washAccentColor ?? input.accentColor;
+  const bassIn = input.bass ?? 0;
+  const midIn = input.mid ?? 0;
+  const highIn = input.high ?? 0;
+  const beamMixIn = input.beamColorMix ?? 0;
+  const washMixIn = input.washColorMix ?? 0;
+
   if (!input.limited) {
-    // Full-rate visual preview opted in: pass visual values through untouched while tracking followers
-    // so re-enabling the limiter never causes a jump or loses refractory history.
-    state.masterInitialized = true;
-    state.masterValue = input.master;
-    state.blinderInitialized = true;
-    state.blinderValue = input.blinder;
-    state.ledBrightInitialized = true;
-    state.ledBrightValue = input.ledBright;
-    state.beatPulseInitialized = true;
-    state.beatPulseValue = input.beatPulse;
-    state.beamIntInitialized = true;
-    state.beamIntValue = input.beamIntensity;
-    state.washIntInitialized = true;
-    state.washIntValue = input.washIntensity;
-    state.primaryInitialized = true;
-    state.primaryR = input.primaryColor.r;
-    state.primaryG = input.primaryColor.g;
-    state.primaryB = input.primaryColor.b;
-    state.accentInitialized = true;
-    state.accentR = input.accentColor.r;
-    state.accentG = input.accentColor.g;
-    state.accentB = input.accentColor.b;
+    syncScalarPassthrough(state.masterGov, input.master);
+    syncScalarPassthrough(state.blinderGov, input.blinder);
+    syncScalarPassthrough(state.ledBrightGov, input.ledBright);
+    syncScalarPassthrough(state.beatPulseGov, input.beatPulse);
+    syncScalarPassthrough(state.bassGov, bassIn);
+    syncScalarPassthrough(state.midGov, midIn);
+    syncScalarPassthrough(state.highGov, highIn);
+    syncScalarPassthrough(state.beamIntGov, input.beamIntensity);
+    syncScalarPassthrough(state.washIntGov, input.washIntensity);
+    syncScalarPassthrough(state.beamColorMixGov, beamMixIn);
+    syncScalarPassthrough(state.washColorMixGov, washMixIn);
+    syncRgbPassthrough(state.primaryGov, input.primaryColor);
+    syncRgbPassthrough(state.accentGov, input.accentColor);
+    syncRgbPassthrough(state.beamPrimaryGov, beamPrimaryIn);
+    syncRgbPassthrough(state.beamAccentGov, beamAccentIn);
+    syncRgbPassthrough(state.washPrimaryGov, washPrimaryIn);
+    syncRgbPassthrough(state.washAccentGov, washAccentIn);
     state.laserArmed = true;
     state.laserGateOn = false;
     state.laserOnUntilMs = -Infinity;
@@ -272,133 +527,128 @@ export function evaluatePreviewFlash(
     out.blinder = input.blinder;
     out.ledBright = input.ledBright;
     out.beatPulse = input.beatPulse;
+    out.bass = bassIn;
+    out.mid = midIn;
+    out.high = highIn;
     out.beamIntensity = input.beamIntensity;
     out.washIntensity = input.washIntensity;
+    out.beamColorMix = beamMixIn;
+    out.washColorMix = washMixIn;
     out.laserStrobeMultiplier = 1;
     out.bypassLaserShaderStrobe = false;
     out.ledFlashLimited = false;
     out.activeLimiting = false;
     out.primaryColor.copy(input.primaryColor);
     out.accentColor.copy(input.accentColor);
+    out.beamPrimaryColor.copy(beamPrimaryIn);
+    out.beamAccentColor.copy(beamAccentIn);
+    out.washPrimaryColor.copy(washPrimaryIn);
+    out.washAccentColor.copy(washAccentIn);
     return out;
   }
 
-  // 1. Master / blackout: blackout drops immediately; rapid restoration holds until refractory expires.
-  const nextMaster = input.blackout
-    ? 0
-    : stepScalarPreview(state, state.masterInitialized, state.masterValue, input.master, true, PREVIEW_EDGE_THRESHOLD);
-  state.masterInitialized = true;
-  state.masterValue = nextMaster;
-
-  // 2. Blinder: immediate fall; rapid taps hold until refractory expires.
-  const nextBlinder = input.blackout
-    ? 0
-    : stepScalarPreview(state, state.blinderInitialized, state.blinderValue, input.blinder, true, PREVIEW_EDGE_THRESHOLD);
-  state.blinderInitialized = true;
-  state.blinderValue = nextBlinder;
-
-  // 3. LED wall brightness: immediate on blackout; rapid restore/cue flips hold until refractory expires.
-  const nextLedBright = input.blackout
-    ? 0
-    : stepScalarPreview(state, state.ledBrightInitialized, state.ledBrightValue, input.ledBright, true, PREVIEW_EDGE_THRESHOLD);
-  state.ledBrightInitialized = true;
-  state.ledBrightValue = nextLedBright;
-
-  // 4. LED beat pulse: both rises and falls gated by the refractory window so high-BPM audio beats cannot flash LED wall > 3/s.
-  const nextBeatPulse = input.blackout
-    ? 0
-    : stepScalarPreview(state, state.beatPulseInitialized, state.beatPulseValue, input.beatPulse, false, PREVIEW_EDGE_THRESHOLD);
-  state.beatPulseInitialized = true;
-  state.beatPulseValue = nextBeatPulse;
-
-  // 5. Beam & wash base intensities (covers rapid cue flips and ducking dimmer toggles).
-  const nextBeamInt = input.blackout
-    ? 0
-    : stepScalarPreview(state, state.beamIntInitialized, state.beamIntValue, input.beamIntensity, true, PREVIEW_EDGE_THRESHOLD);
-  state.beamIntInitialized = true;
-  state.beamIntValue = nextBeamInt;
-
-  const nextWashInt = input.blackout
-    ? 0
-    : stepScalarPreview(state, state.washIntInitialized, state.washIntValue, input.washIntensity, true, PREVIEW_EDGE_THRESHOLD);
-  state.washIntInitialized = true;
-  state.washIntValue = nextWashInt;
-
-  // 6. Primary & accent color transitions (inlined, zero-allocation): hold the last admitted color
-  // during the refractory window so rapid red<->cyan cue flips cannot oscillate WCAG saturated red > 3/s.
-  if (!state.primaryInitialized) {
-    state.primaryInitialized = true;
-    state.primaryR = input.primaryColor.r;
-    state.primaryG = input.primaryColor.g;
-    state.primaryB = input.primaryColor.b;
-    out.primaryColor.copy(input.primaryColor);
-  } else {
-    const pMag =
-      Math.abs(input.primaryColor.r - state.primaryR) +
-      Math.abs(input.primaryColor.g - state.primaryG) +
-      Math.abs(input.primaryColor.b - state.primaryB);
-    if (pMag < 0.15) {
-      state.primaryR = input.primaryColor.r;
-      state.primaryG = input.primaryColor.g;
-      state.primaryB = input.primaryColor.b;
-      out.primaryColor.copy(input.primaryColor);
-    } else if (canAdmitPreviewEdge(state)) {
-      state.lastGlobalEdgeMs = tMs;
-      state.primaryR = input.primaryColor.r;
-      state.primaryG = input.primaryColor.g;
-      state.primaryB = input.primaryColor.b;
-      out.primaryColor.copy(input.primaryColor);
-    } else {
+  const runScalar = (gov: ScalarGovernorState, target: number, instantFall: boolean): number => {
+    const r = stepGovernedScalar(
+      gov,
+      state.budgetClock,
+      tMs,
+      target,
+      input.blackout,
+      instantFall,
+      PREVIEW_EDGE_THRESHOLD,
+      PREVIEW_REFRACTORY_MS,
+    );
+    syncPreviewClockEdges(state);
+    if (r.limited) {
       state.limitedUntilMs = Math.max(state.limitedUntilMs, tMs + PREVIEW_FLASH_LIMITED_HOLD_MS);
-      out.primaryColor.setRGB(state.primaryR, state.primaryG, state.primaryB);
     }
+    return r.value;
+  };
+
+  const runColor = (gov: RgbGovernorState, src: THREE.Color, dst: THREE.Color): void => {
+    const r = stepGovernedRgb(
+      gov,
+      state.budgetClock,
+      tMs,
+      src.r,
+      src.g,
+      src.b,
+      input.blackout,
+      PREVIEW_EDGE_THRESHOLD,
+      undefined,
+      undefined,
+      PREVIEW_REFRACTORY_MS,
+      RGB_OUT_SCRATCH,
+    );
+    syncPreviewClockEdges(state);
+    if (r.limited) {
+      state.limitedUntilMs = Math.max(state.limitedUntilMs, tMs + PREVIEW_FLASH_LIMITED_HOLD_MS);
+    }
+    dst.setRGB(r.r, r.g, r.b);
+  };
+
+  const nextMaster = runScalar(state.masterGov, input.master, true);
+  const nextBlinder = runScalar(state.blinderGov, input.blinder, true);
+  const nextLedBright = runScalar(state.ledBrightGov, input.ledBright, true);
+  const nextBeatPulse = runScalar(state.beatPulseGov, input.beatPulse, false);
+  const nextBass = runScalar(state.bassGov, bassIn, false);
+  const nextMid = runScalar(state.midGov, midIn, false);
+  const nextHigh = runScalar(state.highGov, highIn, false);
+  const nextBeamInt = runScalar(state.beamIntGov, input.beamIntensity, true);
+  const nextWashInt = runScalar(state.washIntGov, input.washIntensity, true);
+  const nextBeamMix = runScalar(state.beamColorMixGov, beamMixIn, false);
+  const nextWashMix = runScalar(state.washColorMixGov, washMixIn, false);
+
+  runColor(state.primaryGov, input.primaryColor, out.primaryColor);
+  runColor(state.accentGov, input.accentColor, out.accentColor);
+
+  if (beamPrimaryIn === input.primaryColor) {
+    syncRgbPassthrough(state.beamPrimaryGov, out.primaryColor);
+    out.beamPrimaryColor.copy(out.primaryColor);
+  } else {
+    runColor(state.beamPrimaryGov, beamPrimaryIn, out.beamPrimaryColor);
   }
 
-  if (!state.accentInitialized) {
-    state.accentInitialized = true;
-    state.accentR = input.accentColor.r;
-    state.accentG = input.accentColor.g;
-    state.accentB = input.accentColor.b;
-    out.accentColor.copy(input.accentColor);
+  if (beamAccentIn === input.accentColor) {
+    syncRgbPassthrough(state.beamAccentGov, out.accentColor);
+    out.beamAccentColor.copy(out.accentColor);
   } else {
-    const aMag =
-      Math.abs(input.accentColor.r - state.accentR) +
-      Math.abs(input.accentColor.g - state.accentG) +
-      Math.abs(input.accentColor.b - state.accentB);
-    if (aMag < 0.15) {
-      state.accentR = input.accentColor.r;
-      state.accentG = input.accentColor.g;
-      state.accentB = input.accentColor.b;
-      out.accentColor.copy(input.accentColor);
-    } else if (canAdmitPreviewEdge(state)) {
-      state.lastGlobalEdgeMs = tMs;
-      state.accentR = input.accentColor.r;
-      state.accentG = input.accentColor.g;
-      state.accentB = input.accentColor.b;
-      out.accentColor.copy(input.accentColor);
-    } else {
-      state.limitedUntilMs = Math.max(state.limitedUntilMs, tMs + PREVIEW_FLASH_LIMITED_HOLD_MS);
-      out.accentColor.setRGB(state.accentR, state.accentG, state.accentB);
-    }
+    runColor(state.beamAccentGov, beamAccentIn, out.beamAccentColor);
   }
 
-  // 7. Unmapped laser shader strobe (single global phase admitted through the shared 334 ms refractory).
+  if (washPrimaryIn === input.primaryColor) {
+    syncRgbPassthrough(state.washPrimaryGov, out.primaryColor);
+    out.washPrimaryColor.copy(out.primaryColor);
+  } else {
+    runColor(state.washPrimaryGov, washPrimaryIn, out.washPrimaryColor);
+  }
+
+  if (washAccentIn === input.accentColor) {
+    syncRgbPassthrough(state.washAccentGov, out.accentColor);
+    out.washAccentColor.copy(out.accentColor);
+  } else {
+    runColor(state.washAccentGov, washAccentIn, out.washAccentColor);
+  }
+
+  // Unmapped laser shader strobe (single global phase admitted through the shared preview budgetClock).
   let laserStrobeMultiplier = 1;
   if (input.laserStrobe > 0.02 && !input.blackout) {
     const rawLit = rawLaserStrobeOscillator(input.laserStrobe, input.tSec);
     if (state.laserGateOn) {
       if (tMs >= state.laserOnUntilMs && !rawLit) {
         state.laserGateOn = false;
+        recordFlashFall(state.budgetClock, tMs);
       } else if (tMs >= state.laserOnUntilMs) {
-        // End pulse after hold window so it cycles cleanly without sticking solid.
         state.laserGateOn = false;
         state.laserArmed = false;
+        recordFlashFall(state.budgetClock, tMs);
       }
     }
     if (!rawLit) {
       state.laserArmed = true;
     } else if (state.laserArmed && !state.laserGateOn) {
       if (canAdmitPreviewEdge(state)) {
+        recordFlashRise(state.budgetClock, tMs);
         state.lastGlobalEdgeMs = tMs;
         state.laserGateOn = true;
         state.laserOnUntilMs = tMs + PREVIEW_STROBE_HOLD_MS;
@@ -409,6 +659,9 @@ export function evaluatePreviewFlash(
     }
     laserStrobeMultiplier = state.laserGateOn ? 1 : 0;
   } else {
+    if (state.laserGateOn) {
+      recordFlashFall(state.budgetClock, tMs);
+    }
     state.laserArmed = true;
     state.laserGateOn = false;
     state.laserOnUntilMs = -Infinity;
@@ -418,8 +671,13 @@ export function evaluatePreviewFlash(
   out.blinder = nextBlinder;
   out.ledBright = nextLedBright;
   out.beatPulse = nextBeatPulse;
+  out.bass = nextBass;
+  out.mid = nextMid;
+  out.high = nextHigh;
   out.beamIntensity = nextBeamInt;
   out.washIntensity = nextWashInt;
+  out.beamColorMix = nextBeamMix;
+  out.washColorMix = nextWashMix;
   out.laserStrobeMultiplier = laserStrobeMultiplier;
   out.bypassLaserShaderStrobe = true;
   out.ledFlashLimited = true;

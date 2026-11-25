@@ -9,6 +9,24 @@ import type {
   ShowState,
 } from '../types/show';
 import { headLook } from '../data/movingGroups';
+import {
+  canAdmitFlashRise,
+  cloneFlashBudgetClock,
+  cloneRgbGovernorState,
+  cloneScalarGovernorState,
+  createFlashBudgetClock,
+  createRgbGovernorState,
+  createScalarGovernorState,
+  factorizeEmittedRgb,
+  recordFlashFall,
+  recordFlashRise,
+  stepGovernedRgb,
+  stepGovernedScalar,
+  type FactorizedEmission,
+  type FlashBudgetClock,
+  type RgbGovernorState,
+  type ScalarGovernorState,
+} from './flashGovernor';
 
 export const MAX_AUDIO_MAPPINGS = 16;
 export const HAZE_MIN_ATTACK_MS = 1000;
@@ -158,14 +176,21 @@ export interface AudioFollowerSlot {
 export interface AudioModulationState {
   clockMs: number;
   lastGlobalStrobeEdgeMs: number;
+  budgetClock: FlashBudgetClock;
   manualStrobeGate: number;
   deliveredBeamGate: number;
   deliveredWashGate: number;
   deliveredBarGate: number;
-  /** Final composed DMX brightness history (0..1) for beam/wash/bar so dimmer toggles & blackout release stay <= 3/s (Codex review-05 R1). */
+  /** Final composed DMX brightness history (0..1) for beam/wash/bar/blinder so dimmer ramps, bumps & blackout release stay <= 3/s. */
   deliveredBeamBright: number;
   deliveredWashBright: number;
   deliveredBarBright: number;
+  deliveredBlinderBright: number;
+  beamBrightGov: ScalarGovernorState;
+  washBrightGov: ScalarGovernorState;
+  barBrightGov: ScalarGovernorState;
+  blinderBrightGov: ScalarGovernorState;
+  unitRgbGovernors: Map<string, RgbGovernorState>;
   slots: AudioFollowerSlot[];
   manualStrobe: StrobeGateState;
   beamStrobe: StrobeGateState;
@@ -345,6 +370,7 @@ export function createAudioModulationState(): AudioModulationState {
   return {
     clockMs: 0,
     lastGlobalStrobeEdgeMs: -Infinity,
+    budgetClock: createFlashBudgetClock(FLASH_REFRACTORY_MS, FLASH_LIMITED_HOLD_MS),
     manualStrobeGate: 1.0,
     deliveredBeamGate: 1.0,
     deliveredWashGate: 1.0,
@@ -352,6 +378,12 @@ export function createAudioModulationState(): AudioModulationState {
     deliveredBeamBright: NaN,
     deliveredWashBright: NaN,
     deliveredBarBright: NaN,
+    deliveredBlinderBright: NaN,
+    beamBrightGov: createScalarGovernorState(),
+    washBrightGov: createScalarGovernorState(),
+    barBrightGov: createScalarGovernorState(),
+    blinderBrightGov: createScalarGovernorState(),
+    unitRgbGovernors: new Map(),
     slots,
     manualStrobe: createStrobeGateState(),
     beamStrobe: createStrobeGateState(),
@@ -384,6 +416,7 @@ export function cloneAudioModulationState(src: AudioModulationState): AudioModul
   const copy = createAudioModulationState();
   copy.clockMs = src.clockMs;
   copy.lastGlobalStrobeEdgeMs = src.lastGlobalStrobeEdgeMs;
+  copy.budgetClock = cloneFlashBudgetClock(src.budgetClock);
   copy.manualStrobeGate = src.manualStrobeGate;
   copy.deliveredBeamGate = src.deliveredBeamGate;
   copy.deliveredWashGate = src.deliveredWashGate;
@@ -391,6 +424,14 @@ export function cloneAudioModulationState(src: AudioModulationState): AudioModul
   copy.deliveredBeamBright = src.deliveredBeamBright;
   copy.deliveredWashBright = src.deliveredWashBright;
   copy.deliveredBarBright = src.deliveredBarBright;
+  copy.deliveredBlinderBright = src.deliveredBlinderBright;
+  copy.beamBrightGov = cloneScalarGovernorState(src.beamBrightGov);
+  copy.washBrightGov = cloneScalarGovernorState(src.washBrightGov);
+  copy.barBrightGov = cloneScalarGovernorState(src.barBrightGov);
+  copy.blinderBrightGov = cloneScalarGovernorState(src.blinderBrightGov);
+  for (const [k, v] of src.unitRgbGovernors) {
+    copy.unitRgbGovernors.set(k, cloneRgbGovernorState(v));
+  }
   for (let i = 0; i < MAX_AUDIO_MAPPINGS; i++) {
     copy.slots[i].id = src.slots[i]?.id ?? '';
     copy.slots[i].envelope = src.slots[i]?.envelope ?? 0;
@@ -564,6 +605,15 @@ function safetyScaleFactor(amount: number, env: number): number {
   return clamp01(1 + a * e);
 }
 
+function syncAudioBudgetClock(state: AudioModulationState): void {
+  state.budgetClock.clockMs = state.clockMs;
+  if (state.lastGlobalStrobeEdgeMs > state.budgetClock.lastAdmittedRiseMs) {
+    state.budgetClock.lastAdmittedRiseMs = state.lastGlobalStrobeEdgeMs;
+  } else if (state.budgetClock.lastAdmittedRiseMs > state.lastGlobalStrobeEdgeMs) {
+    state.lastGlobalStrobeEdgeMs = state.budgetClock.lastAdmittedRiseMs;
+  }
+}
+
 function stepStrobeGate(
   gate: StrobeGateState,
   signal: number,
@@ -571,14 +621,15 @@ function stepStrobeGate(
   out: StrobeModResult,
   state: AudioModulationState,
 ): boolean {
+  syncAudioBudgetClock(state);
+  const prevOn = gate.gateOn;
   const env = clamp01(signal);
   if (env >= FLASH_TRIGGER_ON && gate.armed) {
     const gateReady = tMs - gate.lastEdgeMs >= FLASH_REFRACTORY_MS;
-    const globalReady =
-      tMs === state.lastGlobalStrobeEdgeMs ||
-      tMs - state.lastGlobalStrobeEdgeMs >= FLASH_REFRACTORY_MS;
+    const globalReady = canAdmitFlashRise(state.budgetClock, tMs);
     if (gateReady && globalReady) {
       gate.lastEdgeMs = tMs;
+      recordFlashRise(state.budgetClock, tMs);
       state.lastGlobalStrobeEdgeMs = tMs;
       gate.onUntilMs = tMs + FLASH_ON_MS;
     } else {
@@ -589,6 +640,9 @@ function stepStrobeGate(
     gate.armed = true;
   }
   gate.gateOn = tMs < gate.onUntilMs;
+  if (prevOn && !gate.gateOn) {
+    recordFlashFall(state.budgetClock, tMs);
+  }
   gate.limited = tMs < gate.limitedUntilMs;
 
   out.mapped = true;
@@ -651,9 +705,13 @@ export function stepCombinedStrobeGate(
   blackout: boolean,
   out?: CombinedStrobeGateResult,
 ): CombinedStrobeGateResult {
+  syncAudioBudgetClock(state);
   const res: CombinedStrobeGateResult = out ?? { gate: 1.0, flashOn: false, limited: false };
   const tMs = state.clockMs;
   if (blackout) {
+    if (state.manualStrobe.gateOn) {
+      recordFlashFall(state.budgetClock, tMs);
+    }
     disarmStrobeGate(state.manualStrobe);
     // Preserve manualStrobeGate across blackout (do not reset 0.06 -> 1.0) so toggling blackout
     // on/off inside a strobe trough cannot bypass the <= 3 flashes/s refractory window (QA M3).
@@ -663,17 +721,15 @@ export function stepCombinedStrobeGate(
     return res;
   }
   if (!Number.isFinite(effectiveStrobe) || effectiveStrobe <= 0.03) {
+    if (state.manualStrobe.gateOn) {
+      recordFlashFall(state.budgetClock, tMs);
+    }
     disarmStrobeGate(state.manualStrobe);
     // Restoring from a strobe dark trough (< 0.5) back to full brightness (1.0) is a bright
-    // rising edge; hold dark until the shared <= 3 flashes/s refractory window has elapsed so
-    // rapid strobe press/release cycles cannot bypass the photosensitivity ceiling (Codex R1).
+    // rising edge; hold dark until the shared <= 3 flashes/s refractory + reversal window has elapsed.
     if (state.manualStrobeGate < 0.5) {
       const gateReady = tMs - state.manualStrobe.lastEdgeMs >= FLASH_REFRACTORY_MS;
-      // Allow restoration on an already-admitted same-frame global edge (matching stepStrobeGate)
-      // so another audio-mapped group pulsing every ~340 ms cannot starve manual release forever (Codex review-04 R2).
-      const globalReady =
-        tMs === state.lastGlobalStrobeEdgeMs ||
-        tMs - state.lastGlobalStrobeEdgeMs >= FLASH_REFRACTORY_MS;
+      const globalReady = canAdmitFlashRise(state.budgetClock, tMs);
       if (!gateReady || !globalReady) {
         state.manualStrobe.limitedUntilMs = tMs + FLASH_LIMITED_HOLD_MS;
         res.gate = 0.06;
@@ -682,6 +738,7 @@ export function stepCombinedStrobeGate(
         return res;
       }
       state.manualStrobe.lastEdgeMs = tMs;
+      recordFlashRise(state.budgetClock, tMs);
       state.lastGlobalStrobeEdgeMs = tMs;
     }
     state.manualStrobeGate = 1.0;
@@ -690,10 +747,14 @@ export function stepCombinedStrobeGate(
     res.limited = tMs < state.manualStrobe.limitedUntilMs;
     return res;
   }
+  const prevManualBright = state.manualStrobeGate >= 0.5;
   const oscSignal = rawManualStrobeOscillator(effectiveStrobe, tSec) ? 1 : 0;
   const limited = stepStrobeGate(state.manualStrobe, oscSignal, tMs, MANUAL_STROBE_SCRATCH, state);
   res.flashOn = state.manualStrobe.gateOn;
   res.gate = res.flashOn ? 1.35 : 0.06;
+  if (prevManualBright && res.gate < 0.5) {
+    recordFlashFall(state.budgetClock, tMs);
+  }
   state.manualStrobeGate = res.gate;
   res.limited = limited;
   return res;
@@ -710,6 +771,7 @@ export function stepDeliveredStrobeGate(
   desiredGate: number,
   blackout: boolean,
 ): number {
+  syncAudioBudgetClock(state);
   if (blackout) {
     // Preserve delivered gate across blackout so toggling blackout in a trough cannot bypass refractory.
     return desiredGate;
@@ -723,20 +785,18 @@ export function stepDeliveredStrobeGate(
         : state.deliveredBarGate;
   let delivered = desiredGate;
   if (prev < 0.5 && desiredGate >= 0.5) {
-    // Relies on state.clockMs advancing once per frame in evaluateAudioModulation before all
-    // strobe-limiter calls in that frame, so equal timestamps represent one synchronized room edge.
-    const globalReady =
-      tMs === state.lastGlobalStrobeEdgeMs ||
-      tMs - state.lastGlobalStrobeEdgeMs >= FLASH_REFRACTORY_MS;
-    if (!globalReady) {
+    if (!canAdmitFlashRise(state.budgetClock, tMs)) {
       state.manualStrobe.limitedUntilMs = Math.max(
         state.manualStrobe.limitedUntilMs,
         tMs + FLASH_LIMITED_HOLD_MS,
       );
       delivered = 0.06;
     } else {
+      recordFlashRise(state.budgetClock, tMs);
       state.lastGlobalStrobeEdgeMs = tMs;
     }
+  } else if (prev >= 0.5 && delivered < 0.5) {
+    recordFlashFall(state.budgetClock, tMs);
   }
   if (channel === 'beam') state.deliveredBeamGate = delivered;
   else if (channel === 'wash') state.deliveredWashGate = delivered;
@@ -745,50 +805,125 @@ export function stepDeliveredStrobeGate(
 }
 
 /**
- * Final composed brightness limiter (Codex review-05 R1):
- * Enforces <= 3 bright rising transitions/s on the final composed brightness reaching DMX/physical output,
- * covering darkness caused by ducking dimmer mappings, toggling `audioReactive`, and rapid `blackout` toggles.
- * Blackout always acts immediately (returns 0 and records darkness); subsequent restoration respects the shared 334 ms refractory.
+ * Final composed brightness limiter (Codex review-05 R1 + review-06 R2 & R3):
+ * Enforces <= 3 flashes in any rolling 1,000 ms window on the final composed brightness reaching
+ * DMX/physical output (including 60/120 Hz multi-frame sawtooth ramps, blinder bumps, ducking dimmer
+ * mappings, toggling `audioReactive`, and rapid `blackout` toggles).
+ * Blackout and pure downward moves always act immediately.
  */
 export function stepDeliveredBrightness(
   state: AudioModulationState,
-  channel: 'beam' | 'wash' | 'bar',
+  channel: 'beam' | 'wash' | 'bar' | 'blinder',
   desiredBrightness: number,
   blackout: boolean,
 ): number {
-  const safeDesired = Number.isFinite(desiredBrightness) ? Math.max(0, desiredBrightness) : 0;
-  if (blackout) {
-    if (channel === 'beam') state.deliveredBeamBright = 0;
-    else if (channel === 'wash') state.deliveredWashBright = 0;
-    else state.deliveredBarBright = 0;
-    return 0;
-  }
+  syncAudioBudgetClock(state);
   const tMs = state.clockMs;
-  const prev =
+  const gov =
     channel === 'beam'
-      ? state.deliveredBeamBright
+      ? state.beamBrightGov
       : channel === 'wash'
-        ? state.deliveredWashBright
-        : state.deliveredBarBright;
-  let delivered = safeDesired;
-  if (Number.isFinite(prev) && safeDesired - prev >= 0.08) {
-    const globalReady =
-      tMs === state.lastGlobalStrobeEdgeMs ||
-      tMs - state.lastGlobalStrobeEdgeMs >= FLASH_REFRACTORY_MS;
-    if (!globalReady) {
-      state.manualStrobe.limitedUntilMs = Math.max(
-        state.manualStrobe.limitedUntilMs,
-        tMs + FLASH_LIMITED_HOLD_MS,
-      );
-      delivered = prev;
-    } else {
-      state.lastGlobalStrobeEdgeMs = tMs;
-    }
+        ? state.washBrightGov
+        : channel === 'bar'
+          ? state.barBrightGov
+          : state.blinderBrightGov;
+  const res = stepGovernedScalar(
+    gov,
+    state.budgetClock,
+    tMs,
+    desiredBrightness,
+    blackout,
+    true,
+    undefined,
+    FLASH_REFRACTORY_MS,
+  );
+  syncAudioBudgetClock(state);
+  if (res.limited) {
+    state.manualStrobe.limitedUntilMs = Math.max(
+      state.manualStrobe.limitedUntilMs,
+      tMs + FLASH_LIMITED_HOLD_MS,
+    );
   }
+  const delivered = res.value;
   if (channel === 'beam') state.deliveredBeamBright = delivered;
   else if (channel === 'wash') state.deliveredWashBright = delivered;
-  else state.deliveredBarBright = delivered;
+  else if (channel === 'bar') state.deliveredBarBright = delivered;
+  else state.deliveredBlinderBright = delivered;
   return delivered;
+}
+
+export interface DeliveredUnitRgbResult {
+  rgbDimmer: number;
+  r: number;
+  g: number;
+  b: number;
+  limited: boolean;
+}
+
+const FACTOR_SCRATCH: FactorizedEmission = { dimmer: 0, r: 0, g: 0, b: 0 };
+
+/**
+ * Per-unit physical DMX emitted-RGB governor (Codex review-06 R4).
+ * Governs linear emitted RGB `E = dimmer * (r, g, b)` across general luminance/component and
+ * WCAG saturated-red reversals (<= 3/s), then factorizes `E` into `(rgbDimmer, r, g, b)` in `[0, 1]`
+ * so `RGB (3-Ch)`, `5-Ch (Default)`, and `generic-simulated` slots never divide by a lowered dimmer
+ * or exceed 3 general/red flashes in any rolling 1,000 ms window.
+ */
+export function stepDeliveredUnitRgb(
+  state: AudioModulationState,
+  unitKey: string,
+  desiredDimmer: number,
+  rawR: number,
+  rawG: number,
+  rawB: number,
+  blackout: boolean,
+  out: DeliveredUnitRgbResult,
+): DeliveredUnitRgbResult {
+  syncAudioBudgetClock(state);
+  const tMs = state.clockMs;
+  let gov = state.unitRgbGovernors.get(unitKey);
+  if (!gov) {
+    if (state.unitRgbGovernors.size > 512) state.unitRgbGovernors.clear();
+    gov = createRgbGovernorState();
+    state.unitRgbGovernors.set(unitKey, gov);
+    // Late initialization mid-session (e.g. rig rebuild during active refractory): seed lastRiseMs
+    // from the shared room clock so newly created unit governors cannot inject an ungoverned flash.
+    if (state.clockMs > 0 && state.budgetClock.lastAdmittedRiseMs > -Infinity && !canAdmitFlashRise(state.budgetClock, tMs)) {
+      gov.initialized = true;
+      gov.genLastDir = -1;
+      gov.lastRiseMs = state.budgetClock.lastAdmittedRiseMs;
+    }
+  }
+  const d = blackout ? 0 : clamp01(desiredDimmer);
+  const cr = clamp01(rawR);
+  const cg = clamp01(rawG);
+  const cb = clamp01(rawB);
+  const res = stepGovernedRgb(
+    gov,
+    null,
+    tMs,
+    d * cr,
+    d * cg,
+    d * cb,
+    blackout,
+    undefined,
+    undefined,
+    undefined,
+    FLASH_REFRACTORY_MS,
+  );
+  if (res.limited) {
+    state.manualStrobe.limitedUntilMs = Math.max(
+      state.manualStrobe.limitedUntilMs,
+      tMs + FLASH_LIMITED_HOLD_MS,
+    );
+  }
+  const fac = factorizeEmittedRgb(res.r, res.g, res.b, FACTOR_SCRATCH);
+  out.rgbDimmer = fac.dimmer;
+  out.r = fac.r;
+  out.g = fac.g;
+  out.b = fac.b;
+  out.limited = res.limited;
+  return out;
 }
 
 /**
@@ -820,6 +955,7 @@ export function evaluateAudioModulation(
   // Advance monotonic limiter clock even while inactive so toggling Beat sync or cues
   // never resets or freezes the <= 3/s refractory window.
   state.clockMs += safeDt * 1000;
+  syncAudioBudgetClock(state);
   const tMs = state.clockMs;
 
   if (!anyEnabled) {

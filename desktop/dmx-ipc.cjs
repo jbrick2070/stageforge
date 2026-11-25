@@ -112,6 +112,10 @@ function createDmxIpcHandlers(getDmx, options = {}) {
             await dmx.shutdown('ai-bridge-active');
             throw new Error('Disable the AI bridge before enabling live DMX output.');
           }
+          if (interlock && options.requireArmedClaim && !interlock.hasWindowClaim(event.sender.id, 'armed')) {
+            await dmx.shutdown('disarmed');
+            throw new Error('Arm live DMX output before enabling it.');
+          }
           try { event.sender.setBackgroundThrottling(false); } catch { /* ignore */ }
           return status;
         } finally {

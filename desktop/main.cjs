@@ -248,6 +248,7 @@ function registerDmxIpc() {
   const { onFrame, onHeartbeat, onControl } = createDmxIpcHandlers(() => dmx, {
     isRestricted,
     interlock: outputInterlock,
+    requireArmedClaim: true,
   });
   ipcMain.on('stageforge:dmx-frame', onFrame);
   ipcMain.on('stageforge:dmx-heartbeat', onHeartbeat);

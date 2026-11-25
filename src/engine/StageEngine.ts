@@ -106,14 +106,18 @@ import {
   stepCombinedStrobeGate,
   stepDeliveredBrightness,
   stepDeliveredStrobeGate,
+  stepDeliveredUnitRgb,
   type AudioModulationFrame,
   type AudioModulationState,
+  type DeliveredUnitRgbResult,
 } from './audioModulation';
 import {
   createPreviewFlashOutput,
   createPreviewFlashState,
   evaluatePreviewFlash,
   stepPreviewDeliveredGate,
+  stepPreviewFixtureUnit,
+  stepPreviewLaserUnit,
   type PreviewFlashOutput,
   type PreviewFlashState,
 } from './previewFlash';
@@ -296,6 +300,7 @@ export class StageEngine {
   private contextAntialias = false;
   private composerSamplesRequested = 2;
   private contextLost = false;
+  private disposed = false;
   private onContextLossChange?: (lost: boolean) => void;
   private handleContextLostBound?: (event: Event) => void;
   private handleContextRestoredBound?: () => void;
@@ -422,6 +427,7 @@ export class StageEngine {
   private audioModState: AudioModulationState = createAudioModulationState();
   private audioModFrame: AudioModulationFrame = createAudioModulationFrame();
   private combinedStrobeScratch = { gate: 1.0, flashOn: false, limited: false };
+  private deliveredRgbScratch: DeliveredUnitRgbResult = { rgbDimmer: 0, r: 0, g: 0, b: 0, limited: false };
   private previewFlashState: PreviewFlashState = createPreviewFlashState();
   private previewFlashOut: PreviewFlashOutput = createPreviewFlashOutput();
   private primaryColorScratch = new THREE.Color();
@@ -432,6 +438,8 @@ export class StageEngine {
   private washAccentScratch = new THREE.Color();
   private tempColScratch = new THREE.Color();
   private previewTempColScratch = new THREE.Color();
+  private governedLaserColorA = new THREE.Color();
+  private governedLaserColorB = new THREE.Color();
   private warmAmberColor = new THREE.Color(0xffbe55);
   private whiteColor = new THREE.Color(0xffffff);
   private stageTintScratch = new THREE.Color();
@@ -500,8 +508,12 @@ export class StageEngine {
     atmo: { haze: 0, smoke: 0, co2: false },
   };
 
-  // Animation loop state
+  // Animation & decoupled control-loop state
   private rafId: number | null = null;
+  private controlTimerId: ReturnType<typeof setInterval> | null = null;
+  private controlLoopSeq = 0;
+  private lastControlTickMs = 0;
+  private lastRafTickMs = 0;
   private lastFrameTime = 0;
   private elapsed = 0;
   private currentState: ShowState;
@@ -574,6 +586,7 @@ export class StageEngine {
         cancelAnimationFrame(this.rafId);
         this.rafId = null;
       }
+      this.stopControlFallbackTimer();
       this.gpuTimer?.onContextLost();
       if (this.profiler) {
         const p = this.profiler;
@@ -592,7 +605,7 @@ export class StageEngine {
       }
       this.updateTourTextTexture(this.lastTourText);
       this.onContextLossChange?.(false);
-      if (this.rafId === null) this.startLoop();
+      if (!this.disposed && this.rafId === null) this.startLoop();
     };
     this.renderer.domElement.addEventListener('webglcontextlost', this.handleContextLostBound);
     this.renderer.domElement.addEventListener('webglcontextrestored', this.handleContextRestoredBound);
@@ -1054,6 +1067,8 @@ export class StageEngine {
     this.renderer.info.reset();
     if (this.updateScene(dt, audio, dt)) this.composer.render(0);
     else this.clearStage();
+    this.controlLoopSeq++;
+    this.lastControlTickMs = performance.now();
 
     const gl = this.renderer.getContext();
     const w = Math.max(1, this.renderer.domElement.width);
@@ -2990,21 +3005,114 @@ export class StageEngine {
     }
   }
 
+  public isContextLost(): boolean {
+    const gl = this.renderer?.getContext?.();
+    const glLost = typeof gl?.isContextLost === 'function' ? gl.isContextLost() : false;
+    return this.contextLost || glLost;
+  }
+
+  public isDisposed(): boolean {
+    return this.disposed;
+  }
+
+  /** Live control-loop health snapshot inspected by `useLiveDmxOutput` before renewing DMX heartbeats. */
+  public getControlLoopHealth(): {
+    seq: number;
+    lastTickMs: number;
+    standby: boolean;
+    contextLost: boolean;
+    disposed: boolean;
+  } {
+    return {
+      seq: this.controlLoopSeq,
+      lastTickMs: this.lastControlTickMs,
+      standby: this.standby,
+      contextLost: this.isContextLost(),
+      disposed: this.disposed,
+    };
+  }
+
+  /**
+   * Test-only hook (`?probe`): deterministically simulate WebGL context loss/restore across SwiftShader
+   * and headless Chromium without relying on driver-specific `WEBGL_lose_context` timing.
+   */
+  public simulateContextLossForTest(lost: boolean): void {
+    if (lost) {
+      if (this.contextLost) return;
+      this.contextLost = true;
+      if (this.rafId !== null) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = null;
+      }
+      this.stopControlFallbackTimer();
+      this.gpuTimer?.onContextLost();
+      if (this.profiler) {
+        const p = this.profiler;
+        this.profiler = null;
+        this.batcher?.setSyncObserver(null);
+        p.finish(this.gpuTimer);
+      }
+      this.onContextLossChange?.(true);
+    } else {
+      if (!this.contextLost) return;
+      this.contextLost = false;
+      if (this.gpuTimer) {
+        this.gpuTimer.onContextRestored(this.renderer.getContext());
+      } else {
+        this.gpuTimer = new GpuTimerRing(this.renderer.getContext());
+      }
+      this.updateTourTextTexture(this.lastTourText);
+      this.onContextLossChange?.(false);
+      if (!this.disposed && this.rafId === null) this.startLoop();
+    }
+  }
+
+  private stopControlFallbackTimer() {
+    if (this.controlTimerId !== null) {
+      clearInterval(this.controlTimerId);
+      this.controlTimerId = null;
+    }
+  }
+
+  private startControlFallbackTimer() {
+    this.stopControlFallbackTimer();
+    if (this.disposed || this.isContextLost() || !this.dmxFrameListener) return;
+    this.controlTimerId = setInterval(() => {
+      if (this.disposed || this.isContextLost() || !this.dmxFrameListener) {
+        this.stopControlFallbackTimer();
+        return;
+      }
+      const now = performance.now();
+      // Step simulation & DMX emission without WebGL rendering whenever rAF is throttled/occluded (> 100 ms).
+      if (now - this.lastRafTickMs > 100) {
+        this.runControlTick(now, false);
+      }
+    }, 33);
+  }
+
   /**
    * Register or clear the live DMX output frame listener.
    * Only active while live DMX output is enabled; pushes changed universe buffers at <= 44 Hz
-   * without touching React state.
+   * without touching React state, exits `standby`, and arms a ~33 ms non-rendering fallback timer
+   * so backgrounded/occluded windows continue advancing blackout, bumps, and cues cleanly.
    */
   public setDmxFrameListener(
     listener?: (u1: Uint8Array, u2: Uint8Array, u1Changed: boolean, u2Changed: boolean) => void
   ) {
     this.dmxFrameListener = listener;
     this.dmxAccum = 0;
-    if (listener) {
-      this.lastDmxU1.set(this.physicalDmxU1);
-      this.lastDmxU2.set(this.physicalDmxU2);
-      listener(this.physicalDmxU1, this.physicalDmxU2, true, true);
+    if (!listener) {
+      this.stopControlFallbackTimer();
+      return;
     }
+    this.previewRig();
+    if (!this.disposed && !this.isContextLost() && this.controlLoopSeq === 0) {
+      this.runControlTick(performance.now(), false);
+    }
+    this.lastDmxU1.set(this.physicalDmxU1);
+    this.lastDmxU2.set(this.physicalDmxU2);
+    listener(this.physicalDmxU1, this.physicalDmxU2, true, true);
+    this.startControlFallbackTimer();
   }
 
   private pushDmxFrame(dt: number) {
@@ -3035,20 +3143,16 @@ export class StageEngine {
     listener(this.physicalDmxU1, this.physicalDmxU2, u1Changed, u2Changed);
   }
 
-  private startLoop() {
-    const animate = (now: number) => {
-      if (this.contextLost) {
-        this.rafId = null;
-        return;
-      }
-      this.rafId = requestAnimationFrame(animate);
-      const elapsed = this.lastFrameTime ? (now - this.lastFrameTime) / 1000 : 1 / 60;
-      this.lastFrameTime = now;
-      const dt = Math.min(0.08, elapsed);
-      // Audio analysis, envelopes, and the <= 3/s flash timer track real elapsed time (capped at 0.5 s across tab stalls).
-      const audioDt = Math.min(0.5, Math.max(0, elapsed));
-      this.elapsed += dt;
+  private runControlTick(now: number, allowRender: boolean) {
+    if (this.disposed || this.isContextLost()) return;
+    const elapsed = this.lastFrameTime ? Math.max(0, (now - this.lastFrameTime) / 1000) : 1 / 60;
+    this.lastFrameTime = now;
+    const dt = Math.min(0.08, elapsed);
+    // Audio analysis, envelopes, and the <= 3/s flash timer track real elapsed time (capped at 0.5 s across tab stalls).
+    const audioDt = Math.min(0.5, Math.max(0, elapsed));
+    this.elapsed += dt;
 
+    if (allowRender) {
       this.frameCounter++;
       this.fpsAccum += elapsed;
       if (this.fpsAccum >= 0.5) {
@@ -3056,29 +3160,40 @@ export class StageEngine {
         this.frameCounter = 0;
         this.fpsAccum = 0;
       }
+    }
 
-      const prof = this.profiler;
-      const recordGpu = Boolean(prof && this.profilerUseGpu && prof.isRecording());
-      if (prof) {
-        prof.beginFrame(performance.now());
-        if (this.profilerUseGpu) {
-          this.gpuTimer?.poll((gpuMs) => prof.recordGpuSample(gpuMs));
-        }
+    const prof = allowRender ? this.profiler : null;
+    const recordGpu = Boolean(prof && this.profilerUseGpu && prof.isRecording());
+    if (prof) {
+      prof.beginFrame(performance.now());
+      if (this.profilerUseGpu) {
+        this.gpuTimer?.poll((gpuMs) => prof.recordGpuSample(gpuMs));
       }
+    }
 
-      const audio = this.audioGetter(audioDt);
+    const audio = this.audioGetter(audioDt);
+    if (allowRender) {
       this.renderer.info.reset();
-      const simStart = prof ? performance.now() : 0;
-      const shouldRender = this.updateScene(dt, audio, audioDt);
-      if (prof) {
-        // Subtract crowd and particle sub-phases so simMs does not double-count them.
-        prof.curSimMs = Math.max(0, performance.now() - simStart - prof.curCrowdMs - prof.curParticlesMs);
-      }
+    }
+    const simStart = prof ? performance.now() : 0;
+    const shouldRenderScene = this.updateScene(dt, audio, audioDt);
+    if (prof) {
+      // Subtract crowd and particle sub-phases so simMs does not double-count them.
+      prof.curSimMs = Math.max(0, performance.now() - simStart - prof.curCrowdMs - prof.curParticlesMs);
+    }
 
+    // Control-loop liveness & DMX emission run independently of WebGL rendering and dark/blackout scenes.
+    if (!this.standby && !this.disposed && !this.isContextLost()) {
+      this.controlLoopSeq++;
+      this.lastControlTickMs = performance.now();
+      this.pushDmxFrame(dt);
+    }
+
+    if (allowRender) {
       const renderStart = prof ? performance.now() : 0;
-      const gpuStarted = recordGpu && shouldRender ? (this.gpuTimer?.beginFrame() ?? false) : false;
+      const gpuStarted = recordGpu && shouldRenderScene ? (this.gpuTimer?.beginFrame() ?? false) : false;
       try {
-        if (shouldRender) this.composer.render();
+        if (shouldRenderScene) this.composer.render();
         else this.clearStage();
       } finally {
         if (gpuStarted) this.gpuTimer?.endFrame();
@@ -3099,14 +3214,24 @@ export class StageEngine {
           if (this.profilerUseGpu) this.gpuTimer?.clearPending();
         }
       }
+    }
 
-      this.pushDmxFrame(dt);
+    this.telemetryAccum += dt;
+    if (this.onFrameTelemetry && this.telemetryAccum >= 0.05) {
+      this.telemetryAccum = 0;
+      this.onFrameTelemetry(audio, this.currentFps);
+    }
+  }
 
-      this.telemetryAccum += dt;
-      if (this.onFrameTelemetry && this.telemetryAccum >= 0.05) {
-        this.telemetryAccum = 0;
-        this.onFrameTelemetry(audio, this.currentFps);
+  private startLoop() {
+    const animate = (now: number) => {
+      if (this.disposed || this.contextLost) {
+        this.rafId = null;
+        return;
       }
+      this.rafId = requestAnimationFrame(animate);
+      this.lastRafTickMs = performance.now();
+      this.runControlTick(now, true);
     };
     this.rafId = requestAnimationFrame(animate);
   }
@@ -3174,9 +3299,9 @@ export class StageEngine {
       mod.flashLimited = true;
     }
 
-    // Preview-only flash governor (Sprint 15): caps visual strobe, laser blanking, ILDA shimmer,
-    // LED strobe_bars, blinder mashing, blackout recovery, and rapid cue/color flips at <= 3/s by default,
-    // without touching physical DMX buffers or AudioModulationState.
+    // Preview-only flash governor (Sprint 15 + Sprint 24 hardening): caps visual strobe, laser blanking,
+    // laser on/off/bump/color flips, ILDA shimmer, LED strobe_bars & spectrum/audio bands, blinder mashing,
+    // blackout recovery, and rapid cue/group-color/ramp flips at <= 3/s by default without touching DMX buffers.
     const previewLimited = !this.effectiveFullRateStrobe;
     const rawEffBlinder = (b.blinder ? 1.0 : (mod.active && mod.blinder.mapped ? mod.blinder.dimmer : s.blinderLevel)) * master;
     const effLedBrightRaw = mod.active && mod.ledWall.brightnessMapped ? mod.ledWall.brightness : s.led.brightness;
@@ -3184,6 +3309,17 @@ export class StageEngine {
     const rawBeamIntBase = mod.active && mod.beam.dimmerMapped ? mod.beam.dimmer : s.beamIntensity;
     const rawWashIntBase = mod.active && mod.wash.dimmerMapped ? mod.wash.dimmer : s.washIntensity;
     const rawUnmappedLaserStrobe = mod.active && mod.laser.strobe.mapped ? 0 : s.laser.strobe;
+    const beamHeadLook = headLook(s, 'beam');
+    const washHeadLook = headLook(s, 'wash');
+    const rawBeamPrimary = beamHeadLook.primaryColor === s.primaryColor ? primaryColor : this.beamPrimaryScratch.set(beamHeadLook.primaryColor);
+    const rawBeamAccent = beamHeadLook.accentColor === s.accentColor ? accentColor : this.beamAccentScratch.set(beamHeadLook.accentColor);
+    const rawWashPrimary = washHeadLook.primaryColor === s.primaryColor ? primaryColor : this.washPrimaryScratch.set(washHeadLook.primaryColor);
+    const rawWashAccent = washHeadLook.accentColor === s.accentColor ? accentColor : this.washAccentScratch.set(washHeadLook.accentColor);
+    const rawBeamColorMix = mod.active && mod.beam.colorMixMapped ? mod.beam.colorMix : 0;
+    const rawWashColorMix = mod.active && mod.wash.colorMixMapped ? mod.wash.colorMix : 0;
+    const rawLedBass = s.audioReactive && audio.playing ? audio.bass : 0.35 + 0.2 * Math.sin(t * 3.1);
+    const rawLedMid = s.audioReactive && audio.playing ? audio.mid : 0.35 + 0.2 * Math.cos(t * 2.4);
+    const rawLedHigh = s.audioReactive && audio.playing ? audio.high : 0.28 + 0.2 * Math.sin(t * 4.5);
     const previewFlash = evaluatePreviewFlash(
       this.previewFlashState,
       {
@@ -3195,11 +3331,20 @@ export class StageEngine {
         blinder: rawEffBlinder,
         ledBright: rawLedBright,
         beatPulse,
+        bass: rawLedBass,
+        mid: rawLedMid,
+        high: rawLedHigh,
         beamIntensity: rawBeamIntBase,
         washIntensity: rawWashIntBase,
+        beamColorMix: rawBeamColorMix,
+        washColorMix: rawWashColorMix,
         laserStrobe: rawUnmappedLaserStrobe,
         primaryColor,
         accentColor,
+        beamPrimaryColor: rawBeamPrimary,
+        beamAccentColor: rawBeamAccent,
+        washPrimaryColor: rawWashPrimary,
+        washAccentColor: rawWashAccent,
       },
       this.previewFlashOut,
     );
@@ -3332,15 +3477,14 @@ export class StageEngine {
         blackoutActive || darkOpening,
         previewLimited,
       );
-      const primaryScratch = kind === 'beam' ? this.beamPrimaryScratch : this.washPrimaryScratch;
-      const accentScratch = kind === 'beam' ? this.beamAccentScratch : this.washAccentScratch;
-      const groupPrimary = look.primaryColor === s.primaryColor ? primaryColor : primaryScratch.set(look.primaryColor);
-      const groupAccent = look.accentColor === s.accentColor ? accentColor : accentScratch.set(look.accentColor);
-      const previewGroupPrimary = look.primaryColor === s.primaryColor ? previewPrimaryColor : groupPrimary;
-      const previewGroupAccent = look.accentColor === s.accentColor ? previewAccentColor : groupAccent;
+      const groupPrimary = kind === 'beam' ? rawBeamPrimary : rawWashPrimary;
+      const groupAccent = kind === 'beam' ? rawBeamAccent : rawWashAccent;
+      const previewGroupPrimary = kind === 'beam' ? previewFlash.beamPrimaryColor : previewFlash.washPrimaryColor;
+      const previewGroupAccent = kind === 'beam' ? previewFlash.beamAccentColor : previewFlash.washAccentColor;
+      const previewColorMix = kind === 'beam' ? previewFlash.beamColorMix : previewFlash.washColorMix;
       return {
         look, focus, moveSpd: baseMoveSpd, phaseOffset, effSpeedNorm, spread: 0.25 + look.movementSpread * 1.15,
-        effZoom, colorMix, tiltOffset, gMod, strobeMapped, groupStrobeGate, composedBrightScale, previewGroupStrobeGate, groupDmxStrobe,
+        effZoom, colorMix, previewColorMix, tiltOffset, gMod, strobeMapped, groupStrobeGate, composedBrightScale, previewGroupStrobeGate, groupDmxStrobe,
         primary: groupPrimary,
         accent: groupAccent,
         previewPrimary: previewGroupPrimary,
@@ -3351,7 +3495,7 @@ export class StageEngine {
     this.beamPools?.begin();
     for (const fx of this.movingFixtures) {
       const {
-        look, focus, moveSpd, phaseOffset, spread, effZoom, colorMix, tiltOffset,
+        look, focus, moveSpd, phaseOffset, spread, effZoom, colorMix, previewColorMix, tiltOffset,
         gMod, groupStrobeGate, composedBrightScale, previewGroupStrobeGate, groupDmxStrobe, primary, accent, previewPrimary, previewAccent,
       } = groups[fx.type];
       const i = fx.index;
@@ -3467,7 +3611,9 @@ export class StageEngine {
       }
       if (colorMix > 0) {
         tempCol.lerp(accent, colorMix);
-        previewTempCol.lerp(previewAccent, colorMix);
+      }
+      if (previewColorMix > 0) {
+        previewTempCol.lerp(previewAccent, previewColorMix);
       }
 
       const firstPair = fx.openingStep === DEMO_BLACKOUT_STEPS;
@@ -3485,14 +3631,24 @@ export class StageEngine {
       const dimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, baseInt, manualMix) : baseInt;
       const previewDimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, previewBaseInt, manualMix) : previewBaseInt;
       const finalInt = Math.min(1.6, dimmer * master * groupStrobeGate * (1.0 + audioBoost * 0.48)) * composedBrightScale;
-      const previewFinalInt =
+      const rawPreviewFinalInt =
         Math.min(1.6, previewDimmer * previewMaster * previewGroupStrobeGate * (1.0 + audioBoost * 0.48)) *
         (previewLimited ? composedBrightScale : 1);
+      const previewFinalInt = stepPreviewFixtureUnit(
+        this.previewFlashState,
+        fx.unitId,
+        previewLimited,
+        blackoutActive || darkOpening,
+        rawPreviewFinalInt,
+        previewTempCol,
+        previewTempCol,
+      );
 
       fx.beamMat.uniforms.uColor.value.copy(previewTempCol);
       const zoomScale = beamZoomScale(fx.type, effZoom);
       fx.lastZoomScale = zoomScale;
-      fx.appliedDimmer = THREE.MathUtils.clamp(finalInt, 0, 1);
+      const clampedFinalInt = THREE.MathUtils.clamp(finalInt, 0, 1);
+      fx.appliedDimmer = clampedFinalInt;
       const emitted = previewFinalInt * aerialGain(fx.optics, zoomScale);
       fx.beamMat.uniforms.uIntensity.value = emitted;
       fx.beamMat.uniforms.uHaze.value = effHaze;
@@ -3523,13 +3679,51 @@ export class StageEngine {
           Math.round(effZoom * 255),
           groupDmxStrobe,
         ]);
-        const ps = this.physicalUnitScratch;
-        ps.blackout = blackoutActive;
-        ps.dimmer = THREE.MathUtils.clamp(finalInt, 0, 1);
-        ps.r = tempCol.r;
-        ps.g = tempCol.g;
-        ps.b = tempCol.b;
-        writePhysicalUnitBytes(physBuf, uBuf, fx.dmxStart, fx.dmxWidth, fx.physicalClass, ps, this.physicalDmxScratch);
+        const unitRgb = stepDeliveredUnitRgb(
+          this.audioModState,
+          fx.unitId,
+          clampedFinalInt,
+          tempCol.r,
+          tempCol.g,
+          tempCol.b,
+          blackoutActive || darkOpening,
+          this.deliveredRgbScratch,
+        );
+        if (unitRgb.limited) {
+          mod.flashLimited = true;
+        }
+        if (fx.physicalClass.status === 'generic-simulated') {
+          const ch = fx.dmxStart - 1;
+          const clampedW = Math.min(fx.dmxWidth, physBuf.length - ch);
+          if (ch >= 0 && clampedW > 0) {
+            this.physicalDmxScratch.length = 8;
+            this.physicalDmxScratch[0] = axisDmx(fx.currentPan, PAN_LIMIT);
+            this.physicalDmxScratch[1] = axisDmx(fx.currentTilt, TILT_LIMIT);
+            this.physicalDmxScratch[2] = blackoutActive ? 0 : Math.round(unitRgb.rgbDimmer * 255);
+            this.physicalDmxScratch[3] = blackoutActive ? 0 : Math.round(unitRgb.r * 255);
+            this.physicalDmxScratch[4] = blackoutActive ? 0 : Math.round(unitRgb.g * 255);
+            this.physicalDmxScratch[5] = blackoutActive ? 0 : Math.round(unitRgb.b * 255);
+            this.physicalDmxScratch[6] = Math.round(effZoom * 255);
+            // Hold hardware strobe slot at 0 on physical wire so external fixtures cannot self-strobe > 3 Hz.
+            this.physicalDmxScratch[7] = 0;
+            writeDmxChannels(physBuf, fx.dmxStart, clampedW, this.physicalDmxScratch);
+          }
+        } else {
+          const ps = this.physicalUnitScratch;
+          ps.blackout = blackoutActive;
+          if (fx.physicalClass.personalityKey === 'etc-colorsource-par::1-Ch') {
+            ps.dimmer = clampedFinalInt;
+            ps.r = tempCol.r;
+            ps.g = tempCol.g;
+            ps.b = tempCol.b;
+          } else {
+            ps.dimmer = unitRgb.rgbDimmer;
+            ps.r = unitRgb.r;
+            ps.g = unitRgb.g;
+            ps.b = unitRgb.b;
+          }
+          writePhysicalUnitBytes(physBuf, uBuf, fx.dmxStart, fx.dmxWidth, fx.physicalClass, ps, this.physicalDmxScratch);
+        }
       }
     }
 
@@ -3552,7 +3746,7 @@ export class StageEngine {
       ? Math.floor(this.ildaPlayTime * this.ildaFps) % this.bakedIlda!.frameRanges.length
       : 0;
 
-    let maxLaserInt = 0;
+    let maxPreviewLaserInt = 0;
     const appliedLaserProjectors = this.appliedParams.laser.projectors;
     if (this.appliedLaserProjectorCount > 0) {
       for (let pk = 0; pk < this.appliedLaserProjectorCount; pk++) {
@@ -3571,8 +3765,6 @@ export class StageEngine {
       const unitBaseLaserInt = laserEnabled
         ? Math.min(1.5, (b.laser ? 1.0 : unitEffIntBase) * master * (1.0 + audioBoost * 0.38) * unitStrobeGate)
         : 0;
-      const unitInt = Math.min(1.5, unitBaseLaserInt * laserPowerPresence(l.laserSpec));
-      if (unitInt > maxLaserInt) maxLaserInt = unitInt;
 
       const effSpreadX = lMod?.spreadMapped ? lMod.spreadX : s.laser.spreadX;
       const effSpreadY = lMod?.spreadMapped ? lMod.spreadY : s.laser.spreadY;
@@ -3580,14 +3772,15 @@ export class StageEngine {
       const effRotation = lMod?.rotationMapped ? lMod.rotation : s.laser.rotation;
       // DMX strobe rate: zero when audio-mapped, raw look strobe otherwise (invariant of preview setting).
       const effLaserStrobe = lMod?.strobe.mapped ? 0 : s.laser.strobe;
-      // Preview laser blanking: when preview-limited, disable 4-30 Hz shader blanked() and gate via global <= 3/s preview multiplier.
+      // Preview laser blanking + emission governor (Codex review-06 R5): governs `s.laser.enabled`,
+      // `b.laser`, `s.laser.intensity` ramps, and custom/preset `colorA/B` flips to <= 3/s while keeping off/blackout instant.
       const previewLaserEnabled = (s.laser.enabled || b.laser) && previewMaster > 0.01;
       const previewLaserGate =
         previewLimited && !lMod?.strobe.mapped && !b.laser ? previewFlash.laserStrobeMultiplier : 1;
-      const previewUnitBaseLaserInt = previewLaserEnabled
+      const rawPreviewUnitBaseLaserInt = previewLaserEnabled
         ? Math.min(1.5, (b.laser ? 1.0 : unitEffIntBase) * previewMaster * (1.0 + audioBoost * 0.38) * unitStrobeGate * previewLaserGate)
         : 0;
-      const previewUnitInt = Math.min(1.5, previewUnitBaseLaserInt * laserPowerPresence(l.laserSpec));
+      const rawPreviewUnitInt = Math.min(1.5, rawPreviewUnitBaseLaserInt * laserPowerPresence(l.laserSpec));
       const previewShaderLaserStrobe = previewFlash.bypassLaserShaderStrobe ? 0 : effLaserStrobe;
 
       if (lMod?.speedMapped) {
@@ -3614,7 +3807,7 @@ export class StageEngine {
       // Single source of truth for laser pitch (shared with laserSafety.ts; always uses base s.laser).
       l.root.rotation.x = laserPitch(l.isFloor, s.laser, t, l.index);
 
-      // Single-color diode constraints enforced in engine with zero per-frame allocations.
+      // Single-color diode constraints + preview flash governor enforced with zero per-frame allocations.
       const su = l.sheetMat.uniforms;
       const shaderColorMode = this.applyLaserColors(
         l.singleColor,
@@ -3623,9 +3816,25 @@ export class StageEngine {
         previewAccentColor,
         override?.colorA ?? s.laser.colorA,
         override?.colorB ?? s.laser.colorB,
+        this.governedLaserColorA,
+        this.governedLaserColorB,
+      );
+      const governedLaser = stepPreviewLaserUnit(
+        this.previewFlashState,
+        l.key,
+        previewLimited,
+        blackoutActive || darkOpening,
+        rawPreviewUnitInt,
+        this.governedLaserColorA,
+        this.governedLaserColorB,
         su.uColorA.value,
         su.uColorB.value,
       );
+      const previewUnitInt = governedLaser.intensity;
+      const previewLaserVisible = previewUnitInt > 0.001;
+      if (previewUnitInt > maxPreviewLaserInt) maxPreviewLaserInt = previewUnitInt;
+      this.previewFlashOut.activeLimiting =
+        this.previewFlashOut.activeLimiting || governedLaser.limited;
       su.uColorMode.value = shaderColorMode;
 
       if (ildaActive && this.bakedIlda && l.ildaMesh && l.ildaMat) {
@@ -3647,7 +3856,7 @@ export class StageEngine {
         const tangents = ildaScanTangents(l.laserSpec?.maxScanAngleDeg, effSpreadX, effSpreadY);
         l.ildaMesh.scale.set(tangents.scaleX, tangents.scaleY, 1);
         l.ildaMesh.rotation.z = effRotation * Math.sin(t * (0.4 + s.laser.speed * 1.4) + speedPhaseOff * 0.54 + l.index) * LASER_ILDA_ROLL_SCALE;
-        l.ildaMesh.visible = previewLaserEnabled && previewUnitBaseLaserInt > 0.001 && dr.count > 0;
+        l.ildaMesh.visible = previewLaserVisible && dr.count > 0;
 
         const hazeGain = 0.35 + 0.65 * effHaze;
         const ildaGain = Math.min(1.5, previewUnitInt * flicker * hazeGain);
@@ -3663,9 +3872,9 @@ export class StageEngine {
         l.sheetMesh.geometry = shapes.sheet;
         l.coneMesh.geometry = shapes.cone;
         l.innerConeMesh.geometry = shapes.cone;
-        l.sheetMesh.visible = previewLaserEnabled && previewUnitInt > 0.001 && !isConePattern;
-        l.coneMesh.visible = previewLaserEnabled && previewUnitInt > 0.001 && isConePattern;
-        l.innerConeMesh.visible = previewLaserEnabled && previewUnitInt > 0.001 && s.laser.pattern === 'dual_cones' && count > 1;
+        l.sheetMesh.visible = previewLaserVisible && !isConePattern;
+        l.coneMesh.visible = previewLaserVisible && isConePattern;
+        l.innerConeMesh.visible = previewLaserVisible && s.laser.pattern === 'dual_cones' && count > 1;
 
         // Subtle roll rotation on sheet patterns when rotation slider > 0 (phase-continuous under modulation)
         const rotPhase = t * s.laser.rotation + rotPhaseOff;
@@ -3756,21 +3965,57 @@ export class StageEngine {
           const ch = l.dmxStart - 1;
           const clampedW = Math.min(l.dmxWidth, physBuf.length - ch);
           if (ch >= 0 && clampedW > 0) physBuf.fill(0, ch, ch + clampedW);
+        } else if (l.physicalClass.status === 'generic-simulated') {
+          const laserPhysRgb = stepDeliveredUnitRgb(
+            this.audioModState,
+            `laser:${l.key}`,
+            Math.min(1, unitBaseLaserInt),
+            tempCol.r,
+            tempCol.g,
+            tempCol.b,
+            blackoutActive || darkOpening || !laserEnabled,
+            this.deliveredRgbScratch,
+          );
+          if (laserPhysRgb.limited) {
+            mod.flashLimited = true;
+          }
+          dv.enabled = laserEnabled && laserPhysRgb.rgbDimmer > 0.01 && !blackoutActive;
+          dv.intensity = blackoutActive ? 0 : laserPhysRgb.rgbDimmer;
+          dv.strobe = 0;
+          dv.colorR = laserPhysRgb.r;
+          dv.colorG = laserPhysRgb.g;
+          dv.colorB = laserPhysRgb.b;
+          const physLaserBytes = encodeLaserDmxChannels(l.resolvedMode, dv, this.physicalDmxScratch);
+          const ch = l.dmxStart - 1;
+          const clampedW = Math.min(l.dmxWidth, physBuf.length - ch);
+          if (ch >= 0 && clampedW > 0) {
+            physBuf.fill(0, ch, ch + clampedW);
+            writeDmxChannels(physBuf, l.dmxStart, clampedW, physLaserBytes);
+          }
         } else {
           writePhysicalUnitBytes(physBuf, uBuf, l.dmxStart, l.dmxWidth, l.physicalClass, ps, this.physicalDmxScratch);
         }
       }
     }
-    const laserInt = this.laserUnits.length ? maxLaserInt : baseLaserInt;
+    const laserInt = this.laserUnits.length ? maxPreviewLaserInt : (previewLimited ? 0 : baseLaserInt);
 
-    // 4. Update Audience Blinders & LED Strobes
-    const effBlinder = rawEffBlinder;
+    // 4. Update Audience Blinders & LED Strobes (governed via stepDeliveredBrightness for review-06 R3)
+    const effBlinder = stepDeliveredBrightness(
+      this.audioModState,
+      'blinder',
+      rawEffBlinder,
+      blackoutActive || darkOpening,
+    );
+    const blinderGovLimited = !blackoutActive && !darkOpening && effBlinder < rawEffBlinder - 1e-4;
+    if (blinderGovLimited) {
+      mod.flashLimited = true;
+    }
     const previewBlinder = previewFlash.blinder;
     const warmAmber = this.warmAmberColor;
     for (const bl of this.blinders) {
       bl.lensMat.color.copy(warmAmber).multiplyScalar(previewBlinder * 4.2);
       if (bl.start) {
-        bl.buffer[bl.start - 1] = Math.round(effBlinder * 255);
+        bl.buffer[bl.start - 1] = Math.round(THREE.MathUtils.clamp(effBlinder, 0, 1) * 255);
         const ps = this.physicalUnitScratch;
         ps.blackout = blackoutActive;
         ps.blinder = THREE.MathUtils.clamp(effBlinder, 0, 1);
@@ -3826,13 +4071,26 @@ export class StageEngine {
     for (const st of this.strobes) {
       if (st.start) {
         const w = st.width ?? 2;
+        const dimByte = Math.round(255 * strobeBarBright / 3.8);
         writeDmxChannels(st.buffer, st.start, w, [
-          Math.round(255 * strobeBarBright / 3.8),
+          dimByte,
           strobeBarDmxRate,
         ]);
-        const ps = this.physicalUnitScratch;
-        ps.blackout = blackoutActive;
-        writePhysicalUnitBytes(st.physBuffer, st.buffer, st.start, w, st.physicalClass, ps, this.physicalDmxScratch);
+        if (st.physicalClass.status === 'generic-simulated') {
+          const ch = st.start - 1;
+          const clampedW = Math.min(w, st.physBuffer.length - ch);
+          if (ch >= 0 && clampedW > 0) {
+            this.physicalDmxScratch.length = 2;
+            this.physicalDmxScratch[0] = blackoutActive ? 0 : dimByte;
+            // Hold hardware strobe rate slot at 0 on physical wire; dimmer byte carries <= 3/s flashes.
+            this.physicalDmxScratch[1] = 0;
+            writeDmxChannels(st.physBuffer, st.start, clampedW, this.physicalDmxScratch);
+          }
+        } else {
+          const ps = this.physicalUnitScratch;
+          ps.blackout = blackoutActive;
+          writePhysicalUnitBytes(st.physBuffer, st.buffer, st.start, w, st.physicalClass, ps, this.physicalDmxScratch);
+        }
       }
       const strobeLensWhite = previewLimited
         ? (strobeBarAudioMapped
@@ -3867,9 +4125,9 @@ export class StageEngine {
       m.uniforms.uSpeed.value = s.led.speed;
       m.uniforms.uColorA.value.copy(previewPrimaryColor);
       m.uniforms.uColorB.value.copy(previewAccentColor);
-      m.uniforms.uBass.value = s.audioReactive && audio.playing ? audio.bass : 0.35 + 0.2 * Math.sin(t * 3.1);
-      m.uniforms.uMid.value = s.audioReactive && audio.playing ? audio.mid : 0.35 + 0.2 * Math.cos(t * 2.4);
-      m.uniforms.uHigh.value = s.audioReactive && audio.playing ? audio.high : 0.28 + 0.2 * Math.sin(t * 4.5);
+      m.uniforms.uBass.value = previewFlash.bass;
+      m.uniforms.uMid.value = previewFlash.mid;
+      m.uniforms.uHigh.value = previewFlash.high;
       m.uniforms.uBeatPulse.value = previewFlash.beatPulse;
       if (m.uniforms.uFlashLimited) m.uniforms.uFlashLimited.value = ledFlashLimitedUniform;
     }
@@ -3988,7 +4246,7 @@ export class StageEngine {
     ap.wash.strobe.limited = (wGrp.gMod?.strobe.limited ?? false) || (effectiveStrobe > 0.03 && combinedStrobe.limited);
 
     ap.blinder.dimmer = effBlinder;
-    ap.blinder.limited = mod.active && mod.blinder.limited;
+    ap.blinder.limited = (mod.active && mod.blinder.limited) || blinderGovLimited;
 
     ap.strobe.dimmer = strobeBarBright / 3.8;
     ap.strobe.limited = (mod.active && (mod.strobeBar.dimmerLimited || mod.strobeBar.strobe.limited)) || (effectiveStrobe > 0.03 && combinedStrobe.limited);
@@ -4047,6 +4305,9 @@ export class StageEngine {
   }
 
   public dispose() {
+    this.disposed = true;
+    this.stopControlFallbackTimer();
+    this.dmxFrameListener = undefined;
     for (const player of this.secondaryPlayers.values()) player.dispose();
     this.secondaryPlayers.clear();
     this.mediaGeneration++;

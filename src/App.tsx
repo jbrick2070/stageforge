@@ -538,6 +538,12 @@ export const App: React.FC = () => {
     capabilities.liveOutput,
     clearAllBumps,
     () => {
+      if (engineRef.current?.isContextLost() || engineRef.current?.isDisposed()) {
+        return {
+          allowed: false,
+          reason: 'Cannot arm or start live DMX output while the 3D graphics context is lost.',
+        };
+      }
       const bridge = aiBridgeRef.current;
       if (bridge && (bridge.enabled || bridge.pendingProposals.length > 0)) {
         return {
@@ -1491,7 +1497,12 @@ export const App: React.FC = () => {
           fullRateStrobePreview: effectiveFullRateStrobeRef.current,
           onContextLossChange: (lost) => {
             setWebglContextLost(lost);
-            if (!lost) showToast('Graphics context restored');
+            if (lost) {
+              clearAllBumps();
+              void liveDmxRef.current.emergencyStopOnFault('Output stopped: graphics context lost');
+            } else {
+              showToast('Graphics context restored');
+            }
           },
         },
       );
@@ -1607,6 +1618,8 @@ export const App: React.FC = () => {
       setBatching: (enabled: boolean, options?: { proxies?: boolean }) => engine.setBatching(enabled, options),
       redrawAndCapture: (options?: { hideBeams?: boolean }) => engine.redrawAndCapture(options),
       rebuildRig: () => engine.forceRebuildCurrentRig(),
+      controlLoopHealth: () => engine.getControlLoopHealth(),
+      simulateContextLoss: (lost: boolean) => engine.simulateContextLossForTest(Boolean(lost)),
     };
 
     return () => {
