@@ -17,7 +17,7 @@ The user is asleep. `scripts/overnight.ps1` runs you directly on `main`, with ev
 
 - **Keep busy, and pick your own work.** Do the full sprint without cutting features. When the backlog runs out, choose the next improvement yourself (see Self-directed rounds below) rather than stopping.
 - **Decide and log.** Make reasonable calls yourself and record each decision, with its reason, in the Overnight log.
-- **Codex is a second design reviewer** (see "Design consult (Codex, read-only)"): required for Sprints 11 and 12, encouraged elsewhere.
+- **Codex is a second design reviewer** (see "Design consult (Codex, read-only)"): required for Sprints 11, 12 and 13, encouraged elsewhere.
 - **Use Opus 5.5 freely for design and code.** Ask Claude Opus 5.5 (design consult command below) before any sprint with real design choices (the v4 `interchange` block, the DMX sender and IPC architecture, clock ownership), when you're stuck, and when you want a second pair of eyes on tricky code or a tricky patch. Opus replies with advice and code; you decide, apply and test it. `%TEMP%\stageforge-overnight\opus-status.txt` says whether Opus 5.5 works on this machine; if not, use Sonnet 5.5 and log it.
 - **Sonnet 5.5 QA on all code you change**, as the loop says.
 - **Never commit failing code.** If the gate still fails after three fix rounds, stash the unfinished work, log what's failing, and move on. The runner also stashes anything left uncommitted at the end of a round.
@@ -42,7 +42,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 12 and 11 in that order (see "Designed Sprints 6–8" and Sprints 9, 10, 11 and 12 below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12 and 11 in that order (see "Designed Sprints 6–8" and Sprints 9, 10, 11, 12 and 13 below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -185,7 +185,7 @@ Opus 5.5 needs Claude Code 2.1.280 or newer. If the call fails with a version er
 
 Codex (OpenAI's coding CLI, model `gpt-6-astra`) is available as a second design reviewer. Use it in addition to Opus 5.5, never instead of it.
 
-- **Required** before building Sprints 11 and 12 (the safety and security designs). **Encouraged** for any other sprint with real design choices.
+- **Required** before building Sprints 11, 12 and 13 (the safety and security work). **Encouraged** for any other sprint with real design choices.
 - Send it the same design consult file you wrote for Opus. Run it in the repo, read-only:
 
 ```powershell
@@ -231,7 +231,7 @@ Get-Content "$qa\sprint-N-design.md" -Raw | codex exec -m gpt-6-astra -s read-on
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 12 and 11 below, in that order (Sprint 12 before Sprint 11), one per round, before Realism items 6 to 8.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9 and 12. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12 and 11 below, in that order (13 before 12, 12 before 11), one per round, before Realism items 6 to 8.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
@@ -482,6 +482,13 @@ These come from a code-grounded roadmap review. The goal is that a working progr
 
    `docs/assets.md` currently says nothing third-party ships. Change that sentence only when a real track is committed.
 
+**Amendments from the Codex review (these override conflicting text above; if Sprint 10 was already built before they were written, apply them in Sprint 13):**
+- `src/data/demoLighting.ts` uses absolute step thresholds for the opening, the LED fade-ins and the build colour transitions (around lines 56 to 66). Separate the one-time opening sequence from section-relative choreography, or repeated and relocated roles will not behave the same at equal progress. Add a test with the same role twice at different times.
+- Give each section occurrence its own identity (its index in the map), separate from its role.
+- Define and test: audio ending before or after the mapped length; seeking; the track failing to load or decode (fall back to the synth demo with a toast); the user changing BPM while the track plays (the map's bpm drives map time, the desk BPM does not).
+- Freeze the parity fixtures as stored golden files generated from the commit before this sprint, never by comparing with a moving `HEAD`.
+- Drop the three-section minimum. One section is valid.
+
 **Out:** generating music, bundling a track in this sprint, odd meters, tempo changes inside a track, automatic section detection.
 
 **Tests:**
@@ -504,6 +511,14 @@ These come from a code-grounded roadmap review. The goal is that a working progr
 ### Sprint 11: AI bridge, an MCP server so people can drive StageForge with their own AI (designed by Claude Code, 2026-11-24)
 
 **Do this after Sprint 9** (it exposes audio mappings), after Sprint 12 (add a read-only `get_safety_report` tool that returns the pre-flight and zone results, and never lets the AI pass a check or arm output), and after Sprints 7 and 8 have settled the show format.
+
+**Amendments from the Codex review (these override conflicting text below, including any claim that outputs are "unreachable"):**
+- **Absent tool names are not capability isolation.** Once a human arms output, `go`, `trigger_cue`, `set_master` and accepted proposals all reach physical output without enabling it. So Phase 1 uses the simplest boundary that can actually be enforced: **the bridge and live output are mutually exclusive.** Output cannot be armed while the bridge is enabled, and the bridge cannot be enabled while output is armed or live. Enforce it in the output service as well as the UI, including pending proposals and in-flight commands. The guarantee describes this bridge's authority only, not everything an external AI client can do.
+- **Phase 2 is a later sprint, only after Sprints 12 and 13:** the AI may run cues while a human has armed output and the pre-flight shows "Checks passed", with its own human arm for lasers, never audience scan, and a dead-man cut-off when the connection drops. It needs flash limiting composed across cues, timeline events, manual and remote overrides and bumps (a positive strobe bump can reach about 25 Hz outside the audio limiter, `StageEngine.ts` around line 2292), so it is not part of Phase 1.
+- **Enforce the dispatch, not just `tools/list`:** `tools/call` must check an exact server-side allowlist.
+- **Reject `audienceScan: true` everywhere it can appear:** every cue, timeline event, full-show proposal and partial-look path. The generic validators intentionally accept it, so the bridge needs its own deep check.
+- **Add** connection and concurrency limits, request timeouts, bounded proposal storage (count and size), cancellation of in-flight work when the bridge is disabled, and rejection of work that arrives with an obsolete token.
+- **SDK:** drop the 5 MB size threshold. Use `@modelcontextprotocol/sdk` if every transitive licence is permissive. Do not hand-roll Streamable HTTP just to save size.
 
 **Goal:** from a desktop-app switch, any local MCP client (Claude, Cursor, Codex and others) can read the show, propose edits, run the show and look at the result. The AI writes the show; StageForge plays it deterministically. No AI sits in the real-time loop, and the AI can never switch on real outputs.
 
@@ -563,7 +578,7 @@ These come from a code-grounded roadmap review. The goal is that a working progr
 
 ### Sprint 12: live measurements and safety zones in the sim, with a visible pre-flight gate (designed by Claude Code, 2026-11-24)
 
-**Run this before Sprint 11** (the AI bridge can then expose a read-only safety report).
+**Run this after Sprint 13 and before Sprint 11** (the AI bridge can then expose a read-only safety report).
 
 **Goal:** the simulator becomes a bit of a real-time physics simulator. While the show runs, the user sees real numbers (angles, heights, distances, beam sizes) on the fixtures, and the safety zones are calculated from them and drawn in 3D and on the plan. A visible pre-flight status gates "Arm output". Everything is guidance, never certification.
 
@@ -608,6 +623,15 @@ These come from a code-grounded roadmap review. The goal is that a working progr
    - Add the same invitation as a short "Contributing" section in `README.md`, and say in `docs/live-dmx.md` that real output is experimental and the manual hardware checklist is still unticked.
    - Keep it keyboard and screen-reader friendly (the summary is focusable and announces its state).
 
+**Amendments from the Codex review (these override conflicting text above):**
+- **Unknown is not safe.** Missing or zero optical power, divergence or beam diameter means the hazard is *unknown*: draw no zone, show "cannot assess", and count it as a gate warning that needs acknowledgement. It must never read as "no hazard". Validate zero or negative divergence, negative radicands, units and the assumed aperture explicitly.
+- **State the equation's assumptions in `docs/measure.md`:** the beam diameter convention, full-angle divergence, beam profile, wavelength and the 0.25 s exposure time. The unit tests prove arithmetic, not these assumptions, and a staring exposure longer than 0.25 s has a lower limit. Show results as approximate. "Static is the worst case" holds only for beam motion, not for exposure time: say exactly that.
+- **Matching `laserSafety.ts` is not independent validation:** its rays stop at the simulator's 38 m beam length and it uses simplified audience geometry. Compute to the venue bounds, and add tests with hand-computed geometry.
+- **Time of check versus time of use.** Tie the pre-flight result to a revision of everything it depends on (rig, patch, stage layout, current look, cues, audio mappings, laser settings, aim). Any change makes it stale, and it is re-evaluated continuously while output is live, not only at arming. A check that starts failing while live shows a persistent warning.
+- **Three outcomes, not two:** hard failures block arming; unknowns and warnings can be acknowledged (never for lasers); passes. Evaluate every fixture whether or not its measurement label is visible, so the overlay toggles never change the safety result.
+- **Wording:** replace "Ready" with "Checks passed" (or "N warnings"), never "safe" or "verified". Hardware calibration is deferred, so the simulated aim may not match the real aim: say so next to the status.
+- Keep the emergency stop visible when Advanced is collapsed, and remove "guaranteed" blackout wording from the docs.
+
 **Out:** the hardware point test and pan/tilt invert, swap and offset calibration (these need new per-fixture fields, a schema change and real hardware, so they are a later sprint); scanned-beam hazard analysis beyond the static worst case; photometric simulation; automatic fixes.
 
 **Tests:**
@@ -631,6 +655,32 @@ These come from a code-grounded roadmap review. The goal is that a working progr
 - **Paperwork:** the commissioning sheet prints and its CSV is consistent.
 
 **Done when:** the gate is green; the overlay is off and free by default; real output sits under Advanced with the experimental note and the contribution invitation; formula pins and the audience-zone parity test pass; the pre-flight badge and gate work as described; the guidance-only text is visible in the UI and `docs/` (add `docs/measure.md`, and note the gate in `docs/live-dmx.md`); and the Overnight log records the overlay-on and overlay-off frame times.
+
+### Sprint 13: safety hardening from the Codex repo review (designed by Claude Code, 2026-11-24)
+
+**Run this before Sprint 12.** The pre-flight gate (Sprint 12) and the AI bridge (Sprint 11) both rely on real output behaving correctly, and the review found places where it does not.
+
+**Source:** an independent read-only review of the repository at commit `d132537` by Codex (`gpt-6-astra`), saved as `docs/reviews/codex-repo-review-2026-11-24.md`. Claude Code checked the findings below against the code. Re-verify each one yourself before changing anything (line numbers may have moved). For every item with a safety impact, consult Opus 5.5 and Codex on the policy (required, see "Design consult (Codex, read-only)").
+
+**Findings to fix** (each one read in the code by Claude Code):
+1. **H1, the simulated channel map goes to real fixtures.** `StageEngine.ts` around line 2545 writes pan, tilt, dimmer, R, G, B, zoom, strobe to every moving or wash fixture in that order, clipped to the catalogue mode's footprint. A mode only changes the footprint, not the encoding. For the ETC ColorSource PAR "1-Ch" mode (`equipmentCatalog.ts` around line 490), the one channel receives the pan byte (128 when centred) even with desk blackout on, so a real PAR would sit at about half intensity. Policy: physical transmission only for fixtures whose personality StageForge really implements, and a catalogue mode counts as implemented only when a golden-byte test exists for it. For any other fixture send neutral zeros across its footprint, list it as "not driven (simulation only)" in the DMX output section and the pre-flight panel, and never count it as verified. Keep the generic encoding for the simulation, the DMX monitor and old files. Generic (non-catalogue) fixtures keep the simulated map but are labelled as such: "StageForge simulated channel layout, verify against your fixture".
+2. **H2, a frozen renderer leaves output running.** `desktop/dmx-sender.cjs` retransmits cached buffers with no renderer-liveness check (confirmed: there is no heartbeat or lease anywhere in the sender or IPC). `docs/live-dmx.md` calls holding the last frame deliberate, which is wrong for lasers, CO2 and strobes. Add a renderer heartbeat lease (a separate small IPC message about once a second while live). Five seconds without one is renderer loss: send all-zero frames, stop output, and show a clear LIVE badge state ("Output stopped: app stopped responding"). Unchanged-frame suppression means frames cannot serve as the heartbeat. Web Serial runs inside the renderer and cannot do this: document the limitation and recommend network output for lasers.
+3. **H3, remote bumps can become permanent.** `App.tsx` `onSetBump` sets a bump until a release arrives, and nothing releases remote bumps on disconnect, listener disable or clock-mode change (only window blur releases keyboard bumps). `StageEngine.ts` around line 2562 lets `bump.laser` enable a laser whose desk toggle is off. Give remote and gamepad bumps a source id and make them leases: hazardous bumps (laser, strobe, CO2, smoke) from a remote source expire after 2 s unless refreshed, and every source-owned hold clears on disconnect, listener disable, clock-mode change and app blur.
+4. **H4, blackout does not zero CO2 or smoke.** `StageEngine.ts` around lines 2875 to 2879 writes the CO2 and smoke DMX channel from `b.co2`, `s.atmo.co2Active` and `s.atmo.smokeOutput` and never looks at `s.blackout` (blackout only sets the lighting master, around line 2270). Space or MSC `ALL_OFF` with CO2 active leaves the channel at 255. While blackout is on, CO2 and smoke output are zero in both the simulation and the DMX buffer. Decide haze with Opus and Codex: it may keep its normal level during an ordinary blackout but must go to zero on Blackout & stop and `ALL_OFF`. Document the decision.
+5. **M2, recording loses removed look fields.** `frameDelta` in `src/input/useShowTimeline.ts` (around line 27) only compares keys that exist in `after.look`, so removing the last audio mapping (which deletes `audioMap`) records nothing and replay keeps modulating. `showFile.ts` (around lines 274 to 277) also deletes empty mapping lists. Add an explicit "cleared" representation and carry it through recording, serialization, cue application and seeking. Older v1 to v8 files must keep loading.
+6. **M4, "Set downbeat" loses the bar position.** `setBeatGridDownbeat` in `src/audio/tempoEngine.ts` (around line 68) keeps the offset modulo one beat, so Beat 1 can land on beat 2, 3 or 4: at 120 BPM, anchoring at 500, 1000 or 1500 ms gives `isDownbeat: false`. Keep the bar phase (an offset modulo one bar, or an absolute downbeat anchor) and preserve it when nudging.
+7. **M5, OSC rate limiting can be sidestepped.** In `desktop/show-control-service.cjs` (around line 100) the per-source token buckets evict the oldest source when full, so cycling 65 source addresses got fresh budgets (reproduced: 100,000 of 100,000 packets accepted). Add an aggregate ingress budget and do not let evicted sources regain a full allowance. This only matters if the source address can vary, and loopback is the default.
+8. **Sprint 10 follow-up:** if Sprint 10 was built before its amendments were written, check it against them (see "Amendments from the Codex review" under Sprint 10) and fix the differences.
+
+**Verify first, then fix only if real** (reported, not yet checked by Claude Code): M1, `src/dmx/enttecPro.ts` around line 361 (an old write failure after disable and reconnect may close the new session; capture a session generation); M3, `src/showControl/clockOwner.ts` around line 308 (a repeated timecode may set the paused flag without pausing the media clocks); L1, `preloadPanels()` in `App.tsx` imports seven panels at start-up (remove it or load on open or hover, and measure first load before and after).
+
+**Docs:** remove "guaranteed" from the blackout description in `docs/live-dmx.md` and replace it with an accurate list of what each failure does; describe the heartbeat once built.
+
+**Tests (each must fail on the old code):** golden bytes for every implemented personality, including a one-channel PAR with blackout; heartbeat loss while sending non-zero hazardous channels, including unchanged cues; a lost bump release, a disconnect and a listener disable all clearing source-owned holds; blackout zeroing CO2 and smoke with active toggles and bumps; mapping add, remove and clear through record, save, reopen, replay and seek; downbeat anchoring on each of four beats and nudges across beat boundaries; OSC admission with more than 64 sources and sustained aggregate overload.
+
+**Out:** splitting the largest files (`StageEngine.ts`, `App.tsx`, `importMvr.ts`, `StageDesigner.tsx`, `geometryBuilders.ts`) is a later refactor sprint, because it risks regressions. No new features.
+
+**Done when:** the gate is green; every fix has a regression test that fails on the old code; hazardous outputs behave as specified; the docs are updated; and the Overnight log lists every finding as fixed, rejected with a reason, or deferred.
 
 ## Backlog (in this order)
 
