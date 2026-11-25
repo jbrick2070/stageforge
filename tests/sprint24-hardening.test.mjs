@@ -621,6 +621,7 @@ test('Sprint 24 (Codex SF-H2 / N2): renderer Web Serial hard-blocks and byte-zer
   const hazardousConfigs = [
     ['Martin JEM ZR45', makeSingleFixtureRig(null, [{ id: 'fx-zr45', type: 'smoke', modelName: 'Martin JEM ZR45', catalogId: 'martin-jem-zr45', dmxMode: '1-Ch', dmxChannels: 1, count: 1, x: 0, z: 2, spread: 4, dmxUniverse: 1, dmxStartChannel: 1 }])],
     ['CHAUVET STRIKE 4', makeSingleFixtureRig({ id: 'f-strike', type: 'blinder', modelName: 'CHAUVET STRIKE 4', catalogId: 'chauvet-strike-4', dmxMode: '4-Ch', dmxChannels: 4, count: 2, dmxUniverse: 1, dmxStartChannel: 1 })],
+    ['Generic wash (no catalogId)', makeSingleFixtureRig({ id: 'f-gen-wash', type: 'wash', modelName: 'Generic Wash', count: 2, dmxUniverse: 1, dmxStartChannel: 1 })],
     ['Generic strobe', makeSingleFixtureRig({ id: 'f-strobe', type: 'strobe', modelName: 'Generic Strobe', count: 2, dmxUniverse: 1, dmxStartChannel: 1 })],
     ['Generic CO2', makeSingleFixtureRig(null, [{ id: 'fx-co2', type: 'co2', modelName: 'Generic CO2', count: 2, x: 0, z: 2, spread: 4, dmxUniverse: 1, dmxStartChannel: 1 }])],
     ['Laser projector', makeSingleFixtureRig({ id: 'f-laser', type: 'laser', modelName: 'KVANT Clubmax 3000 FB4', catalogId: 'kvant-clubmax', dmxMode: '16-Ch Show', dmxChannels: 16, count: 1, dmxUniverse: 1, dmxStartChannel: 1 })],

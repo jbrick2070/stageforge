@@ -605,7 +605,7 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       const beforeStaleEdit = packets.length;
       await dmxPage.getByRole('button', { name: 'Close DMX monitor', exact: true }).click();
       await dmxPage.getByRole('button', { name: 'Rig builder', exact: true }).click();
-      await dmxPage.getByRole('button', { name: 'DJ Console', exact: true }).click();
+      await dmxPage.getByRole('button', { name: /^DJ Console / }).click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
       await expect(dmxPage.getByTestId('live-dmx-stopped-badge')).toContainText('Output stopped:');
       await expect.poll(() => {

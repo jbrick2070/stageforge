@@ -555,7 +555,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
         code: 'serial_watchdog_unsupported',
         outcome: 'fail',
         message:
-          'USB Serial DMX lacks an out-of-process crash watchdog and is blocked when blinders, strobes, or atmospheric effects (smoke, haze, CO2) are patched. Switch transport to desktop sACN / Art-Net 4.',
+          'USB Serial DMX lacks an out-of-process crash watchdog and is blocked when generic non-catalogue fixtures, blinders, strobes, or atmospheric effects (smoke, haze, CO2) are patched. Assign verified passive catalogue fixtures or switch transport to desktop sACN / Art-Net 4.',
       });
       outcome = 'fail';
       hardBlock = true;

@@ -278,6 +278,7 @@ export function useLiveDmxOutput(
 
   const serialLive = enabled && serialStatus.enabled;
   const isLive = enabled && (desktopLive || serialLive);
+  const emergencyStopRef = useRef<(notice: string) => Promise<void>>(async () => {});
 
   // Wire StageEngine's lightweight <= 44 Hz frame listener ONLY while live output is enabled.
   useEffect(() => {
@@ -291,6 +292,23 @@ export function useLiveDmxOutput(
     const serial = serialRef.current;
     engine.setDmxFrameListener((u1, u2, u1Changed, u2Changed, serialU1, serialU2) => {
       if (!enabledRef.current) return;
+      // Reject frames synchronously if pre-flight revision became stale/blocked before React effects run (qa-03 R3).
+      const liveCheck = canArmCheckRef.current?.();
+      if (liveCheck && !liveCheck.allowed) {
+        void emergencyStopRef.current(
+          `Output stopped: ${liveCheck.reason ?? 'Pre-flight safety check became stale or blocked.'}`,
+        );
+        return;
+      }
+      if (serialLive && rigRef?.current) {
+        const serialCheck = checkSerialTransportSafety(rigRef.current);
+        if (!serialCheck.allowed) {
+          void emergencyStopRef.current(
+            `Output stopped: ${serialCheck.reason ?? 'USB Serial DMX is blocked for the current rig.'}`,
+          );
+          return;
+        }
+      }
       if (desktopLive && bridge?.sendDmxFrame) {
         if (u1Changed) bridge.sendDmxFrame(1, u1);
         if (u2Changed) bridge.sendDmxFrame(2, u2);
@@ -303,7 +321,7 @@ export function useLiveDmxOutput(
     return () => {
       engine.setDmxFrameListener(undefined);
     };
-  }, [engineRef, enabled, isLive, desktopLive, serialLive]);
+  }, [engineRef, rigRef, enabled, isLive, desktopLive, serialLive]);
 
   const discoverArtNet = useCallback(async () => {
     if (!enabledRef.current) return;
@@ -366,6 +384,7 @@ export function useLiveDmxOutput(
     }
     await Promise.all(tasks);
   }, [engineRef, releaseClaim]);
+  emergencyStopRef.current = emergencyStopOnFault;
 
   const disable = useCallback(async () => {
     faultGenRef.current += 1;

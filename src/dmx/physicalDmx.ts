@@ -257,17 +257,17 @@ const SERIAL_BLOCKED_TYPES = new Set(['laser', 'floor_laser', 'co2', 'smoke', 'h
 const SERIAL_BLOCKED_CATEGORIES = new Set(['laser', 'fogger', 'hazer', 'co2', 'sparks', 'strobe', 'blinder']);
 
 /**
- * True when a fixture group represents a hazardous luminaire or atmospheric effect that MUST NOT be
- * armed or driven over renderer-local Web Serial (which lacks an out-of-process crash watchdog).
+ * True when a fixture group is generic/unverified (`!catalogId`) or represents a hazardous luminaire
+ * or atmospheric effect that MUST NOT be armed or driven over renderer-local Web Serial (which lacks
+ * an out-of-process crash watchdog).
  */
 export function isSerialBlockedFixtureGroup(
   group: Pick<PhysicalGroup, 'catalogId' | 'type'>,
 ): boolean {
+  if (!group.catalogId) return true;
   if (SERIAL_BLOCKED_TYPES.has(group.type)) return true;
-  if (group.catalogId) {
-    const entry = getCatalogEntry(group.catalogId);
-    if (entry && SERIAL_BLOCKED_CATEGORIES.has(entry.category)) return true;
-  }
+  const entry = getCatalogEntry(group.catalogId);
+  if (!entry || SERIAL_BLOCKED_CATEGORIES.has(entry.category)) return true;
   return false;
 }
 
@@ -289,7 +289,7 @@ export function checkSerialTransportSafety(rig: RigConfig): {
     return {
       allowed: false,
       reason:
-        'USB Serial DMX lacks an out-of-process crash watchdog and is blocked when lasers, blinders, strobes, or atmospheric effects (smoke, haze, CO2) are patched. Remove hazardous fixtures or switch to desktop sACN / Art-Net 4.',
+        'USB Serial DMX lacks an out-of-process crash watchdog and is blocked when generic non-catalogue fixtures, lasers, blinders, strobes, or atmospheric effects (smoke, haze, CO2) are patched. Assign verified passive catalogue fixtures or switch to desktop sACN / Art-Net 4.',
       blockingGroupIds,
     };
   }
