@@ -42,7 +42,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11, 14 and the graphics Sprints 15 to 21 in that order (see "Designed Sprints 6–8" and Sprints 9 to 14 and "Graphics Sprints 15 to 21" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11, 14, 14b and the graphics Sprints 15 to 21 in that order (see "Designed Sprints 6–8" and Sprints 9 to 14 and "Graphics Sprints 15 to 21" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -231,7 +231,7 @@ Get-Content "$qa\sprint-N-design.md" -Raw | codex exec -m gpt-6-astra -s read-on
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14, then the graphics Sprints 15 to 21, in that order (13 before 12, 12 before 11, 14 before 15), one per round, before Realism items 6 and 7. Realism item 8 is superseded by Sprints 15, 20 and 21.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14, then Sprint 14b (catalogue expansion), then the graphics Sprints 15 to 21, in that order (13 before 12, 12 before 11, 14 and 14b before 15), one per round, before Realism items 6 and 7. Realism item 8 is superseded by Sprints 15, 20 and 21.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
@@ -749,6 +749,27 @@ Extend `AtmosphericParticles` with the seeded simulation from Sprint 15 and per-
 Extend `BakedIldaClip` processing with bounded dwell and corner weights that respect blanking. Prototype capped camera-facing segment ribbons with a bright core and softer halo in one shader, replacing the corresponding line draw rather than adding draws. Low tier uses a much smaller segment cap and falls back to the current lines. Reuse the haze density for approximate scatter. Cap added laser triangles at 4,000 on low tier and 16,000 on high across the scene. Budget: 0 added draws, at most 0.30 ms phone-like and 0.20 ms laptop, at most 0.5 MiB low and 2 MiB high. Tests: blanked jumps, sharp corners, monochrome projectors, dense clips, near and far widths, draw-range playback, disposal. Do not claim a physical galvo simulation, and do not rebuild ILDA ingestion.
 
 **Combined optional ceiling:** at most 1 added draw, 1.50 ms on the phone-like profile, 1.00 ms on the laptop, and 2 MiB low / 4 MiB high of GPU memory. Defaults incur no optional cost.
+
+### Sprint 14b: expand the equipment catalogue with researched real products (designed by Claude Code, 2026-11-24)
+
+**Run this after Sprint 14 and before the graphics sprints.** It is data work, about 40 to 60 minutes.
+
+**Source data:** `docs/research/catalogue-candidates-2026-11-24.json`, 51 real products (12 lasers, 12 moving heads, 10 LED panels, 9 washes, PARs, battens, ellipsoidals, blinders and strobes, 8 atmospherics) with the exact source URLs for every value and the fields the researchers could not confirm. Five research agents collected it from primary sources. Claude Code then re-fetched every cited source and checked that each recorded number appears in the source text: 227 of 241 numbers were found. Four products were dropped (Laserworld DS-2000G and DS-6000B, Robe Pointe, Elation CUEPIX Blinder WW4) and the Robe ESPRITE power and lumens were set to null, because their numbers could not be re-found. The verification detail is in `docs/research/catalogue-verification-2026-11-24.txt`. The raw category notes (rejected products, conflicts between sources, licence facts) are in `%LOCALAPPDATA%\stageforge-overnight\research\*.notes.md`.
+
+**Do:**
+1. **Spot-check first.** Before trusting the file, open at least five of the cited primary sources yourself (include a laser, a moving head and an LED panel) and confirm the numbers. Report what you checked in the Overnight log.
+2. **Add the entries** to `src/data/equipmentCatalog.ts` in the existing entry shape (id, manufacturer, model, category, weightKg, powerW, ipRating, optics, modes, `sources`, `unverified`), with new, stable, unique ids. Never change an existing entry's id.
+   - Map categories to the existing ones unless a new one is trivial. Suggested: `hybrid` to `spot`, `ellipsoidal` to `profile`, `low_fog` to `fogger`. Reuse the nearest existing body family and 3D model: do not invent new models in this sprint.
+   - Keep nulls as nulls. A missing weight or power falls back to the catalogue default and is marked estimated, exactly as the paperwork already does. Every field the dataset lists under `unverified` goes into the entry's `unverified` list.
+   - **Lasers:** use the full-angle divergence in mrad and say in the entry notes which convention the maker states. If divergence, optical power or beam diameter is null, it stays unknown: Sprint 12's hazard zones must treat unknown as unknown, never as zero.
+   - Record in the docs which figure `powerW` holds (the manufacturer's headline maximum or typical figure, the 230 V value where there are two) and which lumens figure was used, as the entry notes in the dataset say.
+3. **Docs:** update `docs/equipment.md` (the table and the sources list) and keep the sourcing policy. The licence facts the researchers found: the Open Fixture Library's code is MIT but its fixture definitions carry no separate licence statement; GDTF Share's terms give no right to redistribute GDTF files; facts such as weights and channel counts are not copyrightable in the US, but the EU has a separate database right against extracting a substantial part of a database. So: record numbers and mode names as facts with citations, never copy datasheet text, photos or logos, and never bundle GDTF archives. Name the JEM products "JEM Professional" (JEM changed owners in 2025) and leave the existing "Martin JEM" entries as they are, with a note.
+4. **Tests:** catalogue integrity (unique ids, required fields, positive integer channel counts, valid categories, non-empty sources, sane numeric ranges, laser fields coherent, every `unverified` name is a real field); the entry count; every new entry builds a 3D model, a plan symbol, a DXF block name, an inventory row and a paperwork row without errors; old shows and every stock template load unchanged; the first-load size does not grow noticeably (report the `dist` size before and after).
+5. Pass the gate, run Sonnet QA on the changed code and tests, and commit locally.
+
+**Out:** new 3D models, GDTF files, changing existing entries, pushing.
+
+**Done when:** the gate is green; the new entries are in the catalogue with citations and honest `unverified` lists; the spot-check results are in the Overnight log; and `docs/equipment.md` is updated.
 
 ## Backlog (in this order)
 

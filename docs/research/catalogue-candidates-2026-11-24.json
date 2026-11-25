@@ -1,0 +1,2232 @@
+[
+ {
+  "manufacturer": "JEM Professional",
+  "model": "Hazer Pro",
+  "category": "hazer",
+  "weightKg": 15,
+  "powerW": 675,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "3-channel (Haze, Fan, Control)",
+    "channels": 3
+   }
+  ],
+  "sources": [
+   "https://jemprofessional.com/datablade/hazer-pro.html",
+   "https://jemprofessional.com/about.html",
+   "https://open-fixture-library.org/categories/Hazer"
+  ],
+  "evidence": "Weight (15 kg dry, 17.5 kg filled), power consumption 675 W (heat exchanger 600 W), DMX channels (3: Haze, Fan, Control), output and fluid data all come from the manufacturer datasheet page https://jemprofessional.com/datablade/hazer-pro.html (Rev. 1.0, October 2026). The about page gives the Martin/HARMAN ownership history. The OFL Hazer category page was opened and does not list this fixture, so DMX modes come from the manufacturer datasheet.",
+  "unverified": [
+   "ipRating (not printed on the datasheet)",
+   "dmxModes: only the three channel names are given, no value ranges"
+  ],
+  "notes": "Output as printed: 5,500 m3 per HOUR (cubic metres per hour, not per minute; about 91.7 m3/min if converted). Water-based haze, JEM C-Plus Haze fluid, 2.5 L reservoir, run time 10.5 to 65 h, ready time 6 min. Supply 220-240 V EU (3.1 A at 230 V) or 100-130 V US (6.0 A at 110 V); the single 675 W figure is not split by region. Datasheet states values marked TYP are indicative and specifications may change. Brand lineage: JEM was part of Martin Professional and HARMAN and has been under new ownership since spring 2025 (per the manufacturer's about page); the catalogue currently labels JEM units as 'Martin JEM', so the maintainer must pick one manufacturer string. RDM supported.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "2/2",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "JEM Professional",
+  "model": "ZR35",
+  "category": "fogger",
+  "weightKg": 15.1,
+  "powerW": 1500,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "1-channel",
+    "channels": 1
+   }
+  ],
+  "sources": [
+   "https://jemprofessional.com/datablade/zr35.html",
+   "https://open-fixture-library.org/categories/Smoke"
+  ],
+  "evidence": "All values come from the manufacturer datasheet page https://jemprofessional.com/datablade/zr35.html (Rev. 1.0, October 2026): weight 15.1 kg dry (20.1 kg filled), power 1500 W EU / 1450 W US, DMX channels 1, output 800 m3/min, fluid consumption, approvals. The OFL Smoke category page was opened and does not list this fixture.",
+  "unverified": [
+   "ipRating (not printed on the datasheet)"
+  ],
+  "notes": "Output as printed: 800 m3 per minute (cubic metres per minute; 28,252 ft3/min); the datasheet does not say how this figure is measured. Heat exchanger 1500 W, ready time 9 min, 5 L drop-in reservoir, max fluid consumption 140 ml/min, fluids from the JEM Pro-Fog range (type of base not stated on the page). Power is 1500 W / 6.8 A on 220-240 V and 1450 W / 12.1 A on 100-130 V. Approvals listed: CE, UKCA, UL 998, CSA C22.2 No 104. DMX512 and RDM. Datasheet says TYP values are indicative. 'JEM Professional' vs the catalogue's 'Martin JEM' naming: see Hazer Pro note.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "2/2",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "JEM Professional",
+  "model": "Glaciator Dynamic",
+  "category": "low_fog",
+  "weightKg": 124,
+  "powerW": 3500,
+  "ipRating": "IP20",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "1-channel",
+    "channels": 1
+   },
+   {
+    "name": "2-channel",
+    "channels": 2
+   }
+  ],
+  "sources": [
+   "https://jemprofessional.com/datablade/glaciator-dynamic.html",
+   "https://open-fixture-library.org/categories/Smoke"
+  ],
+  "evidence": "All values come from the manufacturer datasheet page https://jemprofessional.com/datablade/glaciator-dynamic.html (Rev. 1.0, October 2026): weight 124 kg dry / 129 kg filled, IP20, power max 3500 W (typ 3350 W), DMX channels '1 / 2', coverage 80 m3/min, fluid consumption. The OFL Smoke category page was opened and does not list this fixture.",
+  "unverified": [
+   "dmxModes channel function names (datasheet gives only '1 / 2' channels)"
+  ],
+  "notes": "Output as printed: 80 m3 per minute (cubic metres per minute; 2,825 ft3/min). Self-contained closed-loop refrigeration, no ice or CO2 needed; fluid is JEM Low-Fog Fluid, max 70 ml/min, 5 L reservoir is about 1 hour. Supply 208-250 V AC hardwired (3 x 4.0 mm2), typ 15.6 A at 230 V, heat exchanger 2500 W, ready time 5 to 7 min, noise 62.76 dBA at full output. Datasheet footnote says values marked typ are indicative and that approvals beyond CE/UKCA are still to be confirmed. DMX512 and RDM, 3- and 5-pin XLR.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "2/2",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Antari",
+  "model": "HZ-500",
+  "category": "hazer",
+  "weightKg": 31.5,
+  "powerW": 480,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "1-channel",
+    "channels": 1
+   }
+  ],
+  "sources": [
+   "https://antari.com/products/hz-500",
+   "https://open-fixture-library.org/categories/Hazer"
+  ],
+  "evidence": "Weight 31.5 kg, rated power 400 W (120 V) / 480 W (240 V), DMX channels 1, fluid, tank and consumption all come from the manufacturer product page https://antari.com/products/hz-500. The OFL Hazer category page was opened and has no Antari entries, so DMX comes from the manufacturer page.",
+  "unverified": [
+   "ipRating (not printed)",
+   "output volume (no m3/min or cfm printed on the page)",
+   "whether the 31.5 kg weight includes a flight case (page does not say)"
+  ],
+  "notes": "powerW is the 240 V figure (480 W); the 120 V US model is 400 W (3.5 A). EU model 220-240 V, 2.0 A. Water- or oil-based haze fluid: Antari HZL or HZL-W haze fluid. Tank 2.5 L (0.66 gal), consumption 1.1 ml/min at 100% output, operating time 37 h at 100%. Dimensions 515 x 375 x 355 mm. Controls: manual, timer, DMX512 (XLR 5-pin). Retailer titles seen in search results (not opened) describe the unit as flight-cased, which may explain the weight for a 2.5 L-tank hazer, but the Antari page does not state it.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "2/2",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Antari",
+  "model": "ICE-101",
+  "category": "low_fog",
+  "weightKg": 24.4,
+  "powerW": 1130,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "1-channel",
+    "channels": 1
+   }
+  ],
+  "sources": [
+   "https://antari.com/products/ice-101",
+   "https://open-fixture-library.org/categories/Smoke"
+  ],
+  "evidence": "Weight 24.4 kg, rated power 1130 W, DMX channels 1, output line, fluid, tank, warm-up, dimensions all come from the manufacturer product page https://antari.com/products/ice-101. The OFL Smoke category page was opened and has no Antari entries.",
+  "unverified": [
+   "ipRating (not printed)",
+   "output volume: the page prints '43 m2 / min' (square metres), which is not a volume; do not enter as m3/min"
+  ],
+  "notes": "Low-lying fog chilled with regular ice cubes or dry ice (page: 'Suitable for Regular ICE Cube or Dry Ice'). Output as printed: 43 m2/min (unit as printed, apparently an area rate; the page gives no m3/min or cfm). Compatible fluids: Antari FLC (Super Light Fog), FLL (Low Fog Effects), FLR (Extra Dense and Fast Dissipating Fog); base of the fluid is not stated on the page. Fluid tank 2.4 L, 25 ml/min at 100% output, warm-up about 4.5 min. US 100-120 V 9.5 A, EU 220-240 V 5.0 A. Dimensions L670 x W355 x H506 mm. Controls: manual, timer, DMX512 (XLR 3-pin), 1 channel.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "2/2",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Chauvet Professional",
+  "model": "Amhaze Stadium",
+  "category": "hazer",
+  "weightKg": 17.4,
+  "powerW": 1230,
+  "ipRating": "IP20",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Standard (single personality)",
+    "channels": 2
+   }
+  ],
+  "sources": [
+   "https://chauvetprofessional.com/product/amhaze-stadium/",
+   "https://chauvetprofessional.com/wp-content/uploads/pdf/en/AMHAZESTADIUM.pdf",
+   "https://open-fixture-library.org/categories/Hazer"
+  ],
+  "evidence": "Weight 38.4 lb (17.4 kg), power 1,230 W at 120 V, IP20 'dry location', DMX channels 2 with '1 personality', 157 cfm, tank, consumption, heat-up all appear on both the manufacturer product page and the manufacturer datasheet PDF (identical values). The OFL Hazer category page was opened and does not list this fixture.",
+  "unverified": [
+   "230 V power draw (printed 2,430 W, which looks inconsistent with 1,230 W at 120 V)",
+   "channel function names (only the count is given)"
+  ],
+  "notes": "Output as printed: 157 cfm (cubic feet per minute), listed under 'Fan Speed', so it is a blower airflow rating, not a measured haze volume; about 4.45 m3/min if converted. Water-based haze, uses Chauvet PHF5L haze fluid, tank 4.92 L (1.3 gal), fluid consumption 9.5 ml/min, heat-up 30 s. The page says both 'greater than 8.25 hours @ full volume' in the spec table and 'up to 11 hours on a single fluid container' in the feature text. 120 VAC 10.25 A, or 230 VAC 50 Hz printed as 2,430 W / 10.56 A (the 230 V line is suspect: 10.56 A x 230 V is about 2,430 W, but it would be double the 120 V draw for the same heater). Certifications: CE, MET, UL 499, CSA C22.2 No. 64-10. Power connector Seetronic Powerkon IP65, but the unit itself is rated IP20 dry location. M12 hanging insert.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "2/2",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Look Solutions",
+  "model": "Cobra 3.1",
+  "category": "fogger",
+  "weightKg": 16,
+  "powerW": 3100,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "1 ch (Fog intensity)",
+    "channels": 1
+   },
+   {
+    "name": "2 ch (Fog intensity, Fog curve)",
+    "channels": 2
+   },
+   {
+    "name": "3 ch (Fog intensity, Fog curve, Control)",
+    "channels": 3
+   }
+  ],
+  "sources": [
+   "https://www.looksolutions.com/produkte/cobra/2.html",
+   "https://www.looksolutions.com/uploads/pdf/info_cobra31_d.pdf",
+   "https://www.looksolutions.com/uploads/pdf/bed_cobra31_d.pdf",
+   "https://open-fixture-library.org/categories/Smoke"
+  ],
+  "evidence": "Product page gives 3100 W, 230 V/50 Hz, fluid and heat-up data, 23 kg 'incl. canister' and max throw 25 m. The datasheet PDF gives 'Gewicht ohne Kanister 16 kg'. DMX personalities 1 ch / 2 ch / 3 ch and their channel meanings come from the German user manual PDF (section 5.6.2). The OFL Smoke category page was opened and has no Cobra entry.",
+  "unverified": [
+   "ipRating (not printed)",
+   "output volume (the manufacturer publishes no m3/min or cfm, only a max throw of 25 m)"
+  ],
+  "notes": "weightKg 16 is without the 5 L fluid canister; the product page prints 23 kg including the canister. Evaporator fog machine, 3100 W on 230 V/50 Hz only; a 120 V/60 Hz version with 1800 W ('Cobra 1.8') is mentioned by the manufacturer but was not separately verified. Fluids: Look Quick-Fog, Regular-Fog, Slow-Fog. Tank 5 L, consumption 260 ml/min at max and 46 ml/min continuous, heat-up about 15 min, noise 82.5 dBA at full output. Dimensions 58 x 26.5 x 26 cm. Control: Ethernet (Art-Net, sACN), DMX512 and RDM, 0-10 V analog, manual, timer. Manufacturer pages are in German.",
+  "verification": {
+   "sourcesReadable": "4/4",
+   "numbersFound": "2/2",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Look Solutions",
+  "model": "Cryo-Fog High Pressure",
+  "category": "low_fog",
+  "weightKg": 33,
+  "powerW": 2300,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "3-channel (Fog Intensity, Fan, Cooling)",
+    "channels": 3
+   }
+  ],
+  "sources": [
+   "https://www.looksolutions.com/produkte/cryo_fog/2.html",
+   "https://open-fixture-library.org/look/cryofog",
+   "https://raw.githubusercontent.com/OpenLightingProject/open-fixture-library/master/fixtures/look/cryofog.json"
+  ],
+  "evidence": "Weight 33 kg 'incl. canister', 2300 W (1700 W at 120 V), fluid data, 99 output steps and dimensions come from the manufacturer page https://www.looksolutions.com/produkte/cryo_fog/2.html. The 3-channel mode (Fog Intensity, Fan, Cooling) comes from the OFL page and JSON; the manufacturer page says that in DMX mode pump, fan and CO2 valve are set separately, which matches. OFL also lists 33 kg and 2300 W.",
+  "unverified": [
+   "ipRating (not printed)",
+   "output volume (not published, only 99 adjustable steps)",
+   "CO2 consumption (not on the manufacturer page)",
+   "DMX mode taken from a community OFL definition, not from the manufacturer chart"
+  ],
+  "notes": "Low fog made by an evaporator fog generator plus a CO2 cooling chamber, fed from a high-pressure CO2 bottle with riser pipe; a Low Pressure version for a 24 bar tank is available on request with separate manuals (not covered by these values). 2300 W on 230 V/50 Hz, 1700 W on 120 V/60 Hz. Fluid: Look Cryo-Fog fluid, 5 L canister fits in the case, 100 ml/min at max output, 40 ml/min at 50%, heat-up about 7 min. Dimensions 67 x 51 x 30 cm flight case. Control: DMX512 and 0-10 V analog.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "2/2",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "MagicFX",
+  "model": "PSYCO2JET",
+  "category": "co2_jet",
+  "weightKg": 8.2,
+  "powerW": 35,
+  "ipRating": "IP23",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Raw (Angle, Speed, Output)",
+    "channels": 3
+   },
+   {
+    "name": "Preset (Preset, Speed, Direction, Go)",
+    "channels": 4
+   }
+  ],
+  "sources": [
+   "https://images.static-thomann.de/pics/atg/atgdata/document/manual/606148_magicfx_psyco2jet_manual.pdf",
+   "https://open-fixture-library.org/magicfx/psyco2jet",
+   "https://raw.githubusercontent.com/OpenLightingProject/open-fixture-library/master/fixtures/magicfx/psyco2jet.json",
+   "https://www.thomannmusic.com/magic_fx_psyco2jet.htm"
+  ],
+  "evidence": "Weight 8.2 kg (packaged 9 kg), IP23, 35 W, 100-250 V, liquid CO2 0.5 L/s, dimensions and the Raw/Preset DMX layout come from the MagicFX manual PDF (doc PART01127 rev 01-02, 25-09-2020; hosted by Thomann, read as page images and text). OFL page and JSON give the same mode names and channel counts. The Thomann retailer page shows the unit as currently sold and repeats 8.2 kg and 35 W.",
+  "unverified": [
+   "magicfx.com product page (automated fetch was blocked with 403/429, not opened)"
+  ],
+  "notes": "Each mode ALSO needs one separate Safety DMX address (any address 1-512), so the footprint is 4 channels in Raw and 5 in Preset including safety; the 3 and 4 above follow the manual and OFL convention of excluding it. OFL lists weight 9 kg, which is the PACKAGED weight; the unit itself is 8.2 kg. Moving CO2 jet: nozzle sweeps -90 to +90 degrees (single axis, left null in motion), 10 presets. Propellant liquid CO2, consumption 0.5 L/s, 3/8 inch CO2 quick connector, type plate nominal pressure 57 bar. Dimensions 330 x 250 x 165 mm. Neutrik powerCON TRUE1 in/out, 5-pin XLR, DMX512-A and RDM. The CO2Jet II already in the catalogue is a different product. Thomann page spec table says power rating 0 W while its text says 35 W; the manual's 35 W was used.",
+  "verification": {
+   "sourcesReadable": "4/4",
+   "numbersFound": "2/2",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "CryoFX",
+  "model": "CO2 Jet DMX 512",
+  "category": "co2_jet",
+  "weightKg": 8.1,
+  "powerW": 100,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Single DMX address (on/off), channel count inferred",
+    "channels": 1
+   }
+  ],
+  "sources": [
+   "https://cryofx.com/cryofx-cryo-jet-dmx-512.html"
+  ],
+  "evidence": "Weight 8.1 kg, power 100 W, 110 VAC (220 VAC available), pressure rating, reach and dimensions come from the specification table on the manufacturer's own product page https://cryofx.com/cryofx-cryo-jet-dmx-512.html. The channel count is inferred from the page text 'assign any one of 512 DMX channels'; no explicit channel count or DMX chart was found. OFL has no CryoFX entries (not listed in the repository tree).",
+  "unverified": [
+   "ipRating (not printed)",
+   "dmxModes channel count (inferred, not stated)",
+   "output (no volume figure; CO2 consumption not given)"
+  ],
+  "notes": "Fixed-position CO2 jet with a manually angled nozzle (page says the nozzle can be set up to 180 degrees and locked, but its spec table also says 'Range of Motion: No', so treat as NOT motorised). Reach 25 to 35 ft (7.6 to 10.6 m), pressure rating up to 1100 psi (75.84 bar), works from high or low pressure systems. 110 VAC 50/60 Hz, 100 W. Dimensions 7 x 10 x 10 inches (17.7 x 25.4 x 25.4 cm). 3-pin and 5-pin DMX connectors, linkable DMX and linkable power via powerCON TRUE1. CryoFX sells direct, so the page is both manufacturer and retailer. Other CryoFX variants (DMX Adjustable 250 W, Dual Nozzle 250 W) were read but not entered.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "2/2",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Laserworld",
+  "model": "EL-400RGB S",
+  "category": "laser",
+  "weightKg": 3.0,
+  "powerW": 30,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": {
+   "class": "3B",
+   "colors": "RGB",
+   "opticalPowerW": 0.4,
+   "wavelengthsNm": "650 nm red (120 mW) / 532 nm green DPSS (100 mW) / 445 nm blue (180 mW)",
+   "beamDiameterMm": 3,
+   "divergenceMradFull": 2,
+   "scanKpps": "15 kpps @ 8 deg (galvo); max scan angle not stated",
+   "ilda": null
+  },
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Standard",
+    "channels": 16
+   },
+   {
+    "name": "Pro",
+    "channels": 36
+   }
+  ],
+  "sources": [
+   "https://www.laserworld.com/en/laserworld-el/laserworld-el-400rgb-s",
+   "https://www.laserworld.com/en/download-file-1931-EL_400RGB_S_web.html",
+   "https://open-fixture-library.org/laserworld/el-400rgb-mk2"
+  ],
+  "evidence": "Product page (first URL): total and per-colour power, wavelengths, beam 'ca. 3 mm / 2 mrad', 15 kpps @ 8 deg, class 3B, 30 W, 3.0 kg, dimensions 255 x 245 x 100 mm, footnote 'Divergence FWHM average depending on model'. Manual PDF dated 11/2024 (second URL, fetched via the download link on that page): Standard 16-channel and Pro 36-channel DMX modes, class 3B label, 'Galvo System, 15 kpps@8 deg', operation modes auto/music/DMX/master-slave, 3 kg. Third URL (OFL) was opened only to check; it lists the older EL-400RGB MK2 (9ch), a different revision, and was NOT used.",
+  "unverified": [
+   "laser.divergenceMradFull (maker does not state full or half angle; footnote says FWHM average)",
+   "laser.ilda (ILDA is not listed among operation modes on the page or in the manual)",
+   "ipRating (not stated)",
+   "scan angle (manual lists it as '-')"
+  ],
+  "notes": "Small club unit just under the 0.5 W bracket. Current model on the Laserworld site; the older EL-400RGB MK2 (9ch in OFL) is a different revision. Per-colour figures sum to 400 mW. Indoor-only unit per the manual label list.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Laserworld",
+  "model": "DS-1000RGB MK5",
+  "category": "laser",
+  "weightKg": 3.8,
+  "powerW": 40,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": {
+   "class": "4",
+   "colors": "RGB",
+   "opticalPowerW": 1.0,
+   "wavelengthsNm": "638 nm red (350 mW) / 520 nm green (300 mW) / 450 nm blue (700 mW), module powers",
+   "beamDiameterMm": 3,
+   "divergenceMradFull": 0.9,
+   "scanKpps": "30 kpps @ 8 deg; max scan angle 40 deg",
+   "ilda": true
+  },
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "DJ Mode",
+    "channels": 19
+   },
+   {
+    "name": "Professional Mode",
+    "channels": 34
+   }
+  ],
+  "sources": [
+   "https://www.laserworld.com/en/laserworld-ds/laserworld-ds-1000rgb-mk5",
+   "https://www.laserworld.com/en/laser-online-user-manual/shownet-dip-switch-panel/dmx-control.html",
+   "https://open-fixture-library.org/laserworld/ds-1000rgb"
+  ],
+  "evidence": "Product page (first URL, raw HTML spec table): 1'000 mW guaranteed at aperture, per-colour module powers and wavelengths, 'ca. 3 mm / 0.9 mrad', 30 kpps@8 deg, max scan angle 40 deg, class 4, diode source, 40 W, 200 x 185 x 125 mm, 3.8 kg, operation modes incl. ILDA and DMX; body text says '0.9 mrad full angle' and names a DJ Mode and a Professional Mode without channel counts. Channel counts 19 and 34 come from the ShowNET DMX manual page (second URL). OFL page (third URL) lists only an older DS-1000RGB with a 12ch mode and was not used for modes.",
+  "unverified": [
+   "dmxModes channel counts (taken from the generic ShowNET manual page, not stated on the product page)",
+   "ipRating (page says only 'Sealed Housing technology')"
+  ],
+  "notes": "Divergence: body text says full angle; the spec footnote says 'FWHM average depending on model'. Beam diameter: spec table says ca. 3 mm, feature text says 4 mm; 3 mm used. Per-colour module powers (350 + 300 + 700 mW) sum to more than the 1000 mW guaranteed at the aperture; the maker footnote cites 'Advanced Optical Correction'. A distributor summary seen in search results gave different per-colour numbers for the MK5; not opened, maker page used. Integrated ShowNET gives Art-Net, ILDA streaming and SD card playback.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Stairville (Thomann)",
+  "model": "DJ Lase RGB Pro Advanced 1000",
+  "category": "laser",
+  "weightKg": 3.6,
+  "powerW": 25,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": {
+   "class": "4",
+   "colors": "RGB",
+   "opticalPowerW": 1.0,
+   "wavelengthsNm": "638 nm red LD (200 mW) / 532 nm green LD (200 mW) / 450 nm blue LD (600 mW), typical",
+   "beamDiameterMm": 5,
+   "divergenceMradFull": 2,
+   "scanKpps": "> 20 kpps @ +/-20 deg; deflection angle 1 to 36 deg",
+   "ilda": true
+  },
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "20ch",
+    "channels": 20
+   }
+  ],
+  "sources": [
+   "https://images.static-thomann.de/pics/atg/atgdata/document/manual/c_368582_v5_en_online.pdf"
+  ],
+  "evidence": "Thomann GmbH user manual V5 dated 20.10.2023 (only URL): features page (1000 mW, class 4, DMX-512 20 channels, ILDA) and Technical specifications pages (wavelengths and per-colour power, beam diameter at aperture '< 5 mm', divergence each beam '< 2 mrad', scanner '> 20 Kpps @ +/-20 deg', deflection angle 1 to 36 deg, 2 x 25-pin ILDA input sockets, 20 DMX channels, 100-240 V, 25 W, 291 x 120 x 200 mm without bracket, 3.6 kg). Open Fixture Library has no entry for this fixture, so the manufacturer manual was used for DMX.",
+  "unverified": [
+   "laser.divergenceMradFull (maker states '< 2 mrad' per beam without full or half angle; upper bound, not a typical value)",
+   "laser.beamDiameterMm (stated as '< 5 mm', upper bound)",
+   "ipRating (not stated)",
+   "current availability (Thomann product page URL returned 404 when fetched)"
+  ],
+  "notes": "Thomann house brand (Stairville). Manual is internally inconsistent on modulation: the features list says colour mixing by analogue diode modulation, the spec page says analogue modulation 'No'. Scanner speed is stated at +/-20 deg, which is an optical deflection quoted differently from the usual @ 8 deg figure used by the other makers here, so it is not directly comparable. Class 4 per the manual. Thomann was not stated as discontinued, but the product page could not be fetched.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Laserworld",
+  "model": "DS-3000RGB MK5",
+  "category": "laser",
+  "weightKg": 5.5,
+  "powerW": 80,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": {
+   "class": "4",
+   "colors": "RGB",
+   "opticalPowerW": 3.0,
+   "wavelengthsNm": "638 nm red (1000 mW) / 520 nm green (900 mW) / 450 nm blue (1600 mW), module powers",
+   "beamDiameterMm": 5.5,
+   "divergenceMradFull": 1.0,
+   "scanKpps": "40 kpps @ 8 deg; max scan angle 40 deg",
+   "ilda": true
+  },
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "DJ Mode",
+    "channels": 19
+   },
+   {
+    "name": "Professional Mode",
+    "channels": 34
+   }
+  ],
+  "sources": [
+   "https://www.laserworld.com/en/laserworld-ds/laserworld-ds-3000rgb-mk5",
+   "https://www.laserworld.com/en/laser-online-user-manual/shownet-dip-switch-panel/dmx-control.html"
+  ],
+  "evidence": "Product page (first URL, raw HTML spec table): 3'000 mW guaranteed at aperture, module powers and wavelengths, 'ca. 5.5 mm / 1.0 mrad', 40 kpps@8 deg, max scan angle 40 deg, class 4, 80 W, 210 x 215 x 142 mm, 5.5 kg, ILDA and DMX operation modes; body text says 'full angle'; DJ Mode and Professional Mode named without counts. Second URL gave the 19 and 34 channel counts.",
+  "unverified": [
+   "dmxModes channel counts (taken from the generic ShowNET manual page, not stated on the product page)",
+   "ipRating (page says only 'Sealed Housing technology')"
+  ],
+  "notes": "Divergence: body text says full angle; the spec footnote says 'FWHM average depending on model'. Per-colour module powers sum to 3500 mW against 3000 mW guaranteed at the aperture. A distributor summary in search results listed red as 650 mW; not opened, maker page used. FB4 variant (DS-3000RGB FB4 MK5) exists as a separate listing and was not checked.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Kvant",
+  "model": "Clubmax 3000 FB4",
+  "category": "laser",
+  "weightKg": 8.8,
+  "powerW": 340,
+  "ipRating": "IP20",
+  "optics": null,
+  "motion": null,
+  "laser": {
+   "class": "4",
+   "colors": "RGB",
+   "opticalPowerW": 3.0,
+   "wavelengthsNm": "637 nm red (680 mW) / 520 nm green (900 mW) / 445 nm blue (1500 mW), +/-5 nm",
+   "beamDiameterMm": 4.5,
+   "divergenceMradFull": 0.6,
+   "scanKpps": "40 kpps @ 8 deg (ScannerMAX 506 Compact); max scan angle 60 deg on both axes",
+   "ilda": true
+  },
+  "panel": null,
+  "dmxModes": [],
+  "sources": [
+   "https://cdn.shopify.com/s/files/1/2680/6950/files/Clubmax_3000_FB4.pdf",
+   "https://cdn.shopify.com/s/files/1/2680/6950/files/kvant-clubmax-fb4-series-operation-manual.pdf"
+  ],
+  "evidence": "Kvant product specification sheet (first URL, PDF created Jan 2021): guaranteed output 3000 mW, R/G/B 680/900/1500 mW, wavelengths 637/520/445 nm +/-5 nm, beam size 4.5 x 4.5 mm, divergence '0.6 [full angle, averaged value]', 40 Kpps @ 8 deg, 8.8 kg, 339 x 168 x 270 mm, max 340 VA, 100-230 V, control via FB4 with Ethernet/ArtNet/DMX/ILDA. Kvant Clubmax FB4 series operation manual v271020 (second URL): CM-3000 FB4 page gives max output 3.48 W, half-angle divergence per colour, max scan angle 60 deg, IP20, 8.8 kg, 340 VA; general text says the series is 'rated as a Class IV laser product' under EN 60825-1:2014.",
+  "unverified": [
+   "dmxModes (neither document gives DMX channel counts or modes; Open Fixture Library has no Kvant entries)"
+  ],
+  "notes": "Divergence convention: the spec sheet states 0.6 mrad full angle (average of the three colours, FWHM for round beams). The manual states half angles (red 0.3, green 0.4/0.2, blue 0.4/0.2 mrad); averaging gives 0.3 mrad half angle, which doubles to the same 0.6 mrad full angle. Optional Saturn 1 scanners: spec sheet says up to 60 kpps, manual says 90 kpps @ 7 deg; not recorded in the field. Class 4 is taken from the series manual's general statement, not from the CM-3000 page itself. Power draw is the maker's max VA figure. Max output power is 3.48 W against 3 W guaranteed.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "X-Laser",
+  "model": "Triton T-5",
+  "category": "laser",
+  "weightKg": 9.52,
+  "powerW": 200,
+  "ipRating": "IP64",
+  "optics": null,
+  "motion": null,
+  "laser": {
+   "class": "4",
+   "colors": "RGB",
+   "opticalPowerW": 5.0,
+   "wavelengthsNm": "638 nm red (1.5 W) / 520 nm green (2.0 W) / 445 nm blue (1.6 W)",
+   "beamDiameterMm": null,
+   "divergenceMradFull": 1.4,
+   "scanKpps": "30 kpps @ 8 deg; max scan angle 45 deg",
+   "ilda": null
+  },
+  "panel": null,
+  "dmxModes": [],
+  "sources": [
+   "https://fullcompass.com/common/files/89767-5WRGBIP64RatedLaserSystemwithBuiltInMercury.pdf"
+  ],
+  "evidence": "X-Laser USA 4-page specification sheet, (c) X-Laser 2024, for the Triton T-2 and T-5, hosted by distributor Full Compass (only URL): 5 W (5,000 mW) nominal, T-5 per-colour 1.5/2.0/1.6 W, wavelengths 638/520/445 nm, closed-loop galvos 30,000 pps at 8 deg, max scan angle 45 deg, divergence '< 1.4 mRad', 100-240 V 200 W, 'FDA / IEC Hazard Class IV', IP64, 21.0 lbs (9.52 kg) for the T-5, 13 x 6.25 x 5 in (330 x 159 x 127 mm), Mercury control with sACN, Art-Net, DMX and RDM.",
+  "unverified": [
+   "laser.beamDiameterMm (not on the sheet)",
+   "laser.divergenceMradFull (stated as '< 1.4 mRad', convention and full/half angle not stated, upper bound)",
+   "laser.ilda (not mentioned on the sheet)",
+   "dmxModes (sheet gives protocols and says console profiles exist, but no channel counts; OFL has no X-Laser entries)"
+  ],
+  "notes": "The maker's own site (x-laser.com / xlaser.com) answered with a bot-verification page and was not accessed; this is the maker's PDF hosted by a US distributor. Per-colour powers sum to 5.1 W against the 5 W nominal. The same sheet covers the Triton T-2 (2 W: 500 mW red, 700 mW green, 800 mW blue; sheet says both units weigh about 20 lbs / 9 kg), not entered separately. Sheet also lists 0.1 to 45 deg zoom range and 120 cfm fans.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Kvant",
+  "model": "Clubmax 10 FB4",
+  "category": "laser",
+  "weightKg": 13,
+  "powerW": 340,
+  "ipRating": "IP20",
+  "optics": null,
+  "motion": null,
+  "laser": {
+   "class": "4",
+   "colors": "RGB",
+   "opticalPowerW": 9.7,
+   "wavelengthsNm": "637 nm red (2500 mW) / 520 nm green (2800 mW) / 445 nm blue (4500 mW), +/-5 nm",
+   "beamDiameterMm": 5,
+   "divergenceMradFull": 0.9,
+   "scanKpps": "40 kpps @ 8 deg per spec sheet (manual v271020 says 30 kpps @ 8 deg); max scan angle 60 deg on both axes",
+   "ilda": true
+  },
+  "panel": null,
+  "dmxModes": [],
+  "sources": [
+   "https://cdn.shopify.com/s/files/1/2680/6950/files/Clubmax_10_FB4.pdf",
+   "https://cdn.shopify.com/s/files/1/2680/6950/files/kvant-clubmax-fb4-series-operation-manual.pdf"
+  ],
+  "evidence": "Kvant product specification sheet (first URL, PDF created Jan 2021): guaranteed 9700 mW, R/G/B 2500/2800/4500 mW, wavelengths 637/520/445 nm, beam size 5 x 4.5 mm, divergence '0.9 [full angle, averaged value]', 40 Kpps @ 8 deg with ScannerMAX 506 Compact, 13 kg, 339 x 168 x 353 mm, max 340 VA, FB4 control (Ethernet, ArtNet, DMX, ILDA). Operation manual v271020 (second URL), CM-10 FB4 page: max output 10.4 W, half-angle divergence per colour, 30 kpps @ 8 deg, max scan angle 60 deg, IP20, 13 kg; general text rates the series Class IV.",
+  "unverified": [
+   "dmxModes (no channel counts in either document; Open Fixture Library has no Kvant entries)",
+   "scanKpps (sheet and manual disagree, see notes)"
+  ],
+  "notes": "CONFLICT: spec sheet (2021) says 40 kpps @ 8 deg default; the 2020 manual says 30 kpps @ 8 deg for this model. Both are Kvant documents; the sheet is newer. Divergence: sheet states 0.9 mrad full angle (average); manual half angles are red 0.5, green 0.6/0.2, blue 0.7/0.2 mrad, which average 0.45 mrad half angle and double to the same 0.9 mrad full angle. Beam size is 5 x 4.5 mm, the larger axis is recorded. Max output 10.4 W against 9.7 W guaranteed. Optional Saturn 5 scanners: 50 kpps (sheet) and 50 kpps @ 7 deg (manual). Sheet describes it as suitable for indoor and smaller outdoor stages, with no IP rating beyond the manual's IP20.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Laserworld",
+  "model": "DS-15.000 IP65",
+  "category": "laser",
+  "weightKg": 11.5,
+  "powerW": 120,
+  "ipRating": "IP65",
+  "optics": null,
+  "motion": null,
+  "laser": {
+   "class": "4",
+   "colors": "RGB",
+   "opticalPowerW": 15.0,
+   "wavelengthsNm": "638 nm red (4000 mW) / 520 nm green (4500 mW) / 450 nm blue (8000 mW), module powers",
+   "beamDiameterMm": 5.5,
+   "divergenceMradFull": 1.1,
+   "scanKpps": "30 kpps @ 8 deg; max scan angle 50 deg",
+   "ilda": true
+  },
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Professional Mode",
+    "channels": 34
+   },
+   {
+    "name": "DJ Mode",
+    "channels": 19
+   }
+  ],
+  "sources": [
+   "https://www.laserworld.com/en/laserworld-ds/laserworld-ds-15-000-ip65",
+   "https://www.laserworld.com/en/laser-online-user-manual/shownet-dip-switch-panel/dmx-control.html"
+  ],
+  "evidence": "Product page (first URL, raw HTML spec table): 15'000 mW guaranteed at aperture, module powers and wavelengths, 'ca. 5.5 mm / 1.1 mrad', 30 kpps @ 8 deg, max scan angle 50 deg, class 4, IP rating 65, 120 W, 292 x 232 x 201 mm, 11.5 kg, ILDA/DMX/Art-Net/LAN/SD card modes, download listed as 'DMX Preset for Daslight - 34 channels'. Second URL: ShowNET DMX manual page giving DJ Mode 19 channels and Professional Mode 34 channels.",
+  "unverified": [
+   "dmxModes (the product page only shows a 34-channel Daslight preset; the 19-channel DJ Mode count comes from the generic ShowNET manual page and the manual says DJ Mode is the default for the smaller units)",
+   "laser.divergenceMradFull (footnote says FWHM average depending on model; full versus half angle is not stated on this page, although the DS-1000/3000 MK5 pages of the same series say full angle)"
+  ],
+  "notes": "Module powers sum to 16.5 W against 15 W guaranteed at the aperture ('Advanced Optical Correction' footnote). A separate DS-15.000 FB4 IP65 listing exists (Pangolin FB4 board instead of ShowNET), not checked. Weight and power are from the page spec table.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Laserworld",
+  "model": "DS-30.000 IP65",
+  "category": "laser",
+  "weightKg": 17.3,
+  "powerW": 350,
+  "ipRating": "IP65",
+  "optics": null,
+  "motion": null,
+  "laser": {
+   "class": "4",
+   "colors": "RGB",
+   "opticalPowerW": 30.0,
+   "wavelengthsNm": "638 nm red (6000 mW) / 520 nm green (8500 mW) / 450 nm blue (16000 mW), module powers",
+   "beamDiameterMm": 5.5,
+   "divergenceMradFull": 1.1,
+   "scanKpps": "30 kpps @ 8 deg; max scan angle 50 deg",
+   "ilda": true
+  },
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Professional Mode",
+    "channels": 34
+   },
+   {
+    "name": "DJ Mode",
+    "channels": 19
+   }
+  ],
+  "sources": [
+   "https://www.laserworld.com/en/laserworld-ds/laserworld-ds-30-000-ip65",
+   "https://www.laserworld.com/en/laser-online-user-manual/shownet-dip-switch-panel/dmx-control.html"
+  ],
+  "evidence": "Product page (first URL, raw HTML spec table): 30'000 mW guaranteed at aperture, module powers and wavelengths, 'ca. 5.5 mm / 1.1 mrad', 30 kpps @ 8 deg, max scan angle 50 deg, class 4, IP rating 65, 350 W, 378 x 260 x 218 mm, 17.3 kg, ILDA/DMX/Art-Net/LAN/SD card modes, 'DMX Preset for Daslight - 34 channels'. Second URL: ShowNET DMX manual page giving DJ Mode 19 and Professional Mode 34 channels.",
+  "unverified": [
+   "dmxModes (the product page only shows a 34-channel Daslight preset; the 19-channel DJ Mode count comes from the generic ShowNET manual page)",
+   "laser.divergenceMradFull (footnote says FWHM average depending on model; full versus half angle is not stated on this page)"
+  ],
+  "notes": "Module powers sum to 30.5 W against 30 W guaranteed. The spec table row is 'Beam Specifications ca. 5.5 mm / 1.1 mrad'; the first number is read as beam diameter and the second as divergence, matching the DS-15.000 page. A DS-30.000 FB4 IP65 listing also exists, not checked.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Kvant",
+  "model": "Clubmax 40 FB4",
+  "category": "laser",
+  "weightKg": 20,
+  "powerW": 1200,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": {
+   "class": null,
+   "colors": "RGB",
+   "opticalPowerW": 36.7,
+   "wavelengthsNm": "638 nm red (8500 mW) / 525 nm green (11500 mW) / 455 nm blue (20000 mW), +/-5 nm",
+   "beamDiameterMm": 7,
+   "divergenceMradFull": 1.1,
+   "scanKpps": "30 kpps @ 8 deg (default scanners); max scan angle not stated",
+   "ilda": true
+  },
+  "panel": null,
+  "dmxModes": [],
+  "sources": [
+   "https://cdn.shopify.com/s/files/1/2680/6950/files/Clubmax_40_FB4.pdf"
+  ],
+  "evidence": "Kvant product specification sheet (only URL, PDF created Mar 2023): guaranteed output 36700 mW, R/G/B 8500/11500/20000 mW, wavelengths 638/525/455 nm +/-5 nm, beam size 7 x 7 mm, divergence '<1.1 [full angle, averaged value]', scanners '30 Kpps @ 8 deg', 20 kg, 339 x 168 x 413 mm, max 1200 VA, FB4 control (Ethernet, ArtNet, DMX, ILDA), compliant with EN 60825-1 and FDA. The file name was found by following the naming pattern of Kvant's other sheets; its text confirms it is the Clubmax 40 FB4 sheet.",
+  "unverified": [
+   "laser.class (sheet says only 'compliant with EN 60825-1' and FDA; the series manual v271020 does not cover models above 15 W)",
+   "ipRating (not on the sheet)",
+   "dmxModes (no DMX chart found; OFL has no Kvant entries)",
+   "max scan angle (not stated; the 15 W-and-below series manual gives 60 deg but this model is not covered)"
+  ],
+  "notes": "Model name says 40 but guaranteed output is 36.7 W; the sheet's own intro says Clubmax FB4 spans 3 to 40 W. Divergence is the maker's averaged full-angle value (FWHM for round beams). Factory-fitted motorised dichroic filters; sheet positions it for large-scale outdoor aerial displays but gives no IP rating. Max power is in VA. Kvant's product pages (kvantlasers.sk) returned HTTP 429 and were not read.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "ROE Visual",
+  "model": "Vanish V8T",
+  "category": "led_panel",
+  "weightKg": 18.2,
+  "powerW": 480,
+  "ipRating": "IP65",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": {
+   "pixelPitchMm": 8.9,
+   "cabinetMm": "1000 x 1000 x 95",
+   "cabinetPixels": "112 x 112",
+   "nits": 4000
+  },
+  "dmxModes": [],
+  "sources": [
+   "https://www.roevisual.com/uploads/files/Product%20File/Vanish/v8t-brochure-nov-7_-2025.pdf",
+   "https://www.roevisual.com/uploads/files/Product%20File/Vanish/v8t-specifications1.pdf",
+   "https://www.roevisual.com/en/products/vanish-8-touring"
+  ],
+  "evidence": "All values come from the spec page of the Nov 2025 brochure (PDF text layer read directly). The product page gives the same figures and was used as a cross-check. The older v8t-specifications1.pdf (file metadata dated 2021-11-10) was used only to document the conflict.",
+  "unverified": [],
+  "notes": "powerW is the maximum; average is 240 W. Panel weight is 18.2 kg per the 2025 brochure and product page; the older 2021 spec sheet says 16.5 kg (that sheet shows IP as 'Outdoor' only, with no IP number). Transparent GOB design, 50% transparency, 3840 Hz, 1/4 scan, 14-bit, 160/160 deg viewing, magnesium frame, Brompton/Megapixel processing. Variants: V8T-H 1000x500x95, 112x56, 11.22 kg, 260/130 W, 41% transparency. V8T-V 500x1000x95, 56x112, 14.56 kg, 260/130 W, 35% transparency. ROE's product listing page writes the pitch as 8.94 mm; the brochure says 8.9 mm. Outdoor touring product.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "ROE Visual",
+  "model": "Black Quartz BQ3.9",
+  "category": "led_panel",
+  "weightKg": 17.8,
+  "powerW": 360,
+  "ipRating": "IP65",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": {
+   "pixelPitchMm": 3.9,
+   "cabinetMm": "500 x 1000 x 82.62",
+   "cabinetPixels": "128 x 256",
+   "nits": 5000
+  },
+  "dmxModes": [],
+  "sources": [
+   "https://www.roevisual.com/uploads/files/Product%20File/Black%20Quartz/black-quartz-brochure-en-july.-22-2024.pdf",
+   "https://www.roevisual.com/en/products/black-quartz"
+  ],
+  "evidence": "All values come from the spec page of the July 2024 brochure (PDF text layer read directly). The product page matches and also supplied the half-panel (500x500) figures.",
+  "unverified": [],
+  "notes": "Weight convention: 17.8 kg is the bare 'Panel Weight'; the brochure also lists 22.0 kg including the support frame (the integrated wind-bracing truss). powerW is the maximum; average is 180 W. 5000 nits is with black LED; 3840 Hz, 1/8 scan, 15-bit, SMD1415 black common cathode, 160 deg H / 110 deg V, magnesium frame, Brompton/Megapixel/Evision processing. Wind-load resistant to 20 m/s with the bracing. Max hang 13 panels, max stack 6. Same 500x1000 cabinet in BQ4.6 (4.6 mm, 108x216, 370/185 W) and BQ6.2 (6.25 mm, 80x160, 450/225 W, 7680 Hz). The product page also lists a BQ3.9 Half at 500x500x82.62, 128x128, 9.8 kg, 190/85 W; that figure is from the web page only, not the brochure.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "ROE Visual",
+  "model": "Vanish ST V3ST",
+  "category": "led_panel",
+  "weightKg": 27.5,
+  "powerW": 700,
+  "ipRating": "IP65",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": {
+   "pixelPitchMm": 3.9,
+   "cabinetMm": "1000 x 1000 x 116",
+   "cabinetPixels": "256 x 256",
+   "nits": 4500
+  },
+  "dmxModes": [],
+  "sources": [
+   "https://www.roevisual.com/uploads/files/Product%20File/Vanish%20ST/vanish-st-brochure-nov-7_-2025.pdf",
+   "https://www.roevisual.com/en/vanish-st"
+  ],
+  "evidence": "V3ST column of the spec page in the Nov 2025 brochure (PDF text layer read directly). The product page was used only to cross-check the V4ST and V6ST values; it did not list V3ST.",
+  "unverified": [],
+  "notes": "Weight convention: 27.5 kg without the ladder; 34.5 kg with the integrated folding wind-bracing ladder. Depth 116 mm without the support frame, 150 mm with the frame closed, 450 mm with it open. powerW is the maximum; average is 350 W. 7680 Hz, 16-bit, 1/8 scan, SMD1415 black, 160 deg H / 120 deg V, magnesium frame. Wind resistance to 20 m/s with the frame. Sister variants in the same brochure: V4ST is 4.6 mm, 216x216, 5000 nits, 27.5/34.5 kg. V6ST is 6.94 mm, 144x144, 5000 nits, 27.3/34.3 kg. Both are 700/350 W and IP65. Half and quarter panels (VST-V, VST-H, VST-Q) exist. The ROE product page lists only V4ST and V6ST, so V3ST may be newer than the page.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "ROE Visual",
+  "model": "Black Marble BM5",
+  "category": "led_panel",
+  "weightKg": 13.5,
+  "powerW": 270,
+  "ipRating": "IP65",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": {
+   "pixelPitchMm": 5.77,
+   "cabinetMm": "600 x 600 x 103",
+   "cabinetPixels": "104 x 104",
+   "nits": 2000
+  },
+  "dmxModes": [],
+  "sources": [
+   "https://www.roevisual.com/uploads/assets/uploads/bm5-brochure-brochure-en-aug.-9-2023-duplicate-duplicate-duplicate-duplicate-duplicate.pdf",
+   "https://www.roevisual.com/en/products"
+  ],
+  "evidence": "Spec page and page 5 text of the BM5 brochure (PDF text layer read directly, filename dated Aug 2023); these are the BM5-PC Matte column. The product listing page confirms BM5 as an LED floor product at 5.7 mm.",
+  "unverified": [],
+  "notes": "LED floor panel. The cabinet is 600 x 600 mm, not 500. Matte (BM5-PC) variant: 13.5 kg, 2000 nits, 103 mm deep. BM5-Glass variant: 18.3 kg, 800 nits, 110 mm deep, same 270/135 W. powerW is the maximum; average is 135 W. 3840 Hz, 1/4 scan, 14-bit, SMD1921 white, 140 deg H. The brochure's spec table says only 'Outdoor' for IP; the text says 'IP 65 rating, outdoor use and wet cleaning'. Support frame is rated for 2000 kg/m2 loading. A BM5i interactive version exists (100 optical sensors per panel, 33 ms response, BrightLogic processor). Operating range -20 to 45 C.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "ROE Visual",
+  "model": "Ruby RB1.5F",
+  "category": "led_panel",
+  "weightKg": 8.16,
+  "powerW": 140,
+  "ipRating": "IP40",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": {
+   "pixelPitchMm": 1.56,
+   "cabinetMm": "500 x 500 x 73",
+   "cabinetPixels": "320 x 320",
+   "nits": 1500
+  },
+  "dmxModes": [],
+  "sources": [
+   "https://www.roevisual.com/uploads/files/Product%20File/Ruby/ruby-1.5fand1.9fand2.2fand2.6f-(vp)-brochure.pdf",
+   "https://www.roevisual.com/en/ruby"
+  ],
+  "evidence": "Spec page of the Ruby F-series brochure (PDF text layer read directly). The Ruby product page matches for RB1.5F: 1.56 mm, 500x500x73, 320x320, 8.16 kg, 140/70 W, 1500 nits, 7680 Hz, IP40.",
+  "unverified": [],
+  "notes": "Indoor fine-pitch panel aimed at virtual production and rental. powerW is the maximum; average is 70 W. 7680 Hz, 1/10 scan, 16-bit, 4-in-1 common cathode flip chip, 140/140 deg viewing, magnesium frame, Megapixel/Brompton processing. Max hang 20, max stack 12 (indoor). Same brochure: RB1.9F is 1.95 mm, 256x256, 8.3 kg, 140/70 W, 1500 nits. RB2.2F is 2.23 mm, 224x224, 8.24 kg, 140/70 W, 1500 nits. RB2.6F is 2.604 mm, 192x192, 8.02 kg, 210/105 W, 2500 nits. The Ruby product page lists many more variants (RB-C curved, RB-B, Deepsky) with different numbers, so confirm the exact SKU before reusing these figures.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Absen",
+  "model": "PL3.9 Pro V10",
+  "category": "led_panel",
+  "weightKg": 8.4,
+  "powerW": 170,
+  "ipRating": "IP65",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": {
+   "pixelPitchMm": 3.9,
+   "cabinetMm": "500 x 500 x 88",
+   "cabinetPixels": "128 x 128",
+   "nits": 4500
+  },
+  "dmxModes": [],
+  "sources": [
+   "https://fullcompass.com/common/files/86826-PL29V10specsheet.pdf"
+  ],
+  "evidence": "Page 8 of this 13-page PDF is the Absen-authored 'PL3.9 Pro V10 Specifications' sheet, version V20221201. It was read from the PDF text layer. The PDF is a Full Compass (distributor) copy of Absen's sheets. absen.com returned HTTP 403 to my fetcher, so no manufacturer-site copy was reachable.",
+  "unverified": [
+   "all fields: only a distributor-hosted copy of the Absen sheet was reachable",
+   "powerW: derived from the sheet's 680/230 W/m2 x 0.25 m2 = 170/57.5 W per panel"
+  ],
+  "notes": "Outdoor rental panel. powerW is the derived maximum; average about 57.5 W. The sheet states power tolerance of +/-15%. IP rating is IP65 front / IP54 rear. 3840 Hz, 1/8 scan, 14-bit, common cathode black SMD 1921, 140 deg H / 100 deg V, operating -20 to +50 C, max rigging 20 panels. The 500x1000 'PL3.9 Pro XL V10' has the same pitch with 128x256 pixels, 13.7 kg and max rigging 10. Absen has since launched a PL3.9 Pro V3 (press release URL returned 403), so V10 may be superseded. A different non-Pro 'PL3.9 V10' is an IP40/IP21 indoor panel at 7.7 kg and 1000 nits; do not mix the two.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "3/4",
+   "missing": [
+    "powerW=170"
+   ]
+  }
+ },
+ {
+  "manufacturer": "Absen",
+  "model": "PL4.8 Pro V10",
+  "category": "led_panel",
+  "weightKg": 8.1,
+  "powerW": 180,
+  "ipRating": "IP65",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": {
+   "pixelPitchMm": 4.8,
+   "cabinetMm": "500 x 500 x 88",
+   "cabinetPixels": "104 x 104",
+   "nits": 4500
+  },
+  "dmxModes": [],
+  "sources": [
+   "https://fullcompass.com/common/files/86826-PL29V10specsheet.pdf"
+  ],
+  "evidence": "Page 12 of the same PDF: Absen-authored 'PL4.8 Pro V10 Specifications' sheet, version V20210118. Read from the PDF text layer. This is a distributor copy; absen.com was not reachable.",
+  "unverified": [
+   "all fields: only a distributor-hosted copy of the Absen sheet was reachable",
+   "powerW: derived from the sheet's 720/240 W/m2 x 0.25 m2 = 180/60 W per panel"
+  ],
+  "notes": "Outdoor rental panel. powerW is the derived maximum; average about 60 W. IP65 front / IP54 rear. 3840 Hz, 1/7 scan, 14-bit, common cathode black SMD 1921, 140 deg H / 80 deg V, operating -20 to +50 C, max rigging 20. This sheet is older (2021 version) than the PL3.9 Pro sheet (2022). The 500x1000 'PL4.8 Pro XL V10' has 104x208 pixels, 13.7 kg and max rigging 10.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Absen",
+  "model": "PL2.5 Pro V10",
+  "category": "led_panel",
+  "weightKg": 8.8,
+  "powerW": 170,
+  "ipRating": "IP40",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": {
+   "pixelPitchMm": 2.5,
+   "cabinetMm": "500 x 500 x 88",
+   "cabinetPixels": "200 x 200",
+   "nits": 1500
+  },
+  "dmxModes": [],
+  "sources": [
+   "https://fullcompass.com/common/files/86826-PL29V10specsheet.pdf"
+  ],
+  "evidence": "Pages 3 to 5 of the same PDF carry the Absen 'PL2.5 Pro V10 Specifications' sheet, version V20221215. Read from the PDF text layer. This is a distributor copy; absen.com was not reachable.",
+  "unverified": [
+   "all fields: only a distributor-hosted copy of the Absen sheet was reachable",
+   "powerW: derived from the sheet's 680/230 W/m2 x 0.25 m2 = 170/57.5 W per panel"
+  ],
+  "notes": "Indoor rental panel; IP40 front / IP21 rear. powerW is the derived maximum; average about 57.5 W. 7680 Hz, 1/8 scan, 16-bit, black SMD 1515, 160 deg H / 140 deg V, operating -10 to +40 C, max rigging 20. Rental-house search snippets disagreed on brightness (1200 vs 1500 nits) and scan; I did not open them and used only the Absen sheet. The sheet from the same PDF for the PL1.9 Pro V10 reads 1.953 mm, 256x256, 9 kg, 1200 nits, 3840 Hz, 720/240 W/m2, IP40/IP21.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "3/4",
+   "missing": [
+    "powerW=170"
+   ]
+  }
+ },
+ {
+  "manufacturer": "Planar (Leyard)",
+  "model": "CarbonLight CLM6.9",
+  "category": "led_panel",
+  "weightKg": 4.8,
+  "powerW": 300,
+  "ipRating": "IP65",
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": {
+   "pixelPitchMm": 6.9,
+   "cabinetMm": "1000 x 500 x 45",
+   "cabinetPixels": "144 x 72",
+   "nits": 5000
+  },
+  "dmxModes": [],
+  "sources": [
+   "https://res.cloudinary.com/iwh/image/upload/q_auto,g_center/assets/1/26/Planar-CLM6.2-Data-Sheet.pdf",
+   "https://www.planar.com/products/led-video-walls/carbonlight/clm"
+  ],
+  "evidence": "All numbers come from the Planar data sheet (Planar part 999-CLM62, spec report date 6/8/2018), read from the PDF text layer. The Planar CLM series page confirms the series is still listed (pitches 5.9, 6.9, 10.4 mm; IP65 outdoor; 500x1000 cabinet) but its specification tab was empty when opened.",
+  "unverified": [
+   "cabinetPixels: the sheet prints '72 x 144' with no axis labels; recorded as 144 W x 72 H from the 1000 x 500 mm cabinet geometry"
+  ],
+  "notes": "See-through mesh LED for rental and staging, indoor and outdoor. powerW is the maximum; typical is 150 W. Weight is 4.8 kg per cabinet. Brightness 5000 cd/m2, contrast 2000:1, 3000 Hz, 14-bit, 140/140 deg viewing, carbon-fiber cabinet, fanless, dual redundant PSU, operating -20 to 40 C. The sheet gives no transparency percentage. The sheet's file name says CLM6.2 but the content is CLM6.9 (6.9 mm). Sibling CLM10.4 and CLM15.6 are mentioned in Planar's 2017 brochure. Datasheet is dated 2018, so confirm the current revision with Planar.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Planar (Leyard)",
+  "model": "CarbonLight CLF VX2.6",
+  "category": "led_panel",
+  "weightKg": 8,
+  "powerW": 150,
+  "ipRating": null,
+  "optics": null,
+  "motion": null,
+  "laser": null,
+  "panel": {
+   "pixelPitchMm": 2.6,
+   "cabinetMm": "500 x 500 x 80",
+   "cabinetPixels": "192 x 192",
+   "nits": 500
+  },
+  "dmxModes": [],
+  "sources": [
+   "https://res.cloudinary.com/iwh/image/upload/q_auto,g_center/assets/1/26/PlanarCLF_VX2.6-Specsheet.pdf"
+  ],
+  "evidence": "All numbers come from the Planar CLF VX2.6 spec sheet (model CLF VX2.6CD, spec report date 5/8/2023), read from the PDF text layer.",
+  "unverified": [
+   "ipRating: not listed on the sheet (described as an indoor flooring display)"
+  ],
+  "notes": "Indoor LED floor for broadcast and virtual production. powerW is the maximum; the sheet gives no typical power. Weight bearing 500 kg per panel (the description text says up to 1,102 lb). Brightness printed as '500' with no unit. 3840 Hz, 16-bit, frame rate 24-144 Hz (processor dependent), 140/140 deg viewing, colour temperature 3000-9000 K, dual PSU, 34 dB noise, operating -20 to 40 C, 10-80% RH. Designed for Colorlight controllers. Sheet marks service access and regulatory compliance as 'tbd'. Planar's 2017 CLF brochure (a separate older floor series at 5.2, 6.2 and 10.4 mm) is a different product line.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Ayrton",
+  "model": "Diablo Profile S",
+  "category": "profile",
+  "weightKg": 22,
+  "powerW": 550,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": 19000,
+   "beamDegMin": 7,
+   "beamDegMax": 53
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 263
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Basic",
+    "channels": 34
+   },
+   {
+    "name": "Standard",
+    "channels": 36
+   },
+   {
+    "name": "Extended",
+    "channels": 56
+   }
+  ],
+  "sources": [
+   "https://www.ayrton.eu/?p=5513",
+   "https://open-fixture-library.org/ayrton/diablo-s",
+   "https://raw.githubusercontent.com/OpenLightingProject/open-fixture-library/master/fixtures/ayrton/diablo-s.json"
+  ],
+  "evidence": "Ayrton page (?p=5513, opened 2026-11-24) gave weight, 550 W maximum, IP20, 19,000 lm total luminaire output (S), 7-53 deg beam aperture, 540/263 deg, and 'from 34 to 56 DMX channels'. OFL JSON gave the three mode names and channel counts (34/36/56), which match Ayrton's range.",
+  "unverified": [],
+  "notes": "White LED engine (26,500 lm engine, 7000 K output, CRI over 70). The same Ayrton page covers the Diablo Profile TC variant (monochromatic LED, 14,000 lm, 6500 K, CRI over 90, same weight, power and modes). The page spec block says 22 kg but the intro text says 21.8 kg. OFL lists 21.8 kg, 17,500 lm and 6.7-53 deg for the S, which conflicts with Ayrton's 19,000 lm and 7 deg. I used Ayrton's figures. In the Ayrton spec, 'Beam aperture' is the zoom range. Power is the stated maximum. OFL has two separate fixtures, diablo-s and diablo-tc, each with the same modes.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "7/7",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Ayrton",
+  "model": "Khamsin S",
+  "category": "profile",
+  "weightKg": 39.8,
+  "powerW": 1150,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": 40000,
+   "beamDegMin": 7,
+   "beamDegMax": 58
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 262
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Basic",
+    "channels": 40
+   },
+   {
+    "name": "Standard",
+    "channels": 42
+   },
+   {
+    "name": "Extended",
+    "channels": 64
+   }
+  ],
+  "sources": [
+   "https://www.ayrton.eu/produit/khamsin/",
+   "https://www.ayrton.eu/wp-content/uploads/2020/06/Khamsin-DMX-chart_V221-1.pdf"
+  ],
+  "evidence": "Ayrton product page gave weight 39.8 kg, 1,150 W maximum, IP20, 40,000 lm total luminaire output (S) and 31,000 lm (TC), 7-58 deg beam aperture, 540/262 deg, and 'from 40 to 64 DMX channels'. The Ayrton DMX chart V221 is titled '64 DMX channels'. Its Ba/Std/Ex columns end at channels 40/42/64 on the last control row.",
+  "unverified": [],
+  "notes": "OFL does not have this fixture, so the modes come from the manufacturer DMX chart. The chart headers read Ba, Std and Ex. I expanded them to Basic, Standard and Extended, and I inferred the per-mode counts from the last row of the chart's Ba/Std/Ex columns. LED engine: white, 60,000 lm engine in the S (7000 K output). The TC variant is 31,000 lm. Both versions share the same weight, power and modes.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "7/7",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Robe",
+  "model": "T2 Profile",
+  "category": "profile",
+  "weightKg": 36.9,
+  "powerW": 1150,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": 22000,
+   "beamDegMin": 5,
+   "beamDegMax": 55
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 270
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Mode 1",
+    "channels": 52
+   },
+   {
+    "name": "Mode 2",
+    "channels": 36
+   },
+   {
+    "name": "Mode 3",
+    "channels": 56
+   }
+  ],
+  "sources": [
+   "https://cdn.aws.robe.cz/print/en_product_4311.pdf",
+   "https://www.robe.cz/res/downloads/user_manuals/User_manual_Robin_T2_Profile.pdf",
+   "https://www.robe.cz/t2-profile"
+  ],
+  "evidence": "Robe product datasheet PDF (dated 4/21/2026) gave 36.9 kg, 1150 W max, IP20, 22,000 lm integrating sphere and 17,600 lm goniophotometer, 5-55 deg zoom, 540/270 deg, and 52/36/56 control channels. User manual v3.1 gave the mode labels Mode 1/2/3 with 52/36/56 channels. The robe.cz product page shows the product as not discontinued.",
+  "unverified": [],
+  "notes": "Light source: 850 W MSL multi-spectral LED engine (RGBAL). I used the integrating-sphere lumens; the goniophotometer figure is 17,600 lm. Power is the stated maximum. Robe quotes the zoom as a plain range; I recorded it as beamDeg min and max. OFL does not have this fixture. A T2 Profile FS (follow-spot) variant exists with different weight and was not recorded here.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "7/7",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Robe",
+  "model": "ESPRITE",
+  "category": "profile",
+  "weightKg": 28.2,
+  "powerW": null,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": null,
+   "beamDegMin": 5.5,
+   "beamDegMax": 50
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 265
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Mode 1 (Standard 16 bit)",
+    "channels": 49
+   },
+   {
+    "name": "Mode 2 (Reduced 8 bit)",
+    "channels": 42
+   },
+   {
+    "name": "Mode 3 (Standard 16 bit + green correction)",
+    "channels": 50
+   },
+   {
+    "name": "Mode 4 (Reduced 8 bit + green correction)",
+    "channels": 43
+   },
+   {
+    "name": "Mode 5 (Enhanced gobo control)",
+    "channels": 51
+   }
+  ],
+  "sources": [
+   "https://www.robe.cz/esprite",
+   "https://www.robe.cz/res/downloads/user_manuals/User_manual_Robin_Esprite.pdf"
+  ],
+  "evidence": "robe.cz product page data (updated 2026-04-16, discontinued flag false) gave 28.2 kg, IP20, 540 deg pan and 265 deg tilt, 5.5-50 deg zoom, and the lumen figures for the three engines. It also gave 870 W (standard mode) and 950 W (high-power mode) at 230 V. The user manual v5.0 gave the mode names and counts (49/42/50/43/51).",
+  "unverified": [
+   "powerW (not found in the cited sources on re-check; set to null)",
+   "optics.lumens (not found in the cited sources on re-check; set to null)"
+  ],
+  "notes": "Three interchangeable 650 W white LED engines: HP is 34,000 lm sphere and 27,000 lm goniophotometer; HCF is 22,800 and 18,300 lm; TGW is 19,500 and 15,700 lm. I recorded the HP figure. Power is 870 W max in standard mode (950 W in high-power mode). The product page lists 4 DMX modes (49/42/50/43) but manual v5.0 lists 5 modes, so I recorded the manual's 5. OFL does not have this fixture.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "5/7",
+   "missing": [
+    "powerW=870",
+    "lumens=34000"
+   ]
+  }
+ },
+ {
+  "manufacturer": "Chauvet Professional",
+  "model": "Maverick MK3 Profile",
+  "category": "profile",
+  "weightKg": 34.7,
+  "powerW": 1180,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": 23000,
+   "beamDegMin": 5.9,
+   "beamDegMax": 64.1
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 270
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "38-channel",
+    "channels": 38
+   },
+   {
+    "name": "54-channel",
+    "channels": 54
+   }
+  ],
+  "sources": [
+   "https://chauvetprofessional.com/product/maverick-mk3-profile/"
+  ],
+  "evidence": "All values came from the Specifications table on the Chauvet Professional product page, opened 2026-11-24. It shows weight 76.4 lb (34.7 kg), 1,180 W at 230 V (1,230 W at 120 V), IP20, source 51,000 lm and output 23,000 lm, zoom 5.9-64.1 deg, 540/270 deg, and '2 personalities (38, 54)'.",
+  "unverified": [],
+  "notes": "Light source: 820 W white LED engine (CW), 7,258 K. I recorded the 'Lumens - Output' figure (23,000 lm); source lumens are 51,000. The page gives three angles: beam angle 5.9-52.7 deg, zoom range 5.9-64.1 deg, field angle 7.6-61.4 deg. I recorded the 'Zoom Range' as min and max. Power is the 230 V figure; 120 V is 1,230 W. The page does not name the two personalities, so I used the channel counts. OFL does not have this fixture. A Profile CX high-CRI sibling exists and was not recorded.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "7/7",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Chauvet Professional",
+  "model": "Maverick Storm 3 Profile",
+  "category": "profile",
+  "weightKg": 31.3,
+  "powerW": 1010,
+  "ipRating": "IP65",
+  "optics": {
+   "lumens": 34500,
+   "beamDegMin": 3.5,
+   "beamDegMax": 57.7
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 270
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "34-channel",
+    "channels": 34
+   },
+   {
+    "name": "50-channel",
+    "channels": 50
+   }
+  ],
+  "sources": [
+   "https://chauvetprofessional.com/product/maverick-storm-3-profile/"
+  ],
+  "evidence": "All values came from the Specifications table on the Chauvet Professional product page, opened 2026-11-24. It shows 69 lb (31.3 kg), 1,010 W at 230 V (1,020 W at 120 V), IP65, 'Lumens - Output' 34,500 lm, zoom range 3.5-57.7 deg, 540/270 deg, and '2 personalities (34, 50)'.",
+  "unverified": [],
+  "notes": "Light source: 620 W white LED engine (CW), 7,500 K. IP65 outdoor-rated. Angles on the page: beam angle 3.5-51.5 deg, field angle 4.1-54.3 deg, zoom range 3.5-57.7 deg. The features text says '3.4 deg to 56.7 deg', which conflicts slightly with the spec table. I recorded the table's zoom range. Power is the 230 V figure; 120 V is 1,020 W. The page does not name the personalities. OFL does not have this fixture.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "7/7",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Chauvet Professional",
+  "model": "Rogue R2X Spot",
+  "category": "spot",
+  "weightKg": 21.7,
+  "powerW": 481,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": 14789,
+   "beamDegMin": 16,
+   "beamDegMax": 16
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 250
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "18-channel",
+    "channels": 18
+   },
+   {
+    "name": "21-channel",
+    "channels": 21
+   }
+  ],
+  "sources": [
+   "https://chauvetprofessional.com/product/rogue-r2x-spot/"
+  ],
+  "evidence": "All values came from the Specifications table on the Chauvet Professional product page, opened 2026-11-24. It shows 47.8 lb (21.7 kg), 481 W at 230 V (488 W at 120 V), IP20 dry location, 'Lumens - Source' 23,000 and 'Lumens - Output' 14,789, beam angle 16 deg, 540/250 deg, and '2 personalities (18, 21)'.",
+  "unverified": [],
+  "notes": "Light source: one 300 W white LED (CW), 8,831 K. The head has no zoom: fixed beam angle 16 deg, field angle 18 deg, cutoff 18.4 deg. The marketing blurb says 16.5 deg, so the table value is used. Power is the 230 V figure; 120 V is 488 W. I recorded the output lumens; source lumens are 23,000. OFL has only Rogue R1/R2 Wash, not this fixture, so the modes come from the product page. The page does not name the personalities.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "6/6",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Martin",
+  "model": "RUSH MH 7 Hybrid",
+  "category": "hybrid",
+  "weightKg": 24,
+  "powerW": 372,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": null,
+   "beamDegMin": 2.2,
+   "beamDegMax": 45
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 250
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "21-channel",
+    "channels": 21
+   }
+  ],
+  "sources": [
+   "https://www.martin.com/en-US/products/rush-mh-7-hybrid",
+   "https://open-fixture-library.org/martin/rush-mh-7-hybrid",
+   "https://raw.githubusercontent.com/OpenLightingProject/open-fixture-library/master/fixtures/martin/rush-mh-7-hybrid.json"
+  ],
+  "evidence": "Martin product page (opened 2026-11-24, marked Discontinued) gave 24 kg, typical 377 W at 120 V and 372 W at 230 V, IP20, 540/250 deg, 21 DMX channels, and the zoom ranges per mode. OFL JSON gave the single 21-channel mode name.",
+  "unverified": [
+   "optics.lumens"
+  ],
+  "notes": "Discontinued. Light source: Philips MSD Platinum 11R 250 W discharge lamp, 7800 K. Martin publishes no lumen figure on the page. Zoom by mode: beam 2.2-24 deg, spot 2.5-24 deg, wash 15-45 deg (the wash value is a one-tenth-peak angle and the others are cutoff angles). I recorded the overall envelope of 2.2 to 45 deg. Power is Martin's 'typical, not maximum' figure at 230 V, allow +/-10 percent; 120 V is 377 W.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "6/6",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Martin",
+  "model": "RUSH MH 5 Profile",
+  "category": "spot",
+  "weightKg": 9,
+  "powerW": 165,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": null,
+   "beamDegMin": 14,
+   "beamDegMax": 14
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 270
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "16-channel",
+    "channels": 16
+   }
+  ],
+  "sources": [
+   "https://www.martin.com/en-US/products/rush-mh-5-profile",
+   "https://open-fixture-library.org/martin/rush-mh-5-profile",
+   "https://raw.githubusercontent.com/OpenLightingProject/open-fixture-library/master/fixtures/martin/rush-mh-5-profile.json"
+  ],
+  "evidence": "Martin product page (opened 2026-11-24, marked Discontinued) gave 9 kg, typical total power 165 W (100 V) and 157 W (230 V), IP20, 540/270 deg, 16 DMX channels, 75 W LED engine, and beam angle 16 deg tenth-peak and 14 deg half-peak. OFL JSON gave the 16-channel mode name.",
+  "unverified": [
+   "optics.lumens"
+  ],
+  "notes": "Discontinued. Light source: 75 W LED engine, rated 50,000 hours. The head has no zoom, so the beam angle is fixed. I recorded the half-peak 14 deg; the one-tenth-peak angle is 16 deg. Martin brands it 'Profile', but it has no framing shutters, so I categorised it as spot. The page's photometric section is empty and the lumen figure on OFL (1,800 lm) is not from a primary source, so lumens are null. Power is Martin's 'typical, not maximum' headline figure.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Martin",
+  "model": "MAC One",
+  "category": "beam",
+  "weightKg": 4.4,
+  "powerW": 180,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": 2500,
+   "beamDegMin": 4,
+   "beamDegMax": 19
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 225
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Compact",
+    "channels": 20
+   },
+   {
+    "name": "Basic",
+    "channels": 36
+   },
+   {
+    "name": "Ludicrous",
+    "channels": 108
+   },
+   {
+    "name": "Compact Direct",
+    "channels": 20
+   }
+  ],
+  "sources": [
+   "https://www.martin.com/en-US/products/mac-one"
+  ],
+  "evidence": "All values came from the Martin product page, opened 2026-11-24, which is not marked discontinued. It gave 4.40 kg, 180 W maximum power, IP20, 2,500 lm, beam angle 4-19 deg and field angle 6-27 deg, pan 540 deg and tilt 225 deg, and the DMX mode names with channel counts '20, 36, 108 & 20'.",
+  "unverified": [],
+  "notes": "Compact beam/wash head with a 150 mm Fresnel lens. Light source: 120 W RGBL (red, green, blue, lime) LED engine, plus a 24-pixel RGB backlight ring (6 W). Martin states beam angle 4-19 deg (half peak) and field angle 6-27 deg; the marketing text says 'zoom 4 to 27 degrees', which mixes the two. I recorded the half-peak beam angle. Power: 180 W maximum, 160 W typical. The four mode names are in the same order as the four channel counts on the page, but the page does not explicitly pair each name to its count. OFL does not have this fixture.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "7/7",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Showtec",
+  "model": "Phantom 130 Spot",
+  "category": "spot",
+  "weightKg": 13.1,
+  "powerW": 270,
+  "ipRating": null,
+  "optics": {
+   "lumens": null,
+   "beamDegMin": 12,
+   "beamDegMax": 21
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 270
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "12-channel",
+    "channels": 12
+   },
+   {
+    "name": "16-channel",
+    "channels": 16
+   }
+  ],
+  "sources": [
+   "https://www.highlite.com/media/attachments/MANUAL/40073_MANUAL_GB_V1.pdf"
+  ],
+  "evidence": "Highlite (Showtec) English manual V1, order code 40073, gave all values in its Features block. That block lists 270 W, 13.1 kg, beam angle 12-21 deg, pan 540 and tilt 270 deg, 12 or 16 DMX channels, and 5200 lux at 5 m (at 12 deg). The manual's DMX menu also lists the 12-channel and 16-channel modes.",
+  "unverified": [
+   "ipRating",
+   "optics.lumens"
+  ],
+  "notes": "Light source: one 130 W white LED. The manual gives only illuminance (5,200 lux at 5 m at 12 deg), not lumens, so lumens are null. The manual says 'use indoors only' but gives no IP code, so ipRating is null. The weight is written '13,1 kg' in the manual. The Highlite product page I opened showed no spec values, and I did not use it. OFL lists a Phantom 140 LED Spot but not the 130, so the modes come from the manual.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "6/6",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "CHAUVET Professional",
+  "model": "Rogue Outcast 2X Wash",
+  "category": "wash",
+  "weightKg": 9.6,
+  "powerW": 291,
+  "ipRating": "IP65",
+  "optics": {
+   "lumens": 6258,
+   "beamDegMin": 8,
+   "beamDegMax": 36.1
+  },
+  "motion": {
+   "panDeg": 540,
+   "tiltDeg": 270
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "56CH",
+    "channels": 56
+   },
+   {
+    "name": "55CH",
+    "channels": 55
+   },
+   {
+    "name": "54CH",
+    "channels": 54
+   },
+   {
+    "name": "33CH",
+    "channels": 33
+   },
+   {
+    "name": "23CH",
+    "channels": 23
+   },
+   {
+    "name": "22CH",
+    "channels": 22
+   },
+   {
+    "name": "17CH",
+    "channels": 17
+   },
+   {
+    "name": "15CH",
+    "channels": 15
+   },
+   {
+    "name": "54MS",
+    "channels": 54
+   },
+   {
+    "name": "33MS",
+    "channels": 33
+   }
+  ],
+  "sources": [
+   "https://chauvetprofessional.com/wp-content/uploads/pdf/en/ROGUEOUTCAST2XWASH.pdf",
+   "https://chauvetprofessional.com/wp-content/uploads/2022/08/Rogue_Outcast_2X_Wash_UM_Rev10.pdf",
+   "https://chauvetprofessional.com/wp-content/uploads/2022/08/Rogue_Outcast_2X_Wash_DMX_Chart_Rev3.pdf",
+   "https://chauvetprofessional.com/product/rogue-outcast-2x-wash/"
+  ],
+  "evidence": "Datasheet PDF (ROGUEOUTCAST2XWASH.pdf): weight 9.6 kg, 291 W at 120 V (284 W at 208 V, 282 W at 230 V), IP65, Lumens - Output 6,258, beam angle 8 to 36.1 deg, field 11.8 to 53 deg, zoom 8 to 66.1 deg, pan 540 / tilt 270, 19 x 25 W RGBW LEDs. User manual Rev 10: the ten personalities and their channel counts (control-personality list and starting-address list), 295 W at 100 V, weight 10.6 kg. DMX chart Rev 3: personality headings 56CH, 55CH, 54CH, 33CH, 23CH, 22CH, 17CH, 15CH, 54MS, 33MS. Product page: only used to find the document links. Not in Open Fixture Library (the OFL page for it returned 404 and the OFL chauvet-professional folder has no Outcast entry), so DMX modes are from the manufacturer's manual and chart.",
+  "unverified": [
+   "weightKg"
+  ],
+  "notes": "Weight conflict between two Chauvet documents: datasheet 9.6 kg (21.2 lb) versus user manual Rev 10 10.6 kg (23.4 lb). I used the datasheet figure; use 10.6 if you prefer the heavier rigging-safe number. powerW convention: highest figure on the datasheet (291 W at 120 V); the manual also lists 295 W at 100 V. DMX conflict: datasheet says 8 personalities (15, 17, 22, 33, 33 MS, 54, 54 MS, 56) while manual Rev 10 and DMX chart Rev 3 list 10 (they add 23CH and 55CH; the manual says colour temperature control is in 23Ch and 55Ch). I recorded the 10 from the manual. 19 pixel-mappable RGBW quad LEDs (25 W each) in 5 individually controlled zones. Pan/tilt ranges are selectable (pan 180/360/540, tilt 90/180/270); maximums recorded. Beam 8 to 36.1 deg and field 11.8 to 53 deg; the 8 to 66.1 deg 'zoom range' on the datasheet equals the cutoff angle. Sold as a current product (datasheet includes a 2024 noise report).",
+  "verification": {
+   "sourcesReadable": "4/4",
+   "numbersFound": "7/7",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Robe",
+  "model": "Robin Tetra2",
+  "category": "led_batten",
+  "weightKg": 18.1,
+  "powerW": 600,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": 10500,
+   "beamDegMin": 4,
+   "beamDegMax": 45
+  },
+  "motion": {
+   "panDeg": null,
+   "tiltDeg": 191
+  },
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Mode 1 - Wash",
+    "channels": 34
+   },
+   {
+    "name": "Mode 2 - Pattern",
+    "channels": 56
+   },
+   {
+    "name": "Mode 3 - Pixel RGB",
+    "channels": 97
+   },
+   {
+    "name": "Mode 4 - Pixel RGBW",
+    "channels": 115
+   },
+   {
+    "name": "Mode 5 - Pattern full RGB",
+    "channels": 110
+   },
+   {
+    "name": "Mode 6 - Pattern full RGBW",
+    "channels": 128
+   }
+  ],
+  "sources": [
+   "https://robe.cz/res/downloads/catalogues/ROBE_Tetra2_leaflet_online_version.pdf",
+   "https://www.robe.cz/res/downloads/user_manuals/User_manual_Robin_Tetra_2.pdf",
+   "https://www.robe.cz/tetra2"
+  ],
+  "evidence": "Leaflet PDF: weight 18.1 kg, IP20, 600 W at 230 V / 50 Hz, 18 x 40 W RGBW LED multichips, zoom 4 to 45 deg, total output 10,500 lm (integrating sphere) and 8,439 lm (goniophotometer), tilt 191 deg, six DMX modes with 34, 56, 97, 115, 110, 128 channels, width 1007 mm. User manual v2.1: max power 600 W, weight 18.1 kg, min/max beam angle 4 and 45 deg, tilt 191 deg, 18 RGB pixels, the Appendix DMX modes overview table (channel counts per mode) and the DMX chart v1.6 heading 'Mode 1-Wash, Mode 2-Pattern, Mode 3-Pixel RGB, Mode 4-Pixel RGBW, Mode 5-Pattern full RGB, Mode 6-Pattern full RGBW'. Robe product page: opened, shows no spec text and no discontinued marker. Not in Open Fixture Library (OFL robe folder has no Tetra entry).",
+  "unverified": [
+   "dmxModes names (mapped to channel counts by mode order; see notes)"
+  ],
+  "notes": "Linear pixel bar that tilts but does not pan (leaflet and manual list only 'Tilt movement 191 deg'; pan left null). 18 pixels, each a 40 W RGBW multichip; pixel control is RGB in Modes 3 and 5 and RGBW in Modes 4 and 6; Modes 2, 5 and 6 add the two patented flower effects (manual appendix). Embedded Ethernet switch with Art-Net, sACN, Kling-Net, MA-Net. Two independent zoom zones. Length 1007 mm, head 279 x 192 mm. Lumens: leaflet gives 10,500 lm by integrating sphere and 8,439 lm by goniophotometer; I recorded the headline 10,500. Mode names: the DMX chart v1.6 heading lists six names in mode-number order and the manual appendix lists channel counts in mode-number order; I matched them by order, which is consistent (97 = pixel RGB, 115 = pixel RGBW, 110/128 = pattern plus RGB/RGBW pixels) but the chart body was not read channel by channel. The older RGBA version has its own manual (User_manual_Robin_Tetra_2_RGBA.pdf) and was not used. The smaller Tetra1 is a different product.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "6/6",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "CHAUVET DJ",
+  "model": "COLORband PiX IP",
+  "category": "led_batten",
+  "weightKg": 6.1,
+  "powerW": 103,
+  "ipRating": "IP65",
+  "optics": {
+   "lumens": null,
+   "beamDegMin": 20,
+   "beamDegMax": 20
+  },
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "3ch",
+    "channels": 3
+   },
+   {
+    "name": "4ch",
+    "channels": 4
+   },
+   {
+    "name": "6ch",
+    "channels": 6
+   },
+   {
+    "name": "7ch",
+    "channels": 7
+   },
+   {
+    "name": "9ch",
+    "channels": 9
+   },
+   {
+    "name": "12ch",
+    "channels": 12
+   },
+   {
+    "name": "18ch",
+    "channels": 18
+   },
+   {
+    "name": "36ch",
+    "channels": 36
+   }
+  ],
+  "sources": [
+   "https://www.chauvetdj.com/products/colorband-pix-ip/",
+   "https://www.chauvetdj.com/wp-content/uploads/pdf/en/colorband-pix-ip.pdf",
+   "https://www.chauvetdj.com/wp-content/uploads/2015/12/COLORband_PiX_IP_UM_Rev2_WO-1.pdf",
+   "https://open-fixture-library.org/chauvet-dj/colorband-pix-ip"
+  ],
+  "evidence": "Product page and highlights PDF: weight 6.1 kg (13.5 lb), 98 W at 120 V and 103 W at 230 V, IP65, 12 tri-colour RGB LEDs at 3 W, beam 20 deg, field 34 deg, 2,325 lux at 2 m, DMX channels 3, 4, 6, 7, 9, 12, 18 or 36, size 993 x 100 x 173 mm, marked 'Discontinued Since 2021'. User manual Rev 2: weight 13.5 lb (6.1 kg), 36-channel mode top address 477, menu list 3-CH, 4-CH, 6-CH, 7CH, 9-CH, 12CH, 18CH, 36CH. OFL page: mode names 3ch to 36ch with channel counts.",
+  "unverified": [
+   "optics.lumens (not published; datasheet gives only 2,325 lux at 2 m)"
+  ],
+  "notes": "DISCONTINUED since 2021 per the Chauvet DJ page, so 'recently sold' at best. 12 RGB LEDs (3 W each) along a 993 mm bar; the 36-channel mode equals 12 x RGB, but the DMX-zone diagrams in the manual are images and I could not read them, so per-LED pixel addressing is inferred, not confirmed. Conflict inside the manual: its prose says 'two DMX personalities, a 3-channel mode and a 36-channel mode' but its own menu list, the datasheet and OFL all give eight modes (3, 4, 6, 7, 9, 12, 18, 36); I recorded eight. powerW convention: highest datasheet figure (103 W at 230 V). Beam 20 deg and field 34 deg are fixed (no zoom). Also has Master/Slave and standalone programs.",
+  "verification": {
+   "sourcesReadable": "4/4",
+   "numbersFound": "3/3",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "CHAUVET Professional",
+  "model": "COLORado 1 Solo",
+  "category": "led_par",
+  "weightKg": 5.4,
+  "powerW": 65,
+  "ipRating": "IP65",
+  "optics": {
+   "lumens": null,
+   "beamDegMin": 4,
+   "beamDegMax": 40
+  },
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Std. Y mode",
+    "channels": 17
+   },
+   {
+    "name": "TR16 mode",
+    "channels": 17
+   },
+   {
+    "name": "TOUR mode",
+    "channels": 12
+   },
+   {
+    "name": "SSP mode",
+    "channels": 9
+   },
+   {
+    "name": "HSIC mode",
+    "channels": 9
+   }
+  ],
+  "sources": [
+   "https://chauvetprofessional.com/wp-content/uploads/pdf/en/COLORADO1SOLO.pdf",
+   "https://open-fixture-library.org/chauvet-professional/colorado-1-solo",
+   "https://chauvetprofessional.com/product/colorado-1-solo/"
+  ],
+  "evidence": "Datasheet PDF: weight 5.4 kg (11.8 lb), 65 W at 120 V and 230 V, IP65 with GORE valve, 1 x 60 W RGBW LED, beam angle 4 to 40 deg, field angle 8 to 55 deg, zoom 4 to 55 deg, 5,370 lux at 5 m (4 deg) and 97 lux at 5 m (40 deg), DMX channels 9, 12 or 17 and 5 personalities (HSIC, SSP, TOUR, TR16, STD.Y). OFL page: mode names mapped to channel counts. Product page: fetched only to check for a discontinued marker; none found.",
+  "unverified": [
+   "optics.lumens (not published; only lux at 5 m)"
+  ],
+  "notes": "Static (non-moving) single-source zoom wash/PAR: one 60 W quad-colour RGBW LED, convection cooled (silent), motorized zoom, 5 dim modes, strobe 0 to 25 Hz, 5-pin IP65 XLR, Seetronic Powerkon IP65 power in/out. Beam 4 to 40 deg and field 8 to 55 deg; zoom range given as 4 to 55 deg. OFL shows the mode-name to channel mapping (Std. Y 17, TR16 17, TOUR 12, SSP 9, HSIC 9), consistent with the datasheet's '9, 12 or 17' channels and five personalities. powerW convention: highest datasheet figure. Siblings with datasheets I also read but did not include: COLORado 2 Solo (3 x 40 W, 7.3 kg, 130 W max, zoom 5 to 42 deg, IP65, 9/12/17 ch) and COLORado 3 Solo (3 x 60 W, 9 kg, 187 W max, zoom 4 to 45 deg, IP65, 9/12/17 ch).",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Elation Professional",
+  "model": "Fuze Par Z60 IP",
+  "category": "led_par",
+  "weightKg": 4.5,
+  "powerW": 78,
+  "ipRating": "IP65",
+  "optics": {
+   "lumens": null,
+   "beamDegMin": 7,
+   "beamDegMax": 39
+  },
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "4ch RGBW",
+    "channels": 4
+   },
+   {
+    "name": "4ch HSI",
+    "channels": 4
+   },
+   {
+    "name": "5ch HSI",
+    "channels": 5
+   },
+   {
+    "name": "6ch RGBW",
+    "channels": 6
+   },
+   {
+    "name": "7ch sRGBWI",
+    "channels": 7
+   },
+   {
+    "name": "7ch RGBW",
+    "channels": 7
+   },
+   {
+    "name": "8ch RGBW",
+    "channels": 8
+   },
+   {
+    "name": "9ch RGBW",
+    "channels": 9
+   },
+   {
+    "name": "10ch 16Bit",
+    "channels": 10
+   },
+   {
+    "name": "10ch HSI",
+    "channels": 10
+   },
+   {
+    "name": "12ch sRGBI",
+    "channels": 12
+   },
+   {
+    "name": "13ch RGBW",
+    "channels": 13
+   }
+  ],
+  "sources": [
+   "https://elationlighting.eu/fuze-par-z60-ip",
+   "https://open-fixture-library.org/elation/fuze-par-z60ip"
+  ],
+  "evidence": "Elation EU product page: weight 4.5 kg (10.0 lb), max power 78 W, IP65, 60 W RGBW COB LED, motorized zoom 7 to 39 deg, 3,813 lux at 3 m (7 deg) and 228 lux at 3 m (39 deg), '12 DMX Channel Modes (13 Total Channels)', size 253 x 252 x 282 mm, page heading carries the word 'Archive'. OFL page: the 12 mode names and channel counts (weight 4.5 kg and 78 W also match). The elationlighting.com page and the ADJ/Elation spec downloads were rate-limited (HTTP 429), so only the .eu page was read.",
+  "unverified": [
+   "optics.lumens (not published; only lux at 3 m)"
+  ],
+  "notes": "ARCHIVED / discontinued: the Elation page heading reads 'Fuze Par Z60 IP Archive', though it does not use the word discontinued. Outdoor IP65 static PAR with motorized zoom. Zoom 7 to 39 deg per the Elation page; OFL lists 5 to 50 deg (probably field angle), so the datasheet figure is used. Mode names come from OFL (the Elation page gives only the count of 12 modes and max 13 channels, which agrees). powerW is the page's 'max power consumption' (78 W). Has IP-rated 5-pin DMX and powerCON TRUE1 in/out, flicker-free output for broadcast.",
+  "verification": {
+   "sourcesReadable": "2/2",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "Martin",
+  "model": "RUSH PAR 2 RGBW Zoom",
+  "category": "led_par",
+  "weightKg": 5.5,
+  "powerW": 151,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": null,
+   "beamDegMin": 10,
+   "beamDegMax": 60
+  },
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "5-channel mode",
+    "channels": 5
+   },
+   {
+    "name": "9-channel mode",
+    "channels": 9
+   }
+  ],
+  "sources": [
+   "https://www.martin.com/pl/site_elements/rush-par-2-rgbw-zoom-spec-sheet-english",
+   "https://www.martin.com/en/site_elements/martin-rush-par-2-rgbw-zoom-user-manual",
+   "https://open-fixture-library.org/martin/rush-par-2-rgbw-zoom"
+  ],
+  "evidence": "Martin spec sheet (2015): weight 5.5 kg (12.2 lb), typical power 151 W at 120 V (148 W at 230 V), IP20 indoor only, 12 x 10 W Osram Ostar RGBW LEDs, zoom range 10 to 60 deg, DMX channels 5/9, size 266 x 287 x 329 mm. User manual (Revision I): '5-channel mode' and '9-channel mode' in its table of contents and mode descriptions. OFL page: same two modes.",
+  "unverified": [
+   "optics.lumens (not published)",
+   "optics.beamDegMin/beamDegMax (sheet says 'Zoom range 10 - 60 deg' without saying beam or field)"
+  ],
+  "notes": "Indoor PAR can, discontinued per the search-result description of Martin's product page; the martin.com product page itself returned HTTP 403 to my fetch, so I did not confirm that status myself. powerW is Martin's 'typical total power consumption' (151 W, plus/minus 10 percent), not a maximum. Spec sheet says 33 colour presets plus full white. 5-pin XLR DMX, PowerCon in/thru. Motorized zoom, forced-air (temperature-regulated) cooling.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "4/4",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "ETC",
+  "model": "Source Four LED Series 3 Lustr X8",
+  "category": "ellipsoidal",
+  "weightKg": 8.9,
+  "powerW": 307,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": 10889,
+   "beamDegMin": 5,
+   "beamDegMax": 90
+  },
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "Direct mode",
+    "channels": 12
+   },
+   {
+    "name": "Expanded mode",
+    "channels": 11
+   },
+   {
+    "name": "Studio mode",
+    "channels": 7
+   },
+   {
+    "name": "3 Ch RGB mode",
+    "channels": 3
+   },
+   {
+    "name": "Intensity mode",
+    "channels": 1
+   }
+  ],
+  "sources": [
+   "https://www.etcconnect.com/WorkArea/DownloadAsset.aspx?id=10737506242",
+   "https://www.etcconnect.com/Products/Entertainment-Fixtures/Source-Four-LED-Series-3/Documentation.aspx",
+   "https://open-fixture-library.org/etc/source-four-led-series-3-lustr-x8",
+   "https://goknight.com/content/documentation/S4LEDS3LS%20Spec%20Sheet.pdf"
+  ],
+  "evidence": "ETC datasheet Rev I (2024-05) at the etcconnect.com DownloadAsset link (listed on the ETC documentation page): weight 8.9 kg with barrel and 6.8 kg without, typical power Lustr X8 307 W at 120 V and 305 W at 230 V, IP20, max lumens Lustr X8 10,889 (Daylight HDR 14,214), beam angle range 5 to 90 deg by swappable lens tube, 5 modes (1 to 12 channels). OFL page: the five mode names and channel counts. goknight.com copy of the older Rev A (2021-03) sheet was opened only to cross-check (it shows 8.87 kg and a second table at 8.71 kg).",
+  "unverified": [],
+  "notes": "Weight is the light engine with shutter barrel, EXCLUDING the lens tube (sold separately; weights in the datasheet's accessory tables) and mounting hardware; without barrel 6.8 kg. Older Rev A sheet gave 8.87 kg and an internal table 8.71 kg; Rev I rounds to 8.9. powerW is ETC's 'wattage typical' at full (120 V; idle 6.3 W). Lumens 10,889 is the maximum system figure for Lustr X8 (efficacy 35 lm/W); actual output depends on the lens tube (the photometry table in the datasheet lists per-tube lumens and candela). Beam 5 to 90 deg is the swappable-lens-tube range, not a zoom. 90 Lumileds LUXEON C and CZ LEDs, eight colours (deep red, red, amber, lime, green, cyan, blue, indigo), 1900 to 10450 K, L70 above 54,000 h, wireless DMX via City Theatrical Multiverse. OFL's physical data for this entry (8.9 kg, 340 W, 14,214 lm) reflect the Daylight HDR engine for power and lumens, so do not take those from OFL. A Daylight HDR variant exists (OFL: source-four-led-series-3-daylight-hdr) with 340 W at 120 V.",
+  "verification": {
+   "sourcesReadable": "4/4",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "CHAUVET Professional",
+  "model": "Ovation E-910FC",
+  "category": "ellipsoidal",
+  "weightKg": 7.1,
+  "powerW": 220,
+  "ipRating": "IP20",
+  "optics": {
+   "lumens": 7263,
+   "beamDegMin": 7,
+   "beamDegMax": 41
+  },
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "1Ch",
+    "channels": 1
+   },
+   {
+    "name": "3Ch",
+    "channels": 3
+   },
+   {
+    "name": "5Ch",
+    "channels": 5
+   },
+   {
+    "name": "7Ch",
+    "channels": 7
+   },
+   {
+    "name": "10Ch",
+    "channels": 10
+   },
+   {
+    "name": "12Ch",
+    "channels": 12
+   },
+   {
+    "name": "13Ch",
+    "channels": 13
+   },
+   {
+    "name": "16Ch",
+    "channels": 16
+   },
+   {
+    "name": "HSV",
+    "channels": 3
+   }
+  ],
+  "sources": [
+   "https://chauvetprofessional.com/product/ovation-e-910fc/",
+   "https://chauvetprofessional.com/wp-content/uploads/pdf/en/OVATIONE910FC-2.pdf",
+   "https://chauvetprofessional.com/wp-content/uploads/2015/09/Ovation_E-910FC_UM_Rev19.pdf"
+  ],
+  "evidence": "Product page and datasheet PDF (OVATIONE910FC-2.pdf): weight 7.1 kg (15.4 lb) fixture only (9.0 to 13.3 kg with lens tubes), 220 W at 100 V / 215 W at 120 V / 216 W at 230 V, IP20 dry location, 91 LEDs (18 R, 18 G, 19 B, 18 A, 18 lime) at 3 W, per-lens beam angle, field angle, lux and lumens (1,553 to 7,263 lm), DMX channels 1, 3, 5, 7, 10, 12, 13, 16 or HSV. User manual Rev 19: the personality list 1Ch, 3Ch, 5Ch, 7Ch, 10Ch, 12Ch, 13Ch, 16Ch, HSV and the highest-start-address table (HSV 510, meaning 3 channels). Not in OFL (the chauvet-professional OFL folder has no E-910FC).",
+  "unverified": [
+   "dmxModes[HSV].channels (inferred as 3 from the manual's highest start address of 510)"
+  ],
+  "notes": "Lens tubes are sold separately, so optics depend on the tube: beam angles by tube run 7 deg (5 deg tube) to 41 deg (50 deg tube); zoom tubes 15-30 deg (13 to 24 deg beam) and 25-50 deg (23 to 36 deg beam); field angles run 7 to 51 deg. Lumens vary 1,553 (15-30 wide) to 7,263 (25-50 wide); I recorded the maximum, 7,263 lm. Weight 7.1 kg excludes the lens tube. powerW is the highest datasheet figure (220 W at 100 V). Mode count conflict: datasheet says 8 personalities and lists 1, 3, 5, 7, 10, 12, 13, 16 or HSV; manual Rev 19 says 9 (counting HSV separately). RGBA-Lime colour mixing, 2800 to 6500 K, CRI 86 at 3200 K, selectable PWM 600 Hz to 25 kHz, strobe 0 to 28 Hz. Ovation E-910FC IP is a separate IP-rated model, not recorded. Product page does not mark it discontinued.",
+  "verification": {
+   "sourcesReadable": "3/3",
+   "numbersFound": "5/5",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "CHAUVET Professional",
+  "model": "STRIKE 1",
+  "category": "blinder",
+  "weightKg": 8.6,
+  "powerW": 265,
+  "ipRating": "IP65",
+  "optics": {
+   "lumens": null,
+   "beamDegMin": 30,
+   "beamDegMax": 30
+  },
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "1Ch",
+    "channels": 1
+   },
+   {
+    "name": "3Ch",
+    "channels": 3
+   },
+   {
+    "name": "4Ch",
+    "channels": 4
+   },
+   {
+    "name": "5Ch",
+    "channels": 5
+   },
+   {
+    "name": "6Ch",
+    "channels": 6
+   },
+   {
+    "name": "7Ch",
+    "channels": 7
+   }
+  ],
+  "sources": [
+   "https://chauvetprofessional.com/wp-content/uploads/pdf/en/STRIKE1.pdf",
+   "https://chauvetprofessional.com/wp-content/uploads/2018/10/Strike_1_UM_Rev8.pdf",
+   "https://chauvetprofessional.com/wp-content/uploads/2018/10/Strike_1_DMX_Chart_Rev4.pdf",
+   "https://chauvetprofessional.com/product/strike-1/"
+  ],
+  "evidence": "Datasheet PDF (STRIKE1.pdf): weight 8.6 kg (18.8 lb), 265 W at 100 V (260 W at 120 V, 254 W at 230 V), IP65, 1 x 230 W warm-white LED plus 8 x 2 W amber LEDs, beam 30 deg, field 51 deg, 1,119 lux at 5 m, strobe 0 to 25 Hz, DMX channels 1, 3, 4, 5 or 6. User manual Rev 8: control personalities 1, 3, 4, 5, 6 or 7 Ch, 266 W at 120 V, 258 W at 230 V. DMX chart Rev 4 (firmware V1.230817): sections 7CH, 6CH, 5CH, 4CH, 3Ch, 1CH. Product page: used for the document links, no discontinued marker found. Not in OFL.",
+  "unverified": [
+   "optics.lumens (not published; only 1,119 lux at 5 m)"
+  ],
+  "notes": "Single-source IP65 warm-white blinder/strobe/floodlight (Chauvet's own description: blinder, strobe, wide-area floodlight); the STRIKE 4 already in the catalogue is a different product. Mode conflict: datasheet says 5 personalities (1, 3, 4, 5, 6 ch) but manual Rev 8 and DMX chart Rev 4 add a 7-channel mode (white, white fine, amber, amber fine, strobe, auto program, dimmer speed); I recorded all six. Narrow modes confirmed: 1ch (dimmer only), 3ch, 4ch, 5ch, 6ch. Warm white 2688 K at full, 1941 K at 10 percent (emulated amber shift), CRI 93, four dim modes, 16-bit dimming, selectable PWM up to 25 kHz. powerW convention: highest datasheet figure (265 W at 100 V). Category 'blinder' chosen; retag as 'strobe' if you prefer.",
+  "verification": {
+   "sourcesReadable": "4/4",
+   "numbersFound": "3/3",
+   "missing": []
+  }
+ },
+ {
+  "manufacturer": "ADJ",
+  "model": "Jolt Panel FXIP",
+  "category": "strobe",
+  "weightKg": 9.1,
+  "powerW": 214,
+  "ipRating": "IP65",
+  "optics": {
+   "lumens": null,
+   "beamDegMin": 73,
+   "beamDegMax": 73
+  },
+  "motion": null,
+  "laser": null,
+  "panel": null,
+  "dmxModes": [
+   {
+    "name": "6Ch",
+    "channels": 6
+   },
+   {
+    "name": "9Ch",
+    "channels": 9
+   },
+   {
+    "name": "13Ch",
+    "channels": 13
+   },
+   {
+    "name": "18Ch",
+    "channels": 18
+   },
+   {
+    "name": "20Ch",
+    "channels": 20
+   },
+   {
+    "name": "36Ch",
+    "channels": 36
+   },
+   {
+    "name": "41Ch",
+    "channels": 41
+   },
+   {
+    "name": "43Ch",
+    "channels": 43
+   },
+   {
+    "name": "51Ch",
+    "channels": 51
+   },
+   {
+    "name": "81Ch",
+    "channels": 81
+   },
+   {
+    "name": "83Ch",
+    "channels": 83
+   },
+   {
+    "name": "126Ch",
+    "channels": 126
+   },
+   {
+    "name": "141Ch",
+    "channels": 141
+   },
+   {
+    "name": "143Ch",
+    "channels": 143
+   }
+  ],
+  "sources": [
+   "https://leisuretec.co.uk/cdn/shop/files/ADJ_Jolt_Panel_FXIP_User_Manual.pdf"
+  ],
+  "evidence": "All fields come from this one document: a UK distributor's hosted copy of the ADJ Jolt Panel FXIP user manual (copyright 2024 ADJ Products, document version 1.3). Specifications page: weight 20.1 lb (9.1 kg), max power 214 W at 120 V and 208 W at 230 V, IP65, 73 deg beam and 111 deg field, 800 x 0.5 W RGB SMD LEDs plus 48 x 5 W cool-white SMD LEDs, max strobe rate 20 Hz. System-menu DMX list and starting-address table: the 14 channel modes. adj.com pages returned HTTP 429 or a bot check, which I did not try to bypass. Not in OFL.",
+  "unverified": [
+   "weightKg",
+   "powerW",
+   "ipRating",
+   "optics.beamDegMin",
+   "optics.beamDegMax",
+   "dmxModes (all values come from a distributor-hosted copy of the manufacturer manual, not adj.com; adj.com was inaccessible)",
+   "optics.lumens (not published in the manual)"
+  ],
+  "notes": "IP65 LED strobe/wash panel: 40 RGB zones and 6 cool-white (about 7400 K) zones addressable in the 126, 141 and 143 channel modes (white zones also in 51, 81, 83). Narrow modes 6, 9, 13, 18, 20 channels exist. Discrepancy in the manual: the specification block says '14 DMX channel modes ... 141 and 144' but the system menu, the starting-address table and the revision table all say 143, so I recorded 143. Manual revision table runs 03/2024 to 12/2024 and later versions may add or change modes. powerW is 'max power consumption' at 120 V. Power linking 6 units at 120 V, 12 at 230 V. Dimensions 417 x 280 x 213 mm. Lumens not published. ADJ's other strobes (Jolt 300, Jolt Bar FXIP) were not recorded.",
+  "verification": {
+   "sourcesReadable": "1/1",
+   "numbersFound": "3/3",
+   "missing": []
+  }
+ }
+]

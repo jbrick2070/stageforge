@@ -1,0 +1,57 @@
+JEM Professional Hazer Pro                     sources readable 3/3  numbers found 2/2
+JEM Professional ZR35                          sources readable 2/2  numbers found 2/2
+JEM Professional Glaciator Dynamic             sources readable 2/2  numbers found 2/2
+Antari HZ-500                                  sources readable 2/2  numbers found 2/2
+Antari ICE-101                                 sources readable 2/2  numbers found 2/2
+Chauvet Professional Amhaze Stadium            sources readable 3/3  numbers found 2/2
+Look Solutions Cobra 3.1                       sources readable 4/4  numbers found 2/2
+Look Solutions Cryo-Fog High Pressure          sources readable 3/3  numbers found 2/2
+MagicFX PSYCO2JET                              sources readable 4/4  numbers found 2/2
+CryoFX CO2 Jet DMX 512                         sources readable 1/1  numbers found 2/2
+Laserworld EL-400RGB S                         sources readable 3/3  numbers found 5/5
+Laserworld DS-1000RGB MK5                      sources readable 3/3  numbers found 5/5
+Stairville (Thomann) DJ Lase RGB Pro Advanced 1000 sources readable 1/1  numbers found 5/5
+Laserworld DS-3000RGB MK5                      sources readable 2/2  numbers found 5/5
+Kvant Clubmax 3000 FB4                         sources readable 2/2  numbers found 5/5
+X-Laser Triton T-5                             sources readable 1/1  numbers found 4/4
+Kvant Clubmax 10 FB4                           sources readable 2/2  numbers found 5/5
+Laserworld DS-15.000 IP65                      sources readable 2/2  numbers found 5/5
+Laserworld DS-30.000 IP65                      sources readable 2/2  numbers found 5/5
+Kvant Clubmax 40 FB4                           sources readable 1/1  numbers found 5/5
+Laserworld DS-2000G                            sources readable 2/2  numbers found 1/3  MISSING: opticalPower(mW)=1800 (UNFLAGGED), divergenceMrad=1.3
+Laserworld DS-6000B                            sources readable 2/2  numbers found 0/3  MISSING: opticalPower(mW)=5500 (UNFLAGGED), beamDiameterMm=4.5 (UNFLAGGED), divergenceMrad=1.8
+ROE Visual Vanish V8T                          sources readable 3/3  numbers found 4/4
+ROE Visual Black Quartz BQ3.9                  sources readable 2/2  numbers found 4/4
+ROE Visual Vanish ST V3ST                      sources readable 2/2  numbers found 4/4
+ROE Visual Black Marble BM5                    sources readable 2/2  numbers found 4/4
+ROE Visual Ruby RB1.5F                         sources readable 2/2  numbers found 4/4
+Absen PL3.9 Pro V10                            sources readable 1/1  numbers found 3/4  MISSING: powerW=170 (UNFLAGGED)
+Absen PL4.8 Pro V10                            sources readable 1/1  numbers found 4/4
+Absen PL2.5 Pro V10                            sources readable 1/1  numbers found 3/4  MISSING: powerW=170 (UNFLAGGED)
+Planar (Leyard) CarbonLight CLM6.9             sources readable 2/2  numbers found 4/4
+Planar (Leyard) CarbonLight CLF VX2.6          sources readable 1/1  numbers found 4/4
+Ayrton Diablo Profile S                        sources readable 3/3  numbers found 7/7
+Ayrton Khamsin S                               sources readable 2/2  numbers found 7/7
+Robe T2 Profile                                sources readable 3/3  numbers found 7/7
+Robe ESPRITE                                   sources readable 2/2  numbers found 5/7  MISSING: powerW=870 (UNFLAGGED), lumens=34000 (UNFLAGGED)
+Robe Pointe                                    sources readable 2/2  numbers found 5/7  MISSING: powerW=470 (UNFLAGGED), lumens=9870 (UNFLAGGED)
+Chauvet Professional Maverick MK3 Profile      sources readable 1/1  numbers found 7/7
+Chauvet Professional Maverick Storm 3 Profile  sources readable 1/1  numbers found 7/7
+Chauvet Professional Rogue R2X Spot            sources readable 1/1  numbers found 6/6
+Martin RUSH MH 7 Hybrid                        sources readable 3/3  numbers found 6/6
+Martin RUSH MH 5 Profile                       sources readable 3/3  numbers found 5/5
+Martin MAC One                                 sources readable 1/1  numbers found 7/7
+Showtec Phantom 130 Spot                       sources readable 1/1  numbers found 6/6
+CHAUVET Professional Rogue Outcast 2X Wash     sources readable 4/4  numbers found 7/7
+Robe Robin Tetra2                              sources readable 3/3  numbers found 6/6
+CHAUVET DJ COLORband PiX IP                    sources readable 4/4  numbers found 3/3
+CHAUVET Professional COLORado 1 Solo           sources readable 3/3  numbers found 4/4
+Elation Professional Fuze Par Z60 IP           sources readable 2/2  numbers found 4/4
+Martin RUSH PAR 2 RGBW Zoom                    sources readable 3/3  numbers found 4/4
+ETC Source Four LED Series 3 Lustr X8          sources readable 4/4  numbers found 5/5
+CHAUVET Professional Ovation E-910FC           sources readable 3/3  numbers found 5/5
+CHAUVET Professional STRIKE 1                  sources readable 4/4  numbers found 3/3
+Elation Professional CUEPIX Blinder WW4        sources readable 2/3  numbers found 0/3  MISSING: weightKg=9.5 (UNFLAGGED), powerW=427 (UNFLAGGED), beamDegMin=62 (UNFLAGGED)
+ADJ Jolt Panel FXIP                            sources readable 1/1  numbers found 3/3
+
+{"checked": 241, "found": 227, "miss_flagged": 2, "miss_unflagged": 12, "no_readable_source": 0}
