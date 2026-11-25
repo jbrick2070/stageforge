@@ -72,7 +72,7 @@ export const LiveDmxBadge: React.FC<LiveDmxBadgeProps> = ({
     ? 'Some catalogue fixtures are simulation-only (neutral zeros on physical DMX)'
     : hasCatalogFixtures
       ? 'Check DMX Output for per-fixture personality status'
-      : 'StageForge simulated channel layout, verify against your fixture';
+      : 'Generic non-catalogue fixtures output neutral zeros on physical DMX';
   const tooltip = `${baseTitle} · ${simNote}`;
 
   const preflightTone =

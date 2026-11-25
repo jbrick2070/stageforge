@@ -613,6 +613,8 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
         const termIdx = tail.findIndex((p) => (p.options & SACN_OPT_STREAM_TERMINATED) !== 0);
         return termIdx >= 3 && tail.slice(termIdx).length >= 3;
       }, { timeout: 5000 }).toBe(true);
+      await dmxPage.getByTestId('live-dmx-stopped-dismiss').click();
+      await expect(dmxPage.getByTestId('live-dmx-stopped-badge')).toHaveCount(0);
       await dmxPage.getByRole('button', { name: 'Close Rig Builder' }).click();
       await dmxPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
 
