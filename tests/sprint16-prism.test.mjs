@@ -352,6 +352,18 @@ describe('Sprint 16: BeamPools flag-off parity, <0.1 MiB cap, upload bytes, low-
     assert.equal(oversize.getStats().extraBufferBytes, 0);
     oversize.dispose();
 
+    // 3b. Non-WebGL2 / missing-derivatives fallback (`qa-14` R1: retains base pool shader cleanly)
+    const noDeriv = new beamPoolsMod.BeamPools(44, 22, 11, 1.8, undefined, {
+      prism: true,
+      tier: 'high',
+      derivativesSupported: false,
+    });
+    assert.equal(noDeriv.prismAllocated, false);
+    assert.equal(noDeriv.group.children[0].material.fragmentShader, beamPoolsMod.POOL_FRAGMENT_BASE);
+    assert.equal(noDeriv.getStats().suppressedReason, 'derivatives-unsupported');
+    assert.equal(noDeriv.getStats().extraBufferBytes, 0);
+    noDeriv.dispose();
+
     // 4. Low-tier overlap hysteresis guard (never suppresses high tier; suppresses & resumes smoothly on low tier)
     assert.equal(prismMod.stepPrismOverlapGuard(false, 40, 80, 'high'), false);
     let sup = false;

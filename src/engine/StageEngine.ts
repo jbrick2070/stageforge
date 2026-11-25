@@ -864,13 +864,21 @@ export class StageEngine {
     this.beamPools?.dispose();
     const rig = this.currentRig;
     if (!rig) return;
+    const gl = this.renderer.getContext();
+    // Three.js 0.187.0 emits GLSL ES 3.00 core `dFdx`/`dFdy` on WebGL2 and removed WebGL1 `extensions.derivatives`;
+    // require a real WebGL2 context before compiling `POOL_FRAGMENT_PRISM`, falling back to `POOL_FRAGMENT_BASE` otherwise.
+    const derivativesSupported = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
     this.beamPools = new BeamPools(
       this.movingFixtures.length,
       rig.stageWidth,
       rig.stageDepth,
       rig.stageHeight,
       rig.platforms,
-      { prism: this.renderSettings.prismPools, tier: this.renderTier },
+      {
+        prism: this.renderSettings.prismPools,
+        tier: this.renderTier,
+        derivativesSupported,
+      },
     );
     this.scene.add(this.beamPools.group);
     if (refill) {

@@ -733,7 +733,9 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
 
       // 4f. Sprint 24 (Codex qa-07 R1, qa-06 R1, qa-08 R2): Opening a show in Pitch Viewer while live DMX is active MUST
       //     synchronously stop BOTH universes before applying `blinderLevel: 1 / smokeOutput: 1` (zero U1 or U2 leak)!
+      await expect(dmxPage.getByTestId('dmx-output-arm')).toBeEnabled();
       await dmxPage.getByTestId('dmx-output-arm').click();
+      await expect(dmxPage.getByTestId('dmx-output-go-live')).toBeEnabled();
       await dmxPage.getByTestId('dmx-output-go-live').click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
       const countAtViewerLive = packets.length;
@@ -791,7 +793,9 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
 
       // 4g. Sprint 24 (Codex qa-04 R1, qa-06 R1, qa-08 R2): Opening a show file while live DMX is active MUST synchronously
       //     detach StageEngine's frame listener BEFORE applying `blinderLevel: 1 / smokeOutput: 1`, with zero U1 or U2 leak!
+      await expect(dmxPage.getByTestId('dmx-output-arm')).toBeEnabled();
       await dmxPage.getByTestId('dmx-output-arm').click();
+      await expect(dmxPage.getByTestId('dmx-output-go-live')).toBeEnabled();
       await dmxPage.getByTestId('dmx-output-go-live').click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
       const countAtImportLive = packets.length;
@@ -846,7 +850,9 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
         await pf2.getByRole('button', { name: 'Done', exact: true }).click();
       }
       const countBeforeCrashArm = packets.length;
+      await expect(dmxPage.getByTestId('dmx-output-arm')).toBeEnabled();
       await dmxPage.getByTestId('dmx-output-arm').click();
+      await expect(dmxPage.getByTestId('dmx-output-go-live')).toBeEnabled();
       await dmxPage.getByTestId('dmx-output-go-live').click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
       await expect.poll(() => packets.length > countBeforeCrashArm + 2, { timeout: 5000 }).toBe(true);

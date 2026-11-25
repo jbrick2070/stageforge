@@ -200,9 +200,16 @@ export interface BeamPoolsOptions {
   prism?: boolean;
   /** Active render tier for low-tier overlap hysteresis guard (default 'high'). */
   tier?: RenderTier;
+  /** True when fragment derivatives (`dFdx`/`dFdy`) are available on the active GL context (default true). */
+  derivativesSupported?: boolean;
 }
 
-export type PrismSuppressionReason = 'disabled' | 'memory-budget' | 'low-tier-overlap' | null;
+export type PrismSuppressionReason =
+  | 'disabled'
+  | 'derivatives-unsupported'
+  | 'memory-budget'
+  | 'low-tier-overlap'
+  | null;
 
 export interface BeamPoolsStats {
   requested: boolean;
@@ -400,6 +407,7 @@ class Receiver {
 export class BeamPools {
   readonly group = new THREE.Group();
   readonly prismRequested: boolean;
+  readonly derivativesSupported: boolean;
   readonly prismAllocated: boolean;
   readonly tier: RenderTier;
   private receivers: Receiver[];
@@ -423,9 +431,10 @@ export class BeamPools {
     options?: BeamPoolsOptions,
   ) {
     this.prismRequested = Boolean(options?.prism);
+    this.derivativesSupported = options?.derivativesSupported !== false;
     this.tier = options?.tier ?? 'high';
     const receiverCount = platforms.length + 1;
-    const admitted = this.prismRequested && canAdmitPrismBuffers(capacity, receiverCount);
+    const admitted = this.prismRequested && this.derivativesSupported && canAdmitPrismBuffers(capacity, receiverCount);
     this.prismAllocated = admitted;
     this.extraBufferBytes = admitted ? prismExtraBufferBytes(capacity, receiverCount) : 0;
 
@@ -556,6 +565,7 @@ export class BeamPools {
   getStats(): BeamPoolsStats {
     let suppressedReason: PrismSuppressionReason = null;
     if (!this.prismRequested) suppressedReason = 'disabled';
+    else if (!this.derivativesSupported) suppressedReason = 'derivatives-unsupported';
     else if (!this.prismAllocated) suppressedReason = 'memory-budget';
     else if (this.prismOverlapSuppressed) suppressedReason = 'low-tier-overlap';
     return {
