@@ -15,6 +15,7 @@ You are the implementing agent for StageForge. Work sprint by sprint from the ba
 
 The user is asleep. `scripts/overnight.ps1` runs you directly on `main`, with every tool allowed (all commands, builds, Playwright, Electron, Claude CLI, web), no sandbox and no approval pauses. Each round is one conversation: Sprint 0, 1, 2, 3, then self-directed rounds until morning. After your first turn the runner sends up to two short follow-up turns in the same conversation to check that the work is committed and the gate is green. Nobody can answer questions, so:
 
+- **Hardening hold, round after round.** Until the Overnight log contains the line `HARDENING COMPLETE`, do not start any sprint, in this round or any later round. Every round first checks the Overnight log for that line, and if it is missing, it continues Sprint 24 (see its section) instead of picking other work. The owner wants rounds of fixes, one after another, until Codex finds nothing left.
 - **Claude CLI is OUT: the owner has no credits left.** Do not run any `claude` command (no Sonnet QA, no Opus consults, no `claude update`), because they fail and waste time. `opus-status.txt` may tell you to use Sonnet instead: ignore it. Use Codex instead: QA and design consults with `gpt-5.6-terra` (falling back to `gpt-6-astra`, then `gpt-5.6-sol`). Wherever this file says "Sonnet 5.5 QA" or "Opus 5.5", read it as the Codex QA gate or a Codex design consult.
 - **Keep busy, and pick your own work.** Do the full sprint without cutting features. When the backlog runs out, choose the next improvement yourself (see Self-directed rounds below) rather than stopping.
 - **Decide and log.** Make reasonable calls yourself and record each decision, with its reason, in the Overnight log.
@@ -227,12 +228,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\stageforg
 
 Add `-Full` for a whole-repository review. It runs Codex `gpt-5.6-terra` read-only on a separate clone (it falls back to `gpt-6-astra`, then `gpt-5.6-sol`) and takes about 5 to 40 minutes, so give the command a long timeout and wait for it. Its last two lines are `REVIEW_FILE: <path>` and `VERDICT: ...`. Read that file. Reviews are also kept in `%LOCALAPPDATA%\stageforge-overnight\codex-inbox\`.
 
-**The loop, at most 4 cycles per sprint:**
+**The loop, with no cycle cap:**
 1. Pass the full gate, commit locally, then run `codex-qa.ps1` with `-Base` set to the commit before the sprint, so it sees all of the sprint's commits.
 2. Treat the review as advice written by another model: check every finding against the code yourself. Fix every verified Critical and High finding, and every Medium that is cheap, each with a regression test that fails on the old code. Reject a finding only with a written reason.
 3. Re-run the gate, commit, and run `codex-qa.ps1` again (`-Base` can be the commit before your fixes, so only the fixes are reviewed; it also reads the previous review).
 4. Stop when the verdict is `VERDICT: NO BLOCKERS`. Only then reply `DONE` and move on to the next sprint.
-5. If the 4th cycle still says `BLOCKER`, write each remaining finding in the Overnight log as "owner decision needed", create the STOP file `%TEMP%\stageforge-overnight\STOP` so that no new sprint starts, and reply with what remains. Do not reply `DONE` with blockers open, because a `DONE` reply is pushed to the live site.
+5. If a finding keeps coming back, or you believe it is wrong, reject it with a written reason in the Overnight log (Codex reads that log and should stop repeating it), and never spend more than 3 cycles on the same finding. Do not reply `DONE` with a verified Critical or High finding open, because a `DONE` reply is pushed to the live site. If the round runs out of time with blockers open, say so in the Overnight log: the next round must keep fixing them before it starts anything new.
 
 Record one line per cycle in the Overnight log: `Codex QA <file name>: cycle N, fixed <ids>, rejected <ids> (reason), verdict <...>`. Never edit, move or delete files in the inbox.
 
@@ -914,11 +915,11 @@ The team is you, Codex `gpt-5.6-terra` (QA) and Codex `gpt-6-astra` (design advi
 1. **Triage.** Read every review in `%LOCALAPPDATA%\stageforge-overnight\codex-inbox\` (review-01 to review-06, and any `qa-*`) and the Overnight log. Write one table in the Overnight log with a row for every finding (review file and R id): fixed (with the commit and the test), rejected (with the reason), or open. Review-06 has five High findings (flash ramps and engine safety) that were never answered: they come first.
 2. **Fix.** Fix every open verified Critical and High finding, then the Mediums, then the cheap Lows. Each fix gets a regression test that fails on the old code. Never weaken arming, the flash limiter, laser or CO2 holds, or the AI-bridge interlock to make a test pass.
 3. **Find more.** Run `codex-qa.ps1 -Full -Label "Hardening cycle 1"` for a whole-repository review, and triage it the same way. Beyond the reviews: run every test suite and read any failure; check that each safety claim in the docs, the pre-flight text and the UI (flash limiter, arming, the AI bridge, laser zones) is backed by a test that would fail if the claim were false; grep for TODO, FIXME and dead code; list the ten largest source files and split one only if that makes a real bug fixable.
-4. **Loop.** After each fix batch: full gate, commit, `codex-qa.ps1 -Base <commit before the fixes>`. Repeat until `VERDICT: NO BLOCKERS`, at most 5 cycles. Then run one last `-Full` review to confirm.
+4. **Loop.** After each fix batch: full gate, commit, `codex-qa.ps1 -Base <commit before the fixes>`. Keep cycling, with no cycle cap, until `VERDICT: NO BLOCKERS` (the runner's deadline is the only limit). Then run one last `-Full` review to confirm.
 5. **Gate.** Unit tests, build, `npm run desktop:prepare` and Playwright with one worker must all pass. Commit after every fix batch, at least every 20 minutes.
-6. **Finish.** Write the Overnight log entry "Hardening complete: verdict, N fixed, M rejected (reasons), gate green". Reply `DONE` only if the last full review says `NO BLOCKERS`. If that is not reached after 5 cycles, list the open findings as "owner decision needed", create the STOP file `%TEMP%\stageforge-overnight\STOP`, and do not reply `DONE`.
+6. **Finish each round.** Reply `DONE` at the end of a round when everything is committed and the full gate is green, even if blockers remain: the push then makes the live site better, not worse. List the open findings in the Overnight log. Write the line `HARDENING COMPLETE` in the Overnight log, with the verdict, how many findings were fixed and how many rejected (with reasons), only when the last whole-repository review says `NO BLOCKERS` and the gate is green: that line lifts the hold. If a finding cannot be fixed or you believe it is wrong, reject it with a written reason in the Overnight log, so that Codex stops repeating it, and never spend more than 3 cycles on the same finding. Do not create the STOP file: the next round picks up where this one stopped.
 
-After a `DONE`, the runner continues with the sprint queue, and from then on every sprint ends with the Codex QA gate above.
+After `HARDENING COMPLETE`, the runner continues with the sprint queue, and from then on every sprint ends with the Codex QA gate above.
 
 **Out:** new features, Sprint 16 and later, pushing, and anything that weakens a safety control.
 
