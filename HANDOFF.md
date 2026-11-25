@@ -687,7 +687,7 @@ These come from a code-grounded roadmap review. The goal is that a working progr
 **Run this after Sprint 11 and before Realism items 6 to 8.** It is small, about 20 to 30 minutes.
 
 **What exists:** the owner supplied a real track (5:09.6, stereo, deep house with blues, real instruments and unusual synths). It was converted, mapped and played through the simulator, and the finished files are waiting outside the repo:
-- `%LOCALAPPDATA%\stageforge-overnight\demo-track\track.mp3` (128 kbps, 4.95 MB)
+- `%LOCALAPPDATA%\stageforge-overnight\demo-track\track.mp3` (96 kbps constant bitrate, 3.72 MB, under the 4 MB mobile target)
 - `%LOCALAPPDATA%\stageforge-overnight\demo-track\track.json` (map: 122 BPM, first downbeat 96 ms, 11 sections, 158 bars)
 - `%LOCALAPPDATA%\stageforge-overnight\demo-track\README.txt` and `analysis.txt` (how the map was measured)
 - optional `provenance.txt`, written by the owner
