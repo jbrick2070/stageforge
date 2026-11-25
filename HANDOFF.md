@@ -1198,3 +1198,54 @@ The overnight runner was stopped after Round 5. Claude Code took over for one sp
   - Zero new npm dependencies, zero schema/show-format/bundle changes, zero new IPC channels.
 - **Leftovers / next up:**
   - Next up: **Sprint 7** (MVR import preflight, with no silent losses), followed by Sprints 8 and 9, then Realism items 6–8.
+
+### 2026-11-24 18:20 PST — Sprint 7: MVR import preflight, with no silent losses (`9b83839`)
+
+- **Consults & QA runs:**
+  - Opus 5.5 (`claude-opus-5-5`) available (`opus-status.txt`) and consulted (`sprint-7-design.md` → `sprint-7-design-reply.md`) on the structured `MvrFinding` taxonomy, measuring real 3D position/orientation deltas via `w`-first orthonormalisation & geodesic angle, `unit-suspect` bounds (`< 0.5 m` / `> 500 m`), preflight trigger policy (Option B), shared `fixtureNumbers()` numbering, and synthetic test design.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) QA pass 1 on all uncommitted Sprint 7 changes (0 Critical, 0 High, 7 Medium, 11 Low), followed by verification against the code, targeted fixes, and regression tests.
+  - Read-only Sonnet 5.5 (`claude-sonnet-5-5`) follow-up QA pass 2 on the Step-4 fixes (0 Critical, 0 High, 0 Medium, 6 Low); applied Low cleanups #1, #2 and #4 before the final gate.
+- **What shipped:**
+  - **Structured findings, measurement & hardened parsing (`src/interchange/mvr/importMvr.ts`, `src/interchange/mvr/coords.ts`, `src/interchange/mvr/exportMvr.ts`, `src/interchange/mvr/xml.ts`):**
+    - Added `findings: MvrFinding[]` (`{ severity: 'info' | 'warn' | 'block', code, message, count, fixtureIds? }`) to `MvrImportReport`, keeping `notes: string[]` derived directly from `findings.map(f => f.message)` for backward compatibility.
+    - Covered every lossy/skip/cap/merge path in both foreign import and `restore()`: `universe-repatched`, `address-assigned`, `break-dropped`, `patch-overlap`, `address-edit-ignored`, `fixture-number-lost`, `uuid-changed`, `transform-simplified`, `unit-suspect`, `hierarchy-flattened`, `truss-merged`, `object-edit-ignored`, `coordinate-out-of-range`, `matrix-unreadable`, `gdtf-missing`, `gdtf-unparsed`, `geometry-unsupported`, `fixture-dropped`, `object-dropped`, `object-skipped`, `resource-dropped`, `passthrough-truncated`, and `payload-damaged`.
+    - Added `matrixRotationDeltaDeg()` in `coords.ts` (orthonormalising from `w`, computing SO(3) geodesic angle, and flagging mirrored/degenerate frames) and measured every placed foreign fixture against its composed MVR world matrix via `placeFixtures(normalizeDesign(finalRig))`: `> 0.05 m` or `> 2°` emits `warn` with worst delta; `> 0.5 m` on `> 10%` escalates to `block`; tilted trusses emit their own `transform-simplified` `warn` so > 64 drifted fixtures never truncate them.
+    - Added `unit-suspect` (`block` on trimmed scene extent `> 500 m` or `< 0.5 m` across `≥ 3` distinct 1 mm positions with feet-scaling hint; `warn` when an untrimmed far outlier exceeds `500 m`).
+    - Exported shared `fixtureNumbers(rig)` from `exportMvr.ts` so import `fixture-number-lost` checks and MVR export sequential numbering never drift; preserved foreign UUIDs through import and in-session/v4 re-export and flagged duplicate or non-canonical UUIDs via `uuid-changed`.
+    - Hardened `xml.ts` to strip trailing/text/attribute NUL bytes in O(N) (skipping comments/CDATA safely) while rejecting UTF-16 payloads and NUL bytes inside tag/attribute names; sanitized C0/C1/bidi/zero-width characters in finding labels and capped labels at 96 chars / 64 IDs per finding; prioritized `.gdtf` retention ahead of textures/meshes under `maxKeptResourceBytes` (clamped `<= 128 MiB`).
+  - **Preflight dialog, pure parse & Show files history (`src/components/MvrImportReport.tsx`, `src/components/ShowFiles.tsx`, `src/App.tsx`, `src/index.css`, `docs/mvr-exchange.md`):**
+    - Built deferred `MvrImportReport` dialog (reusing `DeskDialog`, mobile-safe on 390 px, Escape = Cancel) displaying scene counts, severity-grouped findings (`Blocking issues`, `Warnings`, `Notes`), expandable `Affected items` lists, **Cancel**, and **Import** (disabled while any `block` finding exists until `"Import anyway — the layout will differ"` is ticked).
+    - Split `App.tsx` MVR open into pure parse (`openMvrBytes`) and explicit commit (`commitMvr`): foreign MVRs and StageForge MVRs with any finding open preflight without touching the desk or `localStorage`; clean lossless StageForge round trips (`source === 'stageforge'` and `findings.length === 0`) commit directly; the last committed import report remains viewable from **Show files → Last MVR import report**.
+    - Documented preflight and added the **Real-world qualification checklist** (grandMA3, Vectorworks Spotlight, Capture) to `docs/mvr-exchange.md`.
+  - **Tests (+6 unit tests, 229 → 235; +1 E2E test, 55 → 56):**
+    - `tests/mvr-core.test.mjs`: `matrixRotationDeltaDeg` (yaw, tilt, 180° standing flip, uniform scale, mirrored, degenerate, tiny-scale, near-collinear) and NUL/UTF-16/comment-quote XML parsing tests.
+    - `tests/mvr-interchange.test.mjs`: parse purity (input byte hash + throwing `localStorage` + determinism), StageForge → MVR → StageForge → MVR and Foreign → SF → MVR → SF → MVR UUID + fixture-number round trips, synthetic MVRs for every finding code (nested rotated groups with independent world-position math, feet-scaled `< 0.5 m` and `> 500 m` unit-suspect, 3 universes, multi-break, missing & corrupt GDTF, `.3ds`/`Symbol`, NUL-padded `GDTFSpec`, oversize resource via `maxKeptResourceBytes`), plus QA regressions (cumulative drop escalation, restore tilt/delete/unpatch, 800 m outlier, GDTF-first retention, missing StageForge payload, bidi sanitization, tilted-truss finding split).
+    - `tests/e2e/mvr-exchange.spec.mjs`: clean StageForge round trip with zero warnings + viewable clean report, third-party preflight confirm + UUID/v4 export, and synthetic `block` MVR where Cancel and Escape leave `localStorage` and live probe byte-identical, checkbox resets on reopen, and accept-anyway imports and keeps the report viewable.
+- **Gate results (final code):**
+  - `npx tsc --noEmit -p .`: PASS
+  - `npm test`: PASS (**235/235**)
+  - `npm run build`: PASS (`dist/schemas/show-v1..v7.schema.json` emitted; 0 warnings)
+  - `npm run desktop:win`: PASS (portable exe built; zero new dependencies; SPDX gate green)
+  - `npm run test:desktop`: PASS (**9/9**)
+  - `npx playwright test --workers=1`: PASS (**56/56**, 8.4 m)
+  - `git status --short`: clean
+- **QA findings verified and fixed:**
+  - *Pass 1 M1 & Pass 2 L1:* Cleared `pendingMvr` when `openRequestRef` bumps in `openFile`, `fileCommand`, and `openExample`, and cleared + toasted in `commitMvr` on stale request mismatch.
+  - *Pass 1 M2 & L4:* Tracked cumulative fixture drops across unreadable, out-of-range, 1024-cap, cluster-cap, and 2-universe-cap against total source fixtures, escalating to `block` above 10% (+regression tests).
+  - *Pass 1 M3, M4, M5 & L7:* In `restore()`, emitted `payload-damaged` if `exportMvr` diff throws, flagged rig truss tilt/roll/scale edits via post-merge `close()`, reported objects deleted in another tool as `object-edit-ignored`, and flagged removed DMX addresses on patched fixtures (+regression tests).
+  - *Pass 1 M6 & Pass 2 L4:* Added an untrimmed `> 500 m` outlier `unit-suspect` `warn` alongside the 5th–95th percentile `block` check with clean wording when wide spread has no single outlier (+regression test).
+  - *Pass 1 M7 & L1:* Retained `.gdtf` profiles ahead of meshes/textures under `maxKeptResourceBytes`, reported unsupported archive extensions as `resource-dropped` `info`, and flagged a StageForge marker missing `StageForge_show.json` as `payload-damaged` (+regression tests).
+  - *Pass 1 L2 & Pass 2 L2:* Rejected UTF-16 payloads and NUL bytes inside XML tag/attribute names while stripping trailing/text/attribute NULs in O(N) and skipping comments/CDATA safely (+regression tests).
+  - *Pass 1 L3, L8, L9, L11:* Split tilted trusses into their own `transform-simplified` finding, tightened `matrixRotationDeltaDeg` relative tolerances, stripped bidi/zero-width/line-sep Unicode in `CONTROL_CHARS` + sanitized `pod.name`, and renamed `RAD` to `DEG_TO_RAD` / `RAD_TO_DEG` (+regression tests).
+- **QA findings rejected or deferred (with reasons):**
+  - *Pass 1 L5 (SceneObjects as point props; empty `<Geometries/>` truss 3 m default):* Point props are StageForge's intentional representation; empty `<Geometries/>` trusses legitimately omit mesh files rather than specifying unsupported geometry.
+  - *Pass 1 L6 (non-fixture position deltas):* Out of Sprint 7 scope (sprint scopes transform-delta measurement to fixtures).
+  - *Pass 1 L7 sub-point (empty `GDTFMode` defaulting to `modes[0]`):* Standard MVR convention when a GDTF has a single mode.
+  - *Pass 1 L10 (`'MVR scene'` desktop label; `lastMvrReport` persisting across non-MVR open):* Avoids changing `desktop/preload.cjs` IPC payload shape; report header explicitly names the imported MVR file and timestamp.
+  - *Pass 2 L3, L5, L6 (dead `0xFFFE` check, unbounded `unsupportedResources` before collector cap, case-sensitive `marked` check predating Sprint 7):* Harmless or bounded upstream by `MAX_ENTRIES`/`MAX_FINDING_IDS`.
+- **Design decisions:**
+  - Chose Option B preflight policy (open preflight whenever `source === 'mvr'` or `findings.length > 0`; auto-commit clean lossless StageForge round trips while keeping the clean report viewable in Show files) per Opus 5.5 consult.
+  - Used `importMvr(bytes, { maxKeptResourceBytes })` (clamped `<= 128 MiB`) to test resource-cap eviction deterministically without allocating 128 MiB in RAM.
+  - Kept zero new dependencies, zero show-format/bundle/schema changes, and zero new desktop IPC channels.
+- **Leftovers / next up:**
+  - Next up: **Sprint 8** (read-only pitch viewer), followed by **Sprint 9** (audio-reactive mappings), then Realism items 6–8.
