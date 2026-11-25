@@ -45,7 +45,28 @@ function Stop-RepoProcesses {
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
+# Antigravity Turbo equivalent: everything allowed, no sandbox, no review pauses. The deny rule is kept
+# as documented, but it does not stop git push in this mode, so the git-level guards below do.
+function Write-AgySettings {
+  [IO.File]::WriteAllText($settingsFile, (@{
+    agentMode = 'accept-edits'; toolPermission = 'always-proceed'; artifactReviewPolicy = 'always-proceed'
+    allowNonWorkspaceAccess = $true; enableTerminalSandbox = $false
+    permissions = @{ deny = @('command(git push)') }
+  } | ConvertTo-Json -Depth 5), $utf8)
+}
+
+# Files under %TEMP% can be swept away mid-run: a tidy-up during Sprint 6 once deleted the settings file and
+# the whole log folder, and every later agy call then failed instantly. Recreate what the run needs before
+# every call.
+function Restore-RunnerFiles {
+  New-Item -ItemType Directory -Force $logDir, $qaDir | Out-Null
+  if (-not (Test-Path $settingsFile)) { Write-AgySettings; Write-RunLog 'Recreated the missing agy settings file.' }
+  $statusFile = Join-Path $logDir 'opus-status.txt'
+  if ($script:opusStatus -and -not (Test-Path $statusFile)) { [IO.File]::WriteAllText($statusFile, $script:opusStatus, $utf8) }
+}
+
 function Invoke-Agy([string]$prompt, [string]$conversation, [string]$logFile) {
+  Restore-RunnerFiles
   $agyArgs = @('-p', $prompt, '--settings', $settingsFile, '--output-format', 'json', '--print-timeout', '0')
   if ($conversation) { $agyArgs += @('--conversation', $conversation) }
   $raw = (& agy @agyArgs 2>&1 | Out-String)
@@ -64,13 +85,7 @@ if (-not $DryRun -and (git branch --show-current) -ne 'main') {
   exit 1
 }
 
-# Antigravity Turbo equivalent: everything allowed, no sandbox, no review pauses. The deny rule is kept
-# as documented, but it does not stop git push in this mode, so the git-level guards below do.
-[IO.File]::WriteAllText($settingsFile, (@{
-  agentMode = 'accept-edits'; toolPermission = 'always-proceed'; artifactReviewPolicy = 'always-proceed'
-  allowNonWorkspaceAccess = $true; enableTerminalSandbox = $false
-  permissions = @{ deny = @('command(git push)') }
-} | ConvertTo-Json -Depth 5), $utf8)
+Write-AgySettings
 
 $deadline = if ($Hours -gt 0) { (Get-Date).AddHours($Hours) } else { [datetime]::MaxValue }
 $baseline = (git ls-remote origin main 2>$null) -split "\s+" | Select-Object -First 1
@@ -106,6 +121,7 @@ try {
   $rounds = @($Sprints | ForEach-Object { [pscustomobject]@{ kind = 'sprint'; n = $_ } })
   $k = 0
   $index = 0
+  $failStreak = 0
   while ($true) {
     if (Test-Path $stopFile) { Write-RunLog 'STOP file found; ending.'; break }
     if ((Get-Date) -ge $deadline) { Write-RunLog 'Deadline reached; ending.'; break }
@@ -126,6 +142,17 @@ try {
 
     $result = Invoke-Agy $prompt $null $logFile
     Write-RunLog "$label turn 1: $($result.status), $([math]::Round([double]$result.duration_seconds / 60, 1)) min, conversation $($result.conversation_id)"
+    # A call that fails at once (settings file gone, login expired, agy missing) is not a finished round. Retry the
+    # same round, and stop after three in a row instead of spinning through the backlog.
+    if ($result.status -ne 'SUCCESS' -and [double]$result.duration_seconds -lt 60) {
+      $failStreak++
+      if ($failStreak -ge 3) { Write-RunLog "agy failed immediately $failStreak times in a row ($($result.status)); stopping so the run does not spin. Fix the cause and run again."; break }
+      Write-RunLog "agy failed immediately ($($result.status)); retrying $label in 20 s (attempt $($failStreak + 1) of 3)."
+      Start-Sleep -Seconds 20
+      if ($round.kind -eq 'sprint') { $index-- } else { $k-- }
+      continue
+    }
+    $failStreak = 0
     for ($f = 1; $f -le $FollowUps -and $result.conversation_id; $f++) {
       $follow = 'Follow-up check. Run git status and git log -5. If your work for this round is not committed, or the full gate was not green on the final code, finish it now: fix, re-run the gate, commit. If the Overnight log entry is missing, add it and commit. If you cannot get to green, stash the unfinished work, say why in the Overnight log, and commit that note. Reply with one line: DONE, or BLOCKED followed by the reason.'
       $result = Invoke-Agy $follow $result.conversation_id $logFile
