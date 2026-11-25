@@ -1,5 +1,6 @@
 import type { AudioMetrics, MusicRef } from '../types/show';
 import { DEMO_TOTAL_STEPS, getDemoPosition } from '../data/demoShow';
+import { demoTrackStepAtMs, getDemoTrackPosition, type DemoTrackMap } from '../data/demoTrack';
 import { DemoScore } from './demoScore';
 import {
   beatGridPhase,
@@ -20,6 +21,7 @@ interface FileSource {
   node: MediaElementAudioSourceNode;
   url: string;
   abort: AbortController;
+  demoTrack?: DemoTrackMap;
 }
 
 function releaseFile(file: FileSource) {
@@ -55,6 +57,24 @@ function fileMetadata(file: FileSource) {
   });
 }
 
+// 46-byte silent 1-sample 8 kHz 16-bit mono PCM WAV for CSP-safe blob: media-element gesture unlock (iOS Safari).
+const SILENT_WAV_BYTES = new Uint8Array([
+  0x52, 0x49, 0x46, 0x46, 0x26, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45,
+  0x66, 0x6d, 0x74, 0x20, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+  0x40, 0x1f, 0x00, 0x00, 0x80, 0x3e, 0x00, 0x00, 0x02, 0x00, 0x10, 0x00,
+  0x64, 0x61, 0x74, 0x61, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+]);
+
+export interface PreparedPlaybackElement {
+  element: HTMLAudioElement;
+  cleanup: () => void;
+}
+
+export interface DemoTrackLoadResult {
+  trackName: string;
+  playing: boolean;
+  autoplayBlocked: boolean;
+}
 const SCHEDULE_AHEAD = 0.15; // Audio seconds; covers main-thread rendering jitter.
 const PUMP_INTERVAL_MS = 25;
 
@@ -108,13 +128,20 @@ export class AudioEngine {
 
     const audibleStep = this.source === 'synth' ? this.currentDemoStep() : undefined;
     if (audibleStep === DEMO_TOTAL_STEPS && this.playing) this.finishDemo();
-    const demo = audibleStep === undefined ? undefined : getDemoPosition(audibleStep);
+    const trackMap = this.source === 'file' ? this.activeFile?.demoTrack : undefined;
+    const demo = audibleStep !== undefined
+      ? getDemoPosition(audibleStep)
+      : trackMap && this.activeFile
+        ? getDemoTrackPosition(trackMap, this.activeFile.element.currentTime * 1000, this.activeFile.element.ended)
+        : undefined;
+    const demoTrackTitle = trackMap?.title;
 
     if (!this.analyser || !this.playing) {
       this.spectrum32.fill(0);
       return {
         playing: false,
         demo,
+        demoTrackTitle,
         source: this.source,
         trackName: this.trackName,
         energy: 0,
@@ -175,15 +202,23 @@ export class AudioEngine {
       drop = (demo.sectionId === 'drop' || demo.sectionId === 'finale') &&
         demo.barInSection === 0 && demo.stepInBar < 4;
     } else if (this.source === 'file' && this.activeFile && this.beatGrid) {
-      // Phase-locked beat pulse driven by the analyzed / nudged offline beat grid.
+      // Phase-locked beat pulse driven by the analyzed / nudged offline beat grid or authoritative track map.
       const playbackMs = this.activeFile.element.currentTime * 1000;
-      const { beatIndex, isDownbeat } = beatGridPhase(this.beatGrid, playbackMs);
-      if (this.lastGridBeatIndex !== null && beatIndex !== this.lastGridBeatIndex) {
-        beat = true;
-        this.beatPulse = isDownbeat ? 1 : Math.min(1, 0.55 + bass * 0.45);
+      if (demo?.beforeDownbeat) {
+        this.lastGridBeatIndex = null;
+        beat = false;
+        drop = false;
+      } else {
+        const { beatIndex, isDownbeat } = beatGridPhase(this.beatGrid, playbackMs);
+        if (this.lastGridBeatIndex !== null && beatIndex !== this.lastGridBeatIndex) {
+          beat = true;
+          this.beatPulse = isDownbeat ? 1 : Math.min(1, 0.55 + bass * 0.45);
+        }
+        this.lastGridBeatIndex = beatIndex;
+        drop = demo
+          ? (demo.sectionId === 'drop' || demo.sectionId === 'finale') && demo.barInSection === 0 && demo.stepInBar < 4
+          : bass > 0.72 && energy > 0.52;
       }
-      this.lastGridBeatIndex = beatIndex;
-      drop = bass > 0.72 && energy > 0.52;
     } else {
       this.bassHistory.push(bass);
       if (this.bassHistory.length > 42) this.bassHistory.shift();
@@ -200,6 +235,7 @@ export class AudioEngine {
     return {
       playing: this.playing,
       demo,
+      demoTrackTitle,
       source: this.source,
       trackName: this.trackName,
       energy,
@@ -372,19 +408,114 @@ export class AudioEngine {
     this.releaseScore();
   }
 
+  /**
+   * Synchronously unlock an Audio element inside a user gesture via a tiny silent blob: WAV
+   * (compatible with Electron's `media-src 'self' blob:` CSP) without resuming a paused synth context.
+   */
+  public preparePlaybackGesture(): PreparedPlaybackElement {
+    this.ensureContext(this.source !== 'synth' || this.playing);
+    const element = new Audio();
+    element.preload = 'auto';
+    element.muted = true;
+    const silentUrl = URL.createObjectURL(new Blob([SILENT_WAV_BYTES], { type: 'audio/wav' }));
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      URL.revokeObjectURL(silentUrl);
+    };
+    element.src = silentUrl;
+    try {
+      const p = element.play();
+      if (p && typeof p.then === 'function') {
+        void p.then(() => {
+          if (element.src === silentUrl) {
+            element.pause();
+            element.muted = false;
+          }
+          cleanup();
+        }).catch(() => {
+          if (element.src === silentUrl) element.muted = false;
+          cleanup();
+        });
+      }
+    } catch {
+      element.muted = false;
+      cleanup();
+    }
+    return { element, cleanup };
+  }
+
   public async loadAudioFile(file: File): Promise<string> {
     return this.openAudioFile(file, true);
   }
 
-  private async openAudioFile(file: File, playing: boolean, position?: () => number): Promise<string> {
+  public async loadDemoTrack(
+    file: File,
+    demoTrack: DemoTrackMap,
+    prepared?: PreparedPlaybackElement,
+  ): Promise<DemoTrackLoadResult> {
+    if (prepared) {
+      prepared.element.muted = false;
+      prepared.cleanup();
+    }
+    try {
+      const trackName = await this.openAudioFile(file, true, undefined, {
+        demoTrack,
+        element: prepared?.element,
+        allowAutoplayFallback: true,
+      });
+      return {
+        trackName,
+        playing: this.playing,
+        autoplayBlocked: !this.playing,
+      };
+    } catch (error) {
+      prepared?.cleanup();
+      throw error;
+    }
+  }
+
+  public isDemoTrackActive(): boolean {
+    return this.source === 'file' && !!this.activeFile?.demoTrack;
+  }
+
+  public getActiveDemoTrackMap(): DemoTrackMap | null {
+    return this.source === 'file' ? (this.activeFile?.demoTrack ?? null) : null;
+  }
+
+  private async openAudioFile(
+    file: File,
+    playing: boolean,
+    position?: () => number,
+    options?: { demoTrack?: DemoTrackMap; element?: HTMLAudioElement; allowAutoplayFallback?: boolean },
+  ): Promise<string> {
     const generation = this.cancelPendingSource();
     const ctx = this.ensureContext(playing && (this.source !== 'synth' || this.playing));
-    const element = new Audio();
-    element.loop = true;
+    const demoTrack = options?.demoTrack;
+    const element = options?.element ?? new Audio();
+    element.muted = false;
+    element.loop = !demoTrack;
     element.preload = 'auto';
     const node = ctx.createMediaElementSource(element);
-    const candidate = { file, element, node, url: URL.createObjectURL(file), abort: new AbortController() };
+    const candidate: FileSource = {
+      file,
+      element,
+      node,
+      url: URL.createObjectURL(file),
+      abort: new AbortController(),
+      demoTrack,
+    };
+    if (demoTrack) {
+      element.addEventListener('ended', () => {
+        if (this.activeFile === candidate) {
+          this.playing = false;
+          this.beatPulse = 0;
+        }
+      }, { signal: candidate.abort.signal });
+    }
     this.pendingFile = candidate;
+    let actuallyPlaying = playing;
     try {
       // The disconnected source stays silent until the browser accepts the file.
       element.src = candidate.url;
@@ -393,7 +524,24 @@ export class AudioEngine {
         if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
         seekLoop(element, position());
       }
-      if (playing) await element.play();
+      if (playing) {
+        try {
+          await element.play();
+        } catch (playErr) {
+          if (
+            options?.allowAutoplayFallback &&
+            playErr instanceof DOMException &&
+            playErr.name === 'NotAllowedError'
+          ) {
+            // Keep the decoded track loaded in paused state so a single tap plays immediately without re-fetching.
+            await fileMetadata(candidate);
+            if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+            actuallyPlaying = false;
+          } else {
+            throw playErr;
+          }
+        }
+      }
       if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
       if (position) seekLoop(element, position());
       node.connect(this.masterGain!);
@@ -406,9 +554,13 @@ export class AudioEngine {
     this.releaseActiveSource();
     this.activeFile = candidate;
     this.source = 'file';
-    this.trackName = file.name.replace(/\.[^/.]+$/, '');
-    this.playing = playing;
-    if (playing) this.ensureContext();
+    this.trackName = demoTrack ? demoTrack.title : file.name.replace(/\.[^/.]+$/, '');
+    this.playing = actuallyPlaying;
+    if (demoTrack) {
+      this.setBpm(demoTrack.bpm);
+      this.setBeatGrid({ bpm: demoTrack.bpm, offsetMs: demoTrack.firstDownbeatMs, source: 'manual' });
+    }
+    if (actuallyPlaying) this.ensureContext();
     if (this.liveBpmEnabled) void this.attachLiveBpm();
     return this.trackName;
   }
@@ -508,7 +660,13 @@ export class AudioEngine {
     return { kind: 'none', name: '', playing: false };
   }
 
-  public async restoreTimelineMusic(ref: MusicRef, file: File | undefined, bpm: number, lateMs: number) {
+  public async restoreTimelineMusic(
+    ref: MusicRef,
+    file: File | undefined,
+    bpm: number,
+    lateMs: number,
+    demoTrack?: DemoTrackMap,
+  ) {
     this.setBpm(bpm);
     const late = Number.isFinite(lateMs) ? Math.max(0, lateMs) / 1000 : 0;
     if (ref.kind === 'live' || ref.kind === 'none') {
@@ -533,9 +691,9 @@ export class AudioEngine {
     }
     const started = performance.now();
     const position = () => (ref.offsetSeconds ?? 0) + (ref.playing ? late + (performance.now() - started) / 1000 : 0);
-    if (active?.file !== selected) {
+    if (active?.file !== selected || active?.demoTrack !== demoTrack) {
       this.stopAll();
-      await this.openAudioFile(selected, ref.playing, position);
+      await this.openAudioFile(selected, ref.playing, position, demoTrack ? { demoTrack } : undefined);
       return;
     }
     const generation = this.cancelPendingSource();
@@ -587,11 +745,15 @@ export class AudioEngine {
       return this.playing;
     }
     if (this.source === 'file' && this.activeFile) {
-      const { element } = this.activeFile;
+      const { element, demoTrack } = this.activeFile;
       if (this.playing) {
         element.pause();
         this.playing = false;
       } else {
+        if (element.ended || (demoTrack && demoTrackStepAtMs(demoTrack, element.currentTime * 1000) >= demoTrack.timeline.totalSteps)) {
+          element.currentTime = 0;
+          this.lastGridBeatIndex = null;
+        }
         this.ensureContext();
         this.playing = true;
         void element.play().catch(() => {
@@ -648,8 +810,15 @@ export class AudioEngine {
   }
 
   public getStatus() {
+    const activeTrack = this.source === 'file' ? this.activeFile?.demoTrack : undefined;
+    const demoTrackFinished = !!activeTrack && !this.playing && !!this.activeFile && (
+      this.activeFile.element.ended ||
+      demoTrackStepAtMs(activeTrack, this.activeFile.element.currentTime * 1000) >= activeTrack.timeline.totalSteps
+    );
     return {
       demoFinished: this.source === 'synth' && !this.playing && this.heldStep >= DEMO_TOTAL_STEPS,
+      demoTrackActive: !!activeTrack,
+      demoTrackFinished,
       playing: this.playing,
       source: this.source,
       trackName: this.trackName,

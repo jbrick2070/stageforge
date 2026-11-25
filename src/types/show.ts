@@ -392,6 +392,7 @@ export interface ShowCue {
 
 export interface AudioMetrics {
   demo?: DemoPosition;
+  demoTrackTitle?: string;
   playing: boolean;
   source: 'none' | 'synth' | 'file' | 'mic';
   trackName: string;

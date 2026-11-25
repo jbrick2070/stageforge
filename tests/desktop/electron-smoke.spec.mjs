@@ -4,7 +4,7 @@ import { _electron as electron, expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import dgram from 'node:dgram';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
@@ -190,6 +190,14 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
   expect(await app.evaluate(({ app }) => app.getPath('userData'))).toBe(path.join(tmp, 'profile'));
   await expect(page).toHaveURL('stageforge://app/');
   await expect(page.getByRole('button', { name: 'Show files', exact: true })).toBeVisible();
+  // Absent demo/track.json returns 204 with CSP and surfaces no "Play demo track" button or console error.
+  const absentDemoRes = await page.evaluate(async () => {
+    const r = await fetch('stageforge://app/demo/track.json');
+    return { status: r.status, csp: r.headers.get('content-security-policy') };
+  });
+  expect(absentDemoRes.status).toBe(204);
+  expect(absentDemoRes.csp).toContain("script-src 'self'");
+  await expect(page.getByRole('button', { name: 'Play demo track', exact: true })).toHaveCount(0);
   const headers = await page.evaluate(async () => {
     const rootRes = await fetch(location.href);
     const upperRes = await fetch('stageforge://app/INDEX.HTML');
@@ -820,4 +828,101 @@ test('File → Open in viewer… enters pitch viewer via openViewer IPC, disable
   await expect.poll(getMenuStates).toEqual(beforeMenus);
   expect(await page.evaluate(() => window.localStorage.getItem('stageforge.design.v1'))).toBe(storageBefore);
   expectNoProblems();
+});
+
+test('demo track plays from stageforge://app/ under strict CSP when renderer/demo/track.json is present', async () => {
+  // Copy desktop/build/app to an isolated temp folder so desktop/build/app stays untouched.
+  const demoTmp = await mkdtemp(path.join(os.tmpdir(), 'stageforge-desktop-demo-'));
+  let demoApp;
+  const demoProblems = [];
+  try {
+    const tempAppDir = path.join(demoTmp, 'app');
+    await cp(appDir, tempAppDir, { recursive: true });
+    const demoDir = path.join(tempAppDir, 'renderer', 'demo');
+    await mkdir(demoDir, { recursive: true });
+
+    // Generate a tiny 120 BPM WAV (12 bars = 24 s, 8 kHz mono PCM) and 3-section map.
+    const sampleRate = 8000;
+    const durationSec = 24;
+    const numSamples = sampleRate * durationSec;
+    const dataBytes = numSamples * 2;
+    const wav = Buffer.alloc(44 + dataBytes);
+    wav.write('RIFF', 0, 'ascii');
+    wav.writeUInt32LE(36 + dataBytes, 4);
+    wav.write('WAVE', 8, 'ascii');
+    wav.write('fmt ', 12, 'ascii');
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(sampleRate, 24);
+    wav.writeUInt32LE(sampleRate * 2, 28);
+    wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write('data', 36, 'ascii');
+    wav.writeUInt32LE(dataBytes, 40);
+    for (let i = 0; i < numSamples; i++) {
+      const t = i / sampleRate;
+      const sample = Math.sin(2 * Math.PI * 220 * t) * 0.25;
+      wav.writeInt16LE(Math.round(sample * 32767), 44 + i * 2);
+    }
+
+    const trackMap = {
+      format: 'stageforge-demo-track',
+      version: 1,
+      title: 'Desktop Smoke Track',
+      file: 'smoke-demo.wav',
+      bpm: 120,
+      firstDownbeatMs: 0,
+      sections: [
+        { role: 'intro', label: 'Desktop Intro', bars: 4 },
+        { role: 'groove', label: 'Desktop Groove', bars: 4 },
+        { role: 'drop', label: 'Desktop Drop', bars: 4 },
+      ],
+    };
+    await writeFile(path.join(demoDir, 'smoke-demo.wav'), wav);
+    await writeFile(path.join(demoDir, 'track.json'), JSON.stringify(trackMap, null, 2));
+
+    const demoProfile = `--user-data-dir=${path.join(demoTmp, 'profile')}`;
+    demoApp = await electron.launch({
+      executablePath: createRequire(import.meta.url)('electron'),
+      args: [tempAppDir, demoProfile],
+    });
+    demoApp.process().stderr?.on('data', chunk => {
+      const text = String(chunk);
+      if (/Uncaught|UnhandledPromiseRejection|TypeError|ReferenceError/.test(text)) demoProblems.push('main: ' + text.trim());
+    });
+    const demoPage = await demoApp.firstWindow();
+    demoPage.on('pageerror', err => demoProblems.push('pageerror: ' + err.message));
+    demoPage.on('console', msg => {
+      if (msg.type() === 'error') demoProblems.push('console: ' + msg.text());
+    });
+    await demoPage.waitForLoadState('domcontentloaded');
+    await expect(demoPage).toHaveURL('stageforge://app/');
+
+    // Idle discovery surfaces "Play demo track" from stageforge://app/demo/track.json under strict CSP.
+    const playTrackBtn = demoPage.getByRole('button', { name: 'Play demo track', exact: true });
+    await expect(playTrackBtn).toBeVisible({ timeout: 15_000 });
+    await playTrackBtn.click();
+
+    // Playing fetches stageforge://app/demo/smoke-demo.wav -> blob and drives the section overlay.
+    await expect(demoPage.getByRole('button', { name: 'Pause', exact: true })).toBeVisible({ timeout: 15_000 });
+    const progress = demoPage.locator('.demo-progress');
+    await expect(progress).toHaveAttribute('data-section', 'intro');
+    await expect(progress).toContainText('/ 12');
+
+    // Open Audio settings and jump sections to prove seeking works under stageforge://app/ CSP.
+    await demoPage.getByRole('button', { name: 'Audio settings', exact: true }).click();
+    await expect(demoPage.getByText('120.0 BPM · 0 ms')).toBeVisible();
+    await demoPage.getByRole('button', { name: 'Next section', exact: true }).click();
+    await expect(progress).toHaveAttribute('data-section', 'groove');
+    await expect(progress).toContainText('Desktop Groove');
+    await demoPage.getByRole('button', { name: 'Next section', exact: true }).click();
+    await expect(progress).toHaveAttribute('data-section', 'drop');
+    await expect(progress).toContainText('Desktop Drop');
+
+    expect(demoProblems, 'desktop demo-track errors').toEqual([]);
+  } finally {
+    await demoApp?.close().catch(() => {});
+    await rm(demoTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
 });

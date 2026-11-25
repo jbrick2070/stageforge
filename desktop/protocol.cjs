@@ -19,8 +19,9 @@ function createRendererHandler({ fetchFile, rendererRoot, csp = CSP }) {
     if (request.method !== 'GET' || !isAppPage(request.url)) {
       return new Response(null, { status: 404 });
     }
+    let pathname = '';
     try {
-      const pathname = decodeURIComponent(new URL(request.url).pathname);
+      pathname = decodeURIComponent(new URL(request.url).pathname);
       if (/[\\:\x00]/.test(pathname)) return new Response(null, { status: 400 });
       const file = path.resolve(root, pathname === '/' ? 'index.html' : '.' + pathname);
       const relative = path.relative(root, file);
@@ -33,6 +34,16 @@ function createRendererHandler({ fetchFile, rendererRoot, csp = CSP }) {
       headers.set('X-Content-Type-Options', 'nosniff');
       return new Response(result.body, { status: result.status, statusText: result.statusText, headers });
     } catch {
+      if (pathname === '/demo/track.json') {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Content-Security-Policy': csp,
+            'X-Content-Type-Options': 'nosniff',
+            'Cache-Control': 'no-store',
+          },
+        });
+      }
       return new Response(null, { status: 404 });
     }
   };

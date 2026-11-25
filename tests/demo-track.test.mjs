@@ -1,0 +1,547 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { createServer } from 'vite';
+
+const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
+const demoShowMod = await vite.ssrLoadModule('/src/data/demoShow.ts');
+const demoLightingMod = await vite.ssrLoadModule('/src/data/demoLighting.ts');
+const demoTrackMod = await vite.ssrLoadModule('/src/data/demoTrack.ts');
+const presetsMod = await vite.ssrLoadModule('/src/data/presets.ts');
+
+const {
+  DEFAULT_DEMO_SECTIONS,
+  DEFAULT_DEMO_TIMELINE,
+  DEMO_TOTAL_BARS,
+  DEMO_TOTAL_STEPS,
+  OPENING_DONE_STEP,
+  compileDemoTimeline,
+  getDemoPosition,
+} = demoShowMod;
+const { applyDemoLighting, DEMO_BLACKOUT_STEPS, demoFade } = demoLightingMod;
+const {
+  DEMO_TRACK_FORMAT,
+  demoTrackMsForStep,
+  demoTrackStepAtMs,
+  fetchDemoTrackAudio,
+  getDemoTrackPosition,
+  parseDemoTrackMap,
+  probeDemoTrack,
+  resolveDemoTrackAudioUrl,
+  resolveDemoTrackMapUrl,
+} = demoTrackMod;
+const { INITIAL_SHOW_STATE } = presetsMod;
+
+test.after(async () => {
+  await vite.close();
+});
+
+// Exact HEAD baseline implementations of getDemoPosition and applyDemoLighting (pinned prior to Sprint 10).
+const HEAD_SECTIONS = [
+  { id: 'intro', label: 'Walk-on', bars: 8 },
+  { id: 'groove', label: 'First groove', bars: 8 },
+  { id: 'build', label: 'Build', bars: 8 },
+  { id: 'drop', label: 'First drop', bars: 8 },
+  { id: 'breakdown', label: 'Breakdown', bars: 8 },
+  { id: 'rebuild', label: 'Rebuild', bars: 8 },
+  { id: 'finale', label: 'Finale', bars: 12 },
+  { id: 'outro', label: 'Curtain call', bars: 4 },
+];
+const HEAD_LOOKS = {
+  intro:     { colors: ['#ffae66', '#ffae66'], level: [0, 0.38], movement: 'fan', motor: 'low', screen: 'cybergrid' },
+  groove:    { colors: ['#ffae66', '#4288dd'], level: [0.38, 0.58], movement: 'sweep', motor: 'breathe', screen: 'cybergrid' },
+  build:     { colors: ['#fdab55', '#7666f0'], level: [0.58, 0.88], movement: 'wave', motor: 'high', screen: 'tunnel', laser: 'horizon' },
+  drop:      { colors: ['#13c7fe', '#ff652d'], level: [1.00, 0.80], movement: 'flyout', motor: 'v_tilt', screen: 'spectrum', laser: 'fan' },
+  breakdown: { colors: ['#324a99', '#efa482'], level: [0.14, 0.30], movement: 'fan', motor: 'low', screen: 'plasma' },
+  rebuild:   { colors: ['#805cff', '#5fe8de'], level: [0.28, 0.93], movement: 'figure8', motor: 'high', screen: 'mandala', laser: 'wave' },
+  finale:    { colors: ['#ffae45', '#f155b9'], level: [0.84, 1.00], movement: 'wave', motor: 'wave', screen: 'tunnel', laser: 'dual_cones' },
+  outro:     { colors: ['#ffb779', '#ae7d80'], level: [0.57, 0.045], movement: 'fan', motor: 'breathe', screen: 'tour_text' },
+};
+
+function headFadeColor(from, to, amount) {
+  if (amount <= 0) return from;
+  if (amount >= 1) return to;
+  const rgb = [1, 3, 5].map((i) => {
+    const a = parseInt(from.slice(i, i + 2), 16);
+    const b = parseInt(to.slice(i, i + 2), 16);
+    return Math.round(a + (b - a) * amount).toString(16).padStart(2, '0');
+  });
+  return '#' + rgb.join('');
+}
+
+function headGetDemoPosition(absoluteStep) {
+  const step = Math.max(0, Math.min(1024, absoluteStep));
+  const bar = Math.min(63, Math.floor(step / 16));
+  let startBar = 0;
+  for (const section of HEAD_SECTIONS) {
+    if (bar < startBar + section.bars) {
+      return {
+        sectionId: section.id,
+        label: section.label,
+        bar,
+        barInSection: bar - startBar,
+        sectionBars: section.bars,
+        sectionProgress: (step / 16 - startBar) / section.bars,
+        stepInBar: Math.min(15, Math.floor(step - bar * 16)),
+        step,
+        finished: step === 1024,
+      };
+    }
+    startBar += section.bars;
+  }
+  throw new RangeError('Invalid demo position');
+}
+
+function headApplyDemoLighting(state, pos) {
+  const id = pos.sectionId;
+  const look = HEAD_LOOKS[id];
+  const lift = id === 'build' || id === 'rebuild';
+  const peak = id === 'drop' || id === 'finale';
+  const rest = lift && pos.barInSection === pos.sectionBars - 1 && pos.stepInBar >= 12;
+  const progress = pos.sectionProgress;
+  const ease = progress * progress * (3 - 2 * progress);
+  const intro = id === 'intro';
+  const groove = id === 'groove';
+  const step = pos.step;
+  const wingFade = demoFade(step, 64, 128);
+  const level = intro ? 0.26 * demoFade(step, DEMO_BLACKOUT_STEPS, 56) + 0.12 * wingFade :
+    rest ? 0.025 : look.level[0] + (look.level[1] - look.level[0]) * ease;
+  const wash = 0.035 + level * (peak ? 0.70 : 0.48);
+  const washFade = demoFade(step, 96, 128);
+  const ledFade = demoFade(step, 128, 224);
+  const accentColor = intro ? headFadeColor(look.colors[1], HEAD_LOOKS.groove.colors[1], wingFade) :
+    id === 'build' ? headFadeColor(HEAD_LOOKS.groove.colors[1], look.colors[1], demoFade(step, 256, 288)) : look.colors[1];
+  const accent = peak && pos.barInSection % 4 === 0 && pos.stepInBar < 2;
+  const laserLevel = look.laser && !rest ? (peak ? 0.48 + level * 0.35 : Math.max(0, progress - 0.35) * 0.55) : 0;
+  return {
+    ...state,
+    ...(state.movingGroups && Object.keys(state.movingGroups).length ? { movingGroups: {} } : {}),
+    primaryColor: look.colors[0], accentColor,
+    colorSplitMode: peak ? 'alternate' : 'gradient',
+    beamIntensity: level, washIntensity: intro ? wash * washFade : wash,
+    beamZoom: intro ? 0.12 + wingFade * 0.35 : lift ? 0.47 - progress * 0.38 : peak ? 0.18 : 0.47,
+    movementMode: look.movement, movementSpeed: 0.07 + level * (peak ? 0.69 : 0.53),
+    movementSpread: 0.19 + level * 0.76, goboPrism: id === 'finale' && pos.barInSection >= 4,
+    strobeRate: 0, blinderLevel: accent ? 0.63 : 0,
+    laser: { enabled: laserLevel > 0, intensity: laserLevel,
+      pattern: look.laser ?? 'fan', colorMode: 'dual', beamCount: peak ? 18 : 8,
+      spreadX: peak ? 0.87 : 0.52, spreadY: 0.35 + level * 0.26, speed: 0.1 + level * 0.38,
+      tilt: 0.16, rotation: 0.24, strobe: 0, audienceScan: false },
+    motors: { ...state.motors, mode: look.motor, speed: 0.18 + level * 0.39 },
+    atmo: { ...state.atmo, hazeLevel: (0.40 + 0.21 * level) * (intro ? demoFade(step, DEMO_BLACKOUT_STEPS, 48) : 1),
+      smokeOutput: intro ? 0 : groove ? 0.045 * ledFade : peak ? 0.20 : 0.045,
+      co2Active: false, co2AutoOnDrop: peak },
+    led: { ...state.led, enabled: !intro && (!groove || ledFade > 0), visualMode: look.screen,
+      brightness: level * 0.72 * (intro || groove ? ledFade : 1), speed: 0.07 + level * 0.48 },
+  };
+}
+
+function validMap(overrides = {}) {
+  return {
+    format: DEMO_TRACK_FORMAT,
+    version: 1,
+    title: 'Deep House Blues',
+    file: 'midnight-blues.mp3',
+    bpm: 120,
+    firstDownbeatMs: 0,
+    sections: [
+      { role: 'intro', label: 'Walk-on', bars: 8 },
+      { role: 'groove', label: 'Verse groove', bars: 12 },
+      { role: 'drop', label: '12-bar chorus', bars: 12 },
+      { role: 'outro', label: 'Fade out', bars: 4 },
+    ],
+    ...overrides,
+  };
+}
+
+test('parseDemoTrackMap accepts valid maps including 12-bar blues, repeated roles, fractional BPM and boundary limits', () => {
+  const parsed = parseDemoTrackMap(validMap());
+  assert.equal(parsed.format, DEMO_TRACK_FORMAT);
+  assert.equal(parsed.version, 1);
+  assert.equal(parsed.title, 'Deep House Blues');
+  assert.equal(parsed.file, 'midnight-blues.mp3');
+  assert.equal(parsed.bpm, 120);
+  assert.equal(parsed.firstDownbeatMs, 0);
+  assert.equal(parsed.timeline.totalBars, 36);
+  assert.equal(parsed.timeline.totalSteps, 36 * 16);
+  assert.equal(Object.isFrozen(parsed), true);
+
+  // Boundary: 3 sections, 70 BPM, wav extension, non-zero downbeat.
+  const minMap = parseDemoTrackMap(validMap({
+    file: 'a.wav',
+    bpm: 70,
+    firstDownbeatMs: 1250.5,
+    sections: [
+      { role: 'groove', label: 'A', bars: 1 },
+      { role: 'drop', label: 'B', bars: 12 },
+      { role: 'outro', label: 'C', bars: 1 },
+    ],
+  }));
+  assert.equal(minMap.timeline.totalBars, 14);
+  assert.equal(minMap.timeline.leadingIntroBars, 0);
+  assert.equal(minMap.timeline.openingBlackoutBars, 0);
+
+  // Boundary: 24 sections, 180 BPM, m4a/ogg, repeated roles, exactly 512 bars.
+  const manySections = Array.from({ length: 24 }, (_, i) => ({
+    role: i % 2 === 0 ? 'groove' : 'drop',
+    label: `Part ${i + 1}`,
+    bars: i < 8 ? 22 : 21, // 8*22 + 16*21 = 176 + 336 = 512
+  }));
+  const maxMap = parseDemoTrackMap(validMap({
+    file: 'set_2026-01.ogg',
+    bpm: 180,
+    sections: manySections,
+  }));
+  assert.equal(maxMap.timeline.totalBars, 512);
+  assert.equal(maxMap.sections.length, 24);
+});
+
+test('parseDemoTrackMap rejects every invalid or hostile input with a readable Error', () => {
+  const cases = [
+    ['null', null, /object/i],
+    ['array', [], /object/i],
+    ['wrong format', validMap({ format: 'other' }), /format/i],
+    ['version 0', validMap({ version: 0 }), /version/i],
+    ['newer version 2', validMap({ version: 2 }), /newer format version 2/i],
+    ['float version', validMap({ version: 1.5 }), /version/i],
+    ['empty title', validMap({ title: '   \u0000\u202E  ' }), /title/i],
+    ['too-long title', validMap({ title: 'A'.repeat(81) }), /title/i],
+    ['path traversal file', validMap({ file: '../secret.mp3' }), /file/i],
+    ['subfolder file', validMap({ file: 'sub/track.mp3' }), /file/i],
+    ['backslash file', validMap({ file: 'sub\\track.mp3' }), /file/i],
+    ['url file', validMap({ file: 'https://evil.test/a.mp3' }), /file/i],
+    ['dot-dot in name', validMap({ file: 'a..b.mp3' }), /file/i],
+    ['bad extension', validMap({ file: 'track.exe' }), /file/i],
+    ['bpm too low', validMap({ bpm: 69.9 }), /bpm/i],
+    ['bpm too high', validMap({ bpm: 180.1 }), /bpm/i],
+    ['bpm NaN', validMap({ bpm: Number.NaN }), /bpm/i],
+    ['bpm Infinity', validMap({ bpm: Number.POSITIVE_INFINITY }), /bpm/i],
+    ['negative firstDownbeatMs', validMap({ firstDownbeatMs: -1 }), /firstDownbeatMs/i],
+    ['NaN firstDownbeatMs', validMap({ firstDownbeatMs: Number.NaN }), /firstDownbeatMs/i],
+    ['too few sections', validMap({ sections: [{ role: 'intro', label: 'A', bars: 4 }, { role: 'outro', label: 'B', bars: 4 }] }), /between 3 and 24/i],
+    ['too many sections', validMap({ sections: Array.from({ length: 25 }, (_, i) => ({ role: 'groove', label: `S${i}`, bars: 4 })) }), /between 3 and 24/i],
+    ['unknown role', validMap({ sections: [{ role: 'intro', label: 'A', bars: 4 }, { role: 'chorus', label: 'B', bars: 4 }, { role: 'outro', label: 'C', bars: 4 }] }), /unknown role/i],
+    ['zero bars', validMap({ sections: [{ role: 'intro', label: 'A', bars: 0 }, { role: 'groove', label: 'B', bars: 4 }, { role: 'outro', label: 'C', bars: 4 }] }), /bars/i],
+    ['float bars', validMap({ sections: [{ role: 'intro', label: 'A', bars: 4.5 }, { role: 'groove', label: 'B', bars: 4 }, { role: 'outro', label: 'C', bars: 4 }] }), /bars/i],
+    ['bars > 64', validMap({ sections: [{ role: 'intro', label: 'A', bars: 65 }, { role: 'groove', label: 'B', bars: 4 }, { role: 'outro', label: 'C', bars: 4 }] }), /bars/i],
+    ['total bars > 512', validMap({ sections: Array.from({ length: 9 }, (_, i) => ({ role: 'groove', label: `S${i}`, bars: 60 })) }), /total bars/i],
+    ['empty section label', validMap({ sections: [{ role: 'intro', label: '   ', bars: 4 }, { role: 'groove', label: 'B', bars: 4 }, { role: 'outro', label: 'C', bars: 4 }] }), /label/i],
+    ['too-long section label', validMap({ sections: [{ role: 'intro', label: 'X'.repeat(49), bars: 4 }, { role: 'groove', label: 'B', bars: 4 }, { role: 'outro', label: 'C', bars: 4 }] }), /label/i],
+  ];
+
+  for (const [name, input, pattern] of cases) {
+    assert.throws(
+      () => parseDemoTrackMap(input),
+      (err) => err instanceof Error && !(err instanceof TypeError) && pattern.test(err.message),
+      `Expected readable error for ${name}`,
+    );
+  }
+
+  // Non-plain prototype objects must be rejected cleanly before reading inherited properties.
+  const inherited = Object.create(validMap());
+  assert.throws(() => parseDemoTrackMap(inherited), /JSON object/i);
+});
+
+test('synth demo parity: getDemoPosition and applyDemoLighting match HEAD bit-for-bit across all 1/8 steps and random floats', () => {
+  assert.equal(DEMO_TOTAL_BARS, 64);
+  assert.equal(DEMO_TOTAL_STEPS, 1024);
+
+  const checkStep = (step) => {
+    const expectedPos = headGetDemoPosition(step);
+    const actualPos = getDemoPosition(step);
+    const actualViaArray = getDemoPosition(step, DEFAULT_DEMO_SECTIONS);
+    assert.deepStrictEqual(actualPos, actualViaArray);
+
+    // Every original DemoPosition field matches HEAD strictly.
+    for (const key of Object.keys(expectedPos)) {
+      assert.strictEqual(actualPos[key], expectedPos[key], `position.${key} mismatch at step ${step}`);
+    }
+    assert.strictEqual(actualPos.openingStep, expectedPos.step, `openingStep parity at step ${step}`);
+
+    const expectedLook = headApplyDemoLighting(INITIAL_SHOW_STATE, expectedPos);
+    const actualLook = applyDemoLighting(INITIAL_SHOW_STATE, actualPos);
+    assert.deepStrictEqual(actualLook, expectedLook, `look mismatch at step ${step}`);
+  };
+
+  // Every 1/8 step from 0 to 1024 inclusive (8,193 points) plus clamping bounds.
+  for (let i = -4; i <= 1024 * 8 + 4; i++) {
+    checkStep(i / 8);
+  }
+
+  // Deterministic pseudo-random float steps across the entire song, plus non-default ShowState with movingGroups.
+  const richState = {
+    ...INITIAL_SHOW_STATE,
+    movingGroups: { 'upstage-beams': { intensity: 0.9, color: '#ff00aa' } },
+    motors: { ...INITIAL_SHOW_STATE.motors, speed: 0.77, podTargets: { p1: { height: 0.5, tilt: 0.2 } } },
+    atmo: { ...INITIAL_SHOW_STATE.atmo, hazeLevel: 0.88, smokeOutput: 0.44, co2Active: true },
+    led: { ...INITIAL_SHOW_STATE.led, tourText: 'TOUR 2026', customMediaUrl: 'blob:demo', customMediaType: 'video' },
+  };
+  let seed = 0x13579bdf;
+  const nextRand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 0xffffffff;
+  };
+  for (let i = 0; i < 1000; i++) {
+    const step = nextRand() * 1024;
+    checkStep(step);
+    const expectedPos = headGetDemoPosition(step);
+    const actualPos = getDemoPosition(step);
+    assert.deepStrictEqual(
+      applyDemoLighting(richState, actualPos),
+      headApplyDemoLighting(richState, expectedPos),
+      `richState look mismatch at step ${step}`,
+    );
+  }
+});
+
+test('role-to-look parity: custom track sections produce the same look as the synth demo at equal role and progress', () => {
+  const customSections = [
+    { role: 'intro', label: 'Slow open', bars: 16 },
+    { role: 'groove', label: 'House pocket', bars: 12 },
+    { role: 'build', label: 'Riser 1', bars: 4 },
+    { role: 'drop', label: 'Blues drop 1', bars: 8 },
+    { role: 'breakdown', label: 'Piano break', bars: 8 },
+    { role: 'rebuild', label: 'Climb', bars: 8 },
+    { role: 'drop', label: 'Blues drop 2', bars: 12 },
+    { role: 'finale', label: 'Peak', bars: 12 },
+    { role: 'outro', label: 'Goodnight', bars: 4 },
+  ];
+  const timeline = compileDemoTimeline(customSections);
+
+  // Compare first drop (index 3, 8 bars starting at bar 32) against synth drop (bar 24, 8 bars) at equal progress.
+  for (const offsetSteps of [0, 1, 2, 16, 48, 64, 96, 127]) {
+    const synthPos = getDemoPosition(24 * 16 + offsetSteps, DEFAULT_DEMO_TIMELINE);
+    const customPos = getDemoPosition(32 * 16 + offsetSteps, timeline);
+    assert.equal(synthPos.sectionId, 'drop');
+    assert.equal(customPos.sectionId, 'drop');
+    assert.equal(customPos.sectionProgress, synthPos.sectionProgress);
+    assert.deepStrictEqual(
+      applyDemoLighting(INITIAL_SHOW_STATE, customPos),
+      applyDemoLighting(INITIAL_SHOW_STATE, synthPos),
+    );
+  }
+
+  // Compare repeated 12-bar drop (index 6, starting at bar 56) at 50% progress (barInSection=6 -> 6%4=2, matching synth barInSection=4? Compare at barInSection=4 vs 4 -> check non-accent barInSection=2 at 0.25 vs 3 at 0.25).
+  const synthDropMid = getDemoPosition(24 * 16 + 4 * 16 + 4, DEFAULT_DEMO_TIMELINE); // progress 0.53125, barInSection=4, stepInBar=4 (accent=false)
+  const bluesDropMid = getDemoPosition(56 * 16 + 6 * 16 + 6, timeline); // progress 0.53125, barInSection=6, stepInBar=6 (accent=false)
+  assert.equal(bluesDropMid.sectionId, 'drop');
+  assert.equal(bluesDropMid.sectionBars, 12);
+  assert.equal(bluesDropMid.sectionProgress, synthDropMid.sectionProgress);
+  assert.deepStrictEqual(
+    applyDemoLighting(INITIAL_SHOW_STATE, bluesDropMid),
+    applyDemoLighting(INITIAL_SHOW_STATE, synthDropMid),
+  );
+
+  // Verify 16-bar leading intro plays the 8-bar reveal then holds at openingStep=128 without snapping back on groove.
+  assert.equal(getDemoPosition(0, timeline).openingStep, 0);
+  assert.equal(getDemoPosition(64, timeline).openingStep, 64);
+  assert.equal(getDemoPosition(128, timeline).openingStep, 128);
+  assert.equal(getDemoPosition(200, timeline).openingStep, 128);
+  assert.equal(getDemoPosition(256, timeline).openingStep, 128); // groove bar 0 starts LED fade smoothly from 128
+  assert.equal(getDemoPosition(352, timeline).openingStep, 224); // groove bar 6 completes LED fade
+
+  // Verify compressed 4-bar leading intro scales openingStep by 2x and holds 1 blackout bar.
+  const shortTimeline = compileDemoTimeline([
+    { role: 'intro', label: 'Short intro', bars: 4 },
+    { role: 'groove', label: 'Groove', bars: 8 },
+    { role: 'outro', label: 'Outro', bars: 4 },
+  ]);
+  assert.equal(shortTimeline.openingBlackoutBars, 1);
+  assert.equal(getDemoPosition(16, shortTimeline).openingStep, 32);
+  assert.equal(getDemoPosition(64, shortTimeline).openingStep, 128);
+
+  // Verify groove-first track skips opening blackout entirely.
+  const grooveFirst = compileDemoTimeline([
+    { role: 'groove', label: 'Instant groove', bars: 8 },
+    { role: 'drop', label: 'Drop', bars: 8 },
+    { role: 'outro', label: 'End', bars: 4 },
+  ]);
+  assert.equal(grooveFirst.openingBlackoutBars, 0);
+  assert.equal(getDemoPosition(0, grooveFirst).openingStep, OPENING_DONE_STEP);
+  assert.equal(applyDemoLighting(INITIAL_SHOW_STATE, getDemoPosition(0, grooveFirst)).led.enabled, true);
+});
+
+test('track clock step math at downbeat, before downbeat, one bar in, across boundaries, and on ended', () => {
+  const map = parseDemoTrackMap(validMap({
+    bpm: 120,
+    firstDownbeatMs: 500,
+    sections: [
+      { role: 'groove', label: 'Groove', bars: 4 },
+      { role: 'build', label: 'Build', bars: 4 },
+      { role: 'drop', label: 'Drop', bars: 12 },
+      { role: 'outro', label: 'Outro', bars: 4 },
+    ],
+  }));
+
+  // Before downbeat: negative raw step, holds opening blackout even though first section is groove.
+  assert.equal(demoTrackStepAtMs(map, 0), -4);
+  const pre = getDemoTrackPosition(map, 250, false);
+  assert.equal(pre.beforeDownbeat, true);
+  assert.equal(pre.step, 0);
+  assert.equal(pre.openingStep, 0);
+  assert.equal(pre.finished, false);
+  const preLook = applyDemoLighting(INITIAL_SHOW_STATE, pre);
+  assert.equal(preLook.beamIntensity, 0);
+  assert.equal(preLook.washIntensity, 0);
+  assert.equal(preLook.led.enabled, false);
+
+  // Exactly at firstDownbeatMs: step 0, bar 0, no longer beforeDownbeat.
+  assert.equal(demoTrackStepAtMs(map, 500), 0);
+  const atDownbeat = getDemoTrackPosition(map, 500, false);
+  assert.equal(atDownbeat.beforeDownbeat, undefined);
+  assert.equal(atDownbeat.sectionId, 'groove');
+  assert.equal(atDownbeat.bar, 0);
+  assert.equal(atDownbeat.step, 0);
+
+  // One bar in at 120 BPM = 2000 ms after downbeat = 2500 ms -> step 16, bar 1.
+  assert.equal(demoTrackStepAtMs(map, 2500), 16);
+  assert.equal(demoTrackMsForStep(map, 16), 2500);
+  const oneBar = getDemoTrackPosition(map, 2500, false);
+  assert.equal(oneBar.sectionId, 'groove');
+  assert.equal(oneBar.bar, 1);
+  assert.equal(oneBar.barInSection, 1);
+
+  // Across section boundaries: bar 4 (8500 ms) -> build; bar 8 (16500 ms) -> 12-bar drop; bar 20 (40500 ms) -> outro.
+  assert.equal(getDemoTrackPosition(map, 8500, false).sectionId, 'build');
+  assert.equal(getDemoTrackPosition(map, 16500, false).sectionId, 'drop');
+  assert.equal(getDemoTrackPosition(map, 16500, false).sectionBars, 12);
+  assert.equal(getDemoTrackPosition(map, 40500, false).sectionId, 'outro');
+
+  // Audio ends early before totalSteps: finished becomes true.
+  const endedEarly = getDemoTrackPosition(map, 10000, true);
+  assert.equal(endedEarly.finished, true);
+});
+
+test('URL resolution stays same-origin across root, GitHub Pages subpath, and Electron stageforge://app/', () => {
+  const rootMap = resolveDemoTrackMapUrl('/', 'http://127.0.0.1:4179/');
+  assert.equal(rootMap.href, 'http://127.0.0.1:4179/demo/track.json');
+  assert.equal(resolveDemoTrackAudioUrl(rootMap, 'track.mp3').href, 'http://127.0.0.1:4179/demo/track.mp3');
+
+  const pagesMap = resolveDemoTrackMapUrl('/stageforge/', 'https://jbrick2070.github.io/stageforge/');
+  assert.equal(pagesMap.href, 'https://jbrick2070.github.io/stageforge/demo/track.json');
+  assert.equal(resolveDemoTrackAudioUrl(pagesMap, 'track.mp3').href, 'https://jbrick2070.github.io/stageforge/demo/track.mp3');
+
+  const electronMap = resolveDemoTrackMapUrl('./', 'stageforge://app/');
+  assert.equal(electronMap.href, 'stageforge://app/demo/track.json');
+  assert.equal(resolveDemoTrackAudioUrl(electronMap, 'track.mp3').href, 'stageforge://app/demo/track.mp3');
+
+  assert.throws(() => resolveDemoTrackAudioUrl(pagesMap, '../escape.mp3'), /plain basename/i);
+});
+
+test('timeline edge cases: 1-bar intro scale 8, non-leading intro, array vs compiled parity, and audio longer/shorter than map', () => {
+  // 1-bar leading intro compresses 128-step reveal by 8x -> 1 blackout bar.
+  const oneBarSections = [
+    { role: 'intro', label: 'Quick intro', bars: 1 },
+    { role: 'groove', label: 'Groove', bars: 4 },
+    { role: 'outro', label: 'Outro', bars: 4 },
+  ];
+  const oneBarTimeline = compileDemoTimeline(oneBarSections);
+  assert.equal(oneBarTimeline.openingBlackoutBars, 1);
+  assert.equal(getDemoPosition(4, oneBarTimeline).openingStep, 32);
+  assert.equal(getDemoPosition(16, oneBarTimeline).openingStep, 128);
+  assert.deepStrictEqual(getDemoPosition(20, oneBarSections), getDemoPosition(20, oneBarTimeline));
+
+  // Non-leading intro gets full openingStep = OPENING_DONE_STEP (no mid-track blackout).
+  const midIntro = compileDemoTimeline([
+    { role: 'groove', label: 'Open groove', bars: 4 },
+    { role: 'intro', label: 'Interlude', bars: 4 },
+    { role: 'outro', label: 'End', bars: 4 },
+  ]);
+  const interludePos = getDemoPosition(4 * 16 + 8, midIntro);
+  assert.equal(interludePos.sectionId, 'intro');
+  assert.equal(interludePos.openingStep, OPENING_DONE_STEP);
+  assert.equal(applyDemoLighting(INITIAL_SHOW_STATE, interludePos).beamIntensity, 0.38);
+
+  // Audio running longer than map clamps at totalSteps and sets finished=true; beforeDownbeat+ended also marks finished.
+  const map = parseDemoTrackMap(validMap({
+    bpm: 120,
+    firstDownbeatMs: 500,
+    sections: [
+      { role: 'intro', label: 'I', bars: 4 },
+      { role: 'groove', label: 'G', bars: 4 },
+      { role: 'outro', label: 'O', bars: 4 },
+    ],
+  }));
+  const pastEnd = getDemoTrackPosition(map, 120_000, false);
+  assert.equal(pastEnd.finished, true);
+  assert.equal(pastEnd.step, map.timeline.totalSteps);
+  assert.equal(pastEnd.sectionId, 'outro');
+
+  const endedBeforeDownbeat = getDemoTrackPosition(map, 100, true);
+  assert.equal(endedBeforeDownbeat.finished, true);
+});
+
+test('probeDemoTrack and fetchDemoTrackAudio handle 404, 204, HTML fallback, UTF-8 BOM, oversize bodies, redirects, and empty audio', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    // 1. 404 -> null silently
+    globalThis.fetch = async () => new Response('Not found', { status: 404 });
+    assert.equal(await probeDemoTrack('/', 'http://127.0.0.1:4179/'), null);
+
+    // 2. 204 -> null silently
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    assert.equal(await probeDemoTrack('/', 'http://127.0.0.1:4179/'), null);
+
+    // 3. Vite SPA HTML 200 -> null silently
+    globalThis.fetch = async () => new Response('<!doctype html><html></html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+    });
+    assert.equal(await probeDemoTrack('/', 'http://127.0.0.1:4179/'), null);
+
+    // 4. UTF-8 BOM JSON -> parsed cleanly on subpath
+    const bomJson = '\uFEFF' + JSON.stringify(validMap({ file: 'song.wav' }));
+    globalThis.fetch = async (url) => {
+      assert.equal(url, 'https://example.test/stageforge/demo/track.json');
+      return new Response(bomJson, { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const found = await probeDemoTrack('/stageforge/', 'https://example.test/stageforge/');
+    assert.ok(found);
+    assert.equal(found.audioUrl, 'https://example.test/stageforge/demo/song.wav');
+
+    // 5. Redirect error -> probe returns null silently
+    globalThis.fetch = async () => { throw new TypeError('Failed to fetch: redirect error'); };
+    assert.equal(await probeDemoTrack('/', 'http://127.0.0.1:4179/'), null);
+
+    // 6. Oversize Content-Length on map -> probe returns null silently
+    globalThis.fetch = async () => new Response('{}', {
+      status: 200,
+      headers: { 'content-length': String(128 * 1024) },
+    });
+    assert.equal(await probeDemoTrack('/', 'http://127.0.0.1:4179/'), null);
+
+    // 7. Oversize streamed map without Content-Length -> probe returns null silently
+    globalThis.fetch = async () => new Response(new Uint8Array(70 * 1024), { status: 200 });
+    assert.equal(await probeDemoTrack('/', 'http://127.0.0.1:4179/'), null);
+
+    // 8. fetchDemoTrackAudio rejects HTML 200 fallback, zero-byte audio, and oversize Content-Length
+    globalThis.fetch = async () => new Response('<html>spa</html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    });
+    await assert.rejects(() => fetchDemoTrackAudio(found), /HTML instead of an audio/i);
+
+    globalThis.fetch = async () => new Response(new Uint8Array(0), {
+      status: 200,
+      headers: { 'content-type': 'audio/wav' },
+    });
+    await assert.rejects(() => fetchDemoTrackAudio(found), /empty/i);
+
+    globalThis.fetch = async () => new Response(new Uint8Array(16), {
+      status: 200,
+      headers: { 'content-type': 'audio/wav', 'content-length': String(20 * 1024 * 1024) },
+    });
+    await assert.rejects(() => fetchDemoTrackAudio(found), /size limit/i);
+
+    // 9. Valid audio bytes return a File with matching name and mime type
+    globalThis.fetch = async () => new Response(new Uint8Array([1, 2, 3, 4]), {
+      status: 200,
+      headers: { 'content-type': 'audio/wav', 'content-length': '4' },
+    });
+    const audioFile = await fetchDemoTrackAudio(found);
+    assert.equal(audioFile.name, 'song.wav');
+    assert.equal(audioFile.type, 'audio/wav');
+    assert.equal(audioFile.size, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

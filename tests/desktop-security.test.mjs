@@ -75,6 +75,36 @@ test('serveRenderer blocks hostile paths/methods and attaches CSP + nosniff to e
   assert.equal(fetched.length, countBefore, 'hostile requests must never call fetchFile');
 });
 
+test('serveRenderer returns 204 with CSP when /demo/track.json is absent, 200 when present, and 404 for other missing files', async () => {
+  let present = false;
+  const handler = createRendererHandler({
+    rendererRoot: path.join(root, 'desktop', 'build', 'app', 'renderer'),
+    fetchFile: async (url) => {
+      if (present && url.endsWith('/demo/track.json')) {
+        return new Response('{"format":"stageforge-demo-track"}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error('ENOENT');
+    },
+  });
+
+  const missingMap = await handler(new Request('stageforge://app/demo/track.json', { method: 'GET' }));
+  assert.equal(missingMap.status, 204);
+  assert.equal(missingMap.headers.get('content-security-policy'), CSP);
+  assert.equal(missingMap.headers.get('x-content-type-options'), 'nosniff');
+
+  const otherMissing = await handler(new Request('stageforge://app/demo/missing.mp3', { method: 'GET' }));
+  assert.equal(otherMissing.status, 404);
+
+  present = true;
+  const presentMap = await handler(new Request('stageforge://app/demo/track.json', { method: 'GET' }));
+  assert.equal(presentMap.status, 200);
+  assert.equal(presentMap.headers.get('content-security-policy'), CSP);
+  assert.equal(presentMap.headers.get('x-content-type-options'), 'nosniff');
+});
+
 test('preload enforces command/payload whitelist, DMX validation, replays pending once, and isolates throwing listeners', async () => {
   const ipcHandlers = new Map();
   const sentMessages = [];

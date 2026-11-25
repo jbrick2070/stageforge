@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { Gamepad2 } from 'lucide-react';
-import { DEMO_TOTAL_BARS, DEMO_TOTAL_STEPS } from '../data/demoShow';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
 import type { AudioMetrics } from '../types/show';
 
@@ -32,10 +31,10 @@ export function ShowOverlay({ audioStore, controller, cinema, showControllerGuid
     };
   }, []);
   return <div className="stage-show-hud">
-    {demo && <div className="demo-progress" data-section={demo.sectionId} data-bar={demo.bar + 1} data-finished={demo.finished}>
-      <div><strong>{demo.finished ? 'Show complete' : demo.label}</strong>
-        <span>Bar {demo.bar + 1} / {DEMO_TOTAL_BARS}</span></div>
-      <progress aria-label="Demo performance" value={demo.step} max={DEMO_TOTAL_STEPS} />
+    {demo && <div className="demo-progress" data-section={demo.sectionId} data-section-index={demo.sectionIndex} data-bar={demo.bar + 1} data-finished={demo.finished} data-before-downbeat={demo.beforeDownbeat ? 'true' : undefined}>
+      <div><strong>{demo.beforeDownbeat ? 'Count-in' : demo.finished ? 'Show complete' : demo.label}</strong>
+        <span>Bar {demo.bar + 1} / {demo.totalBars}</span></div>
+      <progress aria-label="Demo performance" value={demo.step} max={demo.totalSteps} />
     </div>}
     {!cinema && showControllerGuide && <details ref={menu} className="controller-guide">
       <summary aria-label="Xbox controller guide" title="Xbox controller guide" data-connected={controller === 'connected'}>

@@ -244,6 +244,7 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
   font: 600 11px/1.2 'Inter', system-ui, sans-serif; white-space: nowrap; cursor: pointer;
 }
 .transport-btn:hover, .camera-select:hover { background: #303339; border-color: #51575f; color: #fff; }
+.transport-btn:disabled, .audio-tempo button:disabled { opacity: 0.45; cursor: not-allowed; }
 .transport-btn[aria-expanded="true"], .transport-btn[aria-pressed="true"] { color: var(--mint); border-color: #568e80; background: #233933; }
 .transport-btn > svg, .camera-select svg, .audio-source > svg { width: 14px; height: 14px; flex: none; }
 .transport-btn.play-btn { background: var(--mint); color: #102b24; border-color: var(--mint); }

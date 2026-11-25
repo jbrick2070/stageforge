@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  AudioLines, Camera, ChevronDown, Clock, DollarSign, DraftingCompass, Eye, EyeOff, Layers, Mic, Pause,
+  AudioLines, Camera, ChevronDown, ChevronLeft, ChevronRight, Clock, DollarSign, DraftingCompass, Eye, EyeOff, Layers, Mic, Music2, Pause,
   Play, Radio, RotateCcw, SlidersHorizontal, Sparkles, Upload, Wrench, FolderOpen,
 } from 'lucide-react';
 import { AudioMetrics, CameraPreset, MusicRef } from '../types/show';
@@ -34,6 +34,8 @@ interface TopBarProps {
   bpm: number;
   tempo: TempoControlProps;
   openingBar?: number;
+  openingTotalBars?: number;
+  openingBeforeDownbeat?: boolean;
   blackout: boolean;
   autoDirector: boolean;
   audioReactive: boolean;
@@ -45,8 +47,14 @@ interface TopBarProps {
   costModalOpen: boolean;
   oneNightCostLabel: string;
   cinemaMode: boolean;
+  availableDemoTrackTitle?: string | null;
+  demoTrackSectionCount?: number;
+  demoTrackLoading?: boolean;
+  demoTrackProgress?: number | null;
   onTogglePlay: () => void;
   onStartDemo: () => void;
+  onStartDemoTrack?: () => void;
+  onJumpDemoSection?: (delta: -1 | 1) => void;
   onDesignStage: () => void;
   onShowFiles: () => void;
   onUploadAudio: (file: File) => void;
@@ -78,9 +86,11 @@ function clockTime(seconds: number) {
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
-  fpsStore, fixtureCount, laserCount, audioStore, getLinkedMusic, getTrackDuration, onSeekTrack, volume, bpm, tempo, openingBar, blackout, autoDirector, audioReactive,
+  fpsStore, fixtureCount, laserCount, audioStore, getLinkedMusic, getTrackDuration, onSeekTrack, volume, bpm, tempo,
+  openingBar, openingTotalBars, openingBeforeDownbeat, blackout, autoDirector, audioReactive,
   activeCamera, rigDrawerOpen, dmxDrawerOpen, showControlOpen, clockMode, costModalOpen, oneNightCostLabel,
-  cinemaMode, onTogglePlay, onStartDemo, onDesignStage, onShowFiles, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
+  cinemaMode, availableDemoTrackTitle, demoTrackSectionCount = 0, demoTrackLoading, demoTrackProgress,
+  onTogglePlay, onStartDemo, onStartDemoTrack, onJumpDemoSection, onDesignStage, onShowFiles, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
   onToggleAutoDirector, onToggleAudioReactive, onSelectCamera, onToggleRigDrawer,
   onToggleDmxDrawer, onToggleShowControl, onToggleCostModal, onToggleCinemaMode,
 }) => {
@@ -92,6 +102,9 @@ export const TopBar: React.FC<TopBarProps> = ({
   const fileRef = useRef<HTMLInputElement>(null);
   const audioPanelRef = useRef<HTMLDivElement>(null);
   const audioButtonRef = useRef<HTMLButtonElement>(null);
+  const playButtonRef = useRef<HTMLButtonElement>(null);
+  const demoTrackButtonRef = useRef<HTMLButtonElement>(null);
+  const demoTrackFocusedRef = useRef(false);
   const [audioOpen, setAudioOpen] = useState(false);
   useEffect(() => {
     if (!audioOpen) return;
@@ -112,19 +125,55 @@ export const TopBar: React.FC<TopBarProps> = ({
     };
   }, [audioOpen]);
 
-  const playLabel = audio.playing ? 'Pause' : audio.demo?.finished ? 'Replay demo' :
+  const demoTrackActive = Boolean(audio.demoTrackTitle);
+  const tempoLocked = demoTrackActive;
+  const canPrevSection = demoTrackActive && !!audio.demo && !audio.demo.beforeDownbeat &&
+    (audio.demo.sectionIndex > 0 || audio.demo.stepInSection >= 16);
+  const canNextSection = demoTrackActive && !!audio.demo &&
+    (audio.demo.beforeDownbeat || audio.demo.sectionIndex < demoTrackSectionCount - 1);
+  useEffect(() => {
+    if (demoTrackActive && demoTrackFocusedRef.current) {
+      demoTrackFocusedRef.current = false;
+      playButtonRef.current?.focus();
+    } else if (!demoTrackLoading && !demoTrackActive) {
+      demoTrackFocusedRef.current = false;
+    }
+  }, [demoTrackActive, demoTrackLoading]);
+  const playLabel = audio.playing ? 'Pause' : audio.demo?.finished
+    ? (demoTrackActive ? 'Replay track' : 'Replay demo') :
     audio.source === 'synth' || (linkedMusic.kind === 'demo' && (linkedMusic.demoStep ?? 0) > 0) ? 'Resume demo' :
     audio.source === 'file' || linkedMusic.kind === 'file' ? 'Play track' : linkedMusic.kind === 'live' ? 'Live input' : 'Play demo';
   const playButton = (
-    <button type="button" className="transport-btn play-btn" onClick={onTogglePlay}>
+    <button ref={playButtonRef} type="button" className="transport-btn play-btn" onClick={onTogglePlay}>
       {audio.playing ? <Pause /> : <Play />} {playLabel}
     </button>
   );
+  const loadingLabel = demoTrackProgress != null ? `Loading ${Math.round(demoTrackProgress * 100)}%` : 'Loading…';
+  const demoTrackButton = availableDemoTrackTitle && onStartDemoTrack && !demoTrackActive ? (
+    <button
+      ref={demoTrackButtonRef}
+      type="button"
+      className="transport-btn demo-track-btn"
+      onClick={() => {
+        demoTrackFocusedRef.current = document.activeElement === demoTrackButtonRef.current;
+        onStartDemoTrack();
+      }}
+      disabled={demoTrackLoading}
+      aria-label={demoTrackLoading ? `${loadingLabel} demo track` : 'Play demo track'}
+      title={`Play demo track · ${availableDemoTrackTitle}`}
+    >
+      <Music2 />
+      <span className="transport-extra-label">
+        {demoTrackLoading ? loadingLabel : 'Play demo track'}
+      </span>
+    </button>
+  ) : null;
 
   if (cinemaMode) {
     return (
       <div className="cinema-tools">
         {playButton}
+        {demoTrackButton}
         <button onClick={onToggleCinemaMode} className="transport-btn" title="Show desk (H)">
           <Eye /> Show desk
         </button>
@@ -132,18 +181,25 @@ export const TopBar: React.FC<TopBarProps> = ({
     );
   }
 
+  const openingNotice = openingBeforeDownbeat
+    ? 'Opening blackout · Count-in'
+    : openingBar
+      ? `Opening blackout · Bar ${openingBar} of ${openingTotalBars ?? 2}`
+      : null;
+
   return (
     <header className="stage-transport">
       <div className="transport-brand">
         <Layers aria-hidden="true" />
         <div>
           <h1>Stageforge <span>3D</span></h1>
-          <p>{blackout ? 'Master blackout' : openingBar ? `Opening blackout · Bar ${openingBar} of 2` :
+          <p>{blackout ? 'Master blackout' : openingNotice ??
             <>{fixtureCount} fixtures <i>·</i> {laserCount} lasers <i>·</i> {fps} fps</>}</p>
         </div>
       </div>
       <div className="transport-playback">
         {playButton}
+        {demoTrackButton}
         <button type="button" className="transport-btn" aria-label="Design stage" title="Design stage" onClick={onDesignStage}>
           <DraftingCompass /><span className="transport-extra-label">Design stage</span>
         </button>
@@ -176,44 +232,71 @@ export const TopBar: React.FC<TopBarProps> = ({
                     value={Math.min(safeTrackDuration, Math.max(0, linkedMusic.offsetSeconds ?? 0))} onChange={e => onSeekTrack(Number(e.target.value))} />
                   <output>{clockTime(linkedMusic.offsetSeconds ?? 0)} / {clockTime(safeTrackDuration)}</output>
                 </label>}
+                {demoTrackActive && onJumpDemoSection && (
+                  <div className="audio-options" role="group" aria-label="Demo track sections">
+                    <button type="button" className="transport-btn" disabled={!canPrevSection} onClick={() => onJumpDemoSection(-1)} aria-label="Previous section">
+                      <ChevronLeft /> Prev section
+                    </button>
+                    <button type="button" className="transport-btn" disabled={!canNextSection} onClick={() => onJumpDemoSection(1)} aria-label="Next section">
+                      Next section <ChevronRight />
+                    </button>
+                  </div>
+                )}
                 <button className="transport-btn" onClick={() => onSeekTrack(0)}><RotateCcw /> Restart 0:00</button>
               </>}
-              {audio.source !== 'none' && <button className="transport-btn" onClick={() => {
-                setAudioOpen(false);
-                onStartDemo();
-                audioButtonRef.current?.focus();
-              }}><Play /> {audio.source === 'synth' ? 'Restart demo' : 'Return to demo'}</button>}
+              {availableDemoTrackTitle && onStartDemoTrack ? (
+                <div className="audio-options" role="group" aria-label="Demo choices">
+                  <button type="button" className="transport-btn" onClick={() => {
+                    setAudioOpen(false);
+                    onStartDemo();
+                    audioButtonRef.current?.focus();
+                  }}><Play /> {audio.source === 'synth' ? 'Restart demo' : 'Play demo'}</button>
+                  <button type="button" className="transport-btn" disabled={demoTrackLoading} onClick={() => {
+                    setAudioOpen(false);
+                    onStartDemoTrack();
+                    audioButtonRef.current?.focus();
+                  }}><Music2 /> {demoTrackActive ? 'Restart track' : 'Play demo track'}</button>
+                </div>
+              ) : (
+                audio.source !== 'none' && <button className="transport-btn" onClick={() => {
+                  setAudioOpen(false);
+                  onStartDemo();
+                  audioButtonRef.current?.focus();
+                }}><Play /> {audio.source === 'synth' ? 'Restart demo' : 'Return to demo'}</button>
+              )}
               <label className="audio-level"><span>Volume</span><input aria-label="Audio volume" type="range" min={0} max={1} step={0.02} value={volume}
                 onChange={(e) => onVolumeChange(Number(e.target.value))} /><output>{Math.round(volume * 100)}%</output></label>
               <div className="audio-tempo">
-                <span>Demo tempo</span>
-                <button aria-label="Decrease tempo" onClick={() => onBpmChange(bpm - 2)}>−</button>
+                <span>{tempoLocked ? 'Track tempo' : 'Demo tempo'}</span>
+                <button aria-label="Decrease tempo" disabled={tempoLocked} title={tempoLocked ? 'Locked to demo track map' : undefined} onClick={() => onBpmChange(bpm - 2)}>−</button>
                 <output>{bpm} BPM</output>
-                <button aria-label="Increase tempo" onClick={() => onBpmChange(bpm + 2)}>+</button>
+                <button aria-label="Increase tempo" disabled={tempoLocked} title={tempoLocked ? 'Locked to demo track map' : undefined} onClick={() => onBpmChange(bpm + 2)}>+</button>
               </div>
               <div className="flex items-center gap-1" role="group" aria-label="Tap and scale tempo">
-                <button type="button" className="transport-btn flex-1 justify-center" onClick={tempo.onTapTempo} title="Tap tempo (key T)">Tap</button>
+                <button type="button" className="transport-btn flex-1 justify-center" disabled={tempoLocked} onClick={tempo.onTapTempo} title={tempoLocked ? 'Locked to demo track map' : 'Tap tempo (key T)'}>Tap</button>
                 <button
                   type="button"
                   className="transport-btn"
                   aria-label="Half time"
-                  aria-disabled={!tempo.canHalfTime}
-                  title={tempo.canHalfTime ? 'Halve BPM' : 'Half time would fall below 70 BPM'}
-                  onClick={() => { if (tempo.canHalfTime) tempo.onHalfTime(); }}
+                  disabled={tempoLocked}
+                  aria-disabled={tempoLocked || !tempo.canHalfTime}
+                  title={tempoLocked ? 'Locked to demo track map' : tempo.canHalfTime ? 'Halve BPM' : 'Half time would fall below 70 BPM'}
+                  onClick={() => { if (!tempoLocked && tempo.canHalfTime) tempo.onHalfTime(); }}
                 >½×</button>
                 <button
                   type="button"
                   className="transport-btn"
                   aria-label="Double time"
-                  aria-disabled={!tempo.canDoubleTime}
-                  title={tempo.canDoubleTime ? 'Double BPM' : 'Double time would exceed 180 BPM'}
-                  onClick={() => { if (tempo.canDoubleTime) tempo.onDoubleTime(); }}
+                  disabled={tempoLocked}
+                  aria-disabled={tempoLocked || !tempo.canDoubleTime}
+                  title={tempoLocked ? 'Locked to demo track map' : tempo.canDoubleTime ? 'Double BPM' : 'Double time would exceed 180 BPM'}
+                  onClick={() => { if (!tempoLocked && tempo.canDoubleTime) tempo.onDoubleTime(); }}
                 >2×</button>
               </div>
               {tempo.beatGridStatus.state !== 'idle' && (
                 <div className="rounded border border-white/10 bg-black/40 p-1.5 space-y-1 text-[10px] font-mono-tech">
                   <div className="flex items-center justify-between text-zinc-300">
-                    <span>Beat grid</span>
+                    <span>{tempoLocked ? 'Track grid' : 'Beat grid'}</span>
                     <span className="text-cyan-300">
                       {tempo.beatGridStatus.state === 'analyzing' && 'Analysing…'}
                       {tempo.beatGridStatus.state === 'ready' && `${tempo.beatGridStatus.grid.bpm.toFixed(1)} BPM · ${tempo.beatGridStatus.grid.offsetMs.toFixed(0)} ms`}
@@ -221,7 +304,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                       {tempo.beatGridStatus.state === 'unavailable' && 'Unavailable'}
                     </span>
                   </div>
-                  {tempo.beatGridStatus.state === 'ready' && (
+                  {tempo.beatGridStatus.state === 'ready' && !tempoLocked && (
                     <div className="flex items-center gap-1">
                       <button type="button" className="px-1 py-0.5 rounded bg-white/10 hover:bg-white/20 text-zinc-200 cursor-pointer" onClick={() => tempo.onNudgeGrid(-50)}>−50</button>
                       <button type="button" className="px-1 py-0.5 rounded bg-white/10 hover:bg-white/20 text-zinc-200 cursor-pointer" onClick={() => tempo.onNudgeGrid(-10)}>−10</button>

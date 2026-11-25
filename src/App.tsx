@@ -22,6 +22,13 @@ import { useShowGamepad } from './input/useShowGamepad';
 import { cueLook, differsFromCue } from './data/cueLook';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
+import {
+  demoTrackMsForStep,
+  fetchDemoTrackAudio,
+  getDemoTrackPosition,
+  probeDemoTrack,
+  type AvailableDemoTrack,
+} from './data/demoTrack';
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
 import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange, type ShowTimeline } from './data/showFile';
@@ -125,6 +132,8 @@ const INITIAL_DISCRETE_AUDIO = {
   playing: false,
   openingBlack: false,
   openingBar: undefined as number | undefined,
+  openingTotalBars: undefined as number | undefined,
+  openingBeforeDownbeat: false,
 };
 
 function readSavedDesign(): RigConfig | null {
@@ -266,6 +275,41 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (!viewerMode) preloadPanels();
   }, [viewerMode]);
+  // Probe once when idle for an optional demo/track.json map (~1 KB); never fetches audio on boot.
+  // Skipped in read-only pitch viewer mode.
+  useEffect(() => {
+    if (viewerMode) return;
+    const abort = new AbortController();
+    let cancelled = false;
+    let idleId: number | null = null;
+    let timerId: number | null = null;
+    const runProbe = () => {
+      if (cancelled) return;
+      void probeDemoTrack(import.meta.env.BASE_URL, document.baseURI, abort.signal).then((found) => {
+        if (!cancelled && found) setAvailableDemoTrack(found);
+      });
+    };
+    const scheduleProbe = () => {
+      if (cancelled) return;
+      if (typeof window.requestIdleCallback === 'function') {
+        idleId = window.requestIdleCallback(runProbe, { timeout: 3000 });
+      } else {
+        timerId = window.setTimeout(runProbe, 1500);
+      }
+    };
+    if (document.readyState === 'complete') {
+      scheduleProbe();
+    } else {
+      window.addEventListener('load', scheduleProbe, { once: true });
+    }
+    return () => {
+      cancelled = true;
+      abort.abort();
+      window.removeEventListener('load', scheduleProbe);
+      if (idleId !== null && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idleId);
+      if (timerId !== null) window.clearTimeout(timerId);
+    };
+  }, [viewerMode]);
   // Notify desktop main process if booted directly in `?view` mode.
   useEffect(() => {
     if (viewerMode) {
@@ -285,6 +329,22 @@ export const App: React.FC = () => {
   const [ildaMode, setIldaMode] = useState<IldaRenderMode>('both');
   const [ildaFps, setIldaFps] = useState(30);
   const [beatGridStatus, setBeatGridStatus] = useState<BeatGridStatus>({ state: 'idle' });
+  const [availableDemoTrack, setAvailableDemoTrack] = useState<AvailableDemoTrack | null>(null);
+  const availableDemoTrackRef = useRef<AvailableDemoTrack | null>(null);
+  availableDemoTrackRef.current = availableDemoTrack;
+  const [demoTrackLoading, setDemoTrackLoading] = useState(false);
+  const [demoTrackProgress, setDemoTrackProgress] = useState<number | null>(null);
+  const demoTrackAbortRef = useRef<AbortController | null>(null);
+  const replayDemoAbortRef = useRef<AbortController | null>(null);
+  const demoTrackFilesRef = useRef(new WeakSet<File>());
+  const cancelDemoTrackLoad = useCallback(() => {
+    demoTrackAbortRef.current?.abort();
+    demoTrackAbortRef.current = null;
+    replayDemoAbortRef.current?.abort();
+    replayDemoAbortRef.current = null;
+    setDemoTrackLoading(false);
+    setDemoTrackProgress(null);
+  }, []);
   const [liveBpmStatus, setLiveBpmStatus] = useState<LiveBpmStatus>({ state: 'off' });
   const [followLiveBpm, setFollowLiveBpm] = useState(false);
   const followLiveBpmRef = useRef(false);
@@ -475,11 +535,42 @@ export const App: React.FC = () => {
     (replayScreen.current.playing ? (performance.now() - replayScreenClock.current) / 1000 : 0);
   const restoreReplayMusic = (ref: MusicRef, lateMs: number) => {
     const epoch = sessionEpochRef.current;
-    void audioEngineRef.current?.restoreTimelineMusic(ref, assets.current.get('file:' + ref.name)?.file, replayLook.current.bpm, lateMs)
-      .then(() => {
-        if (epoch !== sessionEpochRef.current) audioEngineRef.current?.stopAll();
-      })
-      .catch(e => { if (epoch === sessionEpochRef.current && e?.name !== 'AbortError') showToast(e instanceof Error ? e.message : 'Audio could not play.'); });
+    cancelDemoTrackLoad();
+    const available = availableDemoTrackRef.current;
+    const cachedFile = assets.current.get('file:' + ref.name)?.file;
+    // Only treat a cached file as the mapped demo track if it was actually fetched as the demo track
+    // (never hijack a user-uploaded file that happens to share the filename).
+    const cachedIsDemoTrack = !!cachedFile && demoTrackFilesRef.current.has(cachedFile);
+    const shouldFetchDemoTrack = !cachedFile && ref.kind === 'file' && !!available && ref.name === available.map.file;
+    const isMappedDemoFile = cachedIsDemoTrack || shouldFetchDemoTrack;
+    const replayAbort = shouldFetchDemoTrack ? new AbortController() : null;
+    if (replayAbort) replayDemoAbortRef.current = replayAbort;
+    const run = async () => {
+      let file = cachedFile;
+      if (shouldFetchDemoTrack && available) {
+        file = await fetchDemoTrackAudio(available, replayAbort?.signal);
+        if (replayAbort?.signal.aborted || epoch !== sessionEpochRef.current) return;
+        demoTrackFilesRef.current.add(file);
+        registerAsset('file', file);
+      }
+      await audioEngineRef.current?.restoreTimelineMusic(
+        ref,
+        file,
+        replayLook.current.bpm,
+        lateMs,
+        isMappedDemoFile && available ? available.map : undefined,
+      );
+      if (epoch !== sessionEpochRef.current) audioEngineRef.current?.stopAll();
+    };
+    void run().catch(e => {
+      if (!replayAbort?.signal.aborted && epoch === sessionEpochRef.current && e?.name !== 'AbortError') {
+        showToast(e instanceof Error ? e.message : 'Audio could not play.');
+      }
+    }).finally(() => {
+      if (replayAbort && replayDemoAbortRef.current === replayAbort) {
+        replayDemoAbortRef.current = null;
+      }
+    });
   };
   const timeline = useShowTimeline(
     () => ({ look: showState, cueId: activeCueId, cueModified: !!activeCueId && cueModified,
@@ -605,6 +696,7 @@ export const App: React.FC = () => {
 
   const applyDeskBpm = useCallback((nextBpm: number) => {
     if (!capabilitiesRef.current.edit) return;
+    if (audioEngineRef.current?.isDemoTrackActive()) return;
     const clamped = Math.round(Math.max(70, Math.min(180, nextBpm)) * 10) / 10;
     setCueModified(true);
     setShowState((s) => ({ ...s, bpm: clamped }));
@@ -619,6 +711,10 @@ export const App: React.FC = () => {
 
   const handleTapTempo = useCallback(() => {
     if (!capabilitiesRef.current.edit) return;
+    if (audioEngineRef.current?.isDemoTrackActive()) {
+      showToast('Tempo is locked to the demo track map.');
+      return;
+    }
     const { bpm: tapped } = tapTrackerRef.current.tap(performance.now());
     if (tapped !== null) {
       applyDeskBpm(tapped);
@@ -628,18 +724,21 @@ export const App: React.FC = () => {
 
   const handleHalfTime = useCallback(() => {
     if (!capabilitiesRef.current.edit) return;
+    if (audioEngineRef.current?.isDemoTrackActive()) return;
     const next = halfTimeBpm(bpmRef.current);
     if (next !== null) applyDeskBpm(next);
   }, [applyDeskBpm]);
 
   const handleDoubleTime = useCallback(() => {
     if (!capabilitiesRef.current.edit) return;
+    if (audioEngineRef.current?.isDemoTrackActive()) return;
     const next = doubleTimeBpm(bpmRef.current);
     if (next !== null) applyDeskBpm(next);
   }, [applyDeskBpm]);
 
   const handleNudgeGrid = useCallback((deltaMs: number) => {
     if (!capabilitiesRef.current.edit) return;
+    if (audioEngineRef.current?.isDemoTrackActive()) return;
     const current = audioEngineRef.current?.getBeatGrid();
     if (!current) return;
     const nudged = nudgeBeatGrid(current, deltaMs);
@@ -649,6 +748,7 @@ export const App: React.FC = () => {
 
   const handleSetDownbeat = useCallback(() => {
     if (!capabilitiesRef.current.edit) return;
+    if (audioEngineRef.current?.isDemoTrackActive()) return;
     const current = audioEngineRef.current?.getBeatGrid();
     if (!current || !audioEngineRef.current) return;
     const anchored = setBeatGridDownbeat(current, audioEngineRef.current.getPlaybackMs());
@@ -920,17 +1020,22 @@ export const App: React.FC = () => {
         (metrics, curFps) => {
           live.fps.set(curFps);
           if (metrics.playing || !idleMetrics || idleMetrics.source !== metrics.source ||
-            idleMetrics.trackName !== metrics.trackName || idleMetrics.demo?.step !== metrics.demo?.step) {
+            idleMetrics.trackName !== metrics.trackName || idleMetrics.demo?.step !== metrics.demo?.step ||
+            idleMetrics.demo?.beforeDownbeat !== metrics.demo?.beforeDownbeat ||
+            idleMetrics.demo?.finished !== metrics.demo?.finished) {
             live.audio.set({ ...metrics, spectrum: new Float32Array(metrics.spectrum) });
           }
           idleMetrics = metrics.playing ? undefined : metrics;
-          const openingBlack = !!metrics.demo && metrics.demo.step < DEMO_BLACKOUT_STEPS;
-          const openingBar = openingBlack ? metrics.demo!.bar + 1 : undefined;
+          const openingBeforeDownbeat = !!metrics.demo?.beforeDownbeat;
+          const openingBlack = !!metrics.demo && (openingBeforeDownbeat || metrics.demo.openingStep < DEMO_BLACKOUT_STEPS);
+          const openingBar = openingBlack && !openingBeforeDownbeat ? metrics.demo!.bar + 1 : undefined;
+          const openingTotalBars = openingBlack && !openingBeforeDownbeat ? metrics.demo!.openingBlackoutBars : undefined;
           setAudioDiscrete(prev =>
             prev.source === metrics.source && prev.playing === metrics.playing &&
-            prev.openingBlack === openingBlack && prev.openingBar === openingBar
+            prev.openingBlack === openingBlack && prev.openingBar === openingBar &&
+            prev.openingTotalBars === openingTotalBars && prev.openingBeforeDownbeat === openingBeforeDownbeat
               ? prev
-              : { source: metrics.source, playing: metrics.playing, openingBlack, openingBar }
+              : { source: metrics.source, playing: metrics.playing, openingBlack, openingBar, openingTotalBars, openingBeforeDownbeat }
           );
           if (dmxOpenRef.current) {
             live.dmx.set({
@@ -945,7 +1050,7 @@ export const App: React.FC = () => {
           if (replaying.current || !directorArmed.current || !allows(clockModeRef.current, 'autoLD', 'auto_ld')) return;
           if (metrics.demo) {
             const position = metrics.demo;
-            const tick = Math.floor(position.step / 2);
+            const tick = position.beforeDownbeat ? -2 : Math.floor(position.step / 2);
             if (autoDirRef.current && (metrics.playing || position.finished) && tick !== lastDemoTick.current) {
               lastDemoTick.current = tick;
               setActiveCueId(null);
@@ -977,6 +1082,10 @@ export const App: React.FC = () => {
       fixtureParams: (group?: AudioTargetGroup) => engine.getFixtureParams(group),
       dmxSnapshot: () => ({ u1: Array.from(engine.dmxUniverse1), u2: Array.from(engine.dmxUniverse2) }),
       audioPlaybackTime: () => (audioEngineRef.current?.getPlaybackMs() ?? 0) / 1000,
+      demoPosition: () => live.audio.get().demo ?? null,
+      demoTrackAvailable: () => availableDemoTrackRef.current?.map ?? null,
+      seekTrack: (seconds: number) => handleSeekTrackRef.current(seconds),
+      jumpDemoSection: (delta: -1 | 1) => handleJumpDemoSectionRef.current(delta),
       screens: () => engine.screenDiagnostics(),
       primaryScreen: () => engine.screenTransport(),
       hangs: () => engine.hangDiagnostics(),
@@ -990,6 +1099,11 @@ export const App: React.FC = () => {
         blackout: showStateRef.current.blackout,
         masterDimmer: showStateRef.current.masterDimmer,
         bpm: showStateRef.current.bpm,
+        primaryColor: showStateRef.current.primaryColor,
+        accentColor: showStateRef.current.accentColor,
+        beamIntensity: showStateRef.current.beamIntensity,
+        washIntensity: showStateRef.current.washIntensity,
+        movementMode: showStateRef.current.movementMode,
       }),
       takeState: () => {
         const tl = timelineRef.current;
@@ -1017,6 +1131,8 @@ export const App: React.FC = () => {
     };
 
     return () => {
+      demoTrackAbortRef.current?.abort();
+      replayDemoAbortRef.current?.abort();
       if (probe) delete (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe;
       engine.dispose();
       audio.dispose();
@@ -1153,11 +1269,15 @@ export const App: React.FC = () => {
     if (!capabilitiesRef.current.edit) return;
     const ae = audioEngineRef.current;
     if (!ae) return;
+    cancelDemoTrackLoad();
+    beatGridAbortRef.current?.abort();
+    beatGridAbortRef.current = null;
+    setBeatGridStatus({ state: 'idle' });
     directorArmed.current = true; expectedMusic.current = NO_MUSIC; setFollow(null);
     ae.startDemoSynth(showState.bpm);
     const demo = getDemoPosition(0);
     const opening = applyDemoLighting({ ...showState, autoDirector: true }, demo);
-    engineRef.current?.beginDemo(opening);
+    engineRef.current?.beginDemo(opening, demo.openingStep);
     autoDirRef.current = true;
     setBump(EMPTY_BUMP);
     setControllerBump(EMPTY_BUMP);
@@ -1165,9 +1285,145 @@ export const App: React.FC = () => {
     setActiveCueId(null);
     setShowState(opening);
     live.audio.set({ ...EMPTY_AUDIO, playing: true, source: 'synth', trackName: ae.getStatus().trackName, demo });
-    setAudioDiscrete({ source: 'synth', playing: true, openingBlack: demo.step < DEMO_BLACKOUT_STEPS, openingBar: demo.bar + 1 });
+    setAudioDiscrete({
+      source: 'synth',
+      playing: true,
+      openingBlack: demo.openingStep < DEMO_BLACKOUT_STEPS,
+      openingBar: demo.bar + 1,
+      openingTotalBars: demo.openingBlackoutBars,
+      openingBeforeDownbeat: false,
+    });
     setToast(null);
   };
+
+  const startDemoTrack = async () => {
+    if (!capabilitiesRef.current.edit) return;
+    const ae = audioEngineRef.current;
+    const available = availableDemoTrackRef.current;
+    if (!ae || !available) return;
+    const epoch = sessionEpochRef.current;
+    // Unlock audio element synchronously inside the user gesture via a CSP-safe silent blob: WAV.
+    const prepared = ae.preparePlaybackGesture();
+    cancelDemoTrackLoad();
+    const abort = new AbortController();
+    demoTrackAbortRef.current = abort;
+    setDemoTrackLoading(true);
+    setDemoTrackProgress(null);
+    try {
+      const cachedCandidate = assets.current.get('file:' + available.map.file)?.file;
+      const cached = cachedCandidate && demoTrackFilesRef.current.has(cachedCandidate) ? cachedCandidate : undefined;
+      const file = cached ?? await fetchDemoTrackAudio(available, abort.signal, (loaded, total) => {
+        if (demoTrackAbortRef.current === abort) {
+          setDemoTrackProgress(total ? Math.min(1, loaded / total) : null);
+        }
+      });
+      if (abort.signal.aborted || demoTrackAbortRef.current !== abort || epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) {
+        prepared.cleanup();
+        return;
+      }
+      demoTrackFilesRef.current.add(file);
+      registerAsset('file', file);
+      const loadResult = await ae.loadDemoTrack(file, available.map, prepared);
+      if (abort.signal.aborted || demoTrackAbortRef.current !== abort || epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) {
+        ae.stopAll();
+        return;
+      }
+      // Abort any prior upload's beat-grid analysis only once the demo track has taken over.
+      beatGridAbortRef.current?.abort();
+      beatGridAbortRef.current = null;
+      const map = available.map;
+      const grid = { bpm: map.bpm, offsetMs: map.firstDownbeatMs, source: 'manual' as const };
+      setBeatGridStatus({ state: 'ready', grid });
+      directorArmed.current = true;
+      expectedMusic.current = { kind: 'file', name: file.name, playing: loadResult.playing, offsetSeconds: 0 };
+      setFollow(null);
+      const demo = getDemoTrackPosition(map, ae.getPlaybackMs(), false);
+      const opening = applyDemoLighting({ ...showStateRef.current, bpm: map.bpm, autoDirector: true }, demo);
+      engineRef.current?.beginDemo(opening, demo.beforeDownbeat ? 0 : demo.openingStep);
+      autoDirRef.current = true;
+      setBump(EMPTY_BUMP);
+      setControllerBump(EMPTY_BUMP);
+      lastDemoTick.current = demo.beforeDownbeat ? -2 : Math.floor(demo.step / 2);
+      setActiveCueId(null);
+      setShowState(opening);
+      live.audio.set({ ...EMPTY_AUDIO, playing: loadResult.playing, source: 'file', trackName: loadResult.trackName, demoTrackTitle: map.title, demo });
+      const openingBeforeDownbeat = !!demo.beforeDownbeat;
+      const openingBlack = openingBeforeDownbeat || demo.openingStep < DEMO_BLACKOUT_STEPS;
+      setAudioDiscrete({
+        source: 'file',
+        playing: loadResult.playing,
+        openingBlack,
+        openingBar: openingBlack && !openingBeforeDownbeat ? demo.bar + 1 : undefined,
+        openingTotalBars: openingBlack && !openingBeforeDownbeat ? demo.openingBlackoutBars : undefined,
+        openingBeforeDownbeat,
+      });
+      setToast(loadResult.autoplayBlocked ? 'Demo track ready — tap Play track to start.' : null);
+    } catch (error) {
+      prepared.cleanup();
+      if (abort.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return;
+      showToast(error instanceof Error ? error.message : 'Could not load demo track.');
+    } finally {
+      if (demoTrackAbortRef.current === abort) {
+        demoTrackAbortRef.current = null;
+        setDemoTrackLoading(false);
+        setDemoTrackProgress(null);
+      }
+    }
+  };
+
+  const handleSeekTrack = useCallback((seconds: number) => {
+    const ae = audioEngineRef.current;
+    if (!ae) return;
+    const currentMusic = readMusic();
+    if (currentMusic.kind !== 'file') return;
+    ae.seekTrack(seconds);
+    const actualSec = ae.getPlaybackMs() / 1000;
+    expectedMusic.current = { ...currentMusic, offsetSeconds: actualSec };
+    const metrics = ae.getMetrics(0);
+    live.audio.set({ ...metrics, spectrum: new Float32Array(metrics.spectrum) });
+    if (metrics.demo) {
+      const position = metrics.demo;
+      const openingBeforeDownbeat = !!position.beforeDownbeat;
+      const openingBlack = openingBeforeDownbeat || position.openingStep < DEMO_BLACKOUT_STEPS;
+      const openingBar = openingBlack && !openingBeforeDownbeat ? position.bar + 1 : undefined;
+      const openingTotalBars = openingBlack && !openingBeforeDownbeat ? position.openingBlackoutBars : undefined;
+      setAudioDiscrete(prev => ({
+        ...prev,
+        source: metrics.source,
+        playing: metrics.playing,
+        openingBlack,
+        openingBar,
+        openingTotalBars,
+        openingBeforeDownbeat,
+      }));
+      if (autoDirRef.current && !replaying.current && directorArmed.current && allows(clockModeRef.current, 'autoLD', 'auto_ld')) {
+        lastDemoTick.current = position.beforeDownbeat ? -2 : Math.floor(position.step / 2);
+        setActiveCueId(null);
+        setShowState(s => (s.autoDirector ? applyDemoLighting(s, position) : s));
+      }
+    }
+  }, [live]);
+
+  const handleJumpDemoSection = useCallback((delta: -1 | 1) => {
+    const ae = audioEngineRef.current;
+    const map = ae?.getActiveDemoTrackMap();
+    if (!ae || !map) return;
+    const pos = getDemoTrackPosition(map, ae.getPlaybackMs(), false);
+    const sections = map.timeline.sections;
+    if (delta > 0 && !pos.beforeDownbeat && pos.sectionIndex >= sections.length - 1) return;
+    if (delta < 0 && (pos.beforeDownbeat || (pos.sectionIndex === 0 && pos.stepInSection < 16))) return;
+    const targetIdx = pos.beforeDownbeat
+      ? 0
+      : Math.max(0, Math.min(sections.length - 1, pos.sectionIndex + delta));
+    // +30 ms clears MP3 frame-quantized seek boundaries (~26 ms per 44.1 kHz frame).
+    const targetMs = demoTrackMsForStep(map, sections[targetIdx].startStep) + 30;
+    handleSeekTrack(targetMs / 1000);
+  }, [handleSeekTrack]);
+
+  const handleSeekTrackRef = useRef(handleSeekTrack);
+  handleSeekTrackRef.current = handleSeekTrack;
+  const handleJumpDemoSectionRef = useRef(handleJumpDemoSection);
+  handleJumpDemoSectionRef.current = handleJumpDemoSection;
 
   const handleTogglePlay = () => {
     const ae = audioEngineRef.current;
@@ -1193,7 +1449,8 @@ export const App: React.FC = () => {
         else setFilesOpen(true);
         return;
       }
-      void ae.restoreTimelineMusic({ ...ref, playing: true }, file, showState.bpm, 0)
+      const mappedDemo = demoTrackFilesRef.current.has(file) ? availableDemoTrackRef.current?.map : undefined;
+      void ae.restoreTimelineMusic({ ...ref, playing: true }, file, showState.bpm, 0, mappedDemo)
         .catch(e => showToast(e instanceof Error ? e.message : 'Could not play linked music.'));
       return;
     }
@@ -1205,6 +1462,9 @@ export const App: React.FC = () => {
       startDemo();
       return;
     }
+    if (status.demoTrackFinished) {
+      lastDemoTick.current = -1;
+    }
     const playing = ae.togglePlayPause();
     showToast(playing ? `Playing: ${ae.getStatus().trackName}` : 'Audio Paused');
   };
@@ -1214,6 +1474,10 @@ export const App: React.FC = () => {
     const ae = audioEngineRef.current;
     if (!ae) return;
     const epoch = sessionEpochRef.current;
+    demoTrackAbortRef.current?.abort();
+    demoTrackAbortRef.current = null;
+    setDemoTrackLoading(false);
+    setDemoTrackProgress(null);
     beatGridAbortRef.current?.abort();
     beatGridAbortRef.current = null;
     try {
@@ -1262,6 +1526,7 @@ export const App: React.FC = () => {
     if (!capabilitiesRef.current.edit) return;
     const ae = audioEngineRef.current;
     if (!ae) return;
+    cancelDemoTrackLoad();
     if (live.audio.get().source === 'mic') {
       ae.stopAll();
       expectedMusic.current = NO_MUSIC;
@@ -1483,6 +1748,10 @@ export const App: React.FC = () => {
   const applyViewerDocument = (doc: ParsedViewerDocument) => {
     timeline.stop();
     audioEngineRef.current?.stopAll();
+    demoTrackAbortRef.current?.abort();
+    demoTrackAbortRef.current = null;
+    setDemoTrackLoading(false);
+    setDemoTrackProgress(null);
     beatGridAbortRef.current?.abort();
     beatGridAbortRef.current = null;
     setBeatGridStatus({ state: 'idle' });
@@ -1600,6 +1869,10 @@ export const App: React.FC = () => {
       const deskTimeline = timelineRef.current.snapshot();
       timelineRef.current.stop();
       audioEngineRef.current?.stopAll();
+      demoTrackAbortRef.current?.abort();
+      demoTrackAbortRef.current = null;
+      setDemoTrackLoading(false);
+      setDemoTrackProgress(null);
       beatGridAbortRef.current?.abort();
       beatGridAbortRef.current = null;
       audioEngineRef.current?.setLiveBpmAnalysis(false);
@@ -1747,6 +2020,10 @@ export const App: React.FC = () => {
     installInterchange(file.interchange);
     takeMetaExplicitRef.current = file.timeline?.frameRate !== undefined || file.timeline?.timecodeOffsetMs !== undefined;
     showControl.syncFromShowTimeline(file.timeline);
+    demoTrackAbortRef.current?.abort();
+    demoTrackAbortRef.current = null;
+    setDemoTrackLoading(false);
+    setDemoTrackProgress(null);
     beatGridAbortRef.current?.abort();
     setBeatGridStatus({ state: 'idle' });
     wallClock.set(0, false);
@@ -2077,6 +2354,7 @@ export const App: React.FC = () => {
     if (missing.length) showToast(viewerModeRef.current
       ? `Playing with missing media (${missing.join(', ')}) · use Relink.`
       : `Playing with missing media. Relink ${missing.join(', ')} in Files.`);
+    cancelDemoTrackLoad();
     const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
     setFollow(null); replaying.current = true; replayLook.current = showState; replayScreen.current = NO_SCREEN; replayMusicClock.current = 0;
     engineRef.current?.releaseDirector(false); previewRig(); timeline.play(false);
@@ -2087,6 +2365,7 @@ export const App: React.FC = () => {
       showToast(`Replay is disabled in ${clockModeRef.current} mode.`);
       return;
     }
+    cancelDemoTrackLoad();
     if (missing.length) showToast(viewerModeRef.current
       ? `Playing with missing media (${missing.join(', ')}) · use Relink.`
       : `Playing with missing media. Relink ${missing.join(', ')} in Files.`);
@@ -2195,17 +2474,13 @@ export const App: React.FC = () => {
         audioStore={live.audio}
         getLinkedMusic={readMusic}
         getTrackDuration={() => audioEngineRef.current?.trackDuration() ?? 0}
-        onSeekTrack={seconds => {
-          const currentMusic = readMusic();
-          if (currentMusic.kind !== 'file') return;
-          expectedMusic.current = { ...currentMusic, offsetSeconds: seconds };
-          audioEngineRef.current?.seekTrack(seconds);
-          live.audio.set({ ...live.audio.get() });
-        }}
+        onSeekTrack={handleSeekTrack}
         volume={volume}
         bpm={showState.bpm}
         tempo={tempoProps}
         openingBar={demoOpeningBlack ? audioDiscrete.openingBar : undefined}
+        openingTotalBars={demoOpeningBlack ? audioDiscrete.openingTotalBars : undefined}
+        openingBeforeDownbeat={demoOpeningBlack ? audioDiscrete.openingBeforeDownbeat : undefined}
         blackout={showState.blackout}
         autoDirector={showState.autoDirector}
         audioReactive={showState.audioReactive}
@@ -2217,8 +2492,14 @@ export const App: React.FC = () => {
         costModalOpen={costModalOpen}
         oneNightCostLabel={oneNightCostLabel}
         cinemaMode={cinemaMode}
+        availableDemoTrackTitle={availableDemoTrack?.map.title ?? null}
+        demoTrackSectionCount={availableDemoTrack?.map.sections.length ?? 0}
+        demoTrackLoading={demoTrackLoading}
+        demoTrackProgress={demoTrackProgress}
         onTogglePlay={handleTogglePlay}
         onStartDemo={startDemo}
+        onStartDemoTrack={() => void startDemoTrack()}
+        onJumpDemoSection={handleJumpDemoSection}
         onDesignStage={() => setDesignerRig(rig)}
         onShowFiles={() => setFilesOpen(true)}
         onUploadAudio={handleUploadAudio}

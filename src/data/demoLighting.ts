@@ -40,9 +40,30 @@ function fadeColor(from: string, to: string, amount: number): string {
 }
 
 // The director owns show fixtures. The operator keeps the master, blackout, camera and media.
+// Section timing metadata (sectionBars, stepInSection, openingStep, beforeDownbeat) is carried on `pos` by getDemoPosition().
 export function applyDemoLighting(state: ShowState, pos: DemoPosition): ShowState {
   const id = pos.sectionId;
   const look = looks[id];
+  if (pos.beforeDownbeat) {
+    return {
+      ...state,
+      ...(state.movingGroups && Object.keys(state.movingGroups).length ? { movingGroups: {} } : {}),
+      primaryColor: look.colors[0], accentColor: look.colors[1],
+      colorSplitMode: 'gradient',
+      beamIntensity: 0, washIntensity: 0,
+      beamZoom: 0.12,
+      movementMode: look.movement, movementSpeed: 0.07,
+      movementSpread: 0.19, goboPrism: false,
+      strobeRate: 0, blinderLevel: 0,
+      laser: { enabled: false, intensity: 0,
+        pattern: look.laser ?? 'fan', colorMode: 'dual', beamCount: 8,
+        spreadX: 0.52, spreadY: 0.35, speed: 0.1,
+        tilt: 0.16, rotation: 0.24, strobe: 0, audienceScan: false },
+      motors: { ...state.motors, mode: look.motor, speed: 0.18 },
+      atmo: { ...state.atmo, hazeLevel: 0, smokeOutput: 0, co2Active: false, co2AutoOnDrop: false },
+      led: { ...state.led, enabled: false, visualMode: look.screen, brightness: 0, speed: 0.07 },
+    };
+  }
   const lift = id === 'build' || id === 'rebuild';
   const peak = id === 'drop' || id === 'finale';
   const rest = lift && pos.barInSection === pos.sectionBars - 1 && pos.stepInBar >= 12;
@@ -50,16 +71,17 @@ export function applyDemoLighting(state: ShowState, pos: DemoPosition): ShowStat
   const ease = progress * progress * (3 - 2 * progress);
   const intro = id === 'intro';
   const groove = id === 'groove';
-  const step = pos.step;
-  const wingFade = demoFade(step, 64, 128);
+  const openingStep = pos.openingStep ?? pos.step;
+  const stepInSection = pos.stepInSection ?? (pos.barInSection * 16 + pos.stepInBar);
+  const wingFade = demoFade(openingStep, 64, 128);
   // Bars 1–2 are dark. The backlight pair rises in bars 3–4, then the wings join.
-  const level = intro ? 0.26 * demoFade(step, DEMO_BLACKOUT_STEPS, 56) + 0.12 * wingFade :
+  const level = intro ? 0.26 * demoFade(openingStep, DEMO_BLACKOUT_STEPS, 56) + 0.12 * wingFade :
     rest ? 0.025 : look.level[0] + (look.level[1] - look.level[0]) * ease;
   const wash = 0.035 + level * (peak ? 0.70 : 0.48);
-  const washFade = demoFade(step, 96, 128);
-  const ledFade = demoFade(step, 128, 224);
+  const washFade = demoFade(openingStep, 96, 128);
+  const ledFade = demoFade(openingStep, 128, 224);
   const accentColor = intro ? fadeColor(look.colors[1], looks.groove.colors[1], wingFade) :
-    id === 'build' ? fadeColor(looks.groove.colors[1], look.colors[1], demoFade(step, 256, 288)) : look.colors[1];
+    id === 'build' ? fadeColor(looks.groove.colors[1], look.colors[1], demoFade(stepInSection, 0, 32)) : look.colors[1];
   const accent = peak && pos.barInSection % 4 === 0 && pos.stepInBar < 2;
   const laserLevel = look.laser && !rest ? (peak ? 0.48 + level * 0.35 : Math.max(0, progress - 0.35) * 0.55) : 0;
   return {
@@ -77,7 +99,7 @@ export function applyDemoLighting(state: ShowState, pos: DemoPosition): ShowStat
       spreadX: peak ? 0.87 : 0.52, spreadY: 0.35 + level * 0.26, speed: 0.1 + level * 0.38,
       tilt: 0.16, rotation: 0.24, strobe: 0, audienceScan: false },
     motors: { ...state.motors, mode: look.motor, speed: 0.18 + level * 0.39 },
-    atmo: { ...state.atmo, hazeLevel: (0.40 + 0.21 * level) * (intro ? demoFade(step, DEMO_BLACKOUT_STEPS, 48) : 1),
+    atmo: { ...state.atmo, hazeLevel: (0.40 + 0.21 * level) * (intro ? demoFade(openingStep, DEMO_BLACKOUT_STEPS, 48) : 1),
       smokeOutput: intro ? 0 : groove ? 0.045 * ledFade : peak ? 0.20 : 0.045,
       co2Active: false, co2AutoOnDrop: peak },
     led: { ...state.led, enabled: !intro && (!groove || ledFade > 0), visualMode: look.screen,

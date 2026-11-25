@@ -685,10 +685,10 @@ export class StageEngine {
     this.standby = false;
   }
 
-  public beginDemo(opening: ShowState) {
+  public beginDemo(opening: ShowState, initialOpeningStep = 0) {
     this.standby = false;
     this.manualFadeStart = undefined;
-    this.directedStep = 0;
+    this.directedStep = initialOpeningStep;
     this.setShowState(opening);
     this.clearStage();
   }
@@ -2252,11 +2252,12 @@ export class StageEngine {
     // The frame loop still clears the canvas and publishes telemetry while the desk is idle.
     if (this.standby) return false;
     const demo = this.currentState.autoDirector ? audio.demo : undefined;
+    const demoOpeningStep = demo ? (demo.beforeDownbeat ? 0 : demo.openingStep) : undefined;
     // Render opening fades on the audio clock, between the slower console readouts.
-    const s = demo && demo.step < 224 ? applyDemoLighting(this.currentState, demo) : this.currentState;
+    const s = demo && (demo.beforeDownbeat || demoOpeningStep! < 224) ? applyDemoLighting(this.currentState, demo) : this.currentState;
     const b = this.currentBump;
     const t = this.elapsed;
-    if (demo) this.directedStep = demo.step;
+    if (demo) this.directedStep = demoOpeningStep;
     const manualMix = demo ? 0 : this.manualFadeStart === undefined ? 1 : demoFade(t - this.manualFadeStart, 0, 0.8);
     if (manualMix === 1) {
       this.manualFadeStart = undefined;
@@ -2265,7 +2266,7 @@ export class StageEngine {
     const openingStep = this.directedStep;
 
     // Effective master blackout / dimmer
-    const darkOpening = demo && demo.step <= DEMO_BLACKOUT_STEPS;
+    const darkOpening = !!demo && (!!demo.beforeDownbeat || demoOpeningStep! <= DEMO_BLACKOUT_STEPS);
     const master = s.blackout || darkOpening ? 0 : s.masterDimmer;
     const roomGain = openingStep === undefined ? 1 : THREE.MathUtils.lerp(demoFade(openingStep, 96, 208), 1, manualMix);
     this.houseAmbient.intensity = 0.36 * roomGain;
@@ -2509,12 +2510,12 @@ export class StageEngine {
       }
 
       const firstPair = fx.openingStep === DEMO_BLACKOUT_STEPS;
-      const groupGain = demo && !firstPair ? demoFade(demo.step, fx.openingStep, fx.openingStep + 12) : 1;
+      const groupGain = demo && !firstPair ? demoFade(demoOpeningStep!, fx.openingStep, fx.openingStep + 12) : 1;
       let baseInt = gMod?.dimmerMapped
         ? gMod.dimmer
         : (fx.type === 'beam' ? s.beamIntensity : s.washIntensity);
-      if (demo && firstPair && fx.type === 'wash' && demo.step < 128) {
-        baseInt = THREE.MathUtils.lerp(s.beamIntensity, baseInt, demoFade(demo.step, 96, 128));
+      if (demo && firstPair && fx.type === 'wash' && demoOpeningStep! < 128) {
+        baseInt = THREE.MathUtils.lerp(s.beamIntensity, baseInt, demoFade(demoOpeningStep!, 96, 128));
       }
       // Release each lantern from its last rendered level, including fixtures still out.
       if (demo) fx.directedDimmer = groupGain * baseInt;

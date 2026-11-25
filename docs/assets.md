@@ -65,3 +65,13 @@ StageForge selects a `RenderTier` (`'high'` vs `'low'`) once at `StageEngine` in
 - `StageEngine.dispose()` frees the entire `FixtureModelCache`, any active `BakedIldaClip` (disposing all per-projector shared-attribute wrapper geometries together), and every unique texture in `SharedMaterials`.
 - Loaded ILDA clips cap total points at 200,000 (`high` tier) and 60,000 (`low` tier), bake once into shared `BufferAttribute`s (1 `LineSegments` draw call per projector), and update only `geometry.setDrawRange` during playback.
 - Every moving fixture builder anchors its `head` group origin strictly at `dir * pivotY` (`HEAD_PIVOT = 0.46 m` for legacy fixtures, catalogue-realistic `pivotY` for catalogue fixtures), preserving `focusAim.ts` and `beamAxes()` convergence.
+
+---
+
+## Optional Demo Track Provenance
+
+No recorded demo track is currently bundled in `public/demo/`. When a real demo track is committed (see [`docs/demo-track.md`](demo-track.md)), update the table below and revise the opening sentence of this document accordingly:
+
+| File / Part | Origin (Own recording vs Generated) | Tool & Plan | Date | Prompt / Session Notes | Licence / Rights |
+|---|---|---|---|---|---|
+| *(none bundled yet)* | — | — | — | — | — |
