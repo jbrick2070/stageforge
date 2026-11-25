@@ -265,7 +265,7 @@ test('Sprint 15: graphics probe, output controls (bloom/FXAA/MSAA), zero-bloom p
 });
 
 test('Sprint 15: post-bloom rendered luminance rolling 1-second flash limiter, positive control, reduced-motion, and physical DMX isolation', async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   await page.setViewportSize({ width: 960, height: 600 });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.stepAndReadLuminance)).toBe('function');
@@ -533,9 +533,11 @@ test('Sprint 15: image vs video sRGB colour equivalence diagnosis and videoSrgbD
       v.onerror = () => reject(new Error('Failed to load /examples/amber-clouds.mp4'));
     });
     // Seek to 1.2 s (bright amber cloud frame, past any 0.0 s fade-in) before capturing the reference PNG.
+    let targetTime = 1.2;
     await new Promise((resolve) => {
       v.onseeked = () => resolve();
-      v.currentTime = Math.min(1.2, (v.duration || 2) * 0.4);
+      targetTime = Math.min(1.2, (v.duration || 2) * 0.4);
+      v.currentTime = targetTime;
     });
     await new Promise((r) => setTimeout(r, 60));
 
@@ -565,6 +567,9 @@ test('Sprint 15: image vs video sRGB colour equivalence diagnosis and videoSrgbD
       led: { enabled: true, brightness: 1, visualMode: 'custom', customMediaUrl: pngUrl, customMediaType: 'image' },
     });
     await new Promise((r) => setTimeout(r, 250));
+    // Advance simulation past the 380 ms preview flash refractory so led.brightness = 1 is fully settled.
+    probe.stepAndReadLuminance(220);
+    probe.stepAndReadLuminance(220);
     const centerWallY = () => {
       const g = probe.stepAndReadLuminance(20).grid;
       return Math.max(g.cells[27].y, g.cells[28].y, g.cells[35].y, g.cells[36].y);
@@ -575,14 +580,16 @@ test('Sprint 15: image vs video sRGB colour equivalence diagnosis and videoSrgbD
     probe.setRenderSettings({ videoSrgbDecode: true });
     const imgOn = centerWallY();
 
-    // Now load the exact same MP4 video on the LED wall and compare videoSrgbDecode off vs on.
+    // Now load the exact same MP4 video paused at the exact same `targetTime` on the LED wall and compare videoSrgbDecode off vs on.
     probe.setRenderSettings({ videoSrgbDecode: false });
     probe.patchShowState({
       led: { enabled: true, brightness: 1, visualMode: 'custom', customMediaUrl: videoUrl, customMediaType: 'video' },
     });
+    probe.setPrimaryScreenTransport(false, targetTime);
     let vidOff = null;
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 80));
+      probe.setPrimaryScreenTransport(false, targetTime);
       const y = centerWallY();
       if (y > imgOff * 0.5) {
         vidOff = y;

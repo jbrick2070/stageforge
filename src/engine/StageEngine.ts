@@ -1779,7 +1779,14 @@ export class StageEngine {
     if (this.pendingScreenOffset !== undefined) {
       const offset = this.pendingScreenOffset;
       const target = Number.isFinite(video.duration) && video.duration > 0 ? offset % video.duration : offset;
-      if (Math.abs(video.currentTime - target) > 0.015) video.currentTime = target;
+      if (Math.abs(video.currentTime - target) > 0.015) {
+        video.addEventListener('seeked', () => {
+          if (this.customTex) this.customTex.needsUpdate = true;
+        }, { once: true });
+        video.currentTime = target;
+      } else if (this.customTex) {
+        this.customTex.needsUpdate = true;
+      }
       this.pendingScreenOffset = undefined;
     }
     if (!this.screenRunning) {

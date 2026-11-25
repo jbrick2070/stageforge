@@ -1533,6 +1533,8 @@ export const App: React.FC = () => {
       jumpDemoSection: (delta: -1 | 1) => handleJumpDemoSectionRef.current(delta),
       screens: () => engine.screenDiagnostics(),
       primaryScreen: () => engine.screenTransport(),
+      setPrimaryScreenTransport: (playing: boolean, offsetSeconds?: number) =>
+        engine.restoreScreenTransport(playing, offsetSeconds),
       hangs: () => engine.hangDiagnostics(),
       renderStats: () => engine.renderStats(),
       graphicsProbe: () => engine.graphicsProbe(),
