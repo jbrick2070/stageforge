@@ -191,11 +191,17 @@ export interface ShowControlApi {
   syncFromShowTimeline: (meta?: { frameRate?: SmpteFrameRate; timecodeOffsetMs?: number }) => void;
 }
 
-export function useShowControl(callbacks: ShowControlCallbacks, enabled = true): ShowControlApi {
+export function useShowControl(
+  callbacks: ShowControlCallbacks,
+  enabled = true,
+  suspendOutbound = false,
+): ShowControlApi {
   const hasDesktopBridge = typeof window !== 'undefined' && typeof window.stageforgeDesktop?.showControl === 'function';
   const hasWebMidi = MidiShowControlClient.isSupported();
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  const suspendOutboundRef = useRef(suspendOutbound);
+  suspendOutboundRef.current = suspendOutbound;
 
   const cbRef = useRef(callbacks);
   cbRef.current = callbacks;
@@ -586,9 +592,9 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
     return () => window.clearInterval(timer);
   }, [enabled, clockMode, syncLockState, tcStore]);
 
-  // Optional outbound MTC / Art-Net TC in Master mode only (never re-emit in chase/caller).
+  // Optional outbound MTC / Art-Net TC in Master mode only (never re-emit in chase/caller, suspended while AI bridge is active).
   useEffect(() => {
-    const canEmitTc = enabled && allows(clockMode, 'internal', 'outbound_timecode');
+    const canEmitTc = enabled && !suspendOutbound && allows(clockMode, 'internal', 'outbound_timecode');
     if (!canEmitTc) {
       midiRef.current?.stopMtcOutput();
       return;
@@ -608,7 +614,7 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
     if (hasDesktopBridge && artnetTcTxEnabled) {
       const interval = Math.max(16, Math.round(frameDurationMs(fps)));
       artnetTimer = window.setInterval(() => {
-        if (!enabledRef.current || !cbRef.current.isTakePlaying()) return;
+        if (!enabledRef.current || suspendOutboundRef.current || !cbRef.current.isTakePlaying()) return;
         const raw = cbRef.current.getTakePlayheadMs() + offset;
         const ms = ((raw % DAY_MS) + DAY_MS) % DAY_MS;
         void window.stageforgeDesktop?.showControl({ type: 'send', payload: { kind: 'timecode', ms, fps } }).catch(() => {});
@@ -618,7 +624,7 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
       midiRef.current?.stopMtcOutput();
       if (artnetTimer !== null) window.clearInterval(artnetTimer);
     };
-  }, [enabled, clockMode, midiMtcTxEnabled, midiStatus.connected, settings.midiOutputId, artnetTcTxEnabled, settings.frameRate, settings.timecodeOffsetMs, hasDesktopBridge]);
+  }, [enabled, suspendOutbound, clockMode, midiMtcTxEnabled, midiStatus.connected, settings.midiOutputId, artnetTcTxEnabled, settings.frameRate, settings.timecodeOffsetMs, hasDesktopBridge]);
 
   const applyDesktopConfig = useCallback(async (
     nextFlags: { oscRxEnabled: boolean; oscTxActive: boolean; artnetTcRxEnabled: boolean; artnetTcTxEnabled: boolean },
@@ -757,7 +763,7 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
   }, []);
 
   const sendFeedback = useCallback((payload: { cue?: string; timecode?: string; bpm?: number; clock?: ClockMode }) => {
-    if (!enabledRef.current) return;
+    if (!enabledRef.current || suspendOutboundRef.current) return;
     if (!allows(clockModeRef.current, 'internal', 'outbound_osc_feedback')) return;
     if (hasDesktopBridge && flagsRef.current.oscTxActive) {
       void window.stageforgeDesktop?.showControl({

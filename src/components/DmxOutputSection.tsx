@@ -30,6 +30,7 @@ interface DmxOutputSectionProps {
   hasCatalogFixtures?: boolean;
   preflight?: PreflightReport;
   liveViolationMessage?: string | null;
+  aiBridgeBlocking?: boolean;
   onOpenPreflight?: () => void;
 }
 
@@ -39,10 +40,10 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
   hasCatalogFixtures,
   preflight,
   liveViolationMessage,
+  aiBridgeBlocking = false,
   onOpenPreflight,
 }) => {
   const [advancedOpen, setAdvancedOpen] = useState<boolean>(readAdvancedOpen);
-  const [armed, setArmed] = useState(false);
   const physicalSummary = useMemo(() => (rig ? summarizePhysicalDrive(rig) : null), [rig]);
 
   const {
@@ -60,6 +61,9 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
     discoverArtNet,
     busy,
     error,
+    armed,
+    arm,
+    disarm,
     isLive,
     enable,
     disable,
@@ -72,14 +76,17 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
     }
   }, [advancedOpen, hasDesktopBridge, refreshInterfaces]);
 
-  // Automatically disarm if output goes live, Advanced collapses, or pre-flight stops allowing arming.
-  const canArmByPreflight = preflight ? preflight.canArm : true;
+  // Automatically disarm if output goes live, Advanced collapses, AI bridge activates, or pre-flight stops allowing arming.
+  const canArmByPreflight = (preflight ? preflight.canArm : true) && !aiBridgeBlocking;
   useEffect(() => {
-    if (isLive || !advancedOpen || !canArmByPreflight) setArmed(false);
-  }, [isLive, advancedOpen, canArmByPreflight]);
+    if (isLive || !advancedOpen || !canArmByPreflight) disarm();
+  }, [isLive, advancedOpen, canArmByPreflight, disarm]);
+
+  // Disarm cleanly if the DMX drawer unmounts while armed.
+  useEffect(() => () => disarm(), [disarm]);
 
   const patchSettings = (patch: Parameters<typeof updateSettings>[0]) => {
-    setArmed(false);
+    disarm();
     updateSettings(patch);
   };
 
@@ -194,7 +201,7 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
           const next = e.currentTarget.open;
           setAdvancedOpen(next);
           saveAdvancedOpen(next);
-          if (!next) setArmed(false);
+          if (!next) disarm();
         }}
         className="border-t border-white/10"
       >
@@ -576,7 +583,16 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
           {/* Pre-flight gate status + two-step Safety Arm -> Go live */}
           {!isLive && (
             <div className="space-y-1.5">
-              {preflight && !preflight.canArm && (
+              {aiBridgeBlocking && (
+                <div
+                  data-testid="dmx-ai-bridge-blocked"
+                  className="rounded border border-violet-400/50 bg-violet-950/40 px-2 py-1.5 text-[9px] text-violet-100"
+                >
+                  AI bridge is enabled (or has pending proposals). Disable the AI bridge in Show Control &amp; Sync before arming live DMX output.
+                </div>
+              )}
+
+              {!aiBridgeBlocking && preflight && !preflight.canArm && (
                 <div className="rounded border border-amber-400/40 bg-amber-950/35 px-2 py-1.5 space-y-1 text-[9px] text-amber-100">
                   <p>{preflight.blockingReasons[0] ?? 'Complete pre-flight checks before arming output.'}</p>
                   {onOpenPreflight && (
@@ -612,7 +628,7 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() => setArmed(false)}
+                      onClick={() => disarm()}
                       className="px-2.5 py-1 rounded bg-white/10 hover:bg-white/15 text-zinc-200 cursor-pointer"
                     >
                       Cancel
@@ -624,10 +640,10 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
                   type="button"
                   disabled={busy || !canArmByPreflight || (settings.mode === 'serial' && !hasWebSerial)}
                   data-testid="dmx-output-arm"
-                  onClick={() => setArmed(true)}
+                  onClick={() => void arm()}
                   className="w-full py-1.5 rounded border border-amber-400/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-100 font-semibold cursor-pointer disabled:opacity-40"
                 >
-                  Arm output · {preflightLabel}
+                  Arm output · {aiBridgeBlocking ? 'AI bridge active' : preflightLabel}
                 </button>
               )}
             </div>

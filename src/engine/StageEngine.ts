@@ -678,6 +678,77 @@ export class StageEngine {
     }
   }
 
+  private captureCanvas: HTMLCanvasElement | null = null;
+
+  /**
+   * Render the committed scene state synchronously and copy to a bounded 2D canvas
+   * before encoding to JPEG (for AI bridge `capture_frame`; never invokes probe or animation loop).
+   */
+  public async captureJpeg(options?: { maxWidth?: number; quality?: number; maxBytes?: number }): Promise<{
+    base64: string;
+    width: number;
+    height: number;
+    byteLength: number;
+  }> {
+    if (this.standby) {
+      throw new Error('Viewport is paused (window hidden or minimised).');
+    }
+    const gl = this.renderer.getContext();
+    if (typeof gl?.isContextLost === 'function' && gl.isContextLost()) {
+      throw new Error('WebGL context is lost.');
+    }
+    const srcCanvas = this.renderer.domElement;
+    const srcW = srcCanvas.width;
+    const srcH = srcCanvas.height;
+    if (srcW <= 0 || srcH <= 0) {
+      throw new Error('Viewport canvas has zero dimensions.');
+    }
+    const targetMaxW = Math.max(160, Math.min(1280, Math.round(options?.maxWidth ?? 1280)));
+    const initialQuality = Math.max(0.3, Math.min(0.95, options?.quality ?? 0.8));
+    const maxBytes = Math.max(32_768, Math.min(1024 * 1024, options?.maxBytes ?? 512 * 1024));
+
+    const encodeAt = async (maxW: number, quality: number) => {
+      const scale = Math.min(1, maxW / srcW);
+      const outW = Math.max(1, Math.round(srcW * scale));
+      const outH = Math.max(1, Math.round(srcH * scale));
+      if (!this.captureCanvas) {
+        this.captureCanvas = document.createElement('canvas');
+      }
+      this.captureCanvas.width = outW;
+      this.captureCanvas.height = outH;
+      const ctx = this.captureCanvas.getContext('2d');
+      if (!ctx) throw new Error('Could not acquire 2D canvas context for JPEG capture.');
+      // Render and drawImage synchronously in the same task so preserveDrawingBuffer is not needed.
+      this.renderer.info.reset();
+      this.composer.render(0);
+      ctx.drawImage(srcCanvas, 0, 0, srcW, srcH, 0, 0, outW, outH);
+
+      const dataUrl = this.captureCanvas.toDataURL('image/jpeg', quality);
+      const prefix = 'data:image/jpeg;base64,';
+      if (!dataUrl.startsWith(prefix)) {
+        throw new Error('Canvas JPEG encoding failed.');
+      }
+      const base64 = dataUrl.slice(prefix.length);
+      const byteLength = Math.floor((base64.length * 3) / 4) - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
+      return { base64, width: outW, height: outH, byteLength };
+    };
+
+    let attempt = await encodeAt(targetMaxW, initialQuality);
+    if (attempt.byteLength > maxBytes) {
+      attempt = await encodeAt(targetMaxW, Math.min(initialQuality, 0.6));
+    }
+    if (attempt.byteLength > maxBytes) {
+      attempt = await encodeAt(Math.min(targetMaxW, 960), 0.55);
+    }
+    if (attempt.byteLength > maxBytes) {
+      attempt = await encodeAt(Math.min(targetMaxW, 640), 0.5);
+    }
+    if (attempt.byteLength > maxBytes) {
+      throw new Error(`Captured JPEG exceeded ${maxBytes} byte budget.`);
+    }
+    return attempt;
+  }
+
   public getRenderTier(): RenderTier {
     return this.renderTier;
   }

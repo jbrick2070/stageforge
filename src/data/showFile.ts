@@ -584,3 +584,83 @@ export function parseShowFile(source: string): StageForgeShowFile {
   }
   return decode(value, false);
 }
+
+/**
+ * Strict, non-pruning validators for AI bridge proposals.
+ * Reuse the canonical v8 JSON Schema reader and `checkLook` directly without calling `makeShowFile`,
+ * so unknown keys, out-of-range numbers, and invalid references are rejected rather than stripped.
+ */
+export function validateLookFragmentForRig(value: unknown, rig: RigConfig, path = 'patch'): Partial<ShowState> {
+  const schema = versions[8];
+  const parsed = read(value, schema.$defs.cueState, path, false, schema) as Partial<ShowState>;
+  checkLook(parsed, rigReferences(rig), path);
+  return parsed;
+}
+
+export function validateFullLookForRig(value: unknown, rig: RigConfig, path = 'look'): ShowState {
+  const schema = versions[8];
+  const parsed = read(value, schema.$defs.look, path, false, schema) as ShowState;
+  checkLook(parsed, rigReferences(rig), path);
+  return parsed;
+}
+
+export function validateCueListForRig(value: unknown, rig: RigConfig, path = 'cues'): ShowCue[] {
+  const schema = versions[8];
+  const parsed = read(value, { type: 'array', maxItems: 500, items: { $ref: '#/$defs/cue' } }, path, false, schema) as ShowCue[];
+  const refs = rigReferences(rig);
+  const ids = new Set<string>();
+  parsed.forEach((cue, i) => {
+    if (ids.has(cue.id)) invalid(`${path}[${i}].id`, 'duplicates another cue');
+    ids.add(cue.id);
+    checkLook(cue.state, refs, `${path}[${i}].state`);
+  });
+  return parsed;
+}
+
+export function validateTimelineForRig(
+  value: unknown,
+  rig: RigConfig,
+  stage?: NativeStage,
+  path = 'timeline',
+): ShowTimeline {
+  const schema = versions[8];
+  const parsed = read(value, schema.$defs.timeline, path, false, schema) as ShowTimeline;
+  const refs = rigReferences(rig);
+  let last = 0;
+  for (const [index, event] of parsed.events.entries()) {
+    const ep = `${path}.events[${index}]`;
+    if (event.atMs < last || event.atMs > parsed.durationMs) invalid(`${ep}.atMs`, 'falls outside the ordered timeline');
+    if (event.look) checkLook(event.look, refs, `${ep}.look`);
+    last = event.atMs;
+  }
+  const stageEnd = stage?.screenEvents.at(-1)?.atMs ?? 0;
+  if (stageEnd > parsed.durationMs) {
+    invalid(`${path}.durationMs`, `must be at least ${stageEnd} ms to cover existing secondary wall cues`);
+  }
+  return parsed;
+}
+
+export function validateAudioMapForRig(
+  value: unknown,
+  rig: RigConfig,
+  path = 'audioMap',
+): NonNullable<ShowState['audioMap']> {
+  const schema = versions[8];
+  const parsed = read(value, schema.$defs.audioMap, path, false, schema) as NonNullable<ShowState['audioMap']>;
+  checkLook({ audioMap: parsed }, rigReferences(rig), path);
+  return parsed;
+}
+
+export function validateSecondaryScreenEventForStage(
+  value: unknown,
+  stage: NativeStage | undefined,
+  path = 'event',
+) {
+  const schema = versions[8];
+  const parsed = read(value, schema.$defs.secondaryScreenEvent, path, false, schema) as NativeStage['screenEvents'][number];
+  const walls = new Set((stage?.walls ?? []).map((w) => w.id));
+  if (!walls.has(parsed.target) || parsed.target === 'main-led') {
+    invalid(`${path}.target`, 'must identify an existing secondary wall');
+  }
+  return parsed;
+}

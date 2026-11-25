@@ -16,6 +16,7 @@ Open **Sync** in the top bar to open the **Show Control & Sync** drawer. StageFo
 - Manual blackout (`Space`) and master dimmer always remain active as safety overrides.
 - Clock ownership can never be changed remotely over OSC or MIDI.
 - When StageForge is in **Chase TC** or **Cue Caller** mode, a compact corner badge stays visible (including in Cinema mode) with a one-click **Master** reset button.
+- For connecting local AI clients over MCP (Streamable HTTP on `127.0.0.1`), see [AI Bridge (`docs/ai-bridge.md`)](./ai-bridge.md).
 
 ## OSC (Open Sound Control 1.0)
 

@@ -4,10 +4,13 @@ import { useLive } from '../state/liveTelemetry';
 import type { ClockMode } from '../showControl/clockOwner';
 import { formatSmpte, msToSmpte, parseSmpteString, SMPTE_RATES, type SmpteFrameRate } from '../showControl/timecode';
 import type { ShowControlApi } from '../showControl/useShowControl';
+import type { AiBridgeApi } from '../aiBridge/useAiBridge';
+import { AiBridgeSection } from './AiBridgeSection';
 
 interface ShowControlDrawerProps {
   open: boolean;
   control: ShowControlApi;
+  aiBridge?: AiBridgeApi;
   onClose: () => void;
 }
 
@@ -17,7 +20,7 @@ const CLOCK_MODES: Array<{ id: ClockMode; label: string; desc: string }> = [
   { id: 'caller', label: 'Cue Caller', desc: 'External OSC or MIDI MSC calls cues. Follows & Auto-LD suppressed.' },
 ];
 
-export const ShowControlDrawer: React.FC<ShowControlDrawerProps> = ({ open, control, onClose }) => {
+export const ShowControlDrawer: React.FC<ShowControlDrawerProps> = ({ open, control, aiBridge, onClose }) => {
   const tc = useLive(control.tcStore);
   const [offsetDraft, setOffsetDraft] = useState(() =>
     formatSmpte(msToSmpte(control.settings.timecodeOffsetMs, control.settings.frameRate)),
@@ -521,6 +524,9 @@ export const ShowControlDrawer: React.FC<ShowControlDrawerProps> = ({ open, cont
             )}
           </section>
         )}
+
+        {/* AI Bridge (Local MCP) */}
+        {aiBridge && <AiBridgeSection bridge={aiBridge} />}
 
         {/* Activity & Ignored Event Log */}
         <section aria-label="Show control event log" className="rounded-lg border border-white/10 bg-black/45 p-2.5 space-y-1.5">

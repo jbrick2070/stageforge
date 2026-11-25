@@ -23,6 +23,7 @@ interface DmxMonitorDrawerProps {
   liveOutput: LiveDmxControllerApi;
   preflight?: PreflightReport;
   liveViolationMessage?: string | null;
+  aiBridgeBlocking?: boolean;
   onOpenPreflight?: () => void;
   onClose: () => void;
 }
@@ -58,6 +59,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   liveOutput,
   preflight,
   liveViolationMessage,
+  aiBridgeBlocking,
   onOpenPreflight,
   onClose,
 }) => {
@@ -138,6 +140,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
         hasCatalogFixtures={catalogPatched}
         preflight={preflight}
         liveViolationMessage={liveViolationMessage}
+        aiBridgeBlocking={aiBridgeBlocking}
         onOpenPreflight={onOpenPreflight}
       />
 

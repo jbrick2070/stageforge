@@ -34,6 +34,9 @@ export interface LiveDmxControllerApi {
   discoverArtNet: () => Promise<void>;
   busy: boolean;
   error: string | null;
+  armed: boolean;
+  arm: () => Promise<boolean>;
+  disarm: () => void;
   isLive: boolean;
   banner: LiveDmxBannerState;
   dismissStoppedNotice: () => void;
@@ -66,12 +69,81 @@ export function useLiveDmxOutput(
   const [discoveryWarning, setDiscoveryWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [armed, setArmed] = useState(false);
+  const armedRef = useRef(false);
+  armedRef.current = armed;
+  const serialClaimedRef = useRef(false);
   const [dismissedStopEventId, setDismissedStopEventId] = useState<number | null>(null);
+
+  const releaseClaim = useCallback((kind: 'armed' | 'serial') => {
+    if (kind === 'armed') {
+      if (!armedRef.current) return;
+      armedRef.current = false;
+      setArmed(false);
+    } else {
+      if (!serialClaimedRef.current) return;
+      serialClaimedRef.current = false;
+    }
+    const bridge = window.stageforgeDesktop;
+    if (bridge?.outputClaim) {
+      void bridge.outputClaim({ type: 'release', kind }).catch(() => {});
+    }
+  }, []);
+
+  const disarm = useCallback(() => {
+    releaseClaim('armed');
+  }, [releaseClaim]);
+
+  const arm = useCallback(async (): Promise<boolean> => {
+    if (!enabledRef.current) return false;
+    const preCheck = canArmCheckRef.current?.();
+    if (preCheck && !preCheck.allowed) {
+      setError(preCheck.reason ?? 'Complete pre-flight checks before arming live DMX output.');
+      return false;
+    }
+    setError(null);
+    const bridge = window.stageforgeDesktop;
+    if (bridge?.outputClaim) {
+      try {
+        const res = await bridge.outputClaim({ type: 'claim', kind: 'armed' });
+        if (!mountedRef.current || !enabledRef.current) {
+          void bridge.outputClaim({ type: 'release', kind: 'armed' }).catch(() => {});
+          return false;
+        }
+        if (!res.ok) {
+          setError(res.reason ?? 'Cannot arm live DMX output while AI bridge is enabled.');
+          return false;
+        }
+      } catch (err) {
+        if (mountedRef.current) {
+          setError(err instanceof Error ? err.message : 'Could not reserve output interlock.');
+        }
+        return false;
+      }
+    }
+    const postCheck = canArmCheckRef.current?.();
+    if (postCheck && !postCheck.allowed) {
+      if (bridge?.outputClaim) {
+        void bridge.outputClaim({ type: 'release', kind: 'armed' }).catch(() => {});
+      }
+      setError(postCheck.reason ?? 'Pre-flight state changed while arming.');
+      return false;
+    }
+    armedRef.current = true;
+    setArmed(true);
+    return true;
+  }, []);
 
   const serialRef = useRef<EnttecProTransport | null>(null);
   if (!serialRef.current) {
     serialRef.current = new EnttecProTransport((next) => {
       setSerialStatus(next);
+      if (!next.enabled && serialClaimedRef.current) {
+        serialClaimedRef.current = false;
+        if (window.stageforgeDesktop?.outputClaim) {
+          void window.stageforgeDesktop.outputClaim({ type: 'release', kind: 'serial' }).catch(() => {});
+        }
+      }
       if (next.error) setError(next.error);
     });
   }
@@ -129,9 +201,8 @@ export function useLiveDmxOutput(
   useEffect(() => {
     if (enabled) return;
     engineRef.current?.setDmxFrameListener(undefined);
-    if (serialRef.current?.isRunning()) {
-      void serialRef.current.disable();
-    }
+    releaseClaim('armed');
+    void serialRef.current?.disable().finally(() => releaseClaim('serial'));
     if (desktopLiveRef.current && window.stageforgeDesktop?.dmxControl) {
       void window.stageforgeDesktop.dmxControl({ type: 'disable' }).then(setDesktopStatus).catch(() => {});
     }
@@ -139,7 +210,7 @@ export function useLiveDmxOutput(
     setSerialStatus((prev) => (prev.enabled ? { ...prev, enabled: false } : prev));
     setDiscovering(false);
     setError(null);
-  }, [enabled, engineRef]);
+  }, [enabled, engineRef, releaseClaim]);
 
   // Best-effort browser Web Serial blackout on page unload / tab close.
   useEffect(() => {
@@ -153,14 +224,13 @@ export function useLiveDmxOutput(
     return () => {
       mountedRef.current = false;
       window.removeEventListener('pagehide', onPageHide);
-      if (enabledRef.current || serialRef.current?.isRunning()) {
-        void serialRef.current?.disable();
-      }
+      releaseClaim('armed');
+      void serialRef.current?.disable().finally(() => releaseClaim('serial'));
       if (desktopLiveRef.current && window.stageforgeDesktop?.dmxControl) {
         void window.stageforgeDesktop.dmxControl({ type: 'disable' }).catch(() => {});
       }
     };
-  }, []);
+  }, [releaseClaim]);
 
   const serialLive = enabled && serialStatus.enabled;
   const isLive = enabled && (desktopLive || serialLive);
@@ -217,14 +287,13 @@ export function useLiveDmxOutput(
 
   const disable = useCallback(async () => {
     onBeforeDisableRef.current?.();
+    releaseClaim('armed');
     setBusy(true);
     setError(null);
     const wasActive = Boolean(serialRef.current?.isRunning() || desktopLiveRef.current);
     try {
       const tasks: Promise<unknown>[] = [];
-      if (serialRef.current?.isRunning()) {
-        tasks.push(serialRef.current.disable());
-      }
+      tasks.push(serialRef.current!.disable().finally(() => releaseClaim('serial')));
       if (desktopLiveRef.current && window.stageforgeDesktop?.dmxControl) {
         tasks.push(window.stageforgeDesktop.dmxControl({ type: 'disable' }).then(setDesktopStatus));
       }
@@ -235,7 +304,7 @@ export function useLiveDmxOutput(
     } finally {
       setBusy(false);
     }
-  }, [onToast]);
+  }, [onToast, releaseClaim]);
 
   const enable = useCallback(async (): Promise<boolean> => {
     if (!enabledRef.current) return false;
@@ -248,23 +317,42 @@ export function useLiveDmxOutput(
     setError(null);
     try {
       if (settings.mode === 'serial') {
-        if (window.stageforgeDesktop?.dmxControl && desktopStatus?.enabled) {
-          await window.stageforgeDesktop.dmxControl({ type: 'disable' }).then(setDesktopStatus);
+        const bridge = window.stageforgeDesktop;
+        if (bridge?.outputClaim) {
+          const claimRes = await bridge.outputClaim({ type: 'claim', kind: 'serial' });
+          if (!claimRes.ok) {
+            setError(claimRes.reason ?? 'Disable the AI bridge before enabling USB Serial DMX.');
+            return false;
+          }
+          serialClaimedRef.current = true;
         }
-        if (!enabledRef.current) return false;
-        const status = await serialRef.current!.enable({
-          universe: settings.serialUniverse,
-          rateHz: Math.min(44, Math.max(1, settings.rateHz)),
-          allowAllDevices: settings.serialAllowAll,
-        });
+        if (bridge?.dmxControl && desktopStatus?.enabled) {
+          await bridge.dmxControl({ type: 'disable' }).then(setDesktopStatus);
+        }
+        if (!enabledRef.current) {
+          releaseClaim('serial');
+          return false;
+        }
+        let status: SerialTransportStatus;
+        try {
+          status = await serialRef.current!.enable({
+            universe: settings.serialUniverse,
+            rateHz: Math.min(44, Math.max(1, settings.rateHz)),
+            allowAllDevices: settings.serialAllowAll,
+          });
+        } catch (err) {
+          releaseClaim('serial');
+          throw err;
+        }
         const postCheck = canArmCheckRef.current?.();
         if (!mountedRef.current || !enabledRef.current || (postCheck && !postCheck.allowed)) {
-          void serialRef.current?.disable();
+          await serialRef.current?.disable().finally(() => releaseClaim('serial'));
           if (mountedRef.current && postCheck && !postCheck.allowed) {
             setError(postCheck.reason ?? 'Pre-flight state changed while opening serial output.');
           }
           return false;
         }
+        releaseClaim('armed');
         setSerialStatus(status);
         onToast(`Live USB DMX active on Universe ${status.universe}.`);
         return true;
@@ -275,7 +363,7 @@ export function useLiveDmxOutput(
         throw new Error('Network DMX (sACN / Art-Net 4) requires the StageForge desktop app.');
       }
       if (serialRef.current?.isRunning()) {
-        await serialRef.current.disable();
+        await serialRef.current.disable().finally(() => releaseClaim('serial'));
       }
       if (!enabledRef.current) return false;
       const midCheck = canArmCheckRef.current?.();
@@ -317,6 +405,7 @@ export function useLiveDmxOutput(
         }
         return false;
       }
+      releaseClaim('armed');
       setDesktopStatus(status);
       onToast(`Live ${settings.mode === 'sacn' ? 'sACN' : 'Art-Net 4'} output active.`);
       return true;
@@ -328,7 +417,7 @@ export function useLiveDmxOutput(
     } finally {
       if (mountedRef.current) setBusy(false);
     }
-  }, [desktopStatus?.enabled, onToast, settings]);
+  }, [desktopStatus?.enabled, onToast, releaseClaim, settings]);
 
   // Send renderer liveness heartbeat (~1 Hz) to Electron main while live network DMX is active.
   // Independent of unchanged-frame suppression so static looks stay alive while a frozen renderer times out in 5 s.
@@ -409,6 +498,9 @@ export function useLiveDmxOutput(
     discoverArtNet,
     busy,
     error,
+    armed,
+    arm,
+    disarm,
     isLive,
     banner,
     dismissStoppedNotice,

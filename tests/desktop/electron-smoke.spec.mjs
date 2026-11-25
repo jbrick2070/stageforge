@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import dgram from 'node:dgram';
 import { existsSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
@@ -231,7 +232,22 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
     };
   }, CSP_PROBE);
   expect(world).toEqual({
-    bridge: ['onRigCommand', 'sendDmxFrame', 'sendDmxHeartbeat', 'dmxControl', 'onDmxStatus', 'showControl', 'onShowControlEvent', 'onShowControlStatus', 'setViewerMode'],
+    bridge: [
+      'onRigCommand',
+      'sendDmxFrame',
+      'sendDmxHeartbeat',
+      'dmxControl',
+      'onDmxStatus',
+      'showControl',
+      'onShowControlEvent',
+      'onShowControlStatus',
+      'setViewerMode',
+      'aiBridgeControl',
+      'onAiBridgeStatus',
+      'onAiBridgeRequest',
+      'replyAiBridgeRequest',
+      'outputClaim',
+    ],
     node: 'undefined/undefined',
     secure: true,
     inlineScript: 'script-src-elem',
@@ -980,5 +996,164 @@ test('demo track plays from stageforge://app/ under strict CSP when renderer/dem
   } finally {
     await demoApp?.close().catch(() => {});
     await rm(demoTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('AI bridge boots off, blocks live DMX arming, serves MCP tools/proposals/revert/capture_frame, and closes port on disable', async () => {
+  const aiTmp = await mkdtemp(path.join(os.tmpdir(), 'stageforge-ai-smoke-'));
+  const packaged = process.env.STAGEFORGE_DESKTOP_EXE;
+  const profile = `--user-data-dir=${path.join(aiTmp, 'profile')}`;
+  const aiPort = 39000 + Math.floor(Math.random() * 8000);
+  const aiProblems = [];
+
+  const postMcp = (port, token, bodyObj, sid) => new Promise((resolve, reject) => {
+    const payload = JSON.stringify(bodyObj);
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      method: 'POST',
+      path: '/mcp',
+      headers: {
+        Host: `127.0.0.1:${port}`,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'Content-Length': Buffer.byteLength(payload),
+        ...(sid ? { 'Mcp-Session-Id': sid } : {}),
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({ status: res.statusCode, headers: res.headers, text, json: text ? JSON.parse(text) : null });
+      });
+    });
+    req.on('error', reject);
+    req.end(payload);
+  });
+
+  let aiApp;
+  try {
+    aiApp = await electron.launch(packaged
+      ? { executablePath: path.resolve(packaged), args: [profile] }
+      : { executablePath: createRequire(import.meta.url)('electron'), args: [appDir, profile] });
+    aiApp.process().stderr?.on('data', (chunk) => {
+      const text = String(chunk);
+      if (/Uncaught|UnhandledPromiseRejection|TypeError|ReferenceError/.test(text)) aiProblems.push('main: ' + text.trim());
+    });
+    const aiPage = await aiApp.firstWindow();
+    aiPage.on('pageerror', (err) => aiProblems.push('pageerror: ' + err.message));
+    await aiPage.waitForLoadState('domcontentloaded');
+    await expect(aiPage.getByRole('button', { name: 'Show control', exact: true })).toBeVisible();
+
+    // 1. Fresh boot has NO AI bridge listener.
+    const initialStatus = await aiPage.evaluate(() => window.stageforgeDesktop.aiBridgeControl({ type: 'getStatus' }));
+    expect(initialStatus.enabled).toBe(false);
+    expect(initialStatus.port).toBe(null);
+
+    // 2. Open Show Control drawer, set port, and enable AI bridge.
+    await aiPage.getByRole('button', { name: 'Show control', exact: true }).click();
+    const portInput = aiPage.getByTestId('ai-bridge-port');
+    await portInput.fill(String(aiPort));
+    await portInput.press('Enter');
+    await aiPage.getByTestId('ai-bridge-enable').click();
+    await expect(aiPage.getByTestId('ai-bridge-status')).toContainText(`ON · 127.0.0.1:${aiPort}`);
+    const token = await aiPage.getByTestId('ai-bridge-token').getAttribute('data-token');
+    expect(token).toBeTruthy();
+
+    // 3. Mutual exclusion: live DMX Arm output is blocked while AI bridge is enabled.
+    await aiPage.getByRole('button', { name: 'Close show control', exact: true }).click();
+    await aiPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
+    await aiPage.getByTestId('dmx-advanced-summary').click();
+    await expect(aiPage.getByTestId('dmx-ai-bridge-blocked')).toBeVisible();
+    await expect(aiPage.getByTestId('dmx-output-arm')).toBeDisabled();
+    await aiPage.getByRole('button', { name: 'Close DMX monitor', exact: true }).click();
+
+    // 4. Raw Streamable HTTP JSON-RPC client: initialize -> notifications/initialized -> tools/list -> get_state -> get_safety_report.
+    const initRes = await postMcp(aiPort, token, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'desktop-smoke', version: '1.0' } },
+    });
+    expect(initRes.status).toBe(200);
+    const sid = initRes.headers['mcp-session-id'];
+    expect(sid).toBeTruthy();
+
+    const notifRes = await postMcp(aiPort, token, { jsonrpc: '2.0', method: 'notifications/initialized' }, sid);
+    expect(notifRes.status).toBe(202);
+
+    const listRes = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, sid);
+    expect(listRes.status).toBe(200);
+    const names = listRes.json.result.tools.map((t) => t.name);
+    expect(names).toHaveLength(26);
+    expect(names).toContain('get_safety_report');
+    expect(names).not.toContain('enable_dmx');
+
+    const stateBefore = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
+    const beforeObj = JSON.parse(stateBefore.json.result.content[0].text);
+    const origColor = beforeObj.look.primaryColor;
+    const targetColor = origColor.toLowerCase() === '#ff0066' ? '#00ff88' : '#ff0066';
+
+    const safetyRes = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_safety_report', arguments: {} } }, sid);
+    const safetyObj = JSON.parse(safetyRes.json.result.content[0].text);
+    expect(safetyObj.readOnly).toBe(true);
+
+    // 5. propose_look shows the banner -> Accept applies the look -> Revert restores byte-for-byte.
+    const propRes = await postMcp(aiPort, token, {
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: { name: 'propose_look', arguments: { summary: 'Smoke color change', patch: { primaryColor: targetColor } } },
+    }, sid);
+    const propObj = JSON.parse(propRes.json.result.content[0].text);
+    expect(propObj.status).toBe('pending');
+    await expect(aiPage.getByTestId('ai-proposal-banner')).toBeVisible();
+    await expect(aiPage.getByTestId('ai-proposal-summary')).toContainText('Smoke color change');
+
+    await aiPage.getByTestId('ai-proposal-accept').click();
+    await expect(aiPage.getByTestId('ai-proposal-banner')).toHaveCount(0);
+
+    const stateAfterAccept = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
+    const afterAcceptObj = JSON.parse(stateAfterAccept.json.result.content[0].text);
+    expect(afterAcceptObj.look.primaryColor.toLowerCase()).toBe(targetColor);
+
+    // Revert AI changes restores the exact prior state.
+    await aiPage.getByRole('button', { name: 'Show control', exact: true }).click();
+    await aiPage.getByTestId('ai-bridge-revert').click();
+
+    const stateAfterRevert = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
+    const afterRevertObj = JSON.parse(stateAfterRevert.json.result.content[0].text);
+    expect(afterRevertObj.look).toEqual(beforeObj.look);
+
+    // 6. capture_frame returns a real decodable JPEG image block (SOI FF D8 FF).
+    const capRes = await postMcp(aiPort, token, {
+      jsonrpc: '2.0',
+      id: 8,
+      method: 'tools/call',
+      params: { name: 'capture_frame', arguments: { maxWidth: 640 } },
+    }, sid);
+    expect(capRes.json.result.isError).toBeUndefined();
+    const imgBlock = capRes.json.result.content[0];
+    expect(imgBlock.type).toBe('image');
+    expect(imgBlock.mimeType).toBe('image/jpeg');
+    const jpegBytes = Buffer.from(imgBlock.data, 'base64');
+    expect(jpegBytes.byteLength).toBeGreaterThan(256);
+    expect(jpegBytes[0]).toBe(0xff);
+    expect(jpegBytes[1]).toBe(0xd8);
+    expect(jpegBytes[2]).toBe(0xff);
+
+    // 7. Disabling the bridge closes the listening port cleanly.
+    await aiPage.getByTestId('ai-bridge-disable').click();
+    await expect(aiPage.getByTestId('ai-bridge-status')).toContainText('OFF');
+    await expect(
+      postMcp(aiPort, token, { jsonrpc: '2.0', id: 9, method: 'tools/list', params: {} }, sid),
+    ).rejects.toThrow();
+
+    expect(aiProblems, 'desktop AI bridge errors').toEqual([]);
+  } finally {
+    await aiApp?.close().catch(() => {});
+    await rm(aiTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

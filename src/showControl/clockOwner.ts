@@ -14,6 +14,7 @@ export type ClockSource =
   | 'autoLD'
   | 'take'
   | 'manual'
+  | 'ai'
   | 'osc'
   | 'msc'
   | 'mtc'
@@ -61,6 +62,18 @@ export function allows(mode: ClockMode, source: ClockSource, action: ClockAction
     if (source === 'osc' || source === 'msc' || source === 'mtc' || source === 'artnetTC') {
       return false;
     }
+    if (source === 'ai') {
+      return (
+        action === 'go' ||
+        action === 'back' ||
+        action === 'stop' ||
+        action === 'resume' ||
+        action === 'blackout' ||
+        action === 'master' ||
+        action === 'tempo' ||
+        action === 'take_play'
+      );
+    }
     return action !== 'timecode_transport';
   }
 
@@ -69,7 +82,7 @@ export function allows(mode: ClockMode, source: ClockSource, action: ClockAction
       return source === 'mtc' || source === 'artnetTC';
     }
     // External ALL_OFF / blackout emergency safety allowed even during chase.
-    if (action === 'blackout' && (source === 'osc' || source === 'msc')) {
+    if (action === 'blackout' && (source === 'osc' || source === 'msc' || source === 'ai')) {
       return true;
     }
     // Tempo adjustments, manual audio toggle, & manual bumps remain usable; internal take play, follows, Auto-LD, and GO are blocked.
@@ -82,6 +95,17 @@ export function allows(mode: ClockMode, source: ClockSource, action: ClockAction
   // mode === 'caller'
   if (action === 'take_play' || action === 'cue_follow' || action === 'auto_ld' || action === 'timecode_transport') {
     return false;
+  }
+  if (source === 'ai') {
+    return (
+      action === 'go' ||
+      action === 'back' ||
+      action === 'stop' ||
+      action === 'resume' ||
+      action === 'blackout' ||
+      action === 'master' ||
+      action === 'tempo'
+    );
   }
   if (source === 'osc' || source === 'msc' || source === 'manual') {
     return true;

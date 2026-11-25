@@ -52,6 +52,9 @@ import { EMPTY_AUDIO_MOD_TELEMETRY, type AudioModulationTelemetry } from './comp
 import { allowsNegativeAmount } from './engine/audioModulation';
 import type { DmxSnapshot } from './components/DmxMonitorDrawer';
 import { LiveDmxBadge } from './components/LiveDmxBadge';
+import { AiProposalBanner } from './components/AiProposalBanner';
+import { useAiBridge, type AiBridgeApi, type AiRevertSnapshot } from './aiBridge/useAiBridge';
+import type { AiProposalCandidate } from './aiBridge/aiBridgeProtocol';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
   DEFAULT_MEASURE_OVERLAY_OPTIONS,
@@ -461,12 +464,21 @@ export const App: React.FC = () => {
   }, []);
 
   const preflightRef = useRef<ReturnType<typeof evaluatePreflight> | null>(null);
+  const aiBridgeRef = useRef<AiBridgeApi | null>(null);
+  const [aiBridgeSuspendOutbound, setAiBridgeSuspendOutbound] = useState(false);
   const liveDmx = useLiveDmxOutput(
     engineRef,
     showToast,
     capabilities.liveOutput,
     clearAllBumps,
     () => {
+      const bridge = aiBridgeRef.current;
+      if (bridge && (bridge.enabled || bridge.pendingProposals.length > 0)) {
+        return {
+          allowed: false,
+          reason: 'Disable the AI bridge before arming or starting live DMX output.',
+        };
+      }
       const rep = preflightRef.current;
       if (!rep) return { allowed: false, reason: 'Run pre-flight check before starting live DMX output.' };
       return { allowed: rep.canArm, reason: rep.blockingReasons[0] };
@@ -927,7 +939,7 @@ export const App: React.FC = () => {
   }, [toast]);
 
   // Trigger a show cue cleanly preserving user's custom media/text/master
-  const triggerCue = useCallback((cue: ShowCue, automatic = false, source: 'manual' | 'autoLD' | 'follow' | 'osc' | 'msc' = automatic ? 'autoLD' : 'manual') => {
+  const triggerCue = useCallback((cue: ShowCue, automatic = false, source: 'manual' | 'autoLD' | 'follow' | 'ai' | 'osc' | 'msc' = automatic ? 'autoLD' : 'manual') => {
     const mode = clockModeRef.current;
     if (automatic && !allows(mode, source, source === 'follow' ? 'cue_follow' : 'auto_ld')) return;
     if (!automatic && !allows(mode, source, 'go')) return;
@@ -1255,7 +1267,7 @@ export const App: React.FC = () => {
       timeline.setMetadata(meta);
     },
     onToast: showToast,
-  }, capabilities.showControl);
+  }, capabilities.showControl, aiBridgeSuspendOutbound);
   const showControlRef = useRef(showControl);
   showControlRef.current = showControl;
   clockModeRef.current = showControl.clockMode;
@@ -2303,6 +2315,7 @@ export const App: React.FC = () => {
     if (!object || typeof object !== 'object' || !('format' in object)) {
       const next = normalizeDesign(parseRigJson(json));
       setPendingMvr(null);
+      aiBridgeRef.current?.notifyDocumentChanged();
       installStage();
       installInterchange();
       wallClock.set(0, false);
@@ -2317,6 +2330,7 @@ export const App: React.FC = () => {
     const wall = file.media?.screen ?? NO_SCREEN;
 
     setPendingMvr(null);
+    aiBridgeRef.current?.notifyDocumentChanged();
     pruneAssets(referenced);
     for (const { kind, file: medium } of bundledMedia) registerAsset(kind, medium);
     const look = wallLook(file.look, wall);
@@ -2379,6 +2393,7 @@ export const App: React.FC = () => {
     }
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     setPendingMvr(null);
+    aiBridgeRef.current?.notifyDocumentChanged();
     const { rig: next, stage, interchange, resources, report } = pending.result;
     installStage(stage);
     installInterchange(interchange, resources);
@@ -2703,6 +2718,335 @@ export const App: React.FC = () => {
     wallClock.set(timeline.playhead(), false);
   };
 
+  // Always-fresh desk refs for AI bridge tool execution and transactional proposal snapshots.
+  const aiDeskRefs = useRef({
+    rig,
+    studioStage,
+    cues,
+    showState,
+    activeCueId,
+    activeCamera,
+    volume,
+    audioDiscrete,
+    playTake,
+    pauseTake,
+    seekTake,
+    stopTake,
+    resumeTake,
+  });
+  aiDeskRefs.current = {
+    rig,
+    studioStage,
+    cues,
+    showState,
+    activeCueId,
+    activeCamera,
+    volume,
+    audioDiscrete,
+    playTake,
+    pauseTake,
+    seekTake,
+    stopTake,
+    resumeTake,
+  };
+
+  const applyAiCandidate = useCallback((candidate: AiProposalCandidate) => {
+    if (!capabilitiesRef.current.edit) return;
+    if (candidate.kind === 'propose_show' && candidate.show) {
+      const file = candidate.show;
+      const nextRig = normalizeDesign(file.rig);
+      const wall = file.media?.screen ?? NO_SCREEN;
+      // Preserve existing asset blob URLs so Revert AI changes can restore media intact.
+      const look = wallLook(file.look, wall);
+      timelineRef.current.replace(file.timeline, {
+        look: file.look,
+        cueId: file.activeCueId,
+        camera: file.controls?.camera ?? 'foh',
+        volume: file.controls?.volume ?? 0.72,
+        bump: EMPTY_BUMP,
+        screen: wall,
+        music: file.media?.music ?? NO_MUSIC,
+      });
+      installStage(file.stage);
+      installInterchange(file.interchange);
+      takeMetaExplicitRef.current = file.timeline?.frameRate !== undefined || file.timeline?.timecodeOffsetMs !== undefined;
+      showControlRef.current.syncFromShowTimeline(file.timeline);
+      wallClock.set(0, false);
+      setFollow(null);
+      directorArmed.current = false;
+      replaying.current = false;
+      audioEngineRef.current?.stopAll();
+      clearAllBumps();
+      expectedMusic.current = file.media?.music ?? NO_MUSIC;
+      applyRig(nextRig, true);
+      setCues(file.cues);
+      setActiveCueId(file.activeCueId);
+      setCueModified(differsFromCue(look, file.cues.find((c) => c.id === file.activeCueId), wall));
+      setShowState(look);
+      autoDirRef.current = look.autoDirector;
+      setScreen(wall);
+      setVolume(file.controls?.volume ?? 0.72);
+      setActiveCamera(file.controls?.camera ?? 'foh');
+      audioEngineRef.current?.setBpm(look.bpm);
+      audioEngineRef.current?.setVolume(file.controls?.volume ?? 0.72);
+      engineRef.current?.releaseDirector(false);
+      engineRef.current?.setShowState(look);
+      engineRef.current?.setCameraPreset(file.controls?.camera ?? 'foh');
+      previewRig();
+      aiDeskRefs.current = {
+        ...aiDeskRefs.current,
+        rig: nextRig,
+        studioStage: file.stage,
+        cues: file.cues,
+        showState: look,
+        activeCueId: file.activeCueId,
+        activeCamera: file.controls?.camera ?? 'foh',
+        volume: file.controls?.volume ?? 0.72,
+      };
+      return;
+    }
+    if ((candidate.kind === 'propose_look' || candidate.kind === 'propose_audio_mapping') && candidate.look) {
+      const next = structuredClone(candidate.look);
+      takeDesk();
+      setShowState(next);
+      autoDirRef.current = next.autoDirector;
+      engineRef.current?.setShowState(next);
+      audioEngineRef.current?.setBpm(next.bpm);
+      aiDeskRefs.current = { ...aiDeskRefs.current, showState: next };
+      return;
+    }
+    if (candidate.kind === 'propose_cue' && candidate.cues) {
+      const nextCues = structuredClone(candidate.cues);
+      setCues(nextCues);
+      if (candidate.activeCueId !== undefined) {
+        setActiveCueId(candidate.activeCueId);
+      }
+      aiDeskRefs.current = {
+        ...aiDeskRefs.current,
+        cues: nextCues,
+        activeCueId: candidate.activeCueId !== undefined ? candidate.activeCueId : aiDeskRefs.current.activeCueId,
+      };
+      return;
+    }
+    if (candidate.kind === 'propose_take' && candidate.timeline) {
+      const nextTake = structuredClone(candidate.timeline);
+      const cur = aiDeskRefs.current;
+      timelineRef.current.replace(nextTake, {
+        look: cur.showState,
+        cueId: cur.activeCueId,
+        camera: cur.activeCamera,
+        volume: cur.volume,
+        bump: EMPTY_BUMP,
+        screen: readScreen(),
+        music: readMusic(),
+      });
+      showControlRef.current.syncFromShowTimeline(nextTake);
+      return;
+    }
+    if (candidate.kind === 'propose_wall_cue' && candidate.stage) {
+      const nextStage = structuredClone(candidate.stage);
+      installStage(nextStage);
+      const nextEvents = nextStage.screenEvents ?? [];
+      if (candidate.timeline) {
+        const cur = aiDeskRefs.current;
+        timelineRef.current.replace(structuredClone(candidate.timeline), {
+          look: cur.showState,
+          cueId: cur.activeCueId,
+          camera: cur.activeCamera,
+          volume: cur.volume,
+          bump: EMPTY_BUMP,
+          screen: readScreen(),
+          music: readMusic(),
+        });
+      } else {
+        timelineRef.current.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
+      }
+      aiDeskRefs.current = { ...aiDeskRefs.current, studioStage: nextStage };
+      previewRig();
+    }
+  }, [applyRig, clearAllBumps, installInterchange, installStage, previewRig, takeDesk, wallClock]);
+
+  const restoreAiRevertSnapshot = useCallback((snap: AiRevertSnapshot) => {
+    if (!capabilitiesRef.current.edit) return;
+    const nextRig = normalizeDesign(snap.rig);
+    const nextLook = structuredClone(snap.look);
+    timelineRef.current.stop();
+    replaying.current = false;
+    setFollow(null);
+    wallClock.set(0, false);
+    audioEngineRef.current?.stopAll();
+    engineRef.current?.restoreScreenTransport(false);
+    clearAllBumps();
+    installStage(snap.stage);
+    installInterchange(snap.interchange);
+    timelineRef.current.replace(snap.timeline, {
+      look: nextLook,
+      cueId: snap.activeCueId,
+      camera: snap.camera,
+      volume: snap.volume,
+      bump: EMPTY_BUMP,
+      screen: readScreen(),
+      music: readMusic(),
+    });
+    showControlRef.current.syncFromShowTimeline(snap.timeline);
+    applyRig(nextRig, true);
+    setCues(snap.cues);
+    setActiveCueId(snap.activeCueId);
+    setCueModified(false);
+    setShowState(nextLook);
+    autoDirRef.current = nextLook.autoDirector;
+    setActiveCamera(snap.camera);
+    setVolume(snap.volume);
+    audioEngineRef.current?.setBpm(nextLook.bpm);
+    audioEngineRef.current?.setVolume(snap.volume);
+    engineRef.current?.releaseDirector(false);
+    engineRef.current?.setShowState(nextLook);
+    engineRef.current?.setCameraPreset(snap.camera);
+    previewRig();
+    aiDeskRefs.current = {
+      ...aiDeskRefs.current,
+      rig: nextRig,
+      studioStage: snap.stage,
+      cues: snap.cues,
+      showState: nextLook,
+      activeCueId: snap.activeCueId,
+      activeCamera: snap.camera,
+      volume: snap.volume,
+    };
+  }, [applyRig, clearAllBumps, installInterchange, installStage, previewRig, wallClock]);
+
+  const aiBridge = useAiBridge(
+    {
+      getDeskSnapshot: () => {
+        const cur = aiDeskRefs.current;
+        return {
+          rig: cur.rig,
+          stage: cur.studioStage,
+          interchange: interchangeRef.current,
+          cues: cur.cues,
+          look: cur.showState,
+          activeCueId: cur.activeCueId,
+          timeline: timelineRef.current.timeline,
+          camera: cur.activeCamera,
+          volume: cur.volume,
+          clockMode: clockModeRef.current,
+          audioStatus: {
+            playing: cur.audioDiscrete.playing,
+            source: cur.audioDiscrete.source,
+            trackName: live.audio.get().trackName,
+            bpm: cur.showState.bpm,
+          },
+        };
+      },
+      getSafetyReport: () => preflightRef.current,
+      getAudioLevels: () => live.audio.get(),
+      captureFrame: async (maxWidth?: number) => {
+        const engine = engineRef.current;
+        if (!engine) throw new Error('StageEngine is not ready.');
+        return engine.captureJpeg({ maxWidth: maxWidth ?? 1280, quality: 0.8 });
+      },
+      applyCandidate: applyAiCandidate,
+      restoreSnapshot: restoreAiRevertSnapshot,
+      onGo: () => {
+        const list = cuesRef.current;
+        if (!list.length) return { ok: false, activeCueId: activeCueIdRef.current, message: 'No cues exist.' };
+        const idx = list.findIndex((c) => c.id === activeCueIdRef.current);
+        const target = list[idx >= 0 ? (idx + 1) % list.length : 0];
+        triggerCue(target, false, 'ai');
+        return { ok: true, activeCueId: target.id };
+      },
+      onBack: () => {
+        const list = cuesRef.current;
+        if (!list.length) return { ok: false, activeCueId: activeCueIdRef.current, message: 'No cues exist.' };
+        const idx = list.findIndex((c) => c.id === activeCueIdRef.current);
+        const target = list[idx > 0 ? idx - 1 : list.length - 1];
+        triggerCue(target, false, 'ai');
+        return { ok: true, activeCueId: target.id };
+      },
+      onStop: () => {
+        aiDeskRefs.current.stopTake();
+        audioEngineRef.current?.stopAll();
+        engineRef.current?.restoreScreenTransport(false);
+      },
+      onResume: () => {
+        if (timelineRef.current.canResume) {
+          aiDeskRefs.current.resumeTake();
+        } else if (!audioEngineRef.current?.getStatus().playing) {
+          audioEngineRef.current?.togglePlayPause();
+        }
+      },
+      onTriggerCue: ({ cueId, index }) => {
+        const list = cuesRef.current;
+        const target = cueId ? list.find((c) => c.id === cueId) : index !== undefined ? list[index - 1] : undefined;
+        if (!target) return { ok: false, activeCueId: activeCueIdRef.current, message: 'Cue not found.' };
+        triggerCue(target, false, 'ai');
+        return { ok: true, activeCueId: target.id };
+      },
+      onPlayTake: () => {
+        const tl = timelineRef.current.timeline;
+        if (!tl || (tl.events.length === 0 && tl.durationMs <= 0)) {
+          return { ok: false, message: 'No playable take timeline is loaded.' };
+        }
+        aiDeskRefs.current.playTake();
+        return { ok: true };
+      },
+      onPauseTake: () => {
+        aiDeskRefs.current.pauseTake();
+        return { ok: true };
+      },
+      onSeekTake: (positionMs: number) => {
+        const tl = timelineRef.current.timeline;
+        if (!tl || (tl.events.length === 0 && tl.durationMs <= 0)) {
+          return { ok: false, message: 'No playable take timeline is loaded.' };
+        }
+        aiDeskRefs.current.seekTake(positionMs);
+        return { ok: true };
+      },
+      onSetBlackout: (active?: boolean) => {
+        const nextVal = active !== undefined ? active : !aiDeskRefs.current.showState.blackout;
+        previewRig();
+        setCueModified(true);
+        setShowState((s) => {
+          const next = { ...s, blackout: nextVal };
+          engineRef.current?.setShowState(next);
+          aiDeskRefs.current = { ...aiDeskRefs.current, showState: next };
+          return next;
+        });
+        return nextVal;
+      },
+      onSetMaster: (value: number) => {
+        const clamped = Math.max(0, Math.min(1, value));
+        previewRig();
+        setCueModified(true);
+        setShowState((s) => {
+          const next = { ...s, masterDimmer: clamped };
+          engineRef.current?.setShowState(next);
+          aiDeskRefs.current = { ...aiDeskRefs.current, showState: next };
+          return next;
+        });
+        return clamped;
+      },
+      onSetBpm: (bpm: number) => {
+        if (audioEngineRef.current?.isDemoTrackActive()) {
+          return { ok: false, bpm: bpmRef.current, message: 'Tempo is locked to the demo track map.' };
+        }
+        applyDeskBpm(bpm);
+        const clamped = Math.round(Math.max(70, Math.min(180, bpm)) * 10) / 10;
+        return { ok: true, bpm: clamped };
+      },
+      onToast: showToast,
+    },
+    {
+      capabilityAllowed: capabilities.edit && !viewerMode,
+      outputBlocking: liveDmx.armed || liveDmx.isLive,
+    },
+  );
+  aiBridgeRef.current = aiBridge;
+  const aiBridgeBlocking = aiBridge.enabled || aiBridge.pendingProposals.length > 0;
+  useEffect(() => {
+    setAiBridgeSuspendOutbound(aiBridge.enabled);
+  }, [aiBridge.enabled]);
+
   const handleViewerTogglePlayback = () => {
     if (hasTake && takeDurationMs > 0) {
       if (timeline.mode === 'playing') pauseTake();
@@ -3008,6 +3352,7 @@ export const App: React.FC = () => {
             liveOutput={liveDmx}
             preflight={preflightReport}
             liveViolationMessage={liveSafetyViolation}
+            aiBridgeBlocking={aiBridgeBlocking}
             onOpenPreflight={() => setPreflightOpen(true)}
             onClose={() => setDmxDrawerOpen(false)}
           />
@@ -3020,10 +3365,14 @@ export const App: React.FC = () => {
           <ShowControlDrawer
             open={showControlOpen}
             control={showControl}
+            aiBridge={aiBridge}
             onClose={() => setShowControlOpen(false)}
           />
         </ErrorBoundary>
       )}
+
+      {/* Floating AI Proposal Review Banner */}
+      {!viewerMode && <AiProposalBanner bridge={aiBridge} />}
 
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
       {designerRig && (
