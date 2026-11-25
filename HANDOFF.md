@@ -42,7 +42,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12 and 11 in that order (see "Designed Sprints 6–8" and Sprints 9, 10, 11, 12 and 13 below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14 in that order (see "Designed Sprints 6–8" and Sprints 9, 10, 11, 12, 13 and 14 below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Do not start item 9 (VR) yet.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -231,7 +231,7 @@ Get-Content "$qa\sprint-N-design.md" -Raw | codex exec -m gpt-6-astra -s read-on
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12 and 11 below, in that order (13 before 12, 12 before 11), one per round, before Realism items 6 to 8.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14 below, in that order (13 before 12, 12 before 11, 14 last), one per round, before Realism items 6 to 8.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. Keep VR (item 9) for later. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
@@ -681,6 +681,28 @@ These come from a code-grounded roadmap review. The goal is that a working progr
 **Out:** splitting the largest files (`StageEngine.ts`, `App.tsx`, `importMvr.ts`, `StageDesigner.tsx`, `geometryBuilders.ts`) is a later refactor sprint, because it risks regressions. No new features.
 
 **Done when:** the gate is green; every fix has a regression test that fails on the old code; hazardous outputs behave as specified; the docs are updated; and the Overnight log lists every finding as fixed, rejected with a reason, or deferred.
+
+### Sprint 14: add the project owner's real demo track (small; designed by Claude Code, 2026-11-24)
+
+**Run this after Sprint 11 and before Realism items 6 to 8.** It is small, about 20 to 30 minutes.
+
+**What exists:** the owner supplied a real track (5:09.6, stereo, deep house with blues, real instruments and unusual synths). It was converted, mapped and played through the simulator, and the finished files are waiting outside the repo:
+- `%LOCALAPPDATA%\stageforge-overnight\demo-track\track.mp3` (128 kbps, 4.95 MB)
+- `%LOCALAPPDATA%\stageforge-overnight\demo-track\track.json` (map: 122 BPM, first downbeat 96 ms, 11 sections, 158 bars)
+- `%LOCALAPPDATA%\stageforge-overnight\demo-track\README.txt` and `analysis.txt` (how the map was measured)
+- optional `provenance.txt`, written by the owner
+
+**Do:**
+1. Copy `track.mp3` and `track.json` into `public/demo/`. Check that `parseDemoTrackMap` accepts the map, the sections cover the whole audio, and the MP3 plays.
+2. Run Sprint 10's tests with the real files present. If any test assumes `public/demo/` is empty (for example "with no map the button is absent" or "the first load makes no audio request"), change that test to set up its own state (route interception or a temporary public folder) instead of depending on the real files. The synth demo and the no-track behaviour must stay covered.
+3. Update `docs/demo-track.md` (the shipped track, and how to replace it) and `docs/assets.md`. The sentence saying nothing third-party ships must be changed, and a provenance row added for the track. Use the owner's text from `provenance.txt` if it exists. Otherwise write exactly "Provenance (tools, plan, date, prompt): to be added by the project owner" and list it as an open item in the Overnight log. Never guess or invent how the track was made.
+4. Check the cost: the first page load still makes no audio request, the audio loads only on "Play demo track", and the desktop build copies `public/demo/` (`npm run desktop:prepare`, then check `desktop/build/app/renderer/demo/`). Report the new `dist` and desktop sizes in the Overnight log.
+5. Do not change the map's timings. They were measured from the audio and checked in the simulator (the kick enters on a bar line at 0:31.6 and the breakdown starts on one at 3:32.6). If you believe a boundary is wrong, say so in the Overnight log.
+6. Pass the gate, run Sonnet 5.5 QA on the changed code and tests, and commit locally.
+
+**Out:** re-editing, re-encoding or re-analysing the audio; changing the lighting for the track; pushing.
+
+**Done when:** the gate is green; the track plays from "Play demo track" in the web and desktop builds; the docs and the provenance row are in; and the Overnight log lists the provenance item as open if the owner has not supplied it.
 
 ## Backlog (in this order)
 
