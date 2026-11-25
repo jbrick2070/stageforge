@@ -719,8 +719,9 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       await pfRevoke.getByRole('button', { name: 'Done', exact: true }).click();
       await dmxPage.getByTestId('live-dmx-stopped-dismiss').click();
 
-      // Switch back to Cue 1 so STRIKE 4 (U1 128..143) is 0 before testing viewer entry and hot show import!
-      await dmxPage.locator('.cue-pad').first().click();
+      // Engage Blackout (`[Space]`) so BOTH STRIKE 4 (U1 128..143) AND Martin JEM ZR45 (U2 311..314) are strictly 0
+      // before importing `hotShowBuf` (`blackout: false, blinderLevel: 1, smokeOutput: 1`) in Viewer and Show Open!
+      await dmxPage.keyboard.press('Space');
 
       const rawLegacyShow = JSON.parse(await readFile(path.join(root, 'tests/fixtures/legacy-v1.stageforge.show.json'), 'utf8'));
       rawLegacyShow.rig.venue = 'club';
@@ -730,14 +731,16 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       rawLegacyShow.look.atmo = { ...rawLegacyShow.look.atmo, smokeOutput: 1, hazeLevel: 1 };
       const hotShowBuf = Buffer.from(JSON.stringify(rawLegacyShow), 'utf8');
 
-      // 4f. Sprint 24 (Codex qa-07 R1 & qa-06 R1): Opening a show in Pitch Viewer while live DMX is active MUST synchronously
-      //     stop BOTH universes before applying the viewer look (`blinderLevel: 1`), and stay OFF after Exit viewer!
+      // 4f. Sprint 24 (Codex qa-07 R1, qa-06 R1, qa-08 R2): Opening a show in Pitch Viewer while live DMX is active MUST
+      //     synchronously stop BOTH universes before applying `blinderLevel: 1 / smokeOutput: 1` (zero U1 or U2 leak)!
       await dmxPage.getByTestId('dmx-output-arm').click();
       await dmxPage.getByTestId('dmx-output-go-live').click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
       const countAtViewerLive = packets.length;
       await expect.poll(
-        () => packets.slice(countAtViewerLive).some((p) => p.universe === 1 && p.slots.slice(128, 144).every((v) => v === 0)),
+        () =>
+          packets.slice(countAtViewerLive).some((p) => p.universe === 1 && p.slots.slice(128, 144).every((v) => v === 0)) &&
+          packets.slice(countAtViewerLive).some((p) => p.universe === 2 && p.slots.slice(311, 315).every((v) => v === 0)),
         { timeout: 5000 },
       ).toBe(true);
       await dmxPage.getByRole('button', { name: 'Close DMX monitor', exact: true }).click();
@@ -755,9 +758,15 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       for (const p of packets.slice(beforeOpenViewer).filter((pkt) => pkt.universe === 1)) {
         expect(p.slots.slice(128, 144).every((v) => v === 0)).toBe(true);
       }
+      for (const p of packets.slice(beforeOpenViewer).filter((pkt) => pkt.universe === 2)) {
+        expect(p.slots.slice(311, 315).every((v) => v === 0)).toBe(true);
+      }
       await dmxPage.getByRole('button', { name: 'Exit viewer' }).click();
       await expect(dmxPage.getByRole('button', { name: 'Show files', exact: true })).toBeVisible();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
+      const countAfterExitViewer = packets.length;
+      await dmxPage.waitForTimeout(250);
+      expect(packets.length).toBe(countAfterExitViewer);
       if ((await dmxPage.getByTestId('live-dmx-stopped-dismiss').count()) > 0) {
         await dmxPage.getByTestId('live-dmx-stopped-dismiss').click();
       }
@@ -780,14 +789,16 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
         await pfAfterViewer.getByRole('button', { name: 'Done', exact: true }).click();
       }
 
-      // 4g. Sprint 24 (Codex qa-04 R1 & qa-06 R1): Opening a show file while live DMX is active MUST synchronously detach
-      //     StageEngine's frame listener BEFORE applying `blinderLevel: 1`, terminating BOTH universes with zero STRIKE 4 leak!
+      // 4g. Sprint 24 (Codex qa-04 R1, qa-06 R1, qa-08 R2): Opening a show file while live DMX is active MUST synchronously
+      //     detach StageEngine's frame listener BEFORE applying `blinderLevel: 1 / smokeOutput: 1`, with zero U1 or U2 leak!
       await dmxPage.getByTestId('dmx-output-arm').click();
       await dmxPage.getByTestId('dmx-output-go-live').click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
       const countAtImportLive = packets.length;
       await expect.poll(
-        () => packets.slice(countAtImportLive).some((p) => p.universe === 1 && p.slots.slice(128, 144).every((v) => v === 0)),
+        () =>
+          packets.slice(countAtImportLive).some((p) => p.universe === 1 && p.slots.slice(128, 144).every((v) => v === 0)) &&
+          packets.slice(countAtImportLive).some((p) => p.universe === 2 && p.slots.slice(311, 315).every((v) => v === 0)),
         { timeout: 5000 },
       ).toBe(true);
 
@@ -805,9 +816,12 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
       await expect(dmxPage.getByTestId('live-dmx-stopped-badge')).toContainText('Output stopped:');
       await assertBothUniversesTerminated(beforeOpenDoc);
-      // Verify zero Strike 4 blinder bytes (0-based 128..143) escaped onto Universe 1 during show open!
+      // Verify zero Strike 4 blinder bytes (U1 128..143) and zero ZR45 smoke bytes (U2 311..314) escaped during show open!
       for (const p of packets.slice(beforeOpenDoc).filter((pkt) => pkt.universe === 1)) {
         expect(p.slots.slice(128, 144).every((v) => v === 0)).toBe(true);
+      }
+      for (const p of packets.slice(beforeOpenDoc).filter((pkt) => pkt.universe === 2)) {
+        expect(p.slots.slice(311, 315).every((v) => v === 0)).toBe(true);
       }
       await dmxPage.getByTestId('live-dmx-stopped-dismiss').click();
       await dmxPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();

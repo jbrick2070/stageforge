@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw, Search, ShieldAlert, ShieldCheck, Square, Zap } from 'lucide-react';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
 import { formatArtNetAddress, parseTargetList, type DmxOutputMode } from '../dmx/liveDmx';
-import { GENERIC_SIMULATED_LABEL, summarizePhysicalDrive } from '../dmx/physicalDmx';
+import { summarizePhysicalDrive } from '../dmx/physicalDmx';
 import type { PreflightReport } from '../data/preflight';
 import type { RigConfig } from '../types/show';
 
@@ -251,11 +251,6 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
                     )}
                   </ul>
                 </div>
-              )}
-              {physicalSummary.hasGeneric && (
-                <p role="note" className="rounded border border-cyan-400/40 bg-cyan-950/40 px-2 py-1 text-[9px] text-cyan-100">
-                  Generic fixtures use {GENERIC_SIMULATED_LABEL}.
-                </p>
               )}
               {physicalSummary.hasImplemented && (
                 <p role="note" className="rounded border border-emerald-400/35 bg-emerald-950/35 px-2 py-1 text-[9px] text-emerald-100">

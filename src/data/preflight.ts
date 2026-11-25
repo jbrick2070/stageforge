@@ -6,7 +6,6 @@ import { buildDmxPatch } from './dmxPatch';
 import { getCatalogEntry } from './equipmentCatalog';
 import {
   classifyPhysicalGroup,
-  GENERIC_SIMULATED_LABEL,
   isSerialBlockedFixtureGroup,
   SIMULATION_ONLY_LABEL,
 } from '../dmx/physicalDmx';
@@ -569,19 +568,12 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       outcome = worstOutcome(outcome, 'warn');
     }
 
-    // Physical DMX personality status (Sprint 13 H1)
+    // Physical DMX personality status (Sprint 13 H1 & Sprint 24 SF-H1)
     if (phys.status === 'simulation-only') {
       findings.push({
         code: 'physical_sim_only',
         outcome: 'warn',
         message: `${SIMULATION_ONLY_LABEL} — physical DMX outputs neutral zeros.`,
-      });
-      outcome = worstOutcome(outcome, 'warn');
-    } else if (phys.status === 'generic-simulated') {
-      findings.push({
-        code: 'physical_generic',
-        outcome: 'warn',
-        message: `${GENERIC_SIMULATED_LABEL}.`,
       });
       outcome = worstOutcome(outcome, 'warn');
     }
@@ -783,12 +775,6 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
           code: 'laser_physical_sim_only',
           outcome: 'warn',
           message: `Physical DMX: ${SIMULATION_ONLY_LABEL} (neutral zeros sent).`,
-        });
-      } else if (phys.status === 'generic-simulated') {
-        findings.push({
-          code: 'laser_physical_generic',
-          outcome: 'warn',
-          message: `Physical DMX: ${GENERIC_SIMULATED_LABEL}.`,
         });
       }
     }

@@ -502,7 +502,7 @@ test('Sprint 24 (Codex SF-H1 / N1): generic non-catalogue fixtures never copy si
   // Every fixture in default arena_mainstage lacks a catalogId and MUST classify as simulation-only.
   const summary = physicalDmx.summarizePhysicalDrive(defaultRig);
   assert.equal(summary.implemented.length, 0);
-  assert.equal(summary.genericSimulated.length, 0);
+  assert.equal('genericSimulated' in summary, false);
   assert.ok(summary.simulationOnly.length > 0);
   for (const item of summary.simulationOnly) {
     assert.equal(item.classification.status, 'simulation-only');
@@ -828,14 +828,35 @@ test('Sprint 24 (Codex SF-M1): live TOCTOU pre-flight staleness and runtime haza
   const guarded = runImportWithTickAtSetShowState(true);
   assert.equal(guarded.length, 1);
 
-  // Also verify App.tsx's stopLiveOutputBeforeStructuralChange detaches the frame listener synchronously and guards
-  // both openDocument and Pitch Viewer entry (openViewerPayload + applyViewerDocument, qa-07 R1).
+  // Also verify App.tsx's stopLiveOutputBeforeStructuralChange detaches the frame listener synchronously, both
+  // `!preflightReport.canArm` and `!rep.canArm` paths invoke emergencyStopOnFault (qa-08 R3), `openViewerPayload`
+  // invokes the barrier BEFORE `syncDesktopViewerMode(true)` (qa-08 R1), and normal `disable()` detaches the
+  // engine listener synchronously before any await (qa-10 M-N1).
   const appSrc = await fs.readFile(path.join(repoRoot, 'src/App.tsx'), 'utf8');
   assert.match(
     appSrc,
     /const\s+stopLiveOutputBeforeStructuralChange\s*=\s*useCallback[\s\S]{0,320}?engineRef\.current\?\.setDmxFrameListener\(undefined\);[\s\S]{0,160}?dmx\.emergencyStopOnFault/,
   );
-  const viewerStopIdx = appSrc.indexOf("stopLiveOutputBeforeStructuralChange('Entered Pitch Viewer");
-  const viewerApplyIdx = appSrc.indexOf('applyViewerDocument(parsed)', viewerStopIdx);
-  assert.ok(viewerStopIdx > 0 && viewerApplyIdx > viewerStopIdx, 'openViewerPayload must invoke synchronous stop barrier before applyViewerDocument');
+  assert.match(appSrc, /if\s*\(\s*!preflightReport\.canArm\s*\)\s*\{[\s\S]{0,400}?clearAllBumps\(\);[\s\S]{0,160}?emergencyStopOnFault/);
+  assert.match(appSrc, /if\s*\(\s*rep\s*&&\s*!rep\.canArm\s*\)\s*\{[\s\S]{0,400}?emergencyStopOnFault/);
+
+  const openViewerFnStart = appSrc.indexOf('const openViewerPayload = async');
+  assert.ok(openViewerFnStart > 0);
+  const viewerStopIdx = appSrc.indexOf("stopLiveOutputBeforeStructuralChange('Entered Pitch Viewer", openViewerFnStart);
+  const viewerLockIdx = appSrc.indexOf('syncDesktopViewerMode(true)', openViewerFnStart);
+  const viewerApplyIdx = appSrc.indexOf('applyViewerDocument(parsed)', openViewerFnStart);
+  assert.ok(
+    viewerStopIdx > openViewerFnStart && viewerLockIdx > viewerStopIdx && viewerApplyIdx > viewerLockIdx,
+    'openViewerPayload must invoke synchronous stop barrier BEFORE syncDesktopViewerMode(true) and applyViewerDocument(parsed)',
+  );
+
+  const liveHookSrc = await fs.readFile(path.join(repoRoot, 'src/dmx/useLiveDmxOutput.ts'), 'utf8');
+  const disableFnStart = liveHookSrc.indexOf('const disable = useCallback(async');
+  assert.ok(disableFnStart > 0);
+  const disableDetachIdx = liveHookSrc.indexOf('engineRef.current?.setDmxFrameListener(undefined)', disableFnStart);
+  const disableAwaitIdx = liveHookSrc.indexOf('await Promise.all(tasks)', disableFnStart);
+  assert.ok(
+    disableDetachIdx > disableFnStart && disableAwaitIdx > disableDetachIdx,
+    'useLiveDmxOutput.disable() must synchronously detach StageEngine frame listener before awaiting transport disable',
+  );
 });

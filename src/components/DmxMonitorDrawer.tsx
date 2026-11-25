@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { X, Radio } from 'lucide-react';
 import { buildDmxPatch, DMX_CHANNELS } from '../data/dmxPatch';
 import { getCatalogEntry, getCatalogMode, hasCatalogFixtures, type LaserChannelRole } from '../data/equipmentCatalog';
-import { classifyPhysicalGroup, GENERIC_SIMULATED_LABEL } from '../dmx/physicalDmx';
+import { classifyPhysicalGroup } from '../dmx/physicalDmx';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
 import type { PreflightReport } from '../data/preflight';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
@@ -278,13 +278,6 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
                 </p>
                 {(() => {
                   const phys = classifyPhysicalGroup(group);
-                  if (phys.status === 'simulation-only') {
-                    return (
-                      <p className="pt-1 text-[9px] text-amber-300/90">
-                        Physical DMX: not driven (simulation only) — outputs neutral zeros.
-                      </p>
-                    );
-                  }
                   if (phys.status === 'implemented') {
                     return (
                       <p className="pt-1 text-[9px] text-emerald-300/90">
@@ -293,8 +286,8 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
                     );
                   }
                   return (
-                    <p className="pt-1 text-[9px] text-cyan-300/85">
-                      Physical DMX: {GENERIC_SIMULATED_LABEL}.
+                    <p className="pt-1 text-[9px] text-amber-300/90">
+                      Physical DMX: not driven (simulation only) — outputs neutral zeros.
                     </p>
                   );
                 })()}

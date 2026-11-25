@@ -199,7 +199,7 @@ test('H1: golden bytes for every implemented physical personality, one-channel P
   // Classification summary matches policy wording
   const summary = physicalDmx.summarizePhysicalDrive(rig);
   assert.equal(summary.implemented.length, 6);
-  assert.equal(summary.genericSimulated.length, 0);
+  assert.equal('genericSimulated' in summary, false);
   assert.equal(summary.simulationOnly.length, 4);
   assert.ok(summary.simulationOnly.every((item) => item.classification.label === physicalDmx.SIMULATION_ONLY_LABEL));
 

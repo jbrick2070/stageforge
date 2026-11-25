@@ -2,7 +2,7 @@ import type { FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show'
 import { buildDmxPatch, groupFootprint, writeDmxChannels } from '../data/dmxPatch';
 import { getCatalogEntry, getCatalogMode } from '../data/equipmentCatalog';
 
-export type PhysicalDriveStatus = 'implemented' | 'generic-simulated' | 'simulation-only';
+export type PhysicalDriveStatus = 'implemented' | 'simulation-only';
 
 export type PhysicalGroup = MountedFixtureGroup | FloorFxUnit;
 
@@ -58,14 +58,11 @@ export interface PhysicalGroupReport {
 
 export interface PhysicalDriveSummary {
   readonly implemented: readonly PhysicalGroupReport[];
-  readonly genericSimulated: readonly PhysicalGroupReport[];
   readonly simulationOnly: readonly PhysicalGroupReport[];
   readonly hasImplemented: boolean;
-  readonly hasGeneric: boolean;
   readonly hasSimulationOnly: boolean;
 }
 
-export const GENERIC_SIMULATED_LABEL = 'StageForge simulated channel layout, verify against your fixture';
 export const SIMULATION_ONLY_LABEL = 'not driven (simulation only)';
 
 function clampByte(v: number): number {
@@ -335,7 +332,6 @@ export function writePhysicalUnitBytes(
 export function summarizePhysicalDrive(rig: RigConfig): PhysicalDriveSummary {
   const patch = buildDmxPatch(rig);
   const implemented: PhysicalGroupReport[] = [];
-  const genericSimulated: PhysicalGroupReport[] = [];
   const simulationOnly: PhysicalGroupReport[] = [];
 
   for (const row of patch.rows) {
@@ -353,16 +349,13 @@ export function summarizePhysicalDrive(rig: RigConfig): PhysicalDriveSummary {
       classification,
     };
     if (classification.status === 'implemented') implemented.push(report);
-    else if (classification.status === 'generic-simulated') genericSimulated.push(report);
     else simulationOnly.push(report);
   }
 
   return {
     implemented,
-    genericSimulated,
     simulationOnly,
     hasImplemented: implemented.length > 0,
-    hasGeneric: genericSimulated.length > 0,
     hasSimulationOnly: simulationOnly.length > 0,
   };
 }

@@ -266,6 +266,8 @@ export function useLiveDmxOutput(
     window.addEventListener('beforeunload', onPageHide);
     return () => {
       mountedRef.current = false;
+      faultGenRef.current += 1;
+      engineRef.current?.setDmxFrameListener(undefined);
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('beforeunload', onPageHide);
       releaseClaim('armed');
@@ -274,7 +276,7 @@ export function useLiveDmxOutput(
         void window.stageforgeDesktop.dmxControl({ type: 'disable' }).catch(() => {});
       }
     };
-  }, [releaseClaim]);
+  }, [engineRef, releaseClaim]);
 
   const serialLive = enabled && serialStatus.enabled;
   const isLive = enabled && (desktopLive || serialLive);
@@ -387,16 +389,20 @@ export function useLiveDmxOutput(
   emergencyStopRef.current = emergencyStopOnFault;
 
   const disable = useCallback(async () => {
+    // Synchronous stop fence (Codex qa-10 M-N1): detach StageEngine's frame listener and clear live refs before any await.
     faultGenRef.current += 1;
+    engineRef.current?.setDmxFrameListener(undefined);
     onBeforeDisableRef.current?.();
     releaseClaim('armed');
     setBusySync(true);
     setError(null);
-    const wasActive = Boolean(serialRef.current?.isRunning() || desktopLiveRef.current);
+    const wasDesktopLive = desktopLiveRef.current;
+    const wasActive = Boolean(serialRef.current?.isRunning() || wasDesktopLive);
+    desktopLiveRef.current = false;
     try {
       const tasks: Promise<unknown>[] = [];
       tasks.push(serialRef.current!.disable().finally(() => releaseClaim('serial')));
-      if (desktopLiveRef.current && window.stageforgeDesktop?.dmxControl) {
+      if (wasDesktopLive && window.stageforgeDesktop?.dmxControl) {
         tasks.push(window.stageforgeDesktop.dmxControl({ type: 'disable' }).then(setDesktopStatus));
       }
       await Promise.all(tasks);
@@ -406,7 +412,7 @@ export function useLiveDmxOutput(
     } finally {
       setBusySync(false);
     }
-  }, [onToast, releaseClaim, setBusySync]);
+  }, [engineRef, onToast, releaseClaim, setBusySync]);
 
   const enable = useCallback(async (): Promise<boolean> => {
     if (!enabledRef.current || busyRef.current) return false;

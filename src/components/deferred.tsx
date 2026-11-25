@@ -5,9 +5,8 @@ import { useEffect, useState, type ComponentType, type ReactElement } from 'reac
  *
  * Unlike React.lazy + Suspense, nothing here waits on timers: React reveals suspended content on a
  * throttle timer, which never fires when time is frozen (Playwright's clock, a paused tab). The panel
- * simply renders nothing until its code arrives, then renders normally. Call `preload()` after first
- * paint so panels are ready before anyone opens them. A failed load is retried once, then thrown from
- * render so the surrounding ErrorBoundary shows its fallback.
+ * simply renders nothing until its code arrives on demand when mounted, then renders normally. A failed
+ * load is retried once, then thrown from render so the surrounding ErrorBoundary shows its fallback.
  */
 export interface DeferredComponent<P extends object> {
   (props: P): ReactElement | null;
