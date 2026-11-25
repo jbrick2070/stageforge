@@ -25,12 +25,70 @@ const LISTS = new Set([
 /** Strip XML 1.0 illegal control characters (C0 except TAB/LF/CR, plus U+FFFE/U+FFFF). */
 const ILLEGAL_XML_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/g;
 
-/** Strip leading UTF-8 BOM and trailing NUL bytes in O(N) without regex backtracking. */
+/**
+ * Strip leading UTF-8 BOM, trailing NUL bytes, and NUL bytes inside XML text/attribute values
+ * in O(N). Rejects UTF-16 payloads decoded as UTF-8 and NULs embedded inside tag/attribute names.
+ */
 export function stripXmlBomAndTrailingNuls(source: string): string {
-  let start = source.charCodeAt(0) === 0xfeff ? 1 : 0;
+  if (source.charCodeAt(0) === 0xfffe) {
+    throw new Error('UTF-16 XML documents are not supported; save as UTF-8.');
+  }
+  const start = source.charCodeAt(0) === 0xfeff ? 1 : 0;
   let end = source.length;
   while (end > start && source.charCodeAt(end - 1) === 0) end--;
-  return (start === 0 && end === source.length ? source : source.slice(start, end)).trimEnd();
+  const trimmed = (start === 0 && end === source.length ? source : source.slice(start, end)).trimEnd();
+  if (trimmed.indexOf('\u0000') < 0) return trimmed;
+  // Detect UTF-16LE/BE XML decoded as UTF-8 (interleaved NUL bytes throughout the header).
+  const sampleEnd = Math.min(trimmed.length, 256);
+  let nuls = 0;
+  let nonNuls = 0;
+  for (let i = 0; i < sampleEnd; i++) {
+    if (trimmed.charCodeAt(i) === 0) nuls++;
+    else nonNuls++;
+  }
+  if (nonNuls > 0 && nuls >= Math.min(4, nonNuls) && nuls / (nuls + nonNuls) >= 0.25) {
+    throw new Error('UTF-16 XML documents are not supported; save as UTF-8.');
+  }
+  let out = '';
+  let inTag = false;
+  let quote = 0;
+  let chunkStart = 0;
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed.charCodeAt(i);
+    if (ch === 0) {
+      if (inTag && !quote) throw new Error('Invalid XML document.');
+      if (i > chunkStart) out += trimmed.slice(chunkStart, i);
+      chunkStart = i + 1;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = 0;
+    } else if (inTag) {
+      if (ch === 34 /* '"' */ || ch === 39 /* "'" */) quote = ch;
+      else if (ch === 62 /* '>' */) inTag = false;
+    } else if (ch === 60 /* '<' */) {
+      if (trimmed.startsWith('<!--', i)) {
+        const endComment = trimmed.indexOf('-->', i + 4);
+        if (endComment >= 0) {
+          out += trimmed.slice(chunkStart, endComment + 3).replaceAll('\u0000', '');
+          chunkStart = endComment + 3;
+          i = endComment + 2;
+          continue;
+        }
+      } else if (trimmed.startsWith('<![CDATA[', i)) {
+        const endCdata = trimmed.indexOf(']]>', i + 9);
+        if (endCdata >= 0) {
+          out += trimmed.slice(chunkStart, endCdata + 3).replaceAll('\u0000', '');
+          chunkStart = endCdata + 3;
+          i = endCdata + 2;
+          continue;
+        }
+      }
+      inTag = true;
+    }
+  }
+  if (chunkStart < trimmed.length) out += trimmed.slice(chunkStart);
+  return out;
 }
 
 /**
@@ -174,7 +232,8 @@ export function child(node: unknown, key: string): XmlNode | undefined {
 export function attr(node: unknown, key: string): string | undefined {
   if (!node || typeof node !== 'object') return undefined;
   const value = (node as XmlNode)['@_' + key];
-  return typeof value === 'string' ? value : value === undefined ? undefined : String(value);
+  const raw = typeof value === 'string' ? value : value === undefined ? undefined : String(value);
+  return raw === undefined ? undefined : raw.replace(ILLEGAL_XML_CHARS, '');
 }
 
 /** Text content of a simple element such as <GDTFSpec>file.gdtf</GDTFSpec>. */
@@ -185,7 +244,7 @@ export function text(node: unknown, key: string): string | undefined {
   if (first === undefined || first === null) return undefined;
   if (typeof first === 'object') {
     const inner = (first as XmlNode)['#text'];
-    return inner === undefined ? undefined : String(inner);
+    return inner === undefined ? undefined : String(inner).replace(ILLEGAL_XML_CHARS, '');
   }
-  return String(first);
+  return String(first).replace(ILLEGAL_XML_CHARS, '');
 }

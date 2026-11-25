@@ -223,3 +223,105 @@ test('CIE 1931 xyY colour parsing and sRGB conversion handle D65 white, primarie
     assert.throws(() => color.parseCieXyY(bad), /Invalid CIE xyY colour/, `reject "${bad}"`);
   }
 });
+
+test('matrixRotationDeltaDeg measures yaw, tilt, standing flip, scaled, mirrored and degenerate frames', () => {
+  const hung0 = coords.poseMatrix({ x: 0, y: 6, z: 0 }, 0, false);
+  const hung30 = coords.poseMatrix({ x: 0, y: 6, z: 0 }, 30, false);
+  const stand0 = coords.poseMatrix({ x: 0, y: 6, z: 0 }, 0, true);
+
+  const same = coords.matrixRotationDeltaDeg(hung0, hung0);
+  assert.equal(same.degenerate, false);
+  assert.equal(same.mirrored, false);
+  close(same.deg, 0, 1e-6);
+
+  const yawed = coords.matrixRotationDeltaDeg(hung30, hung0);
+  close(yawed.deg, 30, 1e-4);
+  assert.equal(yawed.degenerate, false);
+  assert.equal(yawed.mirrored, false);
+
+  const flipped = coords.matrixRotationDeltaDeg(stand0, hung0);
+  close(flipped.deg, 180, 1e-4);
+
+  // Uniformly scaled right-handed matrix still compares identically after orthonormalisation.
+  const scaled = {
+    u: { x: 2, y: 0, z: 0 },
+    v: { x: 0, y: 2, z: 0 },
+    w: { x: 0, y: 0, z: 2 },
+    o: { x: 0, y: 0, z: 6000 },
+  };
+  const scaledDelta = coords.matrixRotationDeltaDeg(scaled, hung0);
+  close(scaledDelta.deg, 0, 1e-6);
+  assert.equal(scaledDelta.mirrored, false);
+  assert.equal(scaledDelta.degenerate, false);
+
+  // Mirrored (negative determinant) matrix is flagged as mirrored.
+  const mirrored = {
+    u: { x: -1, y: 0, z: 0 },
+    v: { x: 0, y: 1, z: 0 },
+    w: { x: 0, y: 0, z: 1 },
+    o: { x: 0, y: 0, z: 6000 },
+  };
+  const mirroredDelta = coords.matrixRotationDeltaDeg(mirrored, hung0);
+  assert.equal(mirroredDelta.mirrored, true);
+  assert.equal(mirroredDelta.degenerate, false);
+
+  // Degenerate zero-length or collinear basis is flagged as degenerate without NaN.
+  const degen = coords.matrixRotationDeltaDeg({
+    u: { x: 0, y: 0, z: 1 },
+    v: { x: 0, y: 1, z: 0 },
+    w: { x: 0, y: 0, z: 1 },
+    o: { x: 0, y: 0, z: 0 },
+  }, hung0);
+  assert.equal(degen.degenerate, true);
+  assert.ok(Number.isFinite(degen.deg));
+});
+
+test('XML parsing strips embedded/trailing NUL bytes in strings and handles &#0; safely', () => {
+  const withLiteralNuls = '<Root><Fixture name="Spot 1\u0000"><GDTFSpec>Vendor@Spot.gdtf\u0000</GDTFSpec></Fixture></Root>\u0000';
+  const parsed = parseXml(withLiteralNuls);
+  const fx = list(parsed.Root, 'Fixture')[0];
+  assert.equal(attr(fx, 'name'), 'Spot 1');
+  assert.equal(text(fx, 'GDTFSpec'), 'Vendor@Spot.gdtf');
+
+  // Numeric character reference &#0; either strips cleanly or rejects with a readable XML Error.
+  let entityParsed;
+  try {
+    entityParsed = parseXml('<Root><Fixture name="Spot&#0;"><GDTFSpec>Vendor@Spot.gdtf&#0;</GDTFSpec></Fixture></Root>');
+  } catch (err) {
+    assert.match(err instanceof Error ? err.message : '', /Invalid XML document/);
+  }
+  if (entityParsed) {
+    const fx2 = list(entityParsed.Root, 'Fixture')[0];
+    assert.equal(attr(fx2, 'name'), 'Spot');
+    assert.equal(text(fx2, 'GDTFSpec'), 'Vendor@Spot.gdtf');
+  }
+
+  // QA regression (L2): UTF-16LE decoded as UTF-8 and NUL inside element names reject with readable Errors.
+  const utf16Like = '<\u0000?\u0000x\u0000m\u0000l\u0000 \u0000v\u0000e\u0000r\u0000?\u0000>\u0000';
+  assert.throws(() => parseXml(utf16Like), /UTF-16/);
+  assert.throws(() => parseXml('\uFFFE<Root/>'), /UTF-16/);
+  assert.throws(() => parseXml('<Fix\u0000ture/>'), /Invalid XML document/);
+  // Pass 2 L2: apostrophe inside a comment must not desync NUL scanning in subsequent elements.
+  const commentQuoteNul = parseXml('<Root><!-- don\'t break --><Fixture name="Spot\u0000"/></Root>');
+  assert.equal(attr(list(commentQuoteNul.Root, 'Fixture')[0], 'name'), 'Spot');
+
+  // QA regression (L8): tiny-scale right-handed matrix and near-collinear basis handle relative scale cleanly.
+  const hung0 = coords.poseMatrix({ x: 0, y: 0, z: 0 }, 0, false);
+  const tinyScale = coords.matrixRotationDeltaDeg({
+    u: { x: 1e-5, y: 0, z: 0 },
+    v: { x: 0, y: 1e-5, z: 0 },
+    w: { x: 0, y: 0, z: 1e-5 },
+    o: { x: 0, y: 0, z: 0 },
+  }, hung0);
+  assert.equal(tinyScale.degenerate, false);
+  assert.equal(tinyScale.mirrored, false);
+  close(tinyScale.deg, 0, 1e-5);
+
+  const nearCollinear = coords.matrixRotationDeltaDeg({
+    u: { x: 1e-10, y: 0, z: 1 },
+    v: { x: 0, y: 1, z: 0 },
+    w: { x: 0, y: 0, z: 1 },
+    o: { x: 0, y: 0, z: 0 },
+  }, hung0);
+  assert.equal(nearCollinear.degenerate, true);
+});

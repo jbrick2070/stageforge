@@ -925,3 +925,362 @@ test('Sprint 1 QA regressions: GDTF DAG cap, UUID remap, invalid-matrix restore,
   assert.equal(nastyShow.version, 4);
   assert.deepEqual(parseShowFile(JSON.stringify(nastyShow)).interchange, nastyExport.interchange);
 });
+
+test('Sprint 7: importMvr is pure (no input mutation, no localStorage touch, deterministic) and derives notes from findings', () => {
+  const bytes = exportMvr(fixtureShow.rig, fixtureShow.stage);
+  const copyBefore = new Uint8Array(bytes);
+  const prevStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get() {
+      throw new Error('localStorage must not be accessed during importMvr');
+    },
+  });
+  try {
+    const first = importMvr(bytes);
+    const second = importMvr(bytes);
+    assert.deepEqual(bytes, copyBefore, 'input Uint8Array is untouched');
+    assert.deepEqual(first.report, second.report);
+    assert.deepEqual(first.rig, second.rig);
+    assert.deepEqual(first.report.findings, []);
+    assert.deepEqual(first.report.notes, []);
+  } finally {
+    if (prevStorage) Object.defineProperty(globalThis, 'localStorage', prevStorage);
+    else delete globalThis.localStorage;
+  }
+});
+
+test('Sprint 7: StageForge -> MVR -> StageForge -> MVR and foreign -> SF -> MVR -> SF -> MVR preserve every UUID and fixture number', async () => {
+  const { boxGlb } = await compiler.ssrLoadModule('/src/interchange/mvr/glb.ts');
+  const rig = fixtureShow.rig, stage = fixtureShow.stage;
+
+  // 1) StageForge -> MVR -> StageForge -> MVR
+  const exp1 = exportMvrDocument(rig, stage, '1.5.0');
+  const imp1 = importMvr(exp1.bytes);
+  assert.equal(imp1.report.source, 'stageforge');
+  assert.deepEqual(imp1.report.findings, []);
+  const exp2 = exportMvrDocument(imp1.rig, imp1.stage, '1.5.0', imp1.interchange, imp1.resources);
+
+  const mapFixtureIds = (bytes) => {
+    const { childList } = scene(bytes);
+    return list(childList, 'Fixture').map((f) => ({
+      uuid: attr(f, 'uuid'),
+      fixtureId: text(f, 'FixtureID'),
+      fixtureIdNumeric: text(f, 'FixtureIDNumeric'),
+      unitNumber: text(f, 'UnitNumber'),
+      customId: text(f, 'CustomId'),
+    }));
+  };
+  const firstMap = mapFixtureIds(exp1.bytes);
+  const secondMap = mapFixtureIds(exp2.bytes);
+  assert.ok(firstMap.length > 0);
+  assert.deepEqual(secondMap, firstMap, 'StageForge round trip keeps every UUID and fixture number');
+
+  // 2) Foreign -> StageForge -> MVR -> StageForge -> MVR keeps foreign fixture UUIDs and stable numbers
+  const F1 = 'BBBBBBBB-1111-4000-8000-000000000001';
+  const F2 = 'BBBBBBBB-1111-4000-8000-000000000002';
+  const foreignBytes = foreignMvr({
+    fixtures:
+      `<Fixture uuid="${F1}" name="Spot A"><Matrix>{1,0,0}{0,1,0}{0,0,1}{-1000,0,-280}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>101</FixtureID><FixtureIDNumeric>101</FixtureIDNumeric><UnitNumber>1</UnitNumber><Addresses><Address break="0">1</Address></Addresses></Fixture>` +
+      `<Fixture uuid="${F2}" name="Spot B"><Matrix>{1,0,0}{0,1,0}{0,0,1}{1000,0,-280}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>102</FixtureID><FixtureIDNumeric>102</FixtureIDNumeric><UnitNumber>2</UnitNumber><Addresses><Address break="0">17</Address></Addresses></Fixture>`,
+    gdtf: { truss: boxGlb(4, 0.3, 0.3), 'Vendor@Spot.gdtf': profileArchive(PROFILES.beam) },
+  });
+  const fImp1 = importMvr(foreignBytes);
+  assert.ok(fImp1.report.findings.some((f) => f.code === 'fixture-number-lost' && f.severity === 'warn'));
+  const fExp1 = exportMvrDocument(fImp1.rig, fImp1.stage, '1.5.0', fImp1.interchange, fImp1.resources);
+  const fImp2 = importMvr(fExp1.bytes);
+  assert.equal(fImp2.report.source, 'stageforge');
+  assert.deepEqual(fImp2.report.findings, [], 're-importing our own export of a foreign MVR has zero findings');
+  const fExp2 = exportMvrDocument(fImp2.rig, fImp2.stage, '1.5.0', fImp2.interchange, fImp2.resources);
+  const fm1 = mapFixtureIds(fExp1.bytes);
+  const fm2 = mapFixtureIds(fExp2.bytes);
+  assert.deepEqual(fm1.map((x) => x.uuid), [F1, F2]);
+  assert.deepEqual(fm2, fm1);
+});
+
+test('Sprint 7: synthetic MVRs cover every finding code, transform-delta thresholds, unit-suspect, NULs and resource cap', async () => {
+  const { boxGlb } = await compiler.ssrLoadModule('/src/interchange/mvr/glb.ts');
+
+  // 1) Nested rotated groups: compute expected world position independently (90 deg CCW about MVR +Z + translation).
+  // Group A at MVR (2000, 1000, 6000) rotated +90 deg about +Z: (lx, ly, lz) -> (2000 - ly, 1000 + lx, 6000 + lz).
+  // Group B nested at local (0, 2000, 0) rotated 0 -> world (0, 1000, 6000) -> wait: local (0, 2000, 0) maps to (2000 - 2000, 1000 + 0, 6000) = (0, 1000, 6000) mm -> SF (0, 6, -1) m.
+  // Truss aligned with Group A (yaw +90 deg) won't be needed: put a floor hazer at Group B's origin so StageForge places it at SF (0, 0, -1),
+  // and put a tilted moving head (rotated 30 deg about local X) to trigger > 2 deg transform-simplified!
+  const cos30 = Math.cos((30 * Math.PI) / 180);
+  const sin30 = Math.sin((30 * Math.PI) / 180);
+  const nestedXml = `<?xml version="1.0" encoding="UTF-8"?>
+<GeneralSceneDescription verMajor="1" verMinor="6" provider="SyntheticCAD" providerVersion="1">
+ <Scene><Layers><Layer uuid="11111111-2222-4333-8444-555555555555" name="Nested"><ChildList>
+  <GroupObject uuid="eeeeeeee-1111-4000-8000-000000000001" name="Outer90">
+   <Matrix>{0,1,0}{-1,0,0}{0,0,1}{2000,1000,0}</Matrix>
+   <ChildList>
+    <GroupObject uuid="eeeeeeee-1111-4000-8000-000000000002" name="InnerShift">
+     <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,2000,0}</Matrix>
+     <ChildList>
+      <Fixture uuid="bbbbbbbb-2222-4000-8000-000000000001" name="Floor Hazer">
+       <Matrix>{0,-1,0}{0,0,-1}{1,0,0}{0,0,0}</Matrix>
+       <GDTFSpec>Vendor@Hazer.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode>
+       <FixtureID>1</FixtureID><FixtureIDNumeric>1</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+       <Addresses><Address break="0">1</Address></Addresses>
+      </Fixture>
+      <Fixture uuid="bbbbbbbb-2222-4000-8000-000000000002" name="Tilted Spot">
+       <Matrix>{1,0,0}{0,${cos30.toFixed(6)},${sin30.toFixed(6)}}{0,${(-sin30).toFixed(6)},${cos30.toFixed(6)}}{0,0,5000}</Matrix>
+       <GDTFSpec>Vendor@Spot.gdtf\u0000</GDTFSpec><GDTFMode>StageForge</GDTFMode>
+       <FixtureID>101</FixtureID><FixtureIDNumeric>101</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+       <Addresses><Address break="0">1025</Address><Address break="1">1537</Address></Addresses>
+      </Fixture>
+      <Fixture uuid="bbbbbbbb-2222-4000-8000-000000000003" name="Missing Profile Spot">
+       <Matrix>{1,0,0}{0,1,0}{0,0,1}{2000,0,5000}</Matrix>
+       <GDTFSpec>NoSuch@Profile.gdtf</GDTFSpec><GDTFMode>Std</GDTFMode>
+       <FixtureID>A7</FixtureID><FixtureIDNumeric>0</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+      </Fixture>
+      <Fixture uuid="bbbbbbbb-2222-4000-8000-000000000004" name="Corrupt Profile Spot">
+       <Matrix>{-1,0,0}{0,1,0}{0,0,1}{-2000,0,5000}</Matrix>
+       <GDTFSpec>Corrupt@Bad.gdtf</GDTFSpec><GDTFMode>Std</GDTFMode>
+       <FixtureID>4</FixtureID><FixtureIDNumeric>4</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+       <Addresses><Address break="0">40</Address></Addresses>
+      </Fixture>
+     </ChildList>
+    </GroupObject>
+   </ChildList>
+  </GroupObject>
+  <Truss uuid="aaaaaaaa-2222-4000-8000-000000000001" name="3DS Tower">
+   <Matrix>{1,0,0}{0,${cos30.toFixed(6)},${sin30.toFixed(6)}}{0,${(-sin30).toFixed(6)},${cos30.toFixed(6)}}{5000,0,4000}</Matrix>
+   <Geometries><Geometry3D fileName="tower.3ds"/></Geometries>
+   <FixtureID></FixtureID><FixtureIDNumeric>0</FixtureIDNumeric>
+  </Truss>
+  <Truss uuid="not-a-uuid" name="Bad UUID Truss">
+   <Matrix>{1,0,0}{0,1,0}{0,0,1}{-5000,0,4000}</Matrix>
+   <Geometries><Symbol symdef="ffffffff-0000-4000-8000-000000000001"/></Geometries>
+   <FixtureID></FixtureID><FixtureIDNumeric>0</FixtureIDNumeric>
+  </Truss>
+ </ChildList></Layer></Layers></Scene></GeneralSceneDescription>\u0000`;
+
+  const nestedArchive = writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(nestedXml) },
+    { name: 'Vendor@Spot.gdtf', data: profileArchive(PROFILES.beam) },
+    { name: 'Vendor@Hazer.gdtf', data: profileArchive(PROFILES.hazer) },
+    { name: 'Corrupt@Bad.gdtf', data: utf8.encode('not-a-zip') },
+    { name: 'tower.3ds', data: new Uint8Array(64) },
+    { name: 'large-tex.png', data: new Uint8Array(2048) },
+  ]);
+
+  // Test lower maxKeptResourceBytes cap to trigger resource-dropped without allocating 128 MiB.
+  const nestedRes = importMvr(nestedArchive, { maxKeptResourceBytes: 512 });
+  const codes = new Set(nestedRes.report.findings.map((f) => f.code));
+  assert.deepEqual(nestedRes.report.notes, nestedRes.report.findings.map((f) => f.message), 'notes derived directly from findings');
+  // Independent check of nested rotated group world placement: hazer at SF (0, 0, -1).
+  assert.equal(nestedRes.rig.floorFx.length, 1);
+  assert.ok(Math.abs(nestedRes.rig.floorFx[0].x - 0) < 0.002);
+  assert.ok(Math.abs(nestedRes.rig.floorFx[0].z - (-1)) < 0.002);
+  // NUL-suffixed GDTFSpec "Vendor@Spot.gdtf\0" resolved cleanly (NOT flagged as missing!).
+  const gdtfMissing = nestedRes.report.findings.find((f) => f.code === 'gdtf-missing');
+  assert.ok(gdtfMissing && gdtfMissing.count === 1 && gdtfMissing.fixtureIds[0].includes('Missing Profile Spot'));
+  assert.ok(codes.has('gdtf-unparsed'), 'corrupt GDTF emits gdtf-unparsed');
+  assert.ok(codes.has('universe-repatched'), 'universe 3 fixture emits universe-repatched');
+  assert.ok(codes.has('address-assigned'), 'unpatched fixture emits address-assigned');
+  assert.ok(codes.has('break-dropped'), 'multi-break fixture emits break-dropped');
+  assert.ok(codes.has('fixture-number-lost'), 'custom FixtureID 101 / A7 emits fixture-number-lost');
+  assert.ok(codes.has('geometry-unsupported'), '.3ds and Symbol emit geometry-unsupported');
+  assert.ok(codes.has('uuid-changed'), 'non-canonical UUID emits uuid-changed');
+  assert.ok(codes.has('hierarchy-flattened'), 'nested GroupObjects emit hierarchy-flattened');
+  assert.ok(codes.has('resource-dropped'), 'oversize resource emits resource-dropped');
+  const transformFindings = nestedRes.report.findings.filter((f) => f.code === 'transform-simplified');
+  assert.ok(transformFindings.some((f) => /mirrored/.test(f.message)), 'mirrored fixture emits transform-simplified');
+  assert.ok(transformFindings.some((f) => /tilted truss/.test(f.message)), 'tilted truss emits separate transform-simplified finding');
+
+  // 2) Clean exact placement (<= 0.05 m and <= 2 deg) emits NO transform-simplified finding!
+  // On a 4 m box truss (32 slots), mountSlotIndex(0, 1, 32) = 16 sits at x = 1.6 / 31 ≈ +0.0516 m, y = -0.28 m.
+  const exactXml = `<?xml version="1.0" encoding="UTF-8"?>
+<GeneralSceneDescription verMajor="1" verMinor="6" provider="ExactTool" providerVersion="1">
+ <Scene><Layers><Layer uuid="11111111-2222-4333-8444-555555555555" name="Exact"><ChildList>
+  <Truss uuid="aaaaaaaa-3333-4000-8000-000000000001" name="LX1">
+   <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,6000}</Matrix>
+   <Geometries><Geometry3D fileName="truss.glb"/></Geometries>
+   <FixtureID></FixtureID><FixtureIDNumeric>0</FixtureIDNumeric>
+   <ChildList>
+    <Fixture uuid="bbbbbbbb-3333-4000-8000-000000000001" name="Center Beam">
+     <Matrix>{1,0,0}{0,1,0}{0,0,1}{52,0,-280}</Matrix>
+     <GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode>
+     <FixtureID>1</FixtureID><FixtureIDNumeric>1</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+     <Addresses><Address break="0">1</Address></Addresses>
+    </Fixture>
+   </ChildList>
+  </Truss>
+ </ChildList></Layer></Layers></Scene></GeneralSceneDescription>`;
+  const exactRes = importMvr(writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(exactXml) },
+    { name: 'truss.glb', data: boxGlb(4, 0.3, 0.3) },
+    { name: 'Vendor@Spot.gdtf', data: profileArchive(PROFILES.beam) },
+  ]));
+  assert.equal(exactRes.report.findings.filter((f) => f.code === 'transform-simplified').length, 0);
+  assert.equal(exactRes.report.findings.filter((f) => f.code === 'fixture-number-lost').length, 0);
+  assert.equal(exactRes.report.findings.filter((f) => f.code === 'unit-suspect').length, 0);
+
+  // 3) Transform-delta threshold: 0.12 m move -> warn; > 0.5 m on > 10% of fixtures -> block!
+  const warnMoveXml = exactXml.replace('{52,0,-280}', '{172,0,-280}');
+  const warnMoveRes = importMvr(writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(warnMoveXml) },
+    { name: 'truss.glb', data: boxGlb(4, 0.3, 0.3) },
+    { name: 'Vendor@Spot.gdtf', data: profileArchive(PROFILES.beam) },
+  ]));
+  const warnTransform = warnMoveRes.report.findings.find((f) => f.code === 'transform-simplified');
+  assert.ok(warnTransform && warnTransform.severity === 'warn');
+  assert.match(warnTransform.message, /0\.12 m/);
+
+  const blockMoveXml = exactXml.replace('{52,0,-280}', '{1252,0,-280}');
+  const blockMoveRes = importMvr(writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(blockMoveXml) },
+    { name: 'truss.glb', data: boxGlb(4, 0.3, 0.3) },
+    { name: 'Vendor@Spot.gdtf', data: profileArchive(PROFILES.beam) },
+  ]));
+  const blockTransform = blockMoveRes.report.findings.find((f) => f.code === 'transform-simplified');
+  assert.ok(blockTransform && blockTransform.severity === 'block');
+  assert.match(blockTransform.message, /1\.20 m/);
+
+  // 4) Feet-scaled document (< 0.5 m across 4 distinct points) -> unit-suspect block!
+  const feetXml = `<?xml version="1.0" encoding="UTF-8"?>
+<GeneralSceneDescription verMajor="1" verMinor="6" provider="FeetExporter" providerVersion="1">
+ <Scene><Layers><Layer uuid="11111111-2222-4333-8444-555555555555" name="Feet Rig"><ChildList>
+  <Truss uuid="aaaaaaaa-4444-4000-8000-000000000001" name="LX1">
+   <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,6,20}</Matrix>
+   <Geometries/><FixtureID></FixtureID><FixtureIDNumeric>0</FixtureIDNumeric>
+   <ChildList>
+    ${[-15, -5, 5, 15].map((ft, i) => `<Fixture uuid="bbbbbbbb-4444-4000-8000-00000000000${i + 1}" name="Spot ${i + 1}">
+     <Matrix>{1,0,0}{0,1,0}{0,0,1}{${ft},0,-1}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode>
+     <FixtureID>${i + 1}</FixtureID><FixtureIDNumeric>${i + 1}</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+     <Addresses><Address break="0">${1 + i * 16}</Address></Addresses></Fixture>`).join('')}
+   </ChildList>
+  </Truss>
+ </ChildList></Layer></Layers></Scene></GeneralSceneDescription>`;
+  const feetRes = importMvr(writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(feetXml) },
+    { name: 'Vendor@Spot.gdtf', data: profileArchive(PROFILES.beam) },
+  ]));
+  const feetFinding = feetRes.report.findings.find((f) => f.code === 'unit-suspect');
+  assert.ok(feetFinding && feetFinding.severity === 'block');
+  assert.match(feetFinding.message, /under 0\.5 m/);
+  assert.match(feetFinding.message, /304\.8/);
+
+  // 5) 1000x oversize unit document (> 500 m) -> unit-suspect block (measured before 10 km filter)!
+  const hugeXml = `<?xml version="1.0" encoding="UTF-8"?>
+<GeneralSceneDescription verMajor="1" verMinor="6" provider="MicronExporter" providerVersion="1">
+ <Scene><Layers><Layer uuid="11111111-2222-4333-8444-555555555555" name="Huge Rig"><ChildList>
+  <Fixture uuid="bbbbbbbb-5555-4000-8000-000000000001" name="Far A"><Matrix>{1,0,0}{0,1,0}{0,0,1}{-400000,0,6000}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>1</FixtureID><FixtureIDNumeric>1</FixtureIDNumeric><UnitNumber>1</UnitNumber><Addresses><Address break="0">1</Address></Addresses></Fixture>
+  <Fixture uuid="bbbbbbbb-5555-4000-8000-000000000002" name="Far B"><Matrix>{1,0,0}{0,1,0}{0,0,1}{400000,0,6000}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>2</FixtureID><FixtureIDNumeric>2</FixtureIDNumeric><UnitNumber>1</UnitNumber><Addresses><Address break="0">17</Address></Addresses></Fixture>
+ </ChildList></Layer></Layers></Scene></GeneralSceneDescription>`;
+  const hugeRes = importMvr(writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(hugeXml) },
+    { name: 'Vendor@Spot.gdtf', data: profileArchive(PROFILES.beam) },
+  ]));
+  const hugeFinding = hugeRes.report.findings.find((f) => f.code === 'unit-suspect');
+  assert.ok(hugeFinding && hugeFinding.severity === 'block');
+  assert.match(hugeFinding.message, /over 500 m/);
+
+  // 6) Restore path detects moved fixture, readdressed fixture, extra break and renumbered fixture!
+  const refRig = referenceRig();
+  const refExport = exportMvr(refRig);
+  const editedRef = editScene(refExport, (raw) =>
+    raw
+      .replace('<FixtureID>1</FixtureID>', '<FixtureID>99</FixtureID>')
+      .replace('<Address break="0">513</Address>', '<Address break="0">520</Address><Address break="1">1025</Address>'),
+  );
+  const restoredEdits = importMvr(editedRef);
+  assert.equal(restoredEdits.report.source, 'stageforge');
+  const restoreCodes = new Set(restoredEdits.report.findings.map((f) => f.code));
+  assert.ok(restoreCodes.has('address-edit-ignored'));
+  assert.ok(restoreCodes.has('break-dropped'));
+  assert.ok(restoreCodes.has('fixture-number-lost'));
+});
+
+test('Sprint 7 QA regressions: drop escalation, restore tilt/delete/unpatch, outlier unit-suspect, resource priority, missing payload, bidi sanitization and L3 split', async () => {
+  const { boxGlb } = await compiler.ssrLoadModule('/src/interchange/mvr/glb.ts');
+
+  // M2 + L4: All unreadable fixtures -> block; >10% out-of-range fixtures -> block; cumulative drops >10% -> block.
+  const allBadXml = `<?xml version="1.0" encoding="UTF-8"?>
+<GeneralSceneDescription verMajor="1" verMinor="6" provider="Broken" providerVersion="1">
+ <Scene><Layers><Layer uuid="11111111-2222-4333-8444-555555555555" name="AllBad"><ChildList>
+  <Fixture uuid="bbbbbbbb-6666-4000-8000-000000000001" name="Bad\u202E\u200BSpot">
+   <Matrix>garbage</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode>
+   <FixtureID>1</FixtureID><FixtureIDNumeric>1</FixtureIDNumeric><UnitNumber>1</UnitNumber>
+  </Fixture>
+ </ChildList></Layer></Layers></Scene></GeneralSceneDescription>`;
+  const allBad = importMvr(writeArchive([{ name: 'GeneralSceneDescription.xml', data: utf8.encode(allBadXml) }]));
+  const unreadableFinding = allBad.report.findings.find((f) => f.code === 'matrix-unreadable');
+  assert.ok(unreadableFinding && unreadableFinding.severity === 'block', 'M2: all-unreadable fixtures escalate to block');
+  // L9: bidi override and zero-width space are stripped from labels.
+  assert.ok(!/[\u202E\u200B]/.test(unreadableFinding.fixtureIds[0]), 'L9: bidi and zero-width chars stripped');
+
+  // Cumulative drops (1 invalid + 1 out-of-range out of 10 fixtures = 20% > 10% -> second drop escalates to block).
+  const cumFixtures = [
+    `<Fixture uuid="bbbbbbbb-7777-4000-8000-000000000001" name="Invalid 1"><Matrix>bad</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>1</FixtureID><FixtureIDNumeric>1</FixtureIDNumeric><UnitNumber>1</UnitNumber></Fixture>`,
+    `<Fixture uuid="bbbbbbbb-7777-4000-8000-000000000002" name="Far 1"><Matrix>{1,0,0}{0,1,0}{0,0,1}{50000000,0,5000}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>2</FixtureID><FixtureIDNumeric>2</FixtureIDNumeric><UnitNumber>1</UnitNumber></Fixture>`,
+    ...Array.from({ length: 8 }, (_, i) => `<Fixture uuid="bbbbbbbb-7777-4000-8000-0000000000${String(i + 3).padStart(2, '0')}" name="Ok ${i + 3}"><Matrix>{1,0,0}{0,1,0}{0,0,1}{${i * 500},0,5000}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>${i + 3}</FixtureID><FixtureIDNumeric>${i + 3}</FixtureIDNumeric><UnitNumber>1</UnitNumber><Addresses><Address break="0">${1 + i * 16}</Address></Addresses></Fixture>`),
+  ].join('');
+  const cumRes = importMvr(writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(`<?xml version="1.0"?><GeneralSceneDescription verMajor="1" verMinor="6" provider="Cum"><Scene><Layers><Layer uuid="11111111-2222-4333-8444-555555555555" name="Cum"><ChildList>${cumFixtures}</ChildList></Layer></Layers></Scene></GeneralSceneDescription>`) },
+    { name: 'Vendor@Spot.gdtf', data: profileArchive(PROFILES.beam) },
+  ]));
+  const cumOor = cumRes.report.findings.find((f) => f.code === 'coordinate-out-of-range');
+  assert.ok(cumOor && cumOor.severity === 'block', 'L4: cumulative 20% fixture drops escalate to block');
+
+  // M6: 22 normal fixtures + 1 far outlier at 800 m emits a unit-suspect warn (never silent).
+  const outlierFixtures = [
+    ...Array.from({ length: 22 }, (_, i) => `<Fixture uuid="bbbbbbbb-8888-4000-8000-0000000000${String(i + 1).padStart(2, '0')}" name="Near ${i + 1}"><Matrix>{1,0,0}{0,1,0}{0,0,1}{${(i - 11) * 400},0,5000}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>${i + 1}</FixtureID><FixtureIDNumeric>${i + 1}</FixtureIDNumeric><UnitNumber>1</UnitNumber><Addresses><Address break="0">${1 + i * 16}</Address></Addresses></Fixture>`),
+    `<Fixture uuid="bbbbbbbb-8888-4000-8000-000000000099" name="Stray 800m"><Matrix>{1,0,0}{0,1,0}{0,0,1}{800000,0,5000}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>23</FixtureID><FixtureIDNumeric>23</FixtureIDNumeric><UnitNumber>1</UnitNumber><Addresses><Address break="0">400</Address></Addresses></Fixture>`,
+  ].join('');
+  const outlierRes = importMvr(writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(`<?xml version="1.0"?><GeneralSceneDescription verMajor="1" verMinor="6" provider="Outlier"><Scene><Layers><Layer uuid="11111111-2222-4333-8444-555555555555" name="Outlier"><ChildList>${outlierFixtures}</ChildList></Layer></Layers></Scene></GeneralSceneDescription>`) },
+    { name: 'Vendor@Spot.gdtf', data: profileArchive(PROFILES.beam) },
+  ]));
+  const outlierFinding = outlierRes.report.findings.find((f) => f.code === 'unit-suspect');
+  assert.ok(outlierFinding && outlierFinding.severity === 'warn', 'M6: single far outlier emits unit-suspect warn');
+  assert.ok(outlierFinding.fixtureIds.some((id) => id.includes('Stray 800m')));
+
+  // M7 + L1: Unsupported extension (.obj) emits resource-dropped info, GDTF is kept ahead of large early PNG,
+  // and StageForge marker without StageForge_show.json emits payload-damaged!
+  const gdtfBytes = profileArchive(PROFILES.beam);
+  const markerNoPayload = writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(`<?xml version="1.0"?><GeneralSceneDescription verMajor="1" verMinor="6" provider="StageForge"><UserData><Data provider="StageForge" ver="1"/></UserData><Scene><Layers><Layer uuid="11111111-2222-4333-8444-555555555555" name="NoPayload"><ChildList><Fixture uuid="bbbbbbbb-9999-4000-8000-000000000001" name="Spot"><Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,5000}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>1</FixtureID><FixtureIDNumeric>1</FixtureIDNumeric><UnitNumber>1</UnitNumber><Addresses><Address break="0">1</Address></Addresses></Fixture></ChildList></Layer></Layers></Scene></GeneralSceneDescription>`) },
+    { name: 'aaa-huge.png', data: new Uint8Array(gdtfBytes.byteLength + 500) },
+    { name: 'Vendor@Spot.gdtf', data: gdtfBytes },
+    { name: 'extra.obj', data: utf8.encode('v 0 0 0\n') },
+  ]);
+  const resPriority = importMvr(markerNoPayload, { maxKeptResourceBytes: gdtfBytes.byteLength + 100 });
+  assert.ok(resPriority.report.findings.some((f) => f.code === 'payload-damaged' && /missing/.test(f.message)), 'L1: missing StageForge payload flagged');
+  assert.ok(resPriority.resources?.has('Vendor@Spot.gdtf'), 'M7: GDTF retained ahead of large PNG');
+  assert.ok(resPriority.report.findings.some((f) => f.code === 'resource-dropped' && f.severity === 'info' && f.fixtureIds?.includes('extra.obj')), 'M7: unsupported .obj extension reported');
+
+  // M4 + M5 + L7: restore() detects tilted rig truss, deleted fixture, and unpatched (removed Addresses) fixture.
+  const refRig = referenceRig();
+  const refBytes = exportMvr(refRig);
+  const pod = refRig.trussPods[0];
+  const origTrussMatrix = matrixText(poseMatrix({ x: pod.x, y: pod.baseY, z: pod.z }, (pod.rotationY * 180) / Math.PI));
+  // Tilt the truss 30 deg about X while keeping its origin and yaw unchanged.
+  const c30 = Math.cos((30 * Math.PI) / 180), s30 = Math.sin((30 * Math.PI) / 180);
+  const tiltedTrussMatrix = `{${Math.cos((30 * Math.PI) / 180).toFixed(6)},${Math.sin((30 * Math.PI) / 180).toFixed(6)},0}{${(-Math.sin((30 * Math.PI) / 180) * c30).toFixed(6)},${(Math.cos((30 * Math.PI) / 180) * c30).toFixed(6)},${s30.toFixed(6)}}{${(Math.sin((30 * Math.PI) / 180) * s30).toFixed(6)},${(-Math.cos((30 * Math.PI) / 180) * s30).toFixed(6)},${c30.toFixed(6)}}{0,4000,8000}`;
+  const restoreEdited = editScene(refBytes, (raw) =>
+    raw
+      .replace(origTrussMatrix, tiltedTrussMatrix)
+      // Delete the floor beam fixture node and strip Addresses from the first Spot fixture.
+      .replace(/<Fixture[^>]*name="Floor beam 1"[\s\S]*?<\/Fixture>/, '')
+      .replace(/<Addresses>\s*<Address break="0">513<\/Address>\s*<\/Addresses>/, ''),
+  );
+  const restoreCheck = importMvr(restoreEdited);
+  assert.ok(restoreCheck.report.findings.some((f) => f.code === 'transform-simplified' && /tilt, roll or scale/.test(f.message)), 'M4: tilted rig truss in restore() flagged');
+  assert.ok(restoreCheck.report.findings.some((f) => f.code === 'object-edit-ignored' && /deleted in the MVR/.test(f.message)), 'M5: deleted fixture in restore() flagged');
+  assert.ok(restoreCheck.report.findings.some((f) => f.code === 'address-edit-ignored'), 'L7: unpatched fixture in restore() flagged');
+
+  // L3: > 64 drifted fixtures do not truncate tilted truss IDs because tilted trusses have their own finding.
+  const manyDrifted = Array.from({ length: 70 }, (_, i) => `<Fixture uuid="bbbbbbbb-aaaa-4000-8000-0000000000${String(i + 1).padStart(2, '0')}" name="Drifted ${i + 1}"><Matrix>{1,0,0}{0,1,0}{0,0,1}{${(i - 35) * 100},0,-280}</Matrix><GDTFSpec>Vendor@Spot.gdtf</GDTFSpec><GDTFMode>StageForge</GDTFMode><FixtureID>${i + 1}</FixtureID><FixtureIDNumeric>${i + 1}</FixtureIDNumeric><UnitNumber>1</UnitNumber><Addresses><Address break="0">${1 + i * 8}</Address></Addresses></Fixture>`).join('');
+  const splitTrussXml = `<?xml version="1.0"?><GeneralSceneDescription verMajor="1" verMinor="6" provider="Split"><Scene><Layers><Layer uuid="11111111-2222-4333-8444-555555555555" name="Split"><ChildList>
+    <Truss uuid="aaaaaaaa-aaaa-4000-8000-000000000001" name="Tilted Main"><Matrix>{1,0,0}{0,${c30.toFixed(6)},${s30.toFixed(6)}}{0,${(-s30).toFixed(6)},${c30.toFixed(6)}}{0,0,6000}</Matrix><Geometries><Geometry3D fileName="truss.glb"/></Geometries><FixtureID></FixtureID><FixtureIDNumeric>0</FixtureIDNumeric><ChildList>${manyDrifted}</ChildList></Truss>
+  </ChildList></Layer></Layers></Scene></GeneralSceneDescription>`;
+  const splitRes = importMvr(writeArchive([
+    { name: 'GeneralSceneDescription.xml', data: utf8.encode(splitTrussXml) },
+    { name: 'truss.glb', data: boxGlb(20, 0.3, 0.3) },
+    { name: 'Vendor@Spot.gdtf', data: profileArchive(PROFILES.beam) },
+  ]));
+  const tiltedOnly = splitRes.report.findings.find((f) => f.code === 'transform-simplified' && /tilted truss/.test(f.message));
+  assert.ok(tiltedOnly && tiltedOnly.count === 1 && tiltedOnly.fixtureIds[0].includes('Tilted Main'), 'L3: tilted truss finding is never truncated by >64 drifted fixtures');
+});

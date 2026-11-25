@@ -135,3 +135,53 @@ export function compose(parent: MvrMatrix, child: MvrMatrix): MvrMatrix {
   const o = apply(child.o);
   return { u: apply(child.u), v: apply(child.v), w: apply(child.w), o: { x: o.x + parent.o.x, y: o.y + parent.o.y, z: o.z + parent.o.z } };
 }
+
+const dot = (a: Vec3, b: Vec3) => a.x * b.x + a.y * b.y + a.z * b.z;
+const cross = (a: Vec3, b: Vec3): Vec3 => ({
+  x: a.y * b.z - a.z * b.y,
+  y: a.z * b.x - a.x * b.z,
+  z: a.x * b.y - a.y * b.x,
+});
+const len = (a: Vec3) => Math.hypot(a.x, a.y, a.z);
+
+export interface RotationDelta {
+  /** Geodesic 3D rotation angle between source and target frames in degrees (0..180). */
+  deg: number;
+  /** True when any basis axis is near-zero or collinear, so orientation cannot be recovered cleanly. */
+  degenerate: boolean;
+  /** True when the source matrix has negative determinant (left-handed / mirrored). */
+  mirrored: boolean;
+}
+
+/**
+ * Geodesic angular difference between an arbitrary MVR matrix's orientation and a StageForge
+ * target pose matrix. Orthonormalises starting from w (the GDTF beam axis −Z) so scaled or
+ * sheared group matrices still yield a meaningful beam-aligned comparison.
+ */
+export function matrixRotationDeltaDeg(source: MvrMatrix, target: MvrMatrix): RotationDelta {
+  const uLen = len(source.u);
+  const vLen = len(source.v);
+  const wLen = len(source.w);
+  if (!Number.isFinite(uLen) || !Number.isFinite(vLen) || !Number.isFinite(wLen) ||
+      uLen < 1e-9 || vLen < 1e-9 || wLen < 1e-9) {
+    return { deg: 180, degenerate: true, mirrored: false };
+  }
+  const det = dot(cross(source.u, source.v), source.w);
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12 * uLen * vLen * wLen) {
+    return { deg: 180, degenerate: true, mirrored: false };
+  }
+  const mirrored = det < 0;
+  const wHat: Vec3 = { x: source.w.x / wLen, y: source.w.y / wLen, z: source.w.z / wLen };
+  const uw = dot(source.u, wHat);
+  const uOrtho: Vec3 = { x: source.u.x - uw * wHat.x, y: source.u.y - uw * wHat.y, z: source.u.z - uw * wHat.z };
+  const uOrthoLen = len(uOrtho);
+  if (!Number.isFinite(uOrthoLen) || uOrthoLen < 1e-9 * uLen) {
+    return { deg: 180, degenerate: true, mirrored };
+  }
+  const uHat: Vec3 = { x: uOrtho.x / uOrthoLen, y: uOrtho.y / uOrthoLen, z: uOrtho.z / uOrthoLen };
+  const vHat = cross(wHat, uHat);
+  const tr = dot(uHat, target.u) + dot(vHat, target.v) + dot(wHat, target.w);
+  const cosTheta = Math.max(-1, Math.min(1, (tr - 1) / 2));
+  const deg = (Math.acos(cosTheta) * 180) / Math.PI;
+  return { deg: Number.isFinite(deg) ? deg : 180, degenerate: false, mirrored };
+}

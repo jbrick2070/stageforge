@@ -37,6 +37,45 @@
 .take-list ol { max-height: 220px; padding: 0; overflow: auto; }
 .take-list li { display: grid; grid-template-columns: 58px minmax(0,1fr); padding: 4px 0; border-top: 1px solid #353e41; font-size: 12px; }
 .take-list time { font: 11px 'JetBrains Mono', monospace; color: #b0e0c6; }
+.mvr-last-report-row { margin-top: 10px; }
+.mvr-last-report-row button { width: 100%; text-align: left; font-size: 12px; color: #c7e7db; }
+.desk-dialog.mvr-report-dialog { width: min(540px, calc(100vw - 20px)); }
+.mvr-report-meta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: #9eb0b3; margin: 2px 0 10px; }
+.mvr-report-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 10px 0 12px; }
+.mvr-report-counts > div { background: #101518; border: 1px solid #354145; border-radius: 5px; padding: 7px 6px; text-align: center; }
+.mvr-report-counts strong { display: block; font: 700 17px/1.15 'JetBrains Mono', monospace; color: #e8f2f0; }
+.mvr-report-counts span { font-size: 11px; color: #9fb0b3; }
+.mvr-report-clean { padding: 10px 12px; border-radius: 5px; border: 1px solid #2f6b56; background: #122921; color: #b6f0d7; font-size: 13px; }
+.mvr-findings-groups h3 { font-size: 13px; margin: 12px 0 6px; color: #dfe7e8; }
+.mvr-findings-groups h3 small { color: #95a7aa; font-weight: 500; }
+.mvr-finding-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 7px; }
+.mvr-finding { background: #11161a; border: 1px solid #364146; border-left-width: 3px; border-radius: 5px; padding: 8px 10px; }
+.mvr-finding--block { border-left-color: #ef4444; background: #1e1215; }
+.mvr-finding--warn { border-left-color: #f59e0b; background: #1d1810; }
+.mvr-finding--info { border-left-color: #38bdf8; }
+.mvr-finding-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mvr-badge { font: 700 10px/1 'JetBrains Mono', monospace; padding: 2px 5px; border-radius: 3px; letter-spacing: .03em; }
+.mvr-badge--block { background: #7f1d1d; color: #fecaca; }
+.mvr-badge--warn { background: #78350f; color: #fde68a; }
+.mvr-badge--info { background: #0c4a6e; color: #bae6fd; }
+.mvr-finding-code { font: 500 11px/1.2 'JetBrains Mono', monospace; color: #c4d1d4; }
+.mvr-finding-count { margin-left: auto; font: 600 11px 'JetBrains Mono', monospace; color: #9eb0b3; }
+.mvr-finding-msg { margin: 5px 0 0; font-size: 12.5px; color: #e2e9ea; overflow-wrap: anywhere; }
+.mvr-finding-ids { margin-top: 6px; font-size: 12px; }
+.mvr-finding-ids summary { cursor: pointer; color: #a7d5c6; }
+.mvr-finding-ids ul { margin: 5px 0 0; padding-left: 16px; max-height: 150px; overflow: auto; font: 11px/1.45 'JetBrains Mono', monospace; color: #c8d4d6; }
+.mvr-finding-ids li { overflow-wrap: anywhere; }
+.mvr-finding-more { color: #90a2a5; font-style: italic; list-style: none; margin-left: -16px; }
+.mvr-report-footer { margin-top: 14px; padding-top: 10px; border-top: 1px solid #354145; display: grid; gap: 8px; }
+.desk-dialog label.mvr-block-ack { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; color: #fecaca; cursor: pointer; }
+.mvr-block-ack input { flex: none; width: 16px; height: 16px; accent-color: #ef4444; }
+.mvr-report-summary { margin: 0; font-size: 12px; color: #b1c0c2; }
+.mvr-report-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.desk-dialog button.mvr-import-confirm { background: #266b54; border-color: #48a182; color: #ecfdf5; font-weight: 600; }
+.desk-dialog button.mvr-import-confirm:hover:not(:disabled) { background: #2f8468; }
+@media (max-width: 440px) {
+  .mvr-report-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 :root {
   color-scheme: dark;

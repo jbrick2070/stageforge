@@ -32,6 +32,8 @@ import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
 import type { BundleAsset } from './data/showBundle';
 import { isCustomMainWall, MAX_WALL_CUE_MS, pruneNativeStage, removeSecondaryScreenEvent, upsertSecondaryScreenEvent, type SecondaryScreenEvent } from './data/studioGeometry';
 import type { FileAction } from './components/ShowFiles';
+import type { MvrReportRecord } from './components/MvrImportReport';
+import type { MvrImport } from './interchange/mvr/importMvr';
 import { useShowTimeline } from './input/useShowTimeline';
 import { useWallClock } from './input/useWallClock';
 import { patchCsv } from './data/patchCsv';
@@ -47,13 +49,14 @@ const createLazyCostEstimatorModal = () => lazy(loadCostEstimatorModal);
 // Panels and drawers load right after first paint (see preloadPanels), keeping them out of the first
 // download. Their ErrorBoundaries also catch a chunk that fails to load.
 const ShowFiles = deferredComponent(() => import('./components/ShowFiles').then((m) => m.ShowFiles));
+const MvrImportReportDialog = deferredComponent(() => import('./components/MvrImportReport').then((m) => m.MvrImportReport));
 const CueListEditor = deferredComponent(() => import('./components/CueListEditor').then((m) => m.CueListEditor));
 const StageDesigner = deferredComponent(() => import('./components/StageDesigner').then((m) => m.StageDesigner));
 const RigBuilderDrawer = deferredComponent(() => import('./components/RigBuilderDrawer').then((m) => m.RigBuilderDrawer));
 const DmxMonitorDrawer = deferredComponent(() => import('./components/DmxMonitorDrawer').then((m) => m.DmxMonitorDrawer));
 const ShowControlDrawer = deferredComponent(() => import('./components/ShowControlDrawer').then((m) => m.ShowControlDrawer));
 const preloadPanels = () => {
-  for (const panel of [RigBuilderDrawer, DmxMonitorDrawer, ShowControlDrawer, ShowFiles, CueListEditor, StageDesigner]) {
+  for (const panel of [RigBuilderDrawer, DmxMonitorDrawer, ShowControlDrawer, ShowFiles, MvrImportReportDialog, CueListEditor, StageDesigner]) {
     panel.preload().catch(() => { /* the panel's ErrorBoundary reports it when opened */ });
   }
 };
@@ -205,6 +208,14 @@ export const App: React.FC = () => {
   designerOpenRef.current = !!designerRig;
   const openRequestRef = useRef(0);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [pendingMvr, setPendingMvr] = useState<{
+    result: MvrImport;
+    normalized: RigConfig;
+    request: number;
+    fileName: string;
+  } | null>(null);
+  const [lastMvrReport, setLastMvrReport] = useState<MvrReportRecord | null>(null);
+  const [viewingMvrReport, setViewingMvrReport] = useState(false);
   const [cueEditor, setCueEditor] = useState(false);
   const [follow, setFollow] = useState<number | 'held' | null>(null);
   const [screen, setScreen] = useState<ScreenRef>(NO_SCREEN);
@@ -1136,6 +1147,7 @@ export const App: React.FC = () => {
     try { object = JSON.parse(json); } catch { throw new Error('Choose a valid StageForge JSON file.'); }
     if (!object || typeof object !== 'object' || !('format' in object)) {
       const next = normalizeDesign(parseRigJson(json));
+      setPendingMvr(null);
       installStage();
       installInterchange();
       wallClock.set(0, false);
@@ -1149,6 +1161,7 @@ export const App: React.FC = () => {
     const referenced = referencedFiles(file.media, file.cues, file.timeline, file.stage);
     const wall = file.media?.screen ?? NO_SCREEN;
 
+    setPendingMvr(null);
     pruneAssets(referenced);
     for (const { kind, file: medium } of bundledMedia) registerAsset(kind, medium);
     const look = wallLook(file.look, wall);
@@ -1192,29 +1205,55 @@ export const App: React.FC = () => {
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     openDocument(JSON.stringify(bundle.show), bundle.files);
   };
-  // MVR (DIN SPEC 15801) rigs from StageForge or other tools. A StageForge export restores
-  // exactly; other files become trusses, fixtures, screens and props, with notes on what changed.
-  const openMvrBytes = async (bytes: Uint8Array, request?: number) => {
-    const { importMvr } = await import('./interchange/mvr/importMvr');
-    const { rig: next, stage, interchange, resources, report } = importMvr(bytes);
-    const normalized = normalizeDesign(next);
-    if (request !== undefined && request !== openRequestRef.current) return;
+  // MVR (DIN SPEC 15801) rigs from StageForge or other tools. Parse purely first; clean
+  // StageForge round trips commit directly, while foreign MVRs or StageForge MVRs with
+  // merge/loss findings open the preflight dialog so nothing changes silently.
+  const commitMvr = (pending: { result: MvrImport; normalized: RigConfig; request: number; fileName: string }) => {
+    if (pending.request !== openRequestRef.current) {
+      setPendingMvr(null);
+      showToast('This MVR import was superseded by a newer file open.');
+      return;
+    }
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
+    setPendingMvr(null);
+    const { rig: next, stage, interchange, resources, report } = pending.result;
     installStage(stage);
     installInterchange(interchange, resources);
     wallClock.set(0, false);
     timeline.stop();
     const lastWallMs = stage?.screenEvents.at(-1)?.atMs ?? 0;
     timeline.syncWallDuration(lastWallMs, (stage?.screenEvents.length ?? 0) > 0, true);
-    applyRig(normalized, true); previewRig();
+    applyRig(pending.normalized, true); previewRig();
+    setLastMvrReport({
+      fileName: pending.fileName,
+      rigName: next.name,
+      report,
+      importedAt: new Date().toISOString(),
+    });
     const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
     // Keep the toast readable: a hostile or huge file can produce long names and many notes.
     const notes = report.notes.join(' ');
     const brief = notes.length > 240 ? `${[...notes].slice(0, 239).join('').trimEnd()}…` : notes;
     showToast(`Opened ${next.name} from MVR · ${count(report.fixtures, 'fixture', 'fixtures')} · ${count(report.trusses, 'truss', 'trusses')}${brief ? ' · ' + brief : ''}`);
   };
+  const openMvrBytes = async (bytes: Uint8Array, request?: number, fileName = 'scene.mvr') => {
+    const { importMvr } = await import('./interchange/mvr/importMvr');
+    const result = importMvr(bytes);
+    const normalized = normalizeDesign(result.rig);
+    const req = request ?? openRequestRef.current;
+    if (request !== undefined && request !== openRequestRef.current) return;
+    if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
+    const pending = { result, normalized, request: req, fileName };
+    if (result.report.source === 'stageforge' && result.report.findings.length === 0) {
+      commitMvr(pending);
+      return;
+    }
+    setViewingMvrReport(false);
+    setPendingMvr(pending);
+  };
   const openFile = async (file: File) => {
     const request = ++openRequestRef.current;
+    setPendingMvr(null);
     const lower = file.name.toLowerCase();
     if (lower.endsWith('.mvr')) {
       const { MAX_ARCHIVE_BYTES } = await import('./interchange/mvr/archive');
@@ -1222,7 +1261,7 @@ export const App: React.FC = () => {
       const bytes = new Uint8Array(await file.arrayBuffer());
       if (request !== openRequestRef.current) return;
       if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
-      return openMvrBytes(bytes, request);
+      return openMvrBytes(bytes, request, file.name);
     }
     if (!lower.endsWith('.zip')) {
       if (file.size > MAX_SHOW_JSON_BYTES) throw new Error('This JSON file exceeds the 32 MiB limit.');
@@ -1294,6 +1333,7 @@ export const App: React.FC = () => {
   };
   const openExample = async (name: 'amber-walk-on' | 'split-rig') => {
     const request = ++openRequestRef.current;
+    setPendingMvr(null);
     const folder = import.meta.env.BASE_URL + 'examples/';
     const [show, video] = await Promise.all([fetch(folder + name + '.stageforge.show.json'), fetch(folder + 'amber-clouds.mp4')]);
     if (!show.ok || !video.ok) throw new Error('The example files could not be opened.');
@@ -1345,8 +1385,12 @@ export const App: React.FC = () => {
     }
     if (source === undefined) return;
     const request = ++openRequestRef.current;
+    setPendingMvr(null);
     try {
-      if (command === 'openMvr' && typeof source !== 'string') await openMvrBytes(source, request);
+      if (command === 'openMvr' && typeof source !== 'string') {
+        setFilesOpen(false);
+        await openMvrBytes(source, request, 'MVR scene');
+      }
       else if (command === 'openBundle' && typeof source !== 'string') await openBundleBytes(source, request);
       else if (typeof source === 'string') openDocument(source);
     } catch (error) {
@@ -1358,7 +1402,7 @@ export const App: React.FC = () => {
   useEffect(() => window.stageforgeDesktop?.onRigCommand(fileCommand), []);
 
   const controller = useShowGamepad({
-    enabled: !costModalOpen && !designerRig && !filesOpen && !cueEditor && timeline.mode !== 'playing',
+    enabled: !costModalOpen && !designerRig && !filesOpen && !pendingMvr && !viewingMvrReport && !cueEditor && timeline.mode !== 'playing',
     command: action => {
       switch (action) {
         case 'play':
@@ -1488,7 +1532,28 @@ export const App: React.FC = () => {
         {missing.length} missing media {missing.length === 1 ? 'file' : 'files'} · Relink
       </button>}
       {filesOpen && <ErrorBoundary label="Show files" onReset={() => setFilesOpen(false)} onExportRig={() => downloadRig(rig)}><ShowFiles name={rig.name} media={media} stage={studioStage} timeline={timeline.timeline} missing={missing} cueNames={new Map(cues.map(c => [c.id, c.name]))}
+        lastMvrSummary={lastMvrReport ? {
+          fileName: lastMvrReport.fileName,
+          warnings: lastMvrReport.report.findings.filter(f => f.severity === 'warn').length,
+          blocks: lastMvrReport.report.findings.filter(f => f.severity === 'block').length,
+        } : undefined}
+        onViewMvrReport={() => setViewingMvrReport(true)}
         onOpen={openFile} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onError={showToast} onClose={() => setFilesOpen(false)}/></ErrorBoundary>}
+      {pendingMvr && !filesOpen && <ErrorBoundary label="MVR import preflight" onReset={() => setPendingMvr(null)} onExportRig={() => downloadRig(rig)}><MvrImportReportDialog
+        key={pendingMvr.request}
+        mode="preflight"
+        fileName={pendingMvr.fileName}
+        rigName={pendingMvr.result.rig.name}
+        report={pendingMvr.result.report}
+        onImport={() => commitMvr(pendingMvr)}
+        onCancel={() => setPendingMvr(null)}/></ErrorBoundary>}
+      {viewingMvrReport && lastMvrReport && !pendingMvr && !filesOpen && <ErrorBoundary label="MVR import report" onReset={() => setViewingMvrReport(false)} onExportRig={() => downloadRig(rig)}><MvrImportReportDialog
+        mode="view"
+        fileName={lastMvrReport.fileName}
+        rigName={lastMvrReport.rigName}
+        report={lastMvrReport.report}
+        importedAt={lastMvrReport.importedAt}
+        onClose={() => setViewingMvrReport(false)}/></ErrorBoundary>}
       {cueEditor && <ErrorBoundary label="Cue list editor" onReset={() => setCueEditor(false)} onExportRig={() => downloadRig(rig)}><CueListEditor cues={cues} capture={() => ({ id: crypto.randomUUID(), name: 'New look',
         tag: 'USER', accent: showState.primaryColor, state: structuredClone(showState), screen: cueScreen() })}
         onApply={next => {

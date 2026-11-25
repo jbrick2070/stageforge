@@ -43,21 +43,23 @@ function describeWallEvent(event: NativeStage['screenEvents'][number], wallNames
   return `${wall} · ${event.name} · ${mode}${offset}`;
 }
 
-export function DeskDialog({ title, onClose, children }: {title: string; onClose: () => void; children: ReactNode}) {
+export function DeskDialog({ title, onClose, className, children }: {title: string; onClose: () => void; className?: string; children: ReactNode}) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const el = dialog.current!;
     el.showModal();
     return () => el.close();
   }, []);
-  return <dialog ref={dialog} className="desk-dialog" aria-label={title} onCancel={e => { e.preventDefault(); onClose(); }}>
+  return <dialog ref={dialog} className={className ? `desk-dialog ${className}` : 'desk-dialog'} aria-label={title} onCancel={e => { e.preventDefault(); onClose(); }}>
     <header><h2>{title}</h2><button aria-label={'Close ' + title} onClick={onClose}>Close</button></header>
     {children}
   </dialog>;
 }
 
-export function ShowFiles({ name, media, stage, timeline, missing, cueNames, onOpen, onExample, onSave, onRelink, onError, onClose }: {
+export function ShowFiles({ name, media, stage, timeline, missing, cueNames, lastMvrSummary, onViewMvrReport, onOpen, onExample, onSave, onRelink, onError, onClose }: {
   name: string; media: ShowMedia; stage?: NativeStage; timeline?: ShowTimeline; missing: string[]; cueNames: Map<string, string>;
+  lastMvrSummary?: { fileName: string; warnings: number; blocks: number };
+  onViewMvrReport?: () => void;
   onOpen: (file: File) => Promise<void>; onSave: (action: FileAction) => Promise<void>;
   onExample: (name: 'amber-walk-on' | 'split-rig') => Promise<void>;
   onRelink: (files: File[]) => string; onError?: (message: string) => void; onClose: () => void;
@@ -126,6 +128,18 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, onO
     <h3>Exchange formats</h3>
     <div className="file-formats">{([['mvr','Rig for consoles and visualizers','MVR'],['dxf','CAD plan','DXF'],['glb','3D scene','GLB'],['csv','DMX channel patch','CSV'],['patchSheetCsv','Patch sheet (per unit)','CSV'],['instrumentScheduleCsv','Instrument schedule','CSV'],['channelHookupCsv','Channel hookup','CSV'],['cueSheetCsv','Cue sheet','CSV'],['inventoryCsv','Equipment list','CSV'],['riggingPowerCsv','Rigging & power report','CSV'],['rig','Rig only','JSON']] as const).map(([kind, label, extension]) =>
       <button key={kind} disabled={busy} onClick={() => void job(() => onSave(kind))}>{label} <small>{extension}</small></button>)}</div>
+    {lastMvrSummary && onViewMvrReport && (
+      <div className="file-actions mvr-last-report-row">
+        <button type="button" onClick={() => { onClose(); onViewMvrReport(); }}>
+          Last MVR import report · {lastMvrSummary.fileName}
+          {lastMvrSummary.blocks > 0
+            ? ` (${lastMvrSummary.blocks} ${lastMvrSummary.blocks === 1 ? 'block' : 'blocks'})`
+            : lastMvrSummary.warnings > 0
+              ? ` (${lastMvrSummary.warnings} ${lastMvrSummary.warnings === 1 ? 'warning' : 'warnings'})`
+              : ' (clean)'}
+        </button>
+      </div>
+    )}
     <p role="status">{busy ? 'Preparing file…' : note}</p>
   </DeskDialog>;
 }

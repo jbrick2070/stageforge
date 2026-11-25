@@ -56,6 +56,28 @@ export function resolveUuid(key: string, interchange?: ShowInterchange): string 
 export const fixtureKey = (unit: Pick<FixturePlacement, 'podId' | 'group' | 'index'>) =>
   'fixture:' + JSON.stringify(unit.podId !== undefined ? ['pod', unit.podId, unit.group.id, unit.index] : ['floor', unit.group.id, unit.index]);
 
+export interface ExportedFixtureNumbers {
+  fixtureId: string;
+  fixtureIdNumeric: number;
+  unitNumber: number;
+  customId: string;
+}
+
+/** Sequential console fixture numbering written by MVR export, shared with import preflight. */
+export function fixtureNumbers(rig: RigConfig): Map<string, ExportedFixtureNumbers> {
+  const out = new Map<string, ExportedFixtureNumbers>();
+  placeFixtures(rig).forEach((unit, n) => {
+    const id = String(n + 1);
+    out.set(fixtureKey(unit), {
+      fixtureId: id,
+      fixtureIdNumeric: n + 1,
+      unitNumber: unit.index + 1,
+      customId: id,
+    });
+  });
+  return out;
+}
+
 /** MVR 1.6 XSD child-element sequence order for <Fixture>. */
 export const FIXTURE_XSD_ORDER = [
   'Matrix', 'Classing', 'GDTFSpec', 'GDTFMode',
@@ -79,7 +101,7 @@ const SCENE_NODE_ALLOWED_TAGS = new Set([
 const FRAGMENT_LIMITS = { maxBytes: 262_144 * 4, maxDepth: 32, maxElements: 10_000 };
 const GENERIC_GDTF_FILES = new Set(Object.values(PROFILES).map((p) => p.file.toLowerCase()));
 
-const RAD = 180 / Math.PI;
+const RAD_TO_DEG = 180 / Math.PI;
 const mm = (n: number) => Math.round(n * 1000);
 
 const CLASSES = ['Lighting', 'Rigging', 'Video', 'Audio', 'Staging', 'Scenery', 'Focus'] as const;
@@ -354,12 +376,12 @@ export function exportMvrDocument(
     const pieces = spans(pod).map(([a, b]) => {
       const length = Math.hypot(b.x - a.x, b.z - a.z);
       const centre = toMvrPoint({ x: (a.x + b.x) / 2, y: 0, z: (a.z + b.z) / 2 });
-      const local: MvrMatrix = { ...poseMatrix({ x: 0, y: 0, z: 0 }, -Math.atan2(b.z - a.z, b.x - a.x) * RAD), o: centre };
+      const local: MvrMatrix = { ...poseMatrix({ x: 0, y: 0, z: 0 }, -Math.atan2(b.z - a.z, b.x - a.x) * RAD_TO_DEG), o: centre };
       const file = `truss-${mm(length)}.glb`;
       if (!filesLower.has(file.toLowerCase())) addFile(file, boxGlb(length, 0.3, 0.3, { color: [0.75, 0.77, 0.8] }));
       return { '@_fileName': filesLower.get(file.toLowerCase())!, Matrix: matrixText(local) };
     });
-    children.Truss.push(placed(pod.name, claimUuid(`truss:${pod.id}`), poseMatrix({ x: pod.x, y: pod.baseY, z: pod.z }, pod.rotationY * RAD),
+    children.Truss.push(placed(pod.name, claimUuid(`truss:${pod.id}`), poseMatrix({ x: pod.x, y: pod.baseY, z: pod.z }, pod.rotationY * RAD_TO_DEG),
       'Rigging', { Geometry3D: pieces }));
   }
 
@@ -374,10 +396,16 @@ export function exportMvrDocument(
   let droppedFragments = 0;
   let missingResourceCount = 0;
 
+  const exportedNumbers = fixtureNumbers(rig);
   placeFixtures(rig).forEach((unit, n) => {
     const key = fixtureKey(unit);
     const fixtureUuid = claimUuid(key);
-    const fixtureId = String(n + 1);
+    const numbers = exportedNumbers.get(key) ?? {
+      fixtureId: String(n + 1),
+      fixtureIdNumeric: n + 1,
+      unitNumber: unit.index + 1,
+      customId: String(n + 1),
+    };
     const specPref = interchange?.mvr?.fixtureSpecs?.[key];
     let gdtfSpec: string;
     let gdtfMode: string;
@@ -398,16 +426,16 @@ export function exportMvrDocument(
     }
 
     const baseFields: Record<string, unknown> = {
-      Matrix: matrixText(poseMatrix(unit.position, unit.yaw * RAD, unit.floor)),
+      Matrix: matrixText(poseMatrix(unit.position, unit.yaw * RAD_TO_DEG, unit.floor)),
       Classing: classUuid('Lighting'),
       GDTFSpec: gdtfSpec,
       GDTFMode: gdtfMode,
-      FixtureID: fixtureId,
-      FixtureIDNumeric: fixtureId,
-      UnitNumber: String(unit.index + 1),
+      FixtureID: numbers.fixtureId,
+      FixtureIDNumeric: String(numbers.fixtureIdNumeric),
+      UnitNumber: String(numbers.unitNumber),
       ...(unit.patched ? { Addresses: { Address: [{ '@_break': '0', '#text': String((unit.universe - 1) * 512 + unit.address) }] } } : {}),
       CustomIdType: '1',
-      CustomId: fixtureId,
+      CustomId: numbers.customId,
     };
 
     const extraFragments = interchange?.mvr?.passthrough?.objectExtras?.[key];

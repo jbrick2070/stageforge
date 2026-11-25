@@ -60,7 +60,32 @@ Other tools' MVR files become:
 - **Scene objects** as scenic layout props.
 - **Focus points, supports and projectors** are skipped in the 3D view and preserved in `interchange.mvr.passthrough` for re-export.
 
-Objects with unreadable matrices or more than 10 km from the origin, and more than 256 trusses or 1,024 fixtures, are left out of the live rig and preserved in passthrough when within the 8 MiB cap. The import toast lists anything that changed.
+Objects with unreadable matrices or more than 10 km from the origin, and more than 256 trusses or 1,024 fixtures, are left out of the live rig and preserved in passthrough when within the 8 MiB cap.
+
+## Import preflight (no silent losses)
+
+Opening any third-party MVR—or any StageForge MVR whose external edits triggered merges or unapplied warnings—parses the archive purely in memory first and opens the **MVR import preflight** dialog before touching the current desk or saved design:
+
+- **Cancel** discards the parsed scene and leaves the current rig, stage layout, cues, and saved design untouched.
+- **Structured findings** group every change by severity (`block`, `warn`, `info`) with expandable lists of affected source fixture IDs:
+  - `transform-simplified`: compares every source fixture's composed MVR world matrix (across nested layers and groups) against the position and 3D orientation `placeFixtures()` actually reconstructs on the imported rig. More than `0.05 m` or `2°` on any fixture emits a `warn` with the worst delta; more than `0.5 m` on over 10% of fixtures escalates to `block`. Tilted trusses laid level and mirrored/degenerate matrices are flagged here too.
+  - `unit-suspect` (`block`): flags scenes whose extent is over `500 m` or under `0.5 m` (across ≥ 3 distinct positions), catching likely feet/metres/millimetres mix-ups without rescaling silently.
+  - `universe-repatched` / `address-assigned` / `break-dropped` / `patch-overlap`: reports fixtures moved into universes 1–2, unpatched fixtures assigned free slots, extra DMX breaks dropped, and fixed-footprint overlaps.
+  - `fixture-number-lost` / `uuid-changed`: reports custom console `FixtureID`/`FixtureIDNumeric`/`UnitNumber`/`CustomId` values replaced by sequential numbering, and duplicate or non-canonical UUIDs.
+  - `gdtf-missing` / `gdtf-unparsed` / `geometry-unsupported`: distinguishes missing/empty GDTF profiles from corrupt or capped GDTFs and non-GLB (`.3ds`/symbol) geometry falling back to default sizes.
+  - `fixture-dropped` / `object-dropped` / `object-skipped` / `resource-dropped` / `passthrough-truncated` / `payload-damaged` / `hierarchy-flattened` / `coordinate-out-of-range` / `matrix-unreadable`: covers every cap, skip, passthrough truncation, and merge limit.
+- **Blocking issues** disable the **Import** button until **"Import anyway — the layout will differ"** is explicitly ticked.
+- **Clean StageForge round trips** (lossless payload restore with zero findings) apply directly, and the report from the last committed MVR import stays viewable from **Show files → Last MVR import report**.
+
+## Real-world qualification checklist
+
+Automated tests verify synthetic MVR files covering nested rotated groups, feet/micrometre scaling errors, three universes, multiple breaks, missing/corrupt GDTFs, NUL-padded XML strings, and oversize archive resources. Before certifying third-party interoperability on a release, collect real exports from licensed copies of the three target peers and run this qualification matrix:
+
+| Peer | Recommended version & export settings | Redistribution note | What to compare in StageForge preflight & re-export |
+|---|---|---|---|
+| **grandMA3** (console or onPC) | grandMA3 v2.x (`Menu → Patch → Export MVR`; include GDTFs, standard mm units, multi-universe patch across U1–U3, custom FixtureIDs like `101–120`, at least one multi-break LED bar/panel, and one MA3 `Position` / `FocusPoint`) | Export a clean test show containing only generic/open GDTF fixtures (or obtain vendor permission before committing any `.mvr` fixture to git) | 1. Preflight reports `universe-repatched` for U3+, `break-dropped` for multi-break fixtures, `fixture-number-lost` for `101–120`, and measured `transform-simplified` deltas.<br>2. All original fixture/truss UUIDs survive in Show v4 JSON and re-exported `.mvr`.<br>3. Re-importing the StageForge re-export into MA3 matches every fixture by UUID without duplicates, and MA3 `UserData`/`AUXData` survives. |
+| **Vectorworks Spotlight** | Vectorworks 2025/2026 (`File → Export → Export MVR`; export Selected/Visible layers in mm, include `.glb` or `.3ds` truss geometry, nested lighting-position symbols/groups, tilted side truss/boom, and a VideoScreen) | Use only stock/clean test geometry authored for QA (no client plots or proprietary symbols) | 1. Verify no `unit-suspect` false positive on mm export; confirm feet-unit misconfiguration triggers `unit-suspect` `block`.<br>2. Verify `.3ds`/symbol trusses flag `geometry-unsupported`, tilted booms/trusses flag `transform-simplified` with accurate worst-case m/° delta, and nested groups report `hierarchy-flattened` while resolving exact world positions.<br>3. Re-exported MVR re-opens in Vectorworks with original UUIDs and unmodeled `Support`/`FocusPoint` objects intact. |
+| **Capture** | Capture 2024/2025 (`File → Export → MVR`; standard mm coordinate frame, mix of hung moving heads, floor fixtures, LED wall, and scenic risers with custom `FixtureID` and `UnitNumber`) | Export a minimal synthetic QA plot containing no copyrighted venue assets | 1. Verify hung vs floor orientation (`standing` 180° X flip) matches Capture's 3D view with ≤ 0.05 m / 2° delta on supported mounts.<br>2. Verify `VideoScreen` width/height/yaw and floor fixtures match Capture coordinates (`+Z` audience ↔ MVR `−Y`).<br>3. Confirm re-exporting from StageForge back into Capture preserves UUIDs, addresses in U1–U2, and bundled manufacturer GDTFs within the same session. |
 
 ## Cross-tool verification checklist (manual)
 
