@@ -607,3 +607,138 @@ test('Sprint 15: image vs video sRGB colour equivalence diagnosis and videoSrgbD
   expect(comparison.vidOff).toBeGreaterThan(comparison.imgOff);
   expect(Math.abs(comparison.vidOn - comparison.imgOff)).toBeLessThan(Math.abs(comparison.vidOff - comparison.imgOff));
 });
+
+test('Sprint 24 hardening: WebGL frame readback on multi-frame ramps, group colour swaps, laser bumps, blackout control-loop health & context loss', async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 960, height: 600 });
+  await page.goto('/?probe');
+  await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.stepAndReadLuminance)).toBe('function');
+  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await page.getByRole('button', { name: /Arena Rock/ }).first().click();
+  await waitFrames(page, 4);
+
+  const report = await page.evaluate(() => {
+    const probe = window.stageforgeProbe;
+    probe.setFullRateStrobePreview(false);
+
+    // 1. Multi-frame 5 Hz sawtooth ramp + wash group primaryColor Red/Cyan flips + laser bump mashing
+    const samples = [];
+    for (let i = 0; i < 120; i++) {
+      const dtMs = 1000 / 60;
+      const phase = ((i * dtMs) / 200) % 1;
+      const saw = Math.min(1, phase * 1.05);
+      const redTurn = Math.floor((i * dtMs) / 50) % 2 === 0;
+      const bumpOn = Math.floor((i * dtMs) / 50) % 2 === 0;
+      probe.patchShowState({
+        autoDirector: false,
+        audioReactive: false,
+        blackout: false,
+        masterDimmer: saw,
+        beamIntensity: saw,
+        washIntensity: 1,
+        blinderLevel: 0,
+        strobeRate: 0,
+        primaryColor: redTurn ? '#ff0000' : '#00ffff',
+        movingGroups: {
+          wash: {
+            movementMode: 'manual',
+            movementSpeed: 0,
+            movementSpread: 0.4,
+            manualPan: 0,
+            manualTilt: 0.35,
+            focusMarkId: null,
+            colorSplitMode: 'solid',
+            primaryColor: redTurn ? '#ff0000' : '#00ffff',
+            accentColor: '#ffffff',
+          },
+        },
+        laser: {
+          enabled: false,
+          intensity: 1,
+          strobe: 0,
+          colorMode: 'custom',
+          colorA: redTurn ? '#ff0000' : '#00ffff',
+        },
+        led: { enabled: true, brightness: saw, visualMode: 'strobe_bars' },
+      });
+      probe.setProbeBump({ laser: bumpOn, blinder: bumpOn });
+      const res = probe.stepAndReadLuminance(dtMs);
+      samples.push({ timeMs: res.elapsedMs, grid: res.grid });
+    }
+    probe.setProbeBump({});
+
+    // Analyze rolling 1 s general & red flash rates across all 64 cells + whole frame inside browser
+    const countReversals = (extract) => {
+      const genTimes = [];
+      const redTimes = [];
+      let anchorY = extract(samples[0]).y;
+      let lastGenDir = 0;
+      let anchorRed = extract(samples[0]);
+      let lastRedDir = 0;
+      for (let i = 1; i < samples.length; i++) {
+        const t = samples[i].timeMs;
+        const m = extract(samples[i]);
+        const dy = m.y - anchorY;
+        if (Math.abs(dy) >= 0.10 && Math.min(m.y, anchorY) < 0.80) {
+          const dir = dy > 0 ? 1 : -1;
+          if (lastGenDir !== 0 && dir !== lastGenDir) genTimes.push(t);
+          lastGenDir = dir;
+          anchorY = m.y;
+        } else if ((lastGenDir > 0 && m.y > anchorY) || (lastGenDir < 0 && m.y < anchorY)) {
+          anchorY = m.y;
+        }
+        const dRed = m.redMetric - anchorRed.redMetric;
+        if ((m.redRatio >= 0.80 || anchorRed.redRatio >= 0.80) && Math.abs(dRed) > 20) {
+          const dir = dRed > 0 ? 1 : -1;
+          if (lastRedDir !== 0 && dir !== lastRedDir) redTimes.push(t);
+          lastRedDir = dir;
+          anchorRed = m;
+        } else if ((lastRedDir > 0 && m.redMetric > anchorRed.redMetric) || (lastRedDir < 0 && m.redMetric < anchorRed.redMetric)) {
+          anchorRed = m;
+        }
+      }
+      const maxWin = (arr) => {
+        let best = 0, left = 0;
+        for (let r = 0; r < arr.length; r++) {
+          while (arr[r] - arr[left] >= 1000) left++;
+          if (r - left + 1 > best) best = r - left + 1;
+        }
+        return Math.ceil(best / 2);
+      };
+      return { gen: maxWin(genTimes), red: maxWin(redTimes) };
+    };
+
+    let maxGen = countReversals((s) => s.grid.whole).gen;
+    let maxRed = countReversals((s) => s.grid.whole).red;
+    for (let c = 0; c < samples[0].grid.cells.length; c++) {
+      const r = countReversals((s) => s.grid.cells[c]);
+      if (r.gen > maxGen) maxGen = r.gen;
+      if (r.red > maxRed) maxRed = r.red;
+    }
+
+    // 2. Verify controlLoopHealth still increments under full desk blackout (`shouldRenderScene === false`).
+    probe.patchShowState({ blackout: true });
+    const hBefore = probe.controlLoopHealth();
+    probe.stepAndReadLuminance(20);
+    probe.stepAndReadLuminance(20);
+    const hAfter = probe.controlLoopHealth();
+
+    return {
+      maxGen,
+      maxRed,
+      seqAdvancedDuringBlackout: hAfter.seq >= hBefore.seq + 2 && !hAfter.standby && !hAfter.contextLost,
+    };
+  });
+
+  expect(report.maxGen).toBeLessThanOrEqual(3);
+  expect(report.maxRed).toBeLessThanOrEqual(3);
+  expect(report.seqAdvancedDuringBlackout).toBe(true);
+
+  // 3. Simulate WebGL context loss & recovery via probe hook -> banner appears and clears cleanly.
+  await page.evaluate(() => window.stageforgeProbe.simulateContextLoss(true));
+  await expect(page.getByTestId('webgl-context-lost-banner')).toBeVisible();
+  expect(await page.evaluate(() => window.stageforgeProbe.controlLoopHealth().contextLost)).toBe(true);
+  await page.evaluate(() => window.stageforgeProbe.simulateContextLoss(false));
+  await expect(page.getByTestId('webgl-context-lost-banner')).toHaveCount(0);
+  expect(await page.evaluate(() => window.stageforgeProbe.controlLoopHealth().contextLost)).toBe(false);
+});

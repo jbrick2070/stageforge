@@ -513,6 +513,67 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       await dmxPage.waitForTimeout(300);
       expect(packets.length).toBe(afterDisableCount);
 
+      // 4b. Sprint 24 (review-06 R1): Direct un-armed DMX enable IPC MUST be rejected by main (`requireArmedClaim: true`).
+      const unarmedEnableErr = await dmxPage.evaluate(async (p) => {
+        try {
+          await window.stageforgeDesktop.dmxControl({
+            type: 'enable',
+            config: { protocol: 'sacn', iface: '127.0.0.1', rateHz: 30, sacn: { mode: 'unicast', universes: [1, 2], priority: 100, ttl: 1, targets: [`127.0.0.1:${p}`] } },
+          });
+          return null;
+        } catch (e) {
+          return String(e?.message ?? e);
+        }
+      }, port);
+      expect(unarmedEnableErr).toMatch(/arm live dmx output/i);
+
+      // 4c. Sprint 24 (review-06 R1): WebGL context loss while live DMX is active MUST send paced blackout + Stream_Terminated,
+      //     surface the stopped notice, and NEVER auto-resume when WebGL context is restored without fresh two-step arming.
+      if ((await dmxPage.getByTestId('dmx-advanced-details').getAttribute('open')) === null) {
+        await dmxPage.getByTestId('dmx-advanced-summary').click();
+      }
+      if (await dmxPage.getByTestId('dmx-output-arm').isDisabled()) {
+        await dmxPage.getByTestId('dmx-open-preflight').click();
+        const pfCtx = dmxPage.getByTestId('preflight-panel');
+        await pfCtx.getByTestId('preflight-run-check').click();
+        const ackCtx = pfCtx.locator('input[type="checkbox"][data-testid^="preflight-ack-"]');
+        for (let i = 0; i < (await ackCtx.count()); i++) {
+          if (!(await ackCtx.nth(i).isChecked())) await ackCtx.nth(i).check();
+        }
+        const lasCtx = pfCtx.locator('input[type="checkbox"][data-testid^="preflight-laser-inhibit-"]');
+        for (let i = 0; i < (await lasCtx.count()); i++) {
+          if (!(await lasCtx.nth(i).isChecked())) await lasCtx.nth(i).check();
+        }
+        await pfCtx.getByRole('button', { name: 'Done', exact: true }).click();
+      }
+      await dmxPage.getByTestId('dmx-output-arm').click();
+      await dmxPage.getByTestId('dmx-output-go-live').click();
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
+      await expect.poll(() => packets.length > afterDisableCount + 2, { timeout: 5000 }).toBe(true);
+
+      const beforeCtxLoss = packets.length;
+      await dmxPage.evaluate(() => {
+        const canvas = document.querySelector('canvas');
+        canvas?.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+      });
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
+      await expect(dmxPage.getByTestId('live-dmx-stopped-badge')).toContainText('Output stopped: graphics context lost');
+      await expect.poll(() => {
+        const tail = packets.slice(beforeCtxLoss).filter((p) => p.universe === 1);
+        const termIdx = tail.findIndex((p) => (p.options & SACN_OPT_STREAM_TERMINATED) !== 0);
+        return termIdx >= 3 && tail.slice(termIdx).length >= 3;
+      }, { timeout: 5000 }).toBe(true);
+
+      // Restore WebGL context -> live DMX MUST remain OFF until the human arms and clicks Go live again.
+      const countBeforeRestore = packets.length;
+      await dmxPage.evaluate(() => {
+        const canvas = document.querySelector('canvas');
+        canvas?.dispatchEvent(new Event('webglcontextrestored'));
+      });
+      await dmxPage.waitForTimeout(350);
+      await expect(dmxPage.getByTestId('live-dmx-badge')).toHaveCount(0);
+      expect(packets.length).toBe(countBeforeRestore);
+
       // 5. Re-enable and forcibly crash the renderer: main process MUST still send blackout + terminate.
       // (Re-expand Advanced first; step 4 triggered a cue which may make pre-flight stale, so refresh if needed.)
       if ((await dmxPage.getByTestId('dmx-advanced-details').getAttribute('open')) === null) {

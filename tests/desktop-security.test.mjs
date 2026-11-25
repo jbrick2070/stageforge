@@ -571,6 +571,43 @@ test('viewer-ipc enforces sender/type checks, disables mutating File menus, and 
     /pitch viewer/,
   );
   assert.deepEqual(scShutdowns, ['stop']);
+
+  // Sprint 24 (review-06 R1): main.cjs wires requireArmedClaim: true so un-armed DMX enable IPC is rejected,
+  // and releasing the 'armed' claim mid-enable shuts down DMX immediately.
+  const mainSrc = await readFile(path.join(root, 'desktop', 'main.cjs'), 'utf8');
+  assert.match(mainSrc, /createDmxIpcHandlers\(\(\)\s*=>\s*dmx,\s*\{[\s\S]*?requireArmedClaim:\s*true/);
+
+  const { createOutputInterlock } = require('../desktop/output-interlock.cjs');
+  tracker.setViewerWindow(7, false);
+  dmxShutdowns.length = 0;
+  fakeDmx.enable = async () => ({ enabled: true, state: 'running' });
+  const interlock = createOutputInterlock({ isDmxActive: () => false });
+  const armedDmxHandlers = createDmxIpcHandlers(() => fakeDmx, {
+    isRestricted,
+    interlock,
+    requireArmedClaim: true,
+  });
+
+  // Without claiming 'armed', direct dmxControl({ type: 'enable' }) MUST reject.
+  await assert.rejects(
+    () => armedDmxHandlers.onControl(win, { type: 'enable', config: { protocol: 'sacn' } }),
+    /Arm live DMX output/i,
+  );
+
+  // Claiming 'armed' allows enable to succeed.
+  assert.equal(interlock.claimOutput(7, 'armed').ok, true);
+  assert.equal((await armedDmxHandlers.onControl(win, { type: 'enable', config: { protocol: 'sacn' } })).enabled, true);
+
+  // If 'armed' is released while async dmx.enable() is in flight (e.g. WebGL context loss), main shuts down DMX!
+  fakeDmx.enable = async () => {
+    interlock.releaseOutput(7, 'armed');
+    return { enabled: true, state: 'running' };
+  };
+  await assert.rejects(
+    () => armedDmxHandlers.onControl(win, { type: 'enable', config: { protocol: 'sacn' } }),
+    /Arm live DMX output/i,
+  );
+  assert.deepEqual(dmxShutdowns, ['disarmed']);
 });
 
 test('prepare.mjs validates SPDX licences, resolves nested node_modules and skips licence directories', async () => {
