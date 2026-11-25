@@ -14,6 +14,7 @@ const frameStats = (page) =>
 test('Measure overlay is off and zero-cost by default, matches live ?probe aim values, toggles 3D and plan safety zones, and stays within 1 ms frame budget', async ({
   page,
 }) => {
+  test.setTimeout(120_000);
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
 

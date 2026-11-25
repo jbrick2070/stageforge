@@ -102,6 +102,7 @@ import {
   createAudioModulationFrame,
   createAudioModulationState,
   evaluateAudioModulation,
+  getOrCreateUnitRgbGov,
   rawManualStrobeOscillator,
   stepCombinedStrobeGate,
   stepDeliveredBrightness,
@@ -110,16 +111,20 @@ import {
   type AudioModulationFrame,
   type AudioModulationState,
   type DeliveredUnitRgbResult,
+  type RgbGovernorState,
 } from './audioModulation';
 import {
   createPreviewFlashOutput,
   createPreviewFlashState,
   evaluatePreviewFlash,
+  getOrCreatePreviewFixtureGov,
+  getOrCreatePreviewLaserGov,
   stepPreviewDeliveredGate,
   stepPreviewFixtureUnit,
   stepPreviewLaserUnit,
   type PreviewFlashOutput,
   type PreviewFlashState,
+  type PreviewLaserGovernorEntry,
 } from './previewFlash';
 import {
   DEFAULT_RENDER_SETTINGS,
@@ -199,6 +204,8 @@ interface MovingFixtureInstance {
   dmxStart: number;
   dmxWidth: number;
   physicalClass: PhysicalGroupClassification;
+  previewRgbGov: RgbGovernorState;
+  physRgbGov: RgbGovernorState;
 }
 
 interface LaserUnitInstance {
@@ -225,6 +232,8 @@ interface LaserUnitInstance {
   dmxStart: number;
   dmxWidth: number;
   physicalClass: PhysicalGroupClassification;
+  previewLaserGov: PreviewLaserGovernorEntry;
+  physRgbGov: RgbGovernorState;
 }
 
 interface DmxOutput {
@@ -2713,8 +2722,9 @@ export class StageEngine {
     beamMesh.frustumCulled = false;
     head.add(beamMesh);
 
+    const unitId = meta?.unitId ?? `head:${index}`;
     return {
-      unitId: meta?.unitId ?? `head:${index}`,
+      unitId,
       fixtureNumber: meta?.fixtureNumber ?? index + 1,
       groupId: meta?.groupId ?? `group:${index}`,
       podId: meta?.podId ?? null,
@@ -2747,6 +2757,8 @@ export class StageEngine {
       dmxStart,
       dmxWidth,
       physicalClass,
+      previewRgbGov: getOrCreatePreviewFixtureGov(this.previewFlashState, unitId),
+      physRgbGov: getOrCreateUnitRgbGov(this.audioModState, unitId),
     };
   }
 
@@ -2900,6 +2912,8 @@ export class StageEngine {
       dmxStart,
       dmxWidth,
       physicalClass,
+      previewLaserGov: getOrCreatePreviewLaserGov(this.previewFlashState, key),
+      physRgbGov: getOrCreateUnitRgbGov(this.audioModState, `laser:${key}`),
     };
   }
 
@@ -3643,7 +3657,7 @@ export class StageEngine {
         (previewLimited ? composedBrightScale : 1);
       const previewFinalInt = stepPreviewFixtureUnit(
         this.previewFlashState,
-        fx.unitId,
+        fx.previewRgbGov,
         previewLimited,
         blackoutActive || darkOpening,
         rawPreviewFinalInt,
@@ -3688,7 +3702,7 @@ export class StageEngine {
         ]);
         const unitRgb = stepDeliveredUnitRgb(
           this.audioModState,
-          fx.unitId,
+          fx.physRgbGov,
           clampedFinalInt,
           tempCol.r,
           tempCol.g,
@@ -3828,7 +3842,7 @@ export class StageEngine {
       );
       const governedLaser = stepPreviewLaserUnit(
         this.previewFlashState,
-        l.key,
+        l.previewLaserGov,
         previewLimited,
         blackoutActive || darkOpening,
         rawPreviewUnitInt,
@@ -3975,7 +3989,7 @@ export class StageEngine {
         } else if (l.physicalClass.status === 'generic-simulated') {
           const laserPhysRgb = stepDeliveredUnitRgb(
             this.audioModState,
-            `laser:${l.key}`,
+            l.physRgbGov,
             Math.min(1, unitBaseLaserInt),
             tempCol.r,
             tempCol.g,

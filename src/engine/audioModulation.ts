@@ -862,23 +862,12 @@ export interface DeliveredUnitRgbResult {
 
 const FACTOR_SCRATCH: FactorizedEmission = { dimmer: 0, r: 0, g: 0, b: 0 };
 
-/**
- * Per-unit physical DMX emitted-RGB governor (Codex review-06 R4).
- * Governs linear emitted RGB `E = dimmer * (r, g, b)` across general luminance/component and
- * WCAG saturated-red reversals (<= 3/s), then factorizes `E` into `(rgbDimmer, r, g, b)` in `[0, 1]`
- * so `RGB (3-Ch)`, `5-Ch (Default)`, and `generic-simulated` slots never divide by a lowered dimmer
- * or exceed 3 general/red flashes in any rolling 1,000 ms window.
- */
-export function stepDeliveredUnitRgb(
+export type { RgbGovernorState };
+
+export function getOrCreateUnitRgbGov(
   state: AudioModulationState,
   unitKey: string,
-  desiredDimmer: number,
-  rawR: number,
-  rawG: number,
-  rawB: number,
-  blackout: boolean,
-  out: DeliveredUnitRgbResult,
-): DeliveredUnitRgbResult {
+): RgbGovernorState {
   syncAudioBudgetClock(state);
   const tMs = state.clockMs;
   let gov = state.unitRgbGovernors.get(unitKey);
@@ -894,6 +883,32 @@ export function stepDeliveredUnitRgb(
       gov.lastRiseMs = state.budgetClock.lastAdmittedRiseMs;
     }
   }
+  return gov;
+}
+
+/**
+ * Per-unit physical DMX emitted-RGB governor (Codex review-06 R4).
+ * Governs linear emitted RGB `E = dimmer * (r, g, b)` across general luminance/component and
+ * WCAG saturated-red reversals (<= 3/s), then factorizes `E` into `(rgbDimmer, r, g, b)` in `[0, 1]`
+ * so `RGB (3-Ch)`, `5-Ch (Default)`, and `generic-simulated` slots never divide by a lowered dimmer
+ * or exceed 3 general/red flashes in any rolling 1,000 ms window.
+ */
+export function stepDeliveredUnitRgb(
+  state: AudioModulationState,
+  unitKeyOrGov: string | RgbGovernorState,
+  desiredDimmer: number,
+  rawR: number,
+  rawG: number,
+  rawB: number,
+  blackout: boolean,
+  out: DeliveredUnitRgbResult,
+): DeliveredUnitRgbResult {
+  syncAudioBudgetClock(state);
+  const tMs = state.clockMs;
+  const gov =
+    typeof unitKeyOrGov === 'string'
+      ? getOrCreateUnitRgbGov(state, unitKeyOrGov)
+      : unitKeyOrGov;
   const d = blackout ? 0 : clamp01(desiredDimmer);
   const cr = clamp01(rawR);
   const cg = clamp01(rawG);

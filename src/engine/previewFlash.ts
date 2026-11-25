@@ -302,6 +302,36 @@ function syncRgbPassthrough(gov: RgbGovernorState, c: THREE.Color): void {
   gov.stepRedMetric = redMetric;
 }
 
+export function getOrCreatePreviewFixtureGov(
+  state: PreviewFlashState,
+  unitKey: string,
+): RgbGovernorState {
+  let gov = state.unitRgbGovernors.get(unitKey);
+  if (!gov) {
+    if (state.unitRgbGovernors.size > 512) state.unitRgbGovernors.clear();
+    gov = createRgbGovernorState();
+    state.unitRgbGovernors.set(unitKey, gov);
+  }
+  return gov;
+}
+
+export function getOrCreatePreviewLaserGov(
+  state: PreviewFlashState,
+  projectorKey: string,
+): PreviewLaserGovernorEntry {
+  let entry = state.laserProjectorGovernors.get(projectorKey);
+  if (!entry) {
+    if (state.laserProjectorGovernors.size > 128) state.laserProjectorGovernors.clear();
+    entry = {
+      intensityGov: createScalarGovernorState(),
+      colorAGov: createRgbGovernorState(),
+      colorBGov: createRgbGovernorState(),
+    };
+    state.laserProjectorGovernors.set(projectorKey, entry);
+  }
+  return entry;
+}
+
 /**
  * Per-fixture final preview RGB/intensity clamp (Codex review-06 R4).
  * Catches per-fixture `colorSplitMode` flips (`solid` <-> `alternate` / `rainbow`) and demo fades
@@ -309,7 +339,7 @@ function syncRgbPassthrough(gov: RgbGovernorState, c: THREE.Color): void {
  */
 export function stepPreviewFixtureUnit(
   state: PreviewFlashState,
-  unitKey: string,
+  unitKeyOrGov: string | RgbGovernorState,
   limited: boolean,
   blackout: boolean,
   rawIntensity: number,
@@ -317,12 +347,10 @@ export function stepPreviewFixtureUnit(
   outColor: THREE.Color,
 ): number {
   const safeInt = Number.isFinite(rawIntensity) && rawIntensity > 0 ? rawIntensity : 0;
-  let gov = state.unitRgbGovernors.get(unitKey);
-  if (!gov) {
-    if (state.unitRgbGovernors.size > 512) state.unitRgbGovernors.clear();
-    gov = createRgbGovernorState();
-    state.unitRgbGovernors.set(unitKey, gov);
-  }
+  const gov =
+    typeof unitKeyOrGov === 'string'
+      ? getOrCreatePreviewFixtureGov(state, unitKeyOrGov)
+      : unitKeyOrGov;
   if (!limited) {
     gov.initialized = true;
     gov.r = rawColor.r * safeInt;
@@ -383,7 +411,7 @@ const LASER_UNIT_SCRATCH: PreviewLaserUnitResult = { intensity: 0, limited: fals
  */
 export function stepPreviewLaserUnit(
   state: PreviewFlashState,
-  projectorKey: string,
+  projectorKeyOrGov: string | PreviewLaserGovernorEntry,
   limited: boolean,
   blackout: boolean,
   rawIntensity: number,
@@ -394,16 +422,10 @@ export function stepPreviewLaserUnit(
   out: PreviewLaserUnitResult = LASER_UNIT_SCRATCH,
 ): PreviewLaserUnitResult {
   const safeInt = Number.isFinite(rawIntensity) && rawIntensity > 0 ? rawIntensity : 0;
-  let entry = state.laserProjectorGovernors.get(projectorKey);
-  if (!entry) {
-    if (state.laserProjectorGovernors.size > 128) state.laserProjectorGovernors.clear();
-    entry = {
-      intensityGov: createScalarGovernorState(),
-      colorAGov: createRgbGovernorState(),
-      colorBGov: createRgbGovernorState(),
-    };
-    state.laserProjectorGovernors.set(projectorKey, entry);
-  }
+  const entry =
+    typeof projectorKeyOrGov === 'string'
+      ? getOrCreatePreviewLaserGov(state, projectorKeyOrGov)
+      : projectorKeyOrGov;
 
   if (!limited) {
     syncScalarPassthrough(entry.intensityGov, safeInt);
