@@ -45,7 +45,7 @@ Fix this before any other work, with a Sonnet 5.5 QA pass and the full gate:
 - Add a regression test that hashes a CRLF copy of a schema and expects the pinned value.
 - Re-check by running `npm test` on an LF export: `git -c core.autocrlf=false archive HEAD`, extracted to a temp folder with `node_modules` linked in.
 
-After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11, 14, 14b, the graphics Sprints 15 to 21 and then Sprint 22 (WebXR audience mode) in that order (see "Designed Sprints 6–8" and Sprints 9 to 14 and "Graphics Sprints 15 to 21" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Item 9 (VR) is now designed Sprint 22: do not start it before Sprints 15 to 21 are done.
+After Sprint 3, each round works like this. **Work Realism backlog items 1 to 5 first, then designed Sprints 6, 7, 8, 9, 10, 13, 12, 11, 14, 14b, the graphics Sprints 15 to 21, then Sprint 23 (neon-night look) and then Sprint 22 (WebXR audience mode) in that order (see "Designed Sprints 6–8" and Sprints 9 to 14 and "Graphics Sprints 15 to 21" below), then Realism items 6 to 8, one item per round (split item 1 across several rounds: catalogue data, then models and textures, then lasers), before anything else.** The user wants people to feel like they are running a real show, with a real inventory of real items. Item 9 (VR) is now designed Sprint 22: do not start it before Sprints 15 to 21 are done.
 
 1. Write a design consult to `$qa\round-N-design.md`: what is already done (read the Overnight log and `git log` so nothing is repeated) and a request to rank the five highest-value next improvements.
 2. Cover these areas:
@@ -261,7 +261,7 @@ A background script sends each finished round to Codex (read-only, on a separate
 
 ### After Sprint 5
 
-Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14, then Sprint 14b (catalogue expansion), then the graphics Sprints 15 to 21, then Sprint 22 (WebXR audience mode), in that order (13 before 12, 12 before 11, 14 and 14b before 15, 15 and 21 before 22), one per round, before Realism items 6 and 7. Realism item 8 is superseded by Sprints 15, 20 and 21.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. VR (item 9) is now Sprint 22, the last in that list. The optional CPU win after Realism item 8:
+Self-directed rounds continue with **Realism backlog item 5** (paperwork). **Then run designed Sprints 6, 7, 8, 9, 10, 13, 12, 11 and 14, then Sprint 14b (catalogue expansion), then the graphics Sprints 15 to 21, then Sprint 23 (neon-night look), then Sprint 22 (WebXR audience mode), in that order (13 before 12, 12 before 11, 14 and 14b before 15, 15 to 21 before 23, 21 and 23 before 22), one per round, before Realism items 6 and 7. Realism item 8 is superseded by Sprints 15, 20 and 21.** Sprint 10 does not need the real demo track to exist (see its text); Sprint 11 comes after 9, 12 and 13. Skip any sprint the Overnight log already records as done, and if one is logged as blocked, move on to the next. VR (item 9) is now Sprint 22, the last in that list. The optional CPU win after Realism item 8:
 - set `matrixAutoUpdate = false` on static rig subtrees (deck, PA, truss structure);
 - call `updateMatrix()` explicitly wherever the engine moves them (motors, layout edits);
 - prove it with a test that moves a motorised truss and checks the hoists and fixtures follow.
@@ -805,7 +805,7 @@ Extend `BakedIldaClip` processing with bounded dwell and corner weights that res
 
 ### Sprint 22: WebXR audience mode, built and tested without a headset (designed by Claude Code, 2026-11-24)
 
-**Run this after Sprint 21 and before Realism items 6 and 7.** It replaces Realism item 9. It depends on Sprint 15 (the probe, the bloom bypass and the tiers), Sprint 12 (the pre-flight gate and hazard zones) and Sprint 21 (laser ribbons), so do not start it before those are done. Budget two or three rounds: (a) session plumbing and rendering, (b) viewpoints, comfort and the menu, (c) safety, tests and docs.
+**Run this after Sprints 21 and 23 and before Realism items 6 and 7.** It replaces Realism item 9. It depends on Sprint 15 (the probe, the bloom bypass and the tiers), Sprint 12 (the pre-flight gate and hazard zones) and Sprint 21 (laser ribbons), so do not start it before those are done. Budget two or three rounds: (a) session plumbing and rendering, (b) viewpoints, comfort and the menu, (c) safety, tests and docs.
 
 **Why:** the owner is deciding whether to buy a headset and wants to see StageForge in VR working before spending money. So this sprint must be useful and testable with no headset, and it must say honestly what only a headset can show. Nobody on this team has a headset tonight. Do not claim comfort, frame rate or legibility that was not measured on real hardware.
 
@@ -839,6 +839,37 @@ Extend `BakedIldaClip` processing with bounded dwell and corner weights that res
 **Out:** hand tracking, AR or passthrough, multiplayer, spatial audio, store packaging, a native app, other projects, show-format changes, pushing.
 
 **Done when:** the gate is green; Enter VR works end to end in the emulated runtime and leaves the non-VR path untouched; the safety gates are tested; `docs/vr.md` has the on-headset checklist; and the Overnight log states plainly that nothing was verified on a real headset.
+
+### Sprint 23: "Neon night" look, a cyberpunk-style graphics preset (designed by Claude Code, 2026-11-24)
+
+**Run this after Sprint 21 and before Sprint 22.** It depends on Sprints 15 (flags, probe, bloom controls), 18 (deck sheen), 20 (beam-lit smoke) and 21 (laser cores), so do not start it before those are done. Budget two or three rounds.
+
+**Why:** the owner wants StageForge to look like a cyberpunk club: saturated neon, glossy wet-looking floors, coloured haze, strong bloom, and a slightly gritty film look. This sprint adds one selectable look on top of the Sprint 15 to 21 work. It must stay Three.js and WebGL2, cost nothing when off, and never make the default look worse.
+
+**Rules:**
+- A single "Look" setting with two values: **Classic** (the default, pixel-identical to today) and **Neon night**. It is a renderer and UI preference stored on the device, **not** in the show file or the bundle format. No new dependency, no required WebGPU.
+- Each effect below has its own sub-flag so it can be turned off alone, and a stated budget. Default off. Allocate nothing until the look is on. Measure with the Sprint 15 probe on the phone-like profile (4x CPU throttle, 390 x 844) and on the laptop, same scene, time, camera and resolution, before and after, and record the numbers in the Overnight log.
+- **Combined budget for this sprint's effects on top of the Sprint 15 to 21 ceiling:** at most 1 added draw and 1 added full-screen pass, at most 0.80 ms on the laptop and 1.50 ms on the phone-like profile, and at most 1 MiB of extra GPU memory. If a measurement misses, switch that sub-effect off on low tier, do not raise the budget.
+- **Do not do:** screen-space reflections, planar scene re-renders, dynamic cubemap captures, ray tracing, full-resolution volumetrics, per-fixture shadow maps or per-edge meshes. Fake reflections only.
+- Consult Codex and Opus before starting (see "Design consult (Codex, read-only)") and read `docs/reviews/codex-graphics-plan-2026-11-24.md` first. Time-boxed.
+- **Photosensitivity comes first.** Nothing here may add flashing. Any glitch or flicker accent obeys the existing flash limit (at most 3 per second), is off under `prefers-reduced-motion` and the reduced-flash setting, and is off by default even inside Neon night.
+
+**Do:**
+1. **Look selector.** Add a "Look" control to the existing render settings (keyboard reachable, labelled, with the current value spoken to screen readers). The choice is remembered on the device in try/catch storage. The Classic path must stay byte-for-byte unchanged: prove it with the existing reference images and render-budget test.
+2. **Colour grade pass** (one added full-screen pass, merged into one shader): teal-and-magenta split toning, a lifted-black "night" curve, restrained chromatic aberration at the screen edges (at most 1.5 pixels), a soft vignette, and optional fine grain and scanlines. Grain and scanlines are static or very slow, never flickering. Place it after tone mapping so Classic is unaffected. Low tier: grade and vignette only.
+3. **Neon accent edges.** Add thin emissive "neon tube" accents along the stage lip, deck edges, truss chords and screen frames, drawn as instanced geometry merged into the existing batches (0 new draws, a capped instance count). Colours come from a small neon palette (magenta, cyan, violet, amber) that follows the show's dominant colour and, when audio is on, the beat envelope smoothed over at least 200 ms. Reuse the bloom for glow. Do not add a light per tube.
+4. **Wet-look deck.** Build on Sprint 18's deck material: lower roughness, a small puddle-style roughness mask, and an environment map generated in code from a few bright neon strips (PMREM), so highlights streak like neon on wet floor. No planar reflection. Low tier: roughness change only, no mask.
+5. **Floor spill from LED walls.** One instanced soft additive quad per LED wall, coloured by a GPU-sampled low mip of the wall's video texture (no CPU readback, no per-frame upload), capped in count and brightness, and faded out near the audience eye line. This is a glow approximation, not light transport, and the docs must say so.
+6. **Coloured haze.** Tint the existing haze and `FogExp2` toward the current beam colours with a slow filter (at least 2 seconds), so the room reads teal and magenta instead of grey. 0 added draws. Respect the haze level and the existing laser scatter.
+7. **Optional glitch accent, off by default.** A short chromatic split on demo-track drops, at most one every 2 seconds and shorter than 250 ms, gated by the flash limit and reduced motion. Skip it entirely if it cannot be proven to respect the limiter in a test.
+8. **Tiers, the audience view and VR.** Low tier gets the grade pass and neon edges only. In Sprint 22's VR path the look stays Classic unless the Neon night cost has been measured on a headset and the owner turns it on.
+9. **Tests:** Classic parity (pixel-identical with the look off); the look on and off, resize, tier change, media replacement and disposal with no resource growth; seeded determinism for the mask and grain; the flash limiter and reduced-motion tests for every moving effect; palette and beat smoothing maths; reference images with localised regions (neon edges, deck highlights, wall spill, haze tint), not whole-image averages; the render-budget test with the look on, per tier.
+10. **Docs:** `docs/looks.md` with the effects, each sub-flag, the measured costs, what is an approximation, and the photosensitivity rules. Add three small screenshots of Neon night (front of house, a close-up of the deck, a wide view) if they total under 600 KB, otherwise leave them out.
+11. Pass the gate, run QA on the changed code and tests, and commit locally.
+
+**Out:** new dependencies, WebGPU, SSR, planar reflections, rain or weather simulation, per-edge meshes, show-format changes, a default that changes the Classic look, pushing.
+
+**Done when:** the gate is green; Classic is unchanged and proven so; Neon night works behind its flags within the stated budget on both profiles, with numbers in the Overnight log; every moving effect respects the flash limit and reduced motion; and `docs/looks.md` is in.
 
 ## Backlog (in this order)
 
