@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ShowState } from '../types/show';
 import type { ShowTimeline, SmpteFrameRate, TimelineEvent } from '../data/showFile';
 import { resolveTakeFrame, type TransportFrame } from '../data/showClock';
+import { isFullLookSnapshot } from '../data/cueLook';
 
 export type DeskFrame = Required<Omit<TimelineEvent, 'atMs' | 'look'>> & { look: ShowState; cueModified: boolean };
 type Mode = 'idle' | 'recording' | 'playing';
@@ -32,6 +33,16 @@ export function frameDelta(before: DeskFrame, after: DeskFrame, atMs: number, el
     const hasAudioMap = (after.look.audioMap?.mappings?.length ?? 0) > 0;
     if (hadAudioMap && !hasAudioMap) {
       patch.audioMap = { mappings: [] };
+    }
+    // If the changed keys happen to satisfy isFullLookSnapshot (laser, motors, atmo, led),
+    // promote the delta to a complete snapshot so replay/seek never drops unchanged optional fields
+    // like movingGroups, focusMarkId, or audioMap.
+    if (isFullLookSnapshot(patch)) {
+      for (const key of Object.keys(after.look) as (keyof ShowState)[]) {
+        if (patch[key] === undefined && after.look[key] !== undefined) {
+          Object.assign(patch, { [key]: after.look[key] });
+        }
+      }
     }
     if (Object.keys(patch).length) event.look = patch;
   }

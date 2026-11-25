@@ -567,3 +567,118 @@ export function triggerToAction(ev: NormalizedTriggerEvent): ClockAction {
       return 'audio';
   }
 }
+
+export interface ChaseHeldMediaState {
+  audio: boolean;
+  screen: boolean;
+}
+
+export interface ChaseTransportDeps {
+  held: ChaseHeldMediaState;
+  getEndMs: () => number;
+  setReplaying: (running: boolean) => void;
+  clearFollow: () => void;
+  prepareSeek: () => void;
+  chaseSeekTimeline: (takeMs: number, running: boolean) => void;
+  chaseAdvanceTimeline: (takeMs: number) => void;
+  resolveTimelineFrame: (takeMs: number) => {
+    music?: { playing?: boolean };
+    screen?: { kind?: string; playing?: boolean; offsetSeconds?: number };
+  } | null;
+  restoreTimelineMusic: (music: { playing?: boolean }) => void;
+  restoreTimelineScreen: (screen: { kind?: string; playing?: boolean; offsetSeconds?: number }) => void;
+  isAudioPlaying: () => boolean;
+  pauseAudio: () => void;
+  resumeAudio: () => void;
+  stopAudio: () => void;
+  isScreenVideoPlaying: () => boolean;
+  setScreenPlaying: (playing: boolean) => void;
+  setWallClock: (posMs: number, running: boolean, endMs?: number) => void;
+  getWallClockPos: () => number;
+  clearReplayBumps: () => void;
+}
+
+/**
+ * Shared timecode-chase transport coordinator used by App.tsx and unit tests.
+ * - Clears replay-owned hazardous bumps on chase hold, chase stop, and non-running seek (R2).
+ * - Preserves and resumes held audio/video on both advance and forward-jump seek paths when no timeline exists (R4).
+ */
+export function createChaseTransportHandlers(deps: ChaseTransportDeps) {
+  function resumeHeldWithoutTimeline(held: ChaseHeldMediaState) {
+    if (held.audio && !deps.isAudioPlaying()) {
+      deps.resumeAudio();
+    }
+    if (held.screen) {
+      deps.setScreenPlaying(true);
+    }
+  }
+
+  return {
+    onChaseSeek(
+      takeMs: number,
+      running: boolean,
+      _resyncMusic: boolean,
+      opts?: { resumedFromHold?: boolean },
+    ) {
+      const endMs = deps.getEndMs();
+      const held: ChaseHeldMediaState = { audio: deps.held.audio, screen: deps.held.screen };
+      deps.held.audio = false;
+      deps.held.screen = false;
+      deps.clearFollow();
+      deps.setReplaying(running);
+      deps.prepareSeek();
+      deps.chaseSeekTimeline(takeMs, running);
+      if (!running) {
+        deps.clearReplayBumps();
+      } else if (opts?.resumedFromHold && !deps.resolveTimelineFrame(takeMs)) {
+        resumeHeldWithoutTimeline(held);
+      }
+      deps.setWallClock(Math.min(takeMs, endMs), running && takeMs < endMs, endMs);
+    },
+    onChaseAdvance(takeMs: number, opts?: { resumedFromHold?: boolean; resyncMusic?: boolean }) {
+      const endMs = deps.getEndMs();
+      deps.setReplaying(true);
+      deps.chaseAdvanceTimeline(takeMs);
+      if (opts?.resumedFromHold) {
+        const held: ChaseHeldMediaState = { audio: deps.held.audio, screen: deps.held.screen };
+        deps.held.audio = false;
+        deps.held.screen = false;
+        const resolved = deps.resolveTimelineFrame(takeMs);
+        if (resolved) {
+          if (resolved.music && resolved.music.playing) {
+            deps.restoreTimelineMusic(resolved.music);
+          }
+          if (resolved.screen && resolved.screen.kind === 'video' && resolved.screen.playing) {
+            deps.restoreTimelineScreen(resolved.screen);
+          }
+        } else {
+          resumeHeldWithoutTimeline(held);
+        }
+        deps.setWallClock(Math.min(takeMs, endMs), takeMs < endMs, endMs);
+      }
+    },
+    onChaseHold(takeMs: number) {
+      const endMs = deps.getEndMs();
+      deps.setReplaying(false);
+      deps.clearReplayBumps();
+      if (deps.isAudioPlaying()) {
+        deps.pauseAudio();
+        deps.held.audio = true;
+      }
+      if (deps.isScreenVideoPlaying()) {
+        deps.setScreenPlaying(false);
+        deps.held.screen = true;
+      }
+      deps.setWallClock(Math.min(takeMs, endMs), false, endMs);
+    },
+    onChaseStop() {
+      deps.held.audio = false;
+      deps.held.screen = false;
+      deps.setReplaying(false);
+      deps.clearReplayBumps();
+      deps.setWallClock(deps.getWallClockPos(), false);
+      deps.setScreenPlaying(false);
+      deps.stopAudio();
+    },
+  };
+}

@@ -30,6 +30,7 @@ const showClockMod = await compiler.ssrLoadModule('/src/data/showClock.ts');
 const cueLookMod = await compiler.ssrLoadModule('/src/data/cueLook.ts');
 const clockOwner = await compiler.ssrLoadModule('/src/showControl/clockOwner.ts');
 const tempoMod = await compiler.ssrLoadModule('/src/audio/tempoEngine.ts');
+const audioMod = await compiler.ssrLoadModule('/src/engine/audioModulation.ts');
 
 function createMockDgram() {
   const sockets = [];
@@ -774,4 +775,268 @@ test('QA L-3: nudgeBeatGrid sets anchorMs on an unanchored grid so subsequent re
   assert.equal(nudged.anchorMs, 1300);
   const retimed = tempoMod.retimeBeatGrid(nudged, 140);
   assert.equal(tempoMod.beatGridPhase(retimed, 1300).isDownbeat, true, 'retimed grid must keep Beat 1 at nudged 1300 ms');
+});
+
+// ---------------------------------------------------------------------------
+// Codex review-01-sprint-13-2acf960 regressions (R1, R2, R3, R4)
+// ---------------------------------------------------------------------------
+
+test('Codex R1: combined strobe bump + audio mapping caps final ETC ColorSource PAR physical dimmer flashes to <= 3/s', () => {
+  const state = audioMod.createAudioModulationState();
+  const frame = audioMod.createAudioModulationFrame();
+  const washStrobeMapping = {
+    id: 'w-st',
+    name: 'Hats -> wash strobe',
+    enabled: true,
+    source: 'high',
+    target: { group: 'wash', param: 'strobe' },
+    amount: 0.9,
+    attackMs: 5,
+    releaseMs: 40,
+    threshold: 0.1,
+    curve: 'linear',
+  };
+  const look = {
+    ...presets.INITIAL_SHOW_STATE,
+    masterDimmer: 1,
+    washIntensity: 0.5,
+    audioReactive: true,
+    audioMap: { mappings: [washStrobeMapping] },
+  };
+  const par1ChClass = physicalDmx.classifyPhysicalGroup({
+    id: 'w1',
+    type: 'wash',
+    modelName: 'ETC ColorSource PAR',
+    catalogId: 'etc-colorsource-par',
+    dmxMode: '1-Ch',
+    dmxChannels: 1,
+    count: 1,
+    dmxUniverse: 1,
+    dmxStartChannel: 1,
+  });
+  assert.equal(par1ChClass.status, 'implemented');
+
+  const uBuf = new Uint8Array(512);
+  const physBuf = new Uint8Array(512);
+  const scratch = [];
+  const dt = 1 / 60;
+  let prevBright = false;
+  const risingEdgeMs = [];
+  let sawLimited = false;
+
+  // Simulate 1.0 s at 60 fps with both audio-mapped wash strobe AND strobe bump held (effectiveStrobe = 0.92 -> 25.58 Hz raw).
+  for (let i = 0; i < 60; i++) {
+    const tSec = i * dt;
+    const metrics = {
+      playing: true,
+      bass: 0.2,
+      mid: 0.2,
+      high: i % 6 < 3 ? 0.95 : 0.0,
+      energy: 0.5,
+      beat: false,
+      beatPulse: 0,
+      drop: false,
+      spectrum: new Float32Array(32),
+    };
+    const mod = audioMod.evaluateAudioModulation(look, metrics, state, dt, frame);
+    const combined = audioMod.stepCombinedStrobeGate(state, 0.92, tSec, false);
+    if (combined.limited || mod.flashLimited) sawLimited = true;
+    const finalInt = Math.min(1.6, look.washIntensity * look.masterDimmer * combined.gate);
+    physicalDmx.writePhysicalUnitBytes(
+      physBuf,
+      uBuf,
+      1,
+      1,
+      par1ChClass,
+      { blackout: false, dimmer: Math.min(1, finalInt), r: 1, g: 1, b: 1, blinder: 0, smoke: 0 },
+      scratch,
+    );
+    const bright = physBuf[0] > 100;
+    if (bright && !prevBright) risingEdgeMs.push(state.clockMs);
+    prevBright = bright;
+  }
+
+  assert.equal(sawLimited, true, 'flash limiter must flag suppression under 25.58 Hz strobe bump');
+  assert.ok(
+    risingEdgeMs.length <= 3,
+    `physical PAR dimmer must produce <= 3 bright edges in 1 s, got ${risingEdgeMs.length}`,
+  );
+  for (let i = 1; i < risingEdgeMs.length; i++) {
+    assert.ok(
+      risingEdgeMs[i] - risingEdgeMs[i - 1] >= audioMod.FLASH_REFRACTORY_MS - 1,
+      `consecutive flashes must be >= ${audioMod.FLASH_REFRACTORY_MS} ms apart`,
+    );
+  }
+});
+
+test('Codex R2: timecode chase stop and stationary hold immediately clear recorded replay hazardous bumps', () => {
+  const ledger = new bumpMod.BumpLedger({ remoteLeaseMs: 2000, gamepadLeaseMs: 2000 });
+  const engineBumpHistory = [];
+  const syncLiveBump = () => {
+    engineBumpHistory.push(ledger.resolve({ laserDeskEnabled: true }, 2000).effective);
+  };
+  const held = { audio: false, screen: false };
+  const handlers = clockOwner.createChaseTransportHandlers({
+    held,
+    getEndMs: () => 8000,
+    setReplaying: () => {},
+    clearFollow: () => {},
+    prepareSeek: () => {},
+    chaseSeekTimeline: () => {},
+    chaseAdvanceTimeline: () => {},
+    resolveTimelineFrame: () => null,
+    restoreTimelineMusic: () => {},
+    restoreTimelineScreen: () => {},
+    isAudioPlaying: () => false,
+    pauseAudio: () => {},
+    resumeAudio: () => {},
+    stopAudio: () => {},
+    isScreenVideoPlaying: () => false,
+    setScreenPlaying: () => {},
+    setWallClock: () => {},
+    getWallClockPos: () => 2000,
+    clearReplayBumps: () => {
+      ledger.clearSource('replay');
+      syncLiveBump();
+    },
+  });
+
+  // Recorded CO2 + laser bump active during take chase at t=2000 ms
+  ledger.setHold('replay', 'local', 'co2', true, 1000);
+  ledger.setHold('replay', 'local', 'laser', true, 1000);
+  assert.equal(ledger.resolve({ laserDeskEnabled: true }, 2000).effective.co2, true);
+
+  // Chase dropout -> STOPPED must clear replay bumps immediately (even 60 s later, never stuck)
+  handlers.onChaseStop();
+  assert.equal(ledger.resolve({ laserDeskEnabled: true }, 60_000).effective.co2, false, 'CO2 must clear on chase stop');
+  assert.equal(ledger.resolve({ laserDeskEnabled: true }, 60_000).effective.laser, false, 'laser bump must clear on chase stop');
+  assert.equal(engineBumpHistory.at(-1).co2, false, 'cleared bump state must propagate to engine immediately');
+
+  // Re-engage replay CO2 bump and verify stationary hold clears it too
+  ledger.setHold('replay', 'local', 'co2', true, 3000);
+  handlers.onChaseHold(3000);
+  assert.equal(ledger.resolve({ laserDeskEnabled: true }, 3100).effective.co2, false, 'CO2 must clear on stationary hold');
+  assert.equal(engineBumpHistory.at(-1).co2, false);
+});
+
+test('Codex R3: four-subsystem frameDelta preserves unchanged audioMap, movingGroups, and focusMarkId through save, reopen, replay, and seek', () => {
+  const mapping = {
+    id: 'm-keep',
+    name: 'Keep Me',
+    enabled: true,
+    source: 'bass',
+    target: { group: 'wash', param: 'dimmer' },
+    amount: 0.6,
+    attackMs: 10,
+    releaseMs: 120,
+    threshold: 0.05,
+    curve: 'linear',
+  };
+  const sharedMoving = { beam: { movementMode: 'figure8', movementSpeed: 0.7 } };
+  const beforeLook = {
+    ...presets.INITIAL_SHOW_STATE,
+    bpm: 126,
+    audioReactive: true,
+    audioMap: { mappings: [mapping] },
+    movingGroups: sharedMoving,
+    focusMarkId: 'audience',
+  };
+  // Change all four subsystems (laser, motors, atmo, led) while keeping audioMap, movingGroups, and focusMarkId identical.
+  const afterLook = {
+    ...beforeLook,
+    laser: { ...beforeLook.laser, intensity: 0.9 },
+    motors: { ...beforeLook.motors, speed: 0.8 },
+    atmo: { ...beforeLook.atmo, hazeDensity: 0.7 },
+    led: { ...beforeLook.led, brightness: 0.6 },
+  };
+  const baseFrame = {
+    look: beforeLook,
+    cueId: 'c1',
+    cueModified: false,
+    camera: 'foh',
+    volume: 0.8,
+    bump: { blinder: false, strobe: false, co2: false, smoke: false, laser: false, motorDrop: false },
+    music: { kind: 'none', name: '', playing: false },
+    screen: { target: 'main-led', kind: 'none', name: '', playing: false },
+  };
+  const delta = timelineMod.frameDelta(baseFrame, { ...baseFrame, look: afterLook, cueId: 'c2' }, 2000, 1000);
+  assert.ok(delta?.look, 'delta must contain look changes');
+  assert.equal(cueLookMod.isFullLookSnapshot(delta.look), true, '4-subsystem delta satisfies snapshot predicate');
+  assert.deepEqual(delta.look.audioMap, { mappings: [mapping] }, '4-subsystem delta must retain unchanged audioMap');
+  assert.deepEqual(delta.look.movingGroups, sharedMoving, '4-subsystem delta must retain unchanged movingGroups');
+  assert.equal(delta.look.focusMarkId, 'audience', '4-subsystem delta must retain unchanged focusMarkId');
+
+  // Round-trip through show file v8 save -> parse -> replay -> seek
+  const rig = structuredClone(presets.RIG_TEMPLATES.arena_mainstage);
+  const take = {
+    durationMs: 4000,
+    events: [
+      { atMs: 0, look: beforeLook, cueId: 'c1', camera: 'foh', volume: 0.8, bump: baseFrame.bump, music: baseFrame.music, screen: baseFrame.screen },
+      delta,
+    ],
+  };
+  const saved = showFileMod.makeShowFile(rig, [], beforeLook, null, undefined, take);
+  const reopened = showFileMod.parseShowFile(JSON.stringify(saved));
+  const at3s = showClockMod.resolveTakeFrame(reopened.timeline, 3000, baseFrame, false);
+  assert.deepEqual(at3s.look.audioMap, { mappings: [mapping] }, 'seek after 4-subsystem delta must preserve audioMap');
+  assert.deepEqual(at3s.look.movingGroups, sharedMoving, 'seek after 4-subsystem delta must preserve movingGroups');
+  assert.equal(at3s.look.focusMarkId, 'audience', 'seek after 4-subsystem delta must preserve focusMarkId');
+});
+
+test('Codex R4: stationary timecode hold followed by forward jump (>10 frames -> seek) resumes held audio and video without a timeline', () => {
+  const chase = new clockOwner.ChaseEngine({ offsetMs: 0, dropoutMs: 300, freewheelMs: 1000 });
+  let audioPlaying = true;
+  let screenPlaying = true;
+  const held = { audio: false, screen: false };
+  const handlers = clockOwner.createChaseTransportHandlers({
+    held,
+    getEndMs: () => 0,
+    setReplaying: () => {},
+    clearFollow: () => {},
+    prepareSeek: () => {},
+    chaseSeekTimeline: () => {},
+    chaseAdvanceTimeline: () => {},
+    resolveTimelineFrame: () => null, // no recorded timeline
+    restoreTimelineMusic: () => {},
+    restoreTimelineScreen: () => {},
+    isAudioPlaying: () => audioPlaying,
+    pauseAudio: () => { audioPlaying = false; },
+    resumeAudio: () => { audioPlaying = true; },
+    stopAudio: () => { audioPlaying = false; },
+    isScreenVideoPlaying: () => screenPlaying,
+    setScreenPlaying: (p) => { screenPlaying = p; },
+    setWallClock: () => {},
+    getWallClockPos: () => 0,
+    clearReplayBumps: () => {},
+  });
+
+  const dispatch = (step) => {
+    if (step.action === 'seek') handlers.onChaseSeek(step.takeMs, true, step.resyncMusic, { resumedFromHold: step.resumedFromHold });
+    else if (step.action === 'advance') handlers.onChaseAdvance(step.takeMs, { resumedFromHold: step.resumedFromHold, resyncMusic: step.resyncMusic });
+    else if (step.action === 'hold') handlers.onChaseHold(step.takeMs);
+    else if (step.action === 'stop') handlers.onChaseStop();
+  };
+
+  // Lock onto progressing 30 fps timecode
+  dispatch(chase.onTimecode({ ms: 1000, fps: 30, source: 'mtc' }, 1000));
+  dispatch(chase.onTimecode({ ms: 1033, fps: 30, source: 'mtc' }, 1033));
+  dispatch(chase.onTimecode({ ms: 1067, fps: 30, source: 'mtc' }, 1067));
+  assert.equal(audioPlaying, true);
+  assert.equal(screenPlaying, true);
+
+  // Repeat stationary timestamp until hold fires
+  dispatch(chase.onTimecode({ ms: 1067, fps: 30, source: 'mtc' }, 1100));
+  const holdStep = chase.onTimecode({ ms: 1067, fps: 30, source: 'mtc' }, 1250);
+  assert.equal(holdStep.action, 'hold');
+  dispatch(holdStep);
+  assert.equal(audioPlaying, false, 'audio must pause on stationary hold');
+  assert.equal(screenPlaying, false, 'screen video must pause on stationary hold');
+
+  // Resume with a 1-second forward jump (> 10 frames -> action === 'seek' with resumedFromHold: true)
+  const jumpStep = chase.onTimecode({ ms: 2067, fps: 30, source: 'mtc' }, 1300);
+  assert.equal(jumpStep.action, 'seek');
+  assert.equal(jumpStep.resumedFromHold, true);
+  dispatch(jumpStep);
+  assert.equal(audioPlaying, true, 'audio must resume on forward-jump seek out of stationary hold');
+  assert.equal(screenPlaying, true, 'screen video must resume on forward-jump seek out of stationary hold');
 });

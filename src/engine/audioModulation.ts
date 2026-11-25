@@ -152,6 +152,7 @@ export interface AudioModulationState {
   clockMs: number;
   lastGlobalStrobeEdgeMs: number;
   slots: AudioFollowerSlot[];
+  manualStrobe: StrobeGateState;
   beamStrobe: StrobeGateState;
   washStrobe: StrobeGateState;
   barStrobe: StrobeGateState;
@@ -330,6 +331,7 @@ export function createAudioModulationState(): AudioModulationState {
     clockMs: 0,
     lastGlobalStrobeEdgeMs: -Infinity,
     slots,
+    manualStrobe: createStrobeGateState(),
     beamStrobe: createStrobeGateState(),
     washStrobe: createStrobeGateState(),
     barStrobe: createStrobeGateState(),
@@ -364,6 +366,7 @@ export function cloneAudioModulationState(src: AudioModulationState): AudioModul
     copy.slots[i].id = src.slots[i]?.id ?? '';
     copy.slots[i].envelope = src.slots[i]?.envelope ?? 0;
   }
+  Object.assign(copy.manualStrobe, src.manualStrobe);
   Object.assign(copy.beamStrobe, src.beamStrobe);
   Object.assign(copy.washStrobe, src.washStrobe);
   Object.assign(copy.barStrobe, src.barStrobe);
@@ -390,6 +393,7 @@ export function resetAudioModulationState(state: AudioModulationState) {
     state.slots[i].id = '';
     state.slots[i].envelope = 0;
   }
+  disarmStrobeGate(state.manualStrobe);
   disarmStrobeGate(state.beamStrobe);
   disarmStrobeGate(state.washStrobe);
   disarmStrobeGate(state.barStrobe);
@@ -596,6 +600,44 @@ function clearStrobeOut(out: StrobeModResult) {
   out.gateOn = false;
   out.lastFlashMs = -Infinity;
   out.limited = false;
+}
+
+export interface CombinedStrobeGateResult {
+  gate: number;
+  flashOn: boolean;
+  limited: boolean;
+}
+
+const MANUAL_STROBE_SCRATCH: StrobeModResult = createStrobeModResult();
+
+/**
+ * Enforce the photosensitivity <= 3 flashes/s ceiling on manual `strobeRate` and `bump.strobe`
+ * combined with audio-mapped strobes via the shared monotonic `state.lastGlobalStrobeEdgeMs` clock.
+ * Runs before both rendering and physical DMX encoding so strobe bumps cannot inject > 3 Hz dimmer flashes.
+ */
+export function stepCombinedStrobeGate(
+  state: AudioModulationState,
+  effectiveStrobe: number,
+  tSec: number,
+  blackout: boolean,
+  out?: CombinedStrobeGateResult,
+): CombinedStrobeGateResult {
+  const res: CombinedStrobeGateResult = out ?? { gate: 1.0, flashOn: false, limited: false };
+  const tMs = state.clockMs;
+  if (blackout || !Number.isFinite(effectiveStrobe) || effectiveStrobe <= 0.03) {
+    disarmStrobeGate(state.manualStrobe);
+    res.gate = 1.0;
+    res.flashOn = false;
+    res.limited = tMs < state.manualStrobe.limitedUntilMs;
+    return res;
+  }
+  const freq = 3.5 + clamp01(effectiveStrobe) * 24.0;
+  const oscSignal = Math.sin(tSec * freq * Math.PI * 2) > 0.25 ? 1 : 0;
+  const limited = stepStrobeGate(state.manualStrobe, oscSignal, tMs, MANUAL_STROBE_SCRATCH, state);
+  res.flashOn = state.manualStrobe.gateOn;
+  res.gate = res.flashOn ? 1.35 : 0.06;
+  res.limited = limited;
+  return res;
 }
 
 /**
@@ -835,7 +877,8 @@ export function evaluateAudioModulation(
   if (beamStrobeMapped) {
     if (stepStrobeGate(state.beamStrobe, beamStrobeSig, tMs, out.beam.strobe, state)) anyFlashLimited = true;
   } else {
-    disarmStrobeGate(state.beamStrobe);
+    disarmStrobeGate(state.manualStrobe);
+  disarmStrobeGate(state.beamStrobe);
     clearStrobeOut(out.beam.strobe);
   }
 

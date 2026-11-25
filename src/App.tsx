@@ -17,7 +17,7 @@ import {
 import { CAMERAS, TopBar, type TempoControlProps } from './components/TopBar';
 import { ShowOverlay } from './components/ShowOverlay';
 import { ClockBadge } from './components/ClockBadge';
-import { allows, type ClockMode } from './showControl/clockOwner';
+import { allows, createChaseTransportHandlers, type ClockMode } from './showControl/clockOwner';
 import { useShowControl } from './showControl/useShowControl';
 import { useShowGamepad } from './input/useShowGamepad';
 import { BumpLedger, sameBumpState, type BumpSourceClass } from './input/bumpLedger';
@@ -1070,6 +1070,45 @@ export const App: React.FC = () => {
   }, []);
 
   const chaseHeldMediaRef = useRef<{ audio: boolean; screen: boolean }>({ audio: false, screen: false });
+  const chaseTransportHandlers = createChaseTransportHandlers({
+    held: chaseHeldMediaRef.current,
+    getEndMs: () => Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0),
+    setReplaying: (running) => { replaying.current = running; },
+    clearFollow: () => setFollow(null),
+    prepareSeek: () => {
+      replayLook.current = showState;
+      engineRef.current?.releaseDirector(false);
+      previewRig();
+    },
+    chaseSeekTimeline: (takeMs, running) => timeline.chaseSeek(takeMs, running),
+    chaseAdvanceTimeline: (takeMs) => timeline.chaseAdvance(takeMs),
+    resolveTimelineFrame: (takeMs) => timeline.resolveFrameAt(takeMs, true),
+    restoreTimelineMusic: (music) => {
+      expectedMusic.current = music as MusicRef;
+      replayMusicClock.current = performance.now();
+      restoreReplayMusic(music as MusicRef, 0);
+    },
+    restoreTimelineScreen: (screen) => {
+      replayScreen.current = screen as ScreenRef;
+      replayScreenClock.current = performance.now();
+      engineRef.current?.restoreScreenTransport(true, screen.offsetSeconds ?? 0);
+    },
+    isAudioPlaying: () => Boolean(audioEngineRef.current?.getStatus().playing),
+    pauseAudio: () => { audioEngineRef.current?.pausePlayback(); },
+    resumeAudio: () => { audioEngineRef.current?.togglePlayPause(); },
+    stopAudio: () => { audioEngineRef.current?.stopAll(); },
+    isScreenVideoPlaying: () => {
+      const s = readScreen();
+      return s.kind === 'video' && s.playing;
+    },
+    setScreenPlaying: (playing) => { engineRef.current?.restoreScreenTransport(playing); },
+    setWallClock: (posMs, running, endMs) => wallClock.set(posMs, running, endMs),
+    getWallClockPos: () => wallClock.position(),
+    clearReplayBumps: () => {
+      bumpLedgerRef.current.clearSource('replay');
+      syncLiveBump();
+    },
+  });
 
   const showControl = useShowControl({
     getCues: () => cuesRef.current,
@@ -1206,73 +1245,10 @@ export const App: React.FC = () => {
         setShowState((s) => (s.audioMap ? { ...s, audioMap: { mappings: nextMappings } } : s));
       });
     },
-    onChaseSeek: (takeMs, running, _resyncMusic) => {
-      const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
-      chaseHeldMediaRef.current = { audio: false, screen: false };
-      setFollow(null);
-      replaying.current = running;
-      replayLook.current = showState;
-      engineRef.current?.releaseDirector(false);
-      previewRig();
-      timeline.chaseSeek(takeMs, running);
-      wallClock.set(Math.min(takeMs, endMs), running && takeMs < endMs, endMs);
-    },
-    onChaseAdvance: (takeMs, opts) => {
-      const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
-      replaying.current = true;
-      timeline.chaseAdvance(takeMs);
-      if (opts?.resumedFromHold) {
-        const held = chaseHeldMediaRef.current;
-        chaseHeldMediaRef.current = { audio: false, screen: false };
-        // Resume audio, main video, and secondary walls cleanly at the authoritative TC position
-        // ONLY when the resolved timeline says they should be playing, without re-firing look/cue events.
-        // If no recorded timeline is loaded, restore only media that onChaseHold paused.
-        const resolved = timeline.resolveFrameAt(takeMs, true);
-        if (resolved) {
-          if (resolved.music && resolved.music.playing) {
-            expectedMusic.current = resolved.music;
-            replayMusicClock.current = performance.now();
-            restoreReplayMusic(resolved.music, 0);
-          }
-          if (resolved.screen && resolved.screen.kind === 'video' && resolved.screen.playing) {
-            replayScreen.current = resolved.screen;
-            replayScreenClock.current = performance.now();
-            engineRef.current?.restoreScreenTransport(true, resolved.screen.offsetSeconds ?? 0);
-          }
-        } else {
-          if (held.audio && !audioEngineRef.current?.getStatus().playing) {
-            audioEngineRef.current?.togglePlayPause();
-          }
-          if (held.screen) {
-            engineRef.current?.restoreScreenTransport(true);
-          }
-        }
-        wallClock.set(Math.min(takeMs, endMs), takeMs < endMs, endMs);
-      }
-    },
-    onChaseHold: (takeMs) => {
-      const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
-      replaying.current = false;
-      const audioWasPlaying = Boolean(audioEngineRef.current?.getStatus().playing);
-      const currentScreen = readScreen();
-      const screenWasPlaying = currentScreen.kind === 'video' && currentScreen.playing;
-      if (audioWasPlaying) {
-        audioEngineRef.current?.pausePlayback();
-        chaseHeldMediaRef.current.audio = true;
-      }
-      if (screenWasPlaying) {
-        engineRef.current?.restoreScreenTransport(false);
-        chaseHeldMediaRef.current.screen = true;
-      }
-      wallClock.set(Math.min(takeMs, endMs), false, endMs);
-    },
-    onChaseStop: () => {
-      chaseHeldMediaRef.current = { audio: false, screen: false };
-      replaying.current = false;
-      wallClock.set(wallClock.position(), false);
-      engineRef.current?.restoreScreenTransport(false);
-      audioEngineRef.current?.stopAll();
-    },
+    onChaseSeek: chaseTransportHandlers.onChaseSeek,
+    onChaseAdvance: chaseTransportHandlers.onChaseAdvance,
+    onChaseHold: chaseTransportHandlers.onChaseHold,
+    onChaseStop: chaseTransportHandlers.onChaseStop,
     onUpdateTakeMeta: (meta) => {
       if (!capabilitiesRef.current.edit) return;
       takeMetaExplicitRef.current = true;

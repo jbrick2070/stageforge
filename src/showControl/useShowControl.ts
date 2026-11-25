@@ -157,7 +157,7 @@ export interface ShowControlCallbacks {
   onTempoDouble: () => void;
   onSetAudioReactive?: (active: boolean) => void;
   onSetAudioMappingAmount?: (mappingId: string, amount: number) => void;
-  onChaseSeek: (takeMs: number, running: boolean, resyncMusic: boolean) => void;
+  onChaseSeek: (takeMs: number, running: boolean, resyncMusic: boolean, opts?: { resumedFromHold?: boolean }) => void;
   onChaseAdvance: (takeMs: number, opts?: { resumedFromHold?: boolean; resyncMusic?: boolean }) => void;
   onChaseHold?: (takeMs: number) => void;
   onChaseStop: () => void;
@@ -307,7 +307,9 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
         source: event.source,
       });
       if (step.action === 'seek') {
-        cbRef.current.onChaseSeek(step.takeMs, !event.locate && !event.reverse, step.resyncMusic);
+        cbRef.current.onChaseSeek(step.takeMs, !event.locate && !event.reverse, step.resyncMusic, {
+          resumedFromHold: step.resumedFromHold,
+        });
       } else if (step.action === 'advance') {
         cbRef.current.onChaseAdvance(step.takeMs, {
           resumedFromHold: step.resumedFromHold,

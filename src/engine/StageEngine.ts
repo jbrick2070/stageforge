@@ -100,6 +100,7 @@ import {
   createAudioModulationFrame,
   createAudioModulationState,
   evaluateAudioModulation,
+  stepCombinedStrobeGate,
   type AudioModulationFrame,
   type AudioModulationState,
 } from './audioModulation';
@@ -347,6 +348,7 @@ export class StageEngine {
   // Audio-reactive modulation state (preallocated for zero per-frame allocations)
   private audioModState: AudioModulationState = createAudioModulationState();
   private audioModFrame: AudioModulationFrame = createAudioModulationFrame();
+  private combinedStrobeScratch = { gate: 1.0, flashOn: false, limited: false };
   private beamPhaseOffset = 0;
   private washPhaseOffset = 0;
   private ledPhaseOffset = 0;
@@ -2597,14 +2599,20 @@ export class StageEngine {
     const accentColor = new THREE.Color(s.accentColor);
     const tempCol = new THREE.Color();
 
-    // Global Strobe gate
+    // Global Strobe gate (enforces <= 3 flashes/s across mappings, manual strobeRate, and strobe bump
+    // before both rendering and physical DMX encoding via shared audioModState.lastGlobalStrobeEdgeMs).
     const effectiveStrobe = b.strobe ? 0.92 : s.strobeRate;
-    let strobeGate = 1.0;
-    let strobeFlashOn = false;
-    if (effectiveStrobe > 0.03) {
-      const freq = 3.5 + effectiveStrobe * 24.0;
-      strobeFlashOn = Math.sin(t * freq * Math.PI * 2) > 0.25;
-      strobeGate = strobeFlashOn ? 1.35 : 0.06;
+    const combinedStrobe = stepCombinedStrobeGate(
+      this.audioModState,
+      effectiveStrobe,
+      t,
+      blackoutActive,
+      this.combinedStrobeScratch,
+    );
+    const strobeGate = combinedStrobe.gate;
+    const strobeFlashOn = combinedStrobe.flashOn;
+    if (combinedStrobe.limited) {
+      mod.flashLimited = true;
     }
 
     // 1. Update Kinetic Chain Hoist Motors & Truss Positions
@@ -2691,7 +2699,7 @@ export class StageEngine {
       const groupStrobeGate = strobeMapped
         ? (b.strobe ? strobeGate : (gMod!.strobe.gateOn ? 1.35 : 0.06))
         : strobeGate;
-      const groupDmxStrobe = strobeMapped && !b.strobe ? 0 : Math.round(effectiveStrobe * 255);
+      const groupDmxStrobe = strobeMapped || b.strobe ? 0 : Math.round(effectiveStrobe * 255);
       return {
         look, focus, moveSpd: baseMoveSpd, phaseOffset, effSpeedNorm, spread: 0.25 + look.movementSpread * 1.15,
         effZoom, colorMix, tiltOffset, gMod, strobeMapped, groupStrobeGate, groupDmxStrobe,
@@ -3110,7 +3118,7 @@ export class StageEngine {
           : s.audioReactive && audio.beat && master > 0.2
             ? 2.2 * master * (openingStep === undefined ? 1 : THREE.MathUtils.lerp(demoFade(openingStep, 256, 384), 1, manualMix))
             : 0);
-    const strobeBarDmxRate = strobeBarAudioMapped && !b.strobe ? 0 : Math.round(255 * effectiveStrobe);
+    const strobeBarDmxRate = strobeBarAudioMapped || b.strobe ? 0 : Math.round(255 * effectiveStrobe);
     const strobeBarFlash = strobeBarAudioMapped ? strobeBarBright > 0.01 : (effectiveStrobe > 0.03 && strobeFlashOn);
     for (const st of this.strobes) {
       if (st.start) {
@@ -3240,11 +3248,11 @@ export class StageEngine {
     ap.beam.speed = bGrp.effSpeedNorm;
     ap.beam.tiltOffset = bGrp.tiltOffset;
     ap.beam.strobe.mode = bGrp.strobeMapped ? 'mapped' : 'unmapped';
-    ap.beam.strobe.rate = bGrp.strobeMapped ? 0 : effectiveStrobe;
+    ap.beam.strobe.rate = bGrp.strobeMapped || b.strobe ? 0 : effectiveStrobe;
     ap.beam.strobe.envelope = bGrp.gMod?.strobe.envelope ?? 0;
-    ap.beam.strobe.gateOn = bGrp.strobeMapped ? (bGrp.gMod?.strobe.gateOn ?? false) : strobeFlashOn;
+    ap.beam.strobe.gateOn = bGrp.strobeMapped && !b.strobe ? (bGrp.gMod?.strobe.gateOn ?? false) : strobeFlashOn;
     ap.beam.strobe.lastFlashMs = bGrp.gMod?.strobe.lastFlashMs ?? -Infinity;
-    ap.beam.strobe.limited = bGrp.gMod?.strobe.limited ?? false;
+    ap.beam.strobe.limited = (bGrp.gMod?.strobe.limited ?? false) || (effectiveStrobe > 0.03 && combinedStrobe.limited);
 
     const wGrp = groups.wash;
     ap.wash.dimmer = Math.min(1.6, (wGrp.gMod?.dimmerMapped ? wGrp.gMod.dimmer : s.washIntensity) * master * wGrp.groupStrobeGate * (1.0 + audioBoost * 0.48));
@@ -3253,23 +3261,23 @@ export class StageEngine {
     ap.wash.speed = wGrp.effSpeedNorm;
     ap.wash.tiltOffset = wGrp.tiltOffset;
     ap.wash.strobe.mode = wGrp.strobeMapped ? 'mapped' : 'unmapped';
-    ap.wash.strobe.rate = wGrp.strobeMapped ? 0 : effectiveStrobe;
+    ap.wash.strobe.rate = wGrp.strobeMapped || b.strobe ? 0 : effectiveStrobe;
     ap.wash.strobe.envelope = wGrp.gMod?.strobe.envelope ?? 0;
-    ap.wash.strobe.gateOn = wGrp.strobeMapped ? (wGrp.gMod?.strobe.gateOn ?? false) : strobeFlashOn;
+    ap.wash.strobe.gateOn = wGrp.strobeMapped && !b.strobe ? (wGrp.gMod?.strobe.gateOn ?? false) : strobeFlashOn;
     ap.wash.strobe.lastFlashMs = wGrp.gMod?.strobe.lastFlashMs ?? -Infinity;
-    ap.wash.strobe.limited = wGrp.gMod?.strobe.limited ?? false;
+    ap.wash.strobe.limited = (wGrp.gMod?.strobe.limited ?? false) || (effectiveStrobe > 0.03 && combinedStrobe.limited);
 
     ap.blinder.dimmer = effBlinder;
     ap.blinder.limited = mod.active && mod.blinder.limited;
 
     ap.strobe.dimmer = strobeBarBright / 3.8;
-    ap.strobe.limited = mod.active && (mod.strobeBar.dimmerLimited || mod.strobeBar.strobe.limited);
+    ap.strobe.limited = (mod.active && (mod.strobeBar.dimmerLimited || mod.strobeBar.strobe.limited)) || (effectiveStrobe > 0.03 && combinedStrobe.limited);
     ap.strobe.strobe.mode = mod.active && mod.strobeBar.strobe.mapped ? 'mapped' : 'unmapped';
     ap.strobe.strobe.rate = strobeBarDmxRate / 255;
     ap.strobe.strobe.envelope = mod.active ? mod.strobeBar.strobe.envelope : 0;
-    ap.strobe.strobe.gateOn = mod.active && mod.strobeBar.strobe.mapped ? mod.strobeBar.strobe.gateOn : strobeFlashOn;
+    ap.strobe.strobe.gateOn = mod.active && mod.strobeBar.strobe.mapped && !b.strobe ? mod.strobeBar.strobe.gateOn : strobeFlashOn;
     ap.strobe.strobe.lastFlashMs = mod.active ? mod.strobeBar.strobe.lastFlashMs : -Infinity;
-    ap.strobe.strobe.limited = mod.active && mod.strobeBar.strobe.limited;
+    ap.strobe.strobe.limited = (mod.active && mod.strobeBar.strobe.limited) || (effectiveStrobe > 0.03 && combinedStrobe.limited);
 
     ap.ledWall.enabled = s.led.enabled;
     ap.ledWall.brightness = ledBright;
