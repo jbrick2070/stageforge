@@ -361,6 +361,10 @@ test('serial port helpers prioritize FTDI devices, cap at 8, and desktop/prepare
   assert.ok(localRequires.includes('show-control-service.cjs'));
   assert.ok(localRequires.includes('show-control-ipc.cjs'));
   assert.ok(localRequires.includes('viewer-ipc.cjs'));
+  assert.ok(localRequires.includes('output-interlock.cjs'));
+  assert.ok(localRequires.includes('ai-bridge-tools.cjs'));
+  assert.ok(localRequires.includes('ai-bridge-service.cjs'));
+  assert.ok(localRequires.includes('ai-bridge-ipc.cjs'));
   for (const mod of localRequires) {
     assert.ok(
       prepareSource.includes(`'${mod}'`),
@@ -630,4 +634,6 @@ test('prepare.mjs validates SPDX licences, resolves nested node_modules and skip
   const realNotices = await thirdPartyNotices(root);
   assert.match(realNotices, /fast-xml-parser/);
   assert.match(realNotices, /three/);
+  assert.match(realNotices, /@modelcontextprotocol\/sdk/);
+  assert.match(realNotices, /json-schema-typed/);
 });

@@ -877,8 +877,7 @@ export function evaluateAudioModulation(
   if (beamStrobeMapped) {
     if (stepStrobeGate(state.beamStrobe, beamStrobeSig, tMs, out.beam.strobe, state)) anyFlashLimited = true;
   } else {
-    disarmStrobeGate(state.manualStrobe);
-  disarmStrobeGate(state.beamStrobe);
+    disarmStrobeGate(state.beamStrobe);
     clearStrobeOut(out.beam.strobe);
   }
 

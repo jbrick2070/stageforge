@@ -22,8 +22,8 @@ The StageForge AI Bridge is an opt-in, desktop-only **Model Context Protocol (MC
    - Any request whose `Host` header is not an exact match for `127.0.0.1:<port>` or `localhost:<port>` (or contains duplicate `Host` headers) is rejected with **HTTP 403**.
    - `/.well-known/*` returns **HTTP 404** and `401 Unauthorized` omits OAuth `resource_metadata` headers so clients use the static `Authorization: Bearer <token>` header without triggering OAuth discovery loops.
 4. **Abuse & resource limits:**
-   - Global rolling rate limit of **20 requests/second** (counted before authentication to throttle brute-force probing; returns **HTTP 429**).
-   - Streaming body cap of **1 MiB** (`1,048,576` bytes), enforced on both `Content-Length` and chunked streams (**HTTP 413**).
+   - Global rolling rate limit of **20 requests/second** across all local callers (counted before authentication to throttle brute-force probing; returns **HTTP 429**).
+   - Streaming body cap of **1 MiB** (`1,048,576` bytes), enforced on both `Content-Length` and chunked streams (**HTTP 413**), plus a **4,096-character** cap per string field in tool arguments (rejecting oversized strings or embedded base64 media payloads before IPC).
    - JSON-RPC batch arrays are rejected (**HTTP 400**).
    - Connection, session, and concurrency caps: max **16** open sockets, max **8** concurrent HTTP requests, max **8** stateful MCP sessions (10-minute idle eviction), max **4** concurrent tool calls, max **1** in-flight `capture_frame` (rate-limited to **<= 1/s**), and explicit deadlines (5 s body read, 5 s capture, 10 s tool call).
    - Disabling the bridge, navigating, closing the window, or entering Pitch Viewer mode immediately cancels in-flight tool calls, clears pending proposals, resets session auto-accept, and closes all sockets.

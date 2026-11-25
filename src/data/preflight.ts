@@ -807,6 +807,18 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       });
       outcome = worstOutcome(outcome, 'warn');
     }
+    const unknownPods = loads.pods.filter((p) => p.status === 'unknown');
+    const unknownReasons = unknownPods.flatMap((p) =>
+      p.warnings.length > 0 ? p.warnings.map((w) => `${p.podName}: ${w}`) : [`${p.podName}: rigging capacity cannot be assessed`],
+    );
+    if (unknownPods.length > 0) {
+      findings.push({
+        code: 'rigging_unknown',
+        outcome: 'warn',
+        message: `${unknownPods.length} truss pod(s) have unknown rigging capacity (${unknownReasons.slice(0, 2).join('; ')}). Verify profiles and hoist ratings on site.`,
+      });
+      outcome = worstOutcome(outcome, 'warn');
+    }
     const rowId = 'rigging:summary';
     rows.push({
       id: rowId,
@@ -825,6 +837,8 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
           uplift: loads.totals.upliftPods,
           overload: loads.totals.overloadPods,
           caution: loads.totals.cautionPods,
+          unknown: unknownPods.length,
+          unknownReasons,
           roofKg: Math.round(loads.totals.totalRoofLoadKg),
           d8: applyD8Derate,
         }),

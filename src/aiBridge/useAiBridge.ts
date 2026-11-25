@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AudioMetrics, CameraPreset, RigConfig, ShowCue, ShowState } from '../types/show';
+import type { AudioMetrics, CameraPreset, MusicRef, RigConfig, ScreenRef, ShowCue, ShowState } from '../types/show';
 import type { NativeStage, ShowInterchange, ShowTimeline } from '../data/showFile';
 import type { PreflightReport } from '../data/preflight';
 import { allows, type ClockMode } from '../showControl/clockOwner';
 import {
   AiProposalStore,
   appendToolLog,
+  applyAudioMappingPatchToDesk,
   assertNoAudienceScan,
   AUDIENCE_SCAN_ERROR,
   buildAiCatalogSummary,
@@ -17,8 +18,7 @@ import {
   compileShowProposal,
   compileTakeProposal,
   compileWallCueProposal,
-  computeDeskRevision,
-  cueEnablesAudienceScan,
+  computeAuthoredRevision,
   formatToolLogText,
   summarizeToolArgs,
   timelineEnablesAudienceScan,
@@ -41,6 +41,10 @@ export interface AiRevertSnapshot {
   timeline?: ShowTimeline;
   camera: CameraPreset;
   volume: number;
+  screen?: ScreenRef;
+  music?: MusicRef;
+  expectedMusic?: MusicRef;
+  takeMetaExplicit?: boolean;
 }
 
 export interface AiBridgeCallbacks {
@@ -48,14 +52,14 @@ export interface AiBridgeCallbacks {
   getSafetyReport: () => PreflightReport | null;
   getAudioLevels: () => AudioMetrics;
   captureFrame: (maxWidth?: number) => Promise<{ base64: string; width: number; height: number; byteLength: number }>;
-  applyCandidate: (candidate: AiProposalCandidate) => void;
+  applyCandidate: (candidate: AiProposalCandidate) => boolean;
   restoreSnapshot: (snapshot: AiRevertSnapshot) => void;
   // Run-tool callbacks (all checked through `allows(clockMode, 'ai', action)` first)
-  onGo: () => { ok: boolean; activeCueId: string | null; message?: string };
-  onBack: () => { ok: boolean; activeCueId: string | null; message?: string };
+  onGo: () => { ok?: boolean; isError?: boolean; activeCueId?: string | null; message?: string };
+  onBack: () => { ok?: boolean; isError?: boolean; activeCueId?: string | null; message?: string };
   onStop: () => void;
-  onResume: () => void;
-  onTriggerCue: (target: { cueId?: string; index?: number }) => { ok: boolean; activeCueId: string | null; message?: string };
+  onResume: () => { ok?: boolean; isError?: boolean; message?: string };
+  onTriggerCue: (target: { cueId?: string; index?: number }) => { ok?: boolean; isError?: boolean; activeCueId?: string | null; message?: string };
   onPlayTake: () => { ok: boolean; message?: string };
   onPauseTake: () => { ok: boolean; message?: string };
   onSeekTake: (positionMs: number) => { ok: boolean; message?: string };
@@ -163,10 +167,9 @@ export function useAiBridge(
     );
   }, []);
 
-  const captureRevertSnapshotIfNeeded = useCallback(() => {
-    if (revertSnapshotRef.current) return;
+  const snapshotCurrentDesk = useCallback((): AiRevertSnapshot => {
     const desk = cbRef.current.getDeskSnapshot();
-    const snap: AiRevertSnapshot = {
+    return {
       capturedAt: Date.now(),
       rig: structuredClone(desk.rig),
       stage: desk.stage ? structuredClone(desk.stage) : undefined,
@@ -177,9 +180,11 @@ export function useAiBridge(
       timeline: desk.timeline ? structuredClone(desk.timeline) : undefined,
       camera: desk.camera,
       volume: desk.volume,
+      screen: desk.screen ? structuredClone(desk.screen) : undefined,
+      music: desk.music ? structuredClone(desk.music) : undefined,
+      expectedMusic: desk.expectedMusic ? structuredClone(desk.expectedMusic) : undefined,
+      takeMetaExplicit: desk.takeMetaExplicit,
     };
-    revertSnapshotRef.current = snap;
-    setRevertCapturedAt(snap.capturedAt);
   }, []);
 
   const clearPendingAndAutoAccept = useCallback(() => {
@@ -199,7 +204,7 @@ export function useAiBridge(
   const isProposalStale = useCallback((proposal: AiProposalRecord): boolean => {
     if (proposal.bridgeGeneration !== statusRef.current.generation) return true;
     if (proposal.documentEpoch !== documentEpochRef.current) return true;
-    const currentRev = computeDeskRevision(cbRef.current.getDeskSnapshot());
+    const currentRev = computeAuthoredRevision(cbRef.current.getDeskSnapshot());
     return proposal.baseRevision !== currentRev;
   }, []);
 
@@ -225,13 +230,41 @@ export function useAiBridge(
       return false;
     }
     const currentDesk = cbRef.current.getDeskSnapshot();
-    const currentRev = computeDeskRevision(currentDesk);
+    const currentRev = computeAuthoredRevision(currentDesk);
     if (rec.baseRevision !== currentRev) {
-      cbRef.current.onToast('Desk changed since this AI proposal was created. Reject it or ask the AI to re-propose.');
+      cbRef.current.onToast('Show document changed since this AI proposal was created. Reject it or ask the AI to re-propose.');
       return false;
     }
+
+    // For partial look and audio-mapping patches, re-apply cleanly against the current live look
+    // so runtime safety/operator changes (audienceScan off, blackout, master dimmer, cue Go, take playback)
+    // are never clobbered by a stale snapshot (M6 + Pass 2 M-A).
+    let candidateToApply: AiProposalCandidate;
     try {
-      assertNoAudienceScan(rec.candidate);
+      if (rec.candidate.kind === 'propose_look' && rec.candidate.lookPatch) {
+        candidateToApply = compileLookProposal(rec.candidate.lookPatch, rec.summary, currentDesk).candidate;
+      } else if (rec.candidate.kind === 'propose_audio_mapping' && rec.candidate.audioMappingPatch) {
+        candidateToApply = applyAudioMappingPatchToDesk(rec.candidate.audioMappingPatch, currentDesk);
+      } else {
+        candidateToApply = structuredClone(rec.candidate);
+      }
+      if (candidateToApply.kind === 'propose_show' || candidateToApply.kind === 'propose_take') {
+        assertNoAudienceScan(candidateToApply);
+      } else if (candidateToApply.look) {
+        // Belt-and-suspenders: an AI proposal may never newly turn audienceScan on.
+        if (!currentDesk.look.laser.audienceScan && candidateToApply.look.laser.audienceScan) {
+          throw new Error(AUDIENCE_SCAN_ERROR);
+        }
+      } else if (candidateToApply.kind === 'propose_cue' && candidateToApply.cues) {
+        const existingScanIds = new Set(
+          currentDesk.cues.filter((c) => c.state.laser?.audienceScan === true).map((c) => c.id),
+        );
+        for (const c of candidateToApply.cues) {
+          if (c.state.laser?.audienceScan === true && !existingScanIds.has(c.id)) {
+            throw new Error(AUDIENCE_SCAN_ERROR);
+          }
+        }
+      }
     } catch (err) {
       store.transition(id, 'rejected');
       syncPendingState();
@@ -239,14 +272,35 @@ export function useAiBridge(
       return false;
     }
 
-    const candidateToApply = structuredClone(rec.candidate);
-    captureRevertSnapshotIfNeeded();
+    // Transactional apply (M1): capture pre-apply rollback snapshot BEFORE mutating;
+    // roll back on failure and mark accepted only after apply succeeds.
+    const preApplySnapshot = snapshotCurrentDesk();
+    const hadRevert = revertSnapshotRef.current !== null;
+    try {
+      const applied = cbRef.current.applyCandidate(candidateToApply);
+      if (!applied) {
+        cbRef.current.onToast('Could not apply AI proposal in current mode.');
+        return false;
+      }
+    } catch (err) {
+      try {
+        cbRef.current.restoreSnapshot(structuredClone(preApplySnapshot));
+      } catch {
+        // Best-effort rollback.
+      }
+      cbRef.current.onToast(err instanceof Error ? `Failed to apply AI proposal: ${err.message}` : 'Failed to apply AI proposal.');
+      return false;
+    }
+
+    if (!hadRevert) {
+      revertSnapshotRef.current = preApplySnapshot;
+      setRevertCapturedAt(preApplySnapshot.capturedAt);
+    }
     store.transition(id, 'accepted');
     syncPendingState();
-    cbRef.current.applyCandidate(candidateToApply);
     cbRef.current.onToast(`Applied AI proposal: ${rec.summary}`);
     return true;
-  }, [captureRevertSnapshotIfNeeded, syncPendingState]);
+  }, [snapshotCurrentDesk, syncPendingState]);
 
   const rejectProposal = useCallback((id: string) => {
     const rec = proposalStoreRef.current.transition(id, 'rejected');
@@ -381,7 +435,7 @@ export function useAiBridge(
         }
 
         verifyActive();
-        const baseRevision = computeDeskRevision(desk);
+        const baseRevision = computeAuthoredRevision(desk);
         const proposalId = crypto.randomUUID();
         const rec = proposalStoreRef.current.add({
           id: proposalId,
@@ -399,9 +453,10 @@ export function useAiBridge(
         // Human-only session auto-accept (still runs full re-validation & revert snapshot inside acceptProposal).
         if (autoAcceptRef.current) {
           const applied = acceptProposal(rec.id);
+          const actualStatus = proposalStoreRef.current.get(rec.id)?.status ?? (applied ? 'accepted' : 'pending');
           return {
             proposalId: rec.id,
-            status: applied ? 'accepted' : 'rejected',
+            status: actualStatus,
             autoAccepted: applied,
             summary: rec.summary,
             diff: rec.diffLines,
@@ -458,26 +513,16 @@ export function useAiBridge(
         return { proposalId, status: 'withdrawn' };
       }
 
-      // --- Run tools (enforced via single clock owner + audienceScan guard) ---
+      // --- Run tools (enforced via single clock owner + authoritative audienceScan/follow-chain guards inside callbacks) ---
       case 'go': {
         const blocked = requireClockAction('go', 'go');
         if (blocked) return blocked;
-        const curIdx = desk.cues.findIndex((c) => c.id === desk.activeCueId);
-        const nextCue = desk.cues[curIdx >= 0 ? (curIdx + 1) % Math.max(1, desk.cues.length) : 0];
-        if (cueEnablesAudienceScan(nextCue)) {
-          return { isError: true, message: AUDIENCE_SCAN_ERROR };
-        }
         return cbRef.current.onGo();
       }
 
       case 'back': {
         const blocked = requireClockAction('back', 'back');
         if (blocked) return blocked;
-        const curIdx = desk.cues.findIndex((c) => c.id === desk.activeCueId);
-        const prevCue = desk.cues[curIdx > 0 ? curIdx - 1 : Math.max(0, desk.cues.length - 1)];
-        if (cueEnablesAudienceScan(prevCue)) {
-          return { isError: true, message: AUDIENCE_SCAN_ERROR };
-        }
         return cbRef.current.onBack();
       }
 
@@ -491,8 +536,7 @@ export function useAiBridge(
       case 'resume': {
         const blocked = requireClockAction('resume', 'resume');
         if (blocked) return blocked;
-        cbRef.current.onResume();
-        return { ok: true };
+        return cbRef.current.onResume();
       }
 
       case 'trigger_cue': {
@@ -500,18 +544,7 @@ export function useAiBridge(
         if (blocked) return blocked;
         const cueId = typeof args.cueId === 'string' ? args.cueId : undefined;
         const index = typeof args.index === 'number' ? args.index : undefined;
-        const targetCue = cueId
-          ? desk.cues.find((c) => c.id === cueId)
-          : index !== undefined
-            ? desk.cues[index - 1]
-            : undefined;
-        if (!targetCue) {
-          return { isError: true, message: 'Requested cue was not found.' };
-        }
-        if (cueEnablesAudienceScan(targetCue)) {
-          return { isError: true, message: AUDIENCE_SCAN_ERROR };
-        }
-        return cbRef.current.onTriggerCue({ cueId: targetCue.id });
+        return cbRef.current.onTriggerCue({ cueId, index });
       }
 
       case 'play_take': {
@@ -582,7 +615,13 @@ export function useAiBridge(
         clearPendingAndAutoAccept();
       }
       if (next.state === 'stopping') {
-        void bridge.aiBridgeControl({ type: 'quiesced', generation: next.generation }).catch(() => {});
+        const stopGen = next.generation;
+        // Drain any in-flight serialized renderer task before acknowledging quiescence (L5).
+        void queueRef.current
+          .catch(() => {})
+          .finally(() => {
+            void bridge.aiBridgeControl({ type: 'quiesced', generation: stopGen }).catch(() => {});
+          });
       }
     });
 

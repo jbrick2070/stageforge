@@ -202,8 +202,9 @@ export function evaluateLaserSafety(
     // Floor lasers sit above deck by half chassis height (~0.16 m); overhead lasers hang below truss mount (~0.24 m).
     const originY = unit.floor ? unit.position.y + 0.16 : unit.position.y - 0.24;
 
-    // Determine worst-case downward elevation and horizontal fan half-angles.
+    // Determine worst-case downward/upward elevation and horizontal fan half-angles.
     let lowestElevationRad: number;
+    let highestElevationRad: number;
     let halfAzimuthRad: number;
     let stationaryByIlda = false;
 
@@ -213,12 +214,13 @@ export function evaluateLaserSafety(
       const { tanHalfX, tanHalfY } = ildaScanTangents(spec?.maxScanAngleDeg, sx, sy);
       const maxRoll = Math.min(Math.PI / 2, Math.max(0, Number.isFinite(laser.rotation) ? laser.rotation : 0) * LASER_ILDA_ROLL_SCALE);
 
-      // Compute worst-case lowest normalized Y tangent across ILDA bounding corners rotated by [-maxRoll, +maxRoll].
+      // Compute worst-case lowest & highest normalized Y tangent across ILDA bounding corners rotated by [-maxRoll, +maxRoll].
       const bxMin = clip.bounds.minX * tanHalfX;
       const bxMax = clip.bounds.maxX * tanHalfX;
       const byMin = clip.bounds.minY * tanHalfY;
       const byMax = clip.bounds.maxY * tanHalfY;
       let worstTanY = byMin;
+      let bestTanY = byMax;
       let maxAbsTanX = Math.max(Math.abs(bxMin), Math.abs(bxMax));
 
       if (maxRoll > 0) {
@@ -236,14 +238,18 @@ export function evaluateLaserSafety(
           const yNeg = -cx * sinR + cy * cosR;
           const yPos = cx * sinR + cy * cosR;
           worstTanY = Math.min(worstTanY, yNeg, yPos);
+          bestTanY = Math.max(bestTanY, yNeg, yPos);
           // Minimum of cx*sin(a) + cy*cos(a) occurs at a* = atan2(-cx, -cy).
           const aMin = Math.atan2(-cx, -cy);
           if (Math.abs(aMin) <= maxRoll) worstTanY = Math.min(worstTanY, -r);
+          const aMax = Math.atan2(cx, cy);
+          if (Math.abs(aMax) <= maxRoll) bestTanY = Math.max(bestTanY, r);
           maxAbsTanX = Math.max(maxAbsTanX, Math.abs(cx * cosR - cy * sinR), Math.abs(cx * cosR + cy * sinR));
         }
       }
 
       lowestElevationRad = Math.atan(worstTanY);
+      highestElevationRad = Math.atan(bestTanY);
       halfAzimuthRad = Math.atan(maxAbsTanX);
 
       // Exact angular span per frame in degrees (never overstating by 2x).
@@ -257,25 +263,71 @@ export function evaluateLaserSafety(
     } else {
       const fan = laserFanHalfAngles(laser.pattern, laser.spreadX, laser.spreadY, laser.rotation, globalLaserIndex);
       lowestElevationRad = -fan.halfYRad;
+      highestElevationRad = fan.halfYRad;
       halfAzimuthRad = fan.halfXRad;
     }
 
-    // Evaluate worst-case (most downward pitch = pitchEnv.maxPitchRad) across center + both lateral fan edges.
+    // Assess the full pitch x elevation envelope against finite floor-clipped audience geometry (Codex R3):
+    // steepest downward rays can hit the floor before the audience while shallower phases enter below 3.0 m.
     let minClearanceM: number | null = null;
-    for (const az of [-halfAzimuthRad, 0, halfAzimuthRad]) {
-      const clearance = lowestAudienceHeightForRay(
-        unit.position.x,
-        originY,
-        unit.position.z,
-        unit.yaw,
-        pitchEnv.maxPitchRad,
-        az,
-        lowestElevationRad,
-        bounds.audienceZone,
-        maxRayLengthM,
-      );
-      if (clearance !== null) {
-        minClearanceM = minClearanceM === null ? clearance : Math.min(minClearanceM, clearance);
+    const pitchSamples: number[] = [];
+    const PITCH_STEPS = 8;
+    const pitchSpan = pitchEnv.maxPitchRad - pitchEnv.minPitchRad;
+    if (pitchSpan <= 1e-6) {
+      pitchSamples.push(pitchEnv.maxPitchRad);
+    } else {
+      for (let i = 0; i <= PITCH_STEPS; i++) {
+        pitchSamples.push(pitchEnv.minPitchRad + (pitchSpan * i) / PITCH_STEPS);
+      }
+    }
+    const elevSamples: number[] = [];
+    const ELEV_STEPS = 4;
+    const elevSpan = highestElevationRad - lowestElevationRad;
+    if (elevSpan <= 1e-6) {
+      elevSamples.push(lowestElevationRad);
+    } else {
+      for (let i = 0; i <= ELEV_STEPS; i++) {
+        elevSamples.push(lowestElevationRad + (elevSpan * i) / ELEV_STEPS);
+      }
+      if (lowestElevationRad < 0 && highestElevationRad > 0) elevSamples.push(0);
+    }
+
+    // Add exact analytical pitch angles aimed at the front edge of the audience floor (y=0) and 3 m plane,
+    // so even narrow pitch windows that clear the stage floor and enter the audience cannot slip between samples.
+    const distToAudienceFront = bounds.audienceZone.minZ - unit.position.z;
+    if (distToAudienceFront > 0.1 && originY > 0) {
+      for (const targetY of [0.05, 1.5, MIN_AUDIENCE_CLEARANCE_M - 0.1]) {
+        const critDownRad = Math.atan2(originY - targetY, distToAudienceFront);
+        if (critDownRad >= pitchEnv.minPitchRad && critDownRad <= pitchEnv.maxPitchRad) {
+          pitchSamples.push(critDownRad);
+        }
+        // Also test at lowestElevationRad (effective downward angle = pitch - elev)
+        const pitchWithLowElev = critDownRad + lowestElevationRad;
+        if (pitchWithLowElev >= pitchEnv.minPitchRad && pitchWithLowElev <= pitchEnv.maxPitchRad) {
+          pitchSamples.push(pitchWithLowElev);
+        }
+      }
+    }
+
+    const azSamples = halfAzimuthRad > 1e-6 ? [-halfAzimuthRad, 0, halfAzimuthRad] : [0];
+    for (const az of azSamples) {
+      for (const pitch of pitchSamples) {
+        for (const elev of elevSamples) {
+          const clearance = lowestAudienceHeightForRay(
+            unit.position.x,
+            originY,
+            unit.position.z,
+            unit.yaw,
+            pitch,
+            az,
+            elev,
+            bounds.audienceZone,
+            maxRayLengthM,
+          );
+          if (clearance !== null) {
+            minClearanceM = minClearanceM === null ? clearance : Math.min(minClearanceM, clearance);
+          }
+        }
       }
     }
 

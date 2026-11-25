@@ -1040,3 +1040,68 @@ test('Codex R4: stationary timecode hold followed by forward jump (>10 frames ->
   assert.equal(audioPlaying, true, 'audio must resume on forward-jump seek out of stationary hold');
   assert.equal(screenPlaying, true, 'screen video must resume on forward-jump seek out of stationary hold');
 });
+
+test('QA H2 regression: evaluateAudioModulation followed by stepCombinedStrobeGate preserves >= 50 ms flash pulses and <= 3 edges/s', () => {
+  const state = audioMod.createAudioModulationState();
+  const frame = audioMod.createAudioModulationFrame();
+  // Active wash dimmer mapping ONLY (no beam strobe mapping — old code erroneously disarmed manualStrobe every frame!)
+  const look = {
+    ...presets.INITIAL_SHOW_STATE,
+    masterDimmer: 1,
+    strobeRate: 0.92,
+    audioReactive: true,
+    audioMap: {
+      mappings: [{
+        id: 'w-dim',
+        name: 'Bass -> wash dimmer',
+        enabled: true,
+        source: 'bass',
+        target: { group: 'wash', param: 'dimmer' },
+        amount: 0.5,
+        attackMs: 10,
+        releaseMs: 100,
+        threshold: 0.1,
+        curve: 'linear',
+      }],
+    },
+  };
+  const metrics = {
+    playing: true,
+    bass: 0.8,
+    mid: 0.2,
+    high: 0.2,
+    energy: 0.5,
+    beat: false,
+    beatPulse: 0,
+    drop: false,
+    spectrum: new Float32Array(32),
+  };
+
+  const dt = 1 / 60;
+  const edgeTimesMs = [];
+  const pulseDurationsMs = [];
+  let prevOn = false;
+  let pulseStartMs = 0;
+
+  // Run 3 seconds (180 frames) calling evaluateAudioModulation THEN stepCombinedStrobeGate every frame.
+  for (let i = 0; i < 180; i++) {
+    audioMod.evaluateAudioModulation(look, metrics, state, dt, frame);
+    const res = audioMod.stepCombinedStrobeGate(state, look.strobeRate, i * dt, false);
+    if (res.flashOn && !prevOn) {
+      edgeTimesMs.push(state.clockMs);
+      pulseStartMs = state.clockMs;
+    } else if (!res.flashOn && prevOn) {
+      pulseDurationsMs.push(state.clockMs - pulseStartMs);
+    }
+    prevOn = res.flashOn;
+  }
+
+  assert.ok(edgeTimesMs.length >= 6 && edgeTimesMs.length <= 9, `expected 6..9 flashes over 3 s (<=3/s), got ${edgeTimesMs.length}`);
+  assert.ok(pulseDurationsMs.length >= 5, 'expected completed flash pulses');
+  for (const dur of pulseDurationsMs) {
+    assert.ok(dur >= audioMod.FLASH_ON_MS - 0.5, `each flash pulse must stay on >= ${audioMod.FLASH_ON_MS} ms, got ${dur.toFixed(2)} ms`);
+  }
+  for (let i = 1; i < edgeTimesMs.length; i++) {
+    assert.ok(edgeTimesMs[i] - edgeTimesMs[i - 1] >= audioMod.FLASH_REFRACTORY_MS - 1);
+  }
+});

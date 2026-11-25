@@ -1,7 +1,9 @@
 import type {
   AudioMapping,
   CameraPreset,
+  MusicRef,
   RigConfig,
+  ScreenRef,
   ShowCue,
   ShowState,
 } from '../types/show';
@@ -82,6 +84,10 @@ export interface AiDeskSnapshot {
   timeline?: ShowTimeline;
   camera: CameraPreset;
   volume: number;
+  screen?: ScreenRef;
+  music?: MusicRef;
+  expectedMusic?: MusicRef;
+  takeMetaExplicit?: boolean;
   clockMode: ClockMode;
   audioStatus: {
     playing: boolean;
@@ -105,6 +111,11 @@ export interface AiProposalCandidate {
   kind: AiProposalKind;
   show?: StageForgeShowFile;
   look?: ShowState;
+  lookPatch?: Record<string, unknown>;
+  audioMappingPatch?: {
+    audioMap?: ShowState['audioMap'];
+    audioReactive?: boolean;
+  };
   cues?: ShowCue[];
   activeCueId?: string | null;
   timeline?: ShowTimeline;
@@ -185,6 +196,20 @@ export function cueEnablesAudienceScan(cue: ShowCue | undefined): boolean {
   return Boolean(cue?.state?.laser?.audienceScan === true);
 }
 
+/**
+ * Walk the cue follow chain starting at `startIndex` (following `followSeconds > 0` to `idx + 1`)
+ * and return true if the cue or any auto-followed successor enables laser audience scanning (H1).
+ */
+export function cueOrFollowChainEnablesAudienceScan(cues: readonly ShowCue[], startIndex: number): boolean {
+  if (startIndex < 0 || startIndex >= cues.length) return false;
+  for (let i = startIndex; i < cues.length; i++) {
+    const cue = cues[i];
+    if (cueEnablesAudienceScan(cue)) return true;
+    if (!(cue.followSeconds && cue.followSeconds > 0)) break;
+  }
+  return false;
+}
+
 export function timelineEnablesAudienceScan(timeline: ShowTimeline | undefined): boolean {
   if (!timeline) return false;
   return timeline.events.some((ev) => ev.look?.laser?.audienceScan === true);
@@ -217,6 +242,25 @@ function stableStringify(value: unknown): string {
     parts.push(`${JSON.stringify(k)}:${stableStringify(obj[k])}`);
   }
   return `{${parts.join(',')}}`;
+}
+
+/**
+ * Authored-document revision hash (rig, stage, interchange, cues, timeline).
+ * Excludes volatile runtime playback state (live look, activeCueId, masterDimmer, blackout)
+ * so running cues, adjusting master, or playing a take does not invalidate pending proposals (M6).
+ */
+export function computeAuthoredRevision(desk: Pick<
+  AiDeskSnapshot,
+  'rig' | 'stage' | 'interchange' | 'cues' | 'timeline'
+>): string {
+  const payload = stableStringify({
+    rig: desk.rig,
+    stage: desk.stage ?? null,
+    interchange: desk.interchange ?? null,
+    cues: desk.cues,
+    timeline: desk.timeline ?? null,
+  });
+  return `doc-${fnv1aHex(payload)}-${payload.length}`;
 }
 
 /**
@@ -349,6 +393,13 @@ export function compileLookProposal(
     } else if (k === 'atmo' && isPlainObject(v)) {
       expandedPatch.atmo = { ...structuredClone(desk.look.atmo), ...structuredClone(v) };
     } else if (k === 'led' && isPlainObject(v)) {
+      // Reject AI-supplied customMediaUrl/customMediaType instead of silently overriding (L8).
+      if (Object.prototype.hasOwnProperty.call(v, 'customMediaUrl') && v.customMediaUrl !== null) {
+        throw new Error('patch.led.customMediaUrl cannot be set by AI proposals.');
+      }
+      if (Object.prototype.hasOwnProperty.call(v, 'customMediaType') && v.customMediaType !== null) {
+        throw new Error('patch.led.customMediaType cannot be set by AI proposals.');
+      }
       const baseLed = { ...structuredClone(desk.look.led), customMediaUrl: null, customMediaType: null };
       expandedPatch.led = { ...baseLed, ...structuredClone(v), customMediaUrl: null, customMediaType: null };
     } else {
@@ -374,7 +425,7 @@ export function compileLookProposal(
   return {
     summary: summary?.trim() || `Update look (${diffLines.length} field${diffLines.length === 1 ? '' : 's'})`,
     diffLines,
-    candidate: { kind: 'propose_look', look: merged },
+    candidate: { kind: 'propose_look', look: merged, lookPatch: structuredClone(rawPatch) },
   };
 }
 
@@ -608,14 +659,18 @@ export function compileAudioMappingProposal(
   }
 
   const validatedMap = validateAudioMapForRig({ mappings: nextMappings }, desk.rig, 'audioMap');
+  const audioMappingPatch: NonNullable<AiProposalCandidate['audioMappingPatch']> = {
+    audioMap: validatedMap.mappings.length > 0 ? validatedMap : undefined,
+    ...(args.audioReactive !== undefined ? { audioReactive: args.audioReactive } : {}),
+  };
   const nextLook = structuredClone(desk.look);
-  if (validatedMap.mappings.length > 0) {
-    nextLook.audioMap = validatedMap;
+  if (audioMappingPatch.audioMap) {
+    nextLook.audioMap = structuredClone(audioMappingPatch.audioMap);
   } else {
     delete nextLook.audioMap;
   }
-  if (args.audioReactive !== undefined) {
-    nextLook.audioReactive = args.audioReactive;
+  if (audioMappingPatch.audioReactive !== undefined) {
+    nextLook.audioReactive = audioMappingPatch.audioReactive;
   }
 
   const diffLines = [
@@ -627,7 +682,38 @@ export function compileAudioMappingProposal(
   return {
     summary: args.summary?.trim() || `Update audio mappings (${validatedMap.mappings.length} active)`,
     diffLines,
-    candidate: { kind: 'propose_audio_mapping', look: nextLook },
+    candidate: { kind: 'propose_audio_mapping', look: nextLook, audioMappingPatch },
+  };
+}
+
+/**
+ * Re-applies an audio-mapping patch onto the current live desk look at accept time so
+ * live safety/operator changes (audienceScan off, blackout, master dimmer, BPM) are
+ * never clobbered by a stale look snapshot captured when the proposal was created.
+ */
+export function applyAudioMappingPatchToDesk(
+  patch: NonNullable<AiProposalCandidate['audioMappingPatch']>,
+  desk: AiDeskSnapshot,
+): AiProposalCandidate {
+  const validatedMap = patch.audioMap
+    ? validateAudioMapForRig(structuredClone(patch.audioMap), desk.rig, 'audioMap')
+    : { mappings: [] };
+  const nextLook = structuredClone(desk.look);
+  if (validatedMap.mappings.length > 0) {
+    nextLook.audioMap = validatedMap;
+  } else {
+    delete nextLook.audioMap;
+  }
+  if (patch.audioReactive !== undefined) {
+    nextLook.audioReactive = patch.audioReactive;
+  }
+  return {
+    kind: 'propose_audio_mapping',
+    look: nextLook,
+    audioMappingPatch: {
+      audioMap: validatedMap.mappings.length > 0 ? validatedMap : undefined,
+      ...(patch.audioReactive !== undefined ? { audioReactive: patch.audioReactive } : {}),
+    },
   };
 }
 

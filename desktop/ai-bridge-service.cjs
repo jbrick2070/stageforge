@@ -200,8 +200,8 @@ function readBoundedJsonBody(req, maxBytes, timeoutMs) {
 }
 
 function createAiBridgeService(options = {}) {
-  const sdk = loadMcpSdk(options);
-  const schemaText = typeof options.schemaText === 'string' ? options.schemaText : loadCanonicalShowSchema();
+  let sdk = options.sdk || null;
+  let schemaText = typeof options.schemaText === 'string' ? options.schemaText : null;
   const interlock = options.interlock || null;
   const allowZeroPort = Boolean(options.allowZeroPort);
   const nowMs = typeof options.nowMs === 'function' ? options.nowMs : defaultMonotonicMs;
@@ -226,8 +226,9 @@ function createAiBridgeService(options = {}) {
 
   /** @type {Set<import('node:net').Socket>} */
   const sockets = new Set();
-  /** @type {Map<string, { server: any, transport: any, generation: number, lastUsedMs: number, activeCount: number }>} */
+  /** @type {Map<string, { server: any, transport: any, generation: number, lastUsedMs: number, activeCount: number, sessionId: string | null }>} */
   const sessions = new Map();
+  let initializingSessions = 0;
   /** @type {Map<string, { resolve: Function, reject: Function, timer: any, ownerId: number, generation: number, tool: string }>} */
   const pendingCalls = new Map();
   /** @type {number[]} */
@@ -554,6 +555,7 @@ function createAiBridgeService(options = {}) {
       generation: sessionGen,
       lastUsedMs: nowMs(),
       activeCount: 0,
+      sessionId: null,
     };
 
     const transport = new sdk.StreamableHTTPServerTransport({
@@ -561,6 +563,7 @@ function createAiBridgeService(options = {}) {
       enableJsonResponse: true,
       onsessioninitialized: (sessionId) => {
         if (state === 'on' && generation === sessionGen) {
+          entry.sessionId = sessionId;
           sessions.set(sessionId, entry);
         }
       },
@@ -701,6 +704,7 @@ function createAiBridgeService(options = {}) {
 
       pruneIdleSessions();
 
+      let isNewSession = false;
       if (sid) {
         sessionEntry = sessions.get(sid) || null;
         if (!sessionEntry || sessionEntry.generation !== reqGen) {
@@ -720,7 +724,8 @@ function createAiBridgeService(options = {}) {
           });
           return;
         }
-        if (sessions.size >= MAX_SESSIONS) {
+        // Atomic session cap check including concurrent in-flight initialize attempts (L3).
+        if (sessions.size + initializingSessions >= MAX_SESSIONS) {
           writeJsonResponse(res, 503, {
             jsonrpc: '2.0',
             error: { code: -32000, message: `Maximum concurrent MCP sessions (${MAX_SESSIONS}) reached.` },
@@ -728,8 +733,18 @@ function createAiBridgeService(options = {}) {
           });
           return;
         }
-        sessionEntry = buildMcpSession(reqGen);
-        await sessionEntry.server.connect(sessionEntry.transport);
+        isNewSession = true;
+        initializingSessions++;
+        try {
+          sessionEntry = buildMcpSession(reqGen);
+          await sessionEntry.server.connect(sessionEntry.transport);
+        } catch (connectErr) {
+          initializingSessions = Math.max(0, initializingSessions - 1);
+          if (sessionEntry?.transport) {
+            void Promise.resolve(sessionEntry.transport.close()).catch(() => {});
+          }
+          throw connectErr;
+        }
       }
 
       sessionEntry.activeCount++;
@@ -739,6 +754,13 @@ function createAiBridgeService(options = {}) {
       } finally {
         sessionEntry.activeCount = Math.max(0, sessionEntry.activeCount - 1);
         sessionEntry.lastUsedMs = nowMs();
+        if (isNewSession) {
+          initializingSessions = Math.max(0, initializingSessions - 1);
+          // Reap failed/unregistered initialize Server+transport pairs immediately (L3).
+          if (!sessionEntry.sessionId || !sessions.has(sessionEntry.sessionId)) {
+            void Promise.resolve(sessionEntry.transport.close()).catch(() => {});
+          }
+        }
       }
     } catch (err) {
       if (!res.writableEnded && !res.destroyed) {
@@ -760,6 +782,18 @@ function createAiBridgeService(options = {}) {
       throw new Error(`Port must be an integer between ${MIN_PORT} and ${MAX_PORT}.`);
     }
 
+    // Lazy-load the MCP SDK and canonical schema on first enable so boot has zero overhead
+    // and a missing bundle cannot crash Electron app.whenReady() (M5).
+    try {
+      if (!sdk) sdk = loadMcpSdk(options);
+      if (schemaText === null) schemaText = loadCanonicalShowSchema();
+    } catch (loadErr) {
+      const msg = loadErr instanceof Error ? loadErr.message : 'AI bridge MCP SDK is unavailable.';
+      lastError = msg;
+      emitStatus(targetOwnerId);
+      throw new Error(msg);
+    }
+
     if (interlock) {
       const check = interlock.tryBeginBridgeStart(targetOwnerId);
       if (!check.ok) {
@@ -775,6 +809,7 @@ function createAiBridgeService(options = {}) {
     generation++;
     const startGen = generation;
     const freshToken = crypto.randomBytes(32).toString('base64url');
+    const localSockets = new Set();
 
     const httpServer = http.createServer((req, res) => {
       void handleHttpRequest(req, res);
@@ -790,8 +825,12 @@ function createAiBridgeService(options = {}) {
       socket.destroy();
     });
     httpServer.on('connection', (socket) => {
+      localSockets.add(socket);
       sockets.add(socket);
-      socket.once('close', () => sockets.delete(socket));
+      socket.once('close', () => {
+        localSockets.delete(socket);
+        sockets.delete(socket);
+      });
     });
 
     try {
@@ -812,8 +851,8 @@ function createAiBridgeService(options = {}) {
       // Check if disable() raced while bind was pending.
       if (state !== 'starting' || generation !== startGen) {
         try { httpServer.close(); } catch { /* ignore */ }
-        for (const s of [...sockets]) { try { s.destroy(); } catch { /* ignore */ } }
-        sockets.clear();
+        for (const s of [...localSockets]) { try { s.destroy(); } catch { /* ignore */ } }
+        localSockets.clear();
         throw new Error('AI bridge startup was cancelled.');
       }
 
@@ -833,19 +872,22 @@ function createAiBridgeService(options = {}) {
       return getStatus(true);
     } catch (err) {
       try { httpServer.close(); } catch { /* ignore */ }
-      for (const s of [...sockets]) { try { s.destroy(); } catch { /* ignore */ } }
-      sockets.clear();
-      server = null;
-      boundPort = null;
-      token = null;
+      for (const s of [...localSockets]) { try { s.destroy(); } catch { /* ignore */ } }
+      localSockets.clear();
       const msg = err && err.code === 'EADDRINUSE'
         ? `Port ${rawPort} is already in use on 127.0.0.1. Choose another port.`
         : (err instanceof Error ? err.message : 'Could not start AI bridge server.');
-      lastError = msg;
-      state = 'off';
-      ownerId = null;
-      if (interlock) interlock.finishBridgeStop();
-      emitStatus(targetOwnerId);
+      // Only clear shared bridge state & interlock if no newer disable/enable superseded this start (L1).
+      if (generation === startGen) {
+        server = null;
+        boundPort = null;
+        token = null;
+        lastError = msg;
+        state = 'off';
+        ownerId = null;
+        if (interlock) interlock.finishBridgeStop();
+        emitStatus(targetOwnerId);
+      }
       throw new Error(msg);
     }
   }

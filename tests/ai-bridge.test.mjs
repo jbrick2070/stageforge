@@ -742,4 +742,161 @@ test('Clock owner enforces AI bridge rules across master, caller, and chase mode
     protocol.timelineEnablesAudienceScan({ durationMs: 1000, events: [{ atMs: 0, look: { laser: { ...presets.INITIAL_SHOW_STATE.laser, audienceScan: true } } }] }),
     true,
   );
+
+  // QA H1 regression: follow-chain audienceScan detection
+  const chainCues = [
+    { id: 'c1', name: 'Clean Lead-in', tag: 'A', accent: '#0ff', followSeconds: 4, state: { masterDimmer: 0.8 } },
+    { id: 'c2', name: 'Scan Cue', tag: 'B', accent: '#f0f', state: { laser: { ...presets.INITIAL_SHOW_STATE.laser, audienceScan: true } } },
+    { id: 'c3', name: 'Isolated Clean', tag: 'C', accent: '#0f0', state: { masterDimmer: 0.7 } },
+  ];
+  assert.equal(protocol.cueOrFollowChainEnablesAudienceScan(chainCues, 0), true, 'follow chain reaching audienceScan cue must be blocked');
+  assert.equal(protocol.cueOrFollowChainEnablesAudienceScan(chainCues, 1), true, 'direct audienceScan cue must be blocked');
+  assert.equal(protocol.cueOrFollowChainEnablesAudienceScan(chainCues, 2), false, 'clean cue without follow chain must pass');
+});
+
+// ---------------------------------------------------------------------------
+// 6. QA Pass 1 regressions (M5 lazy SDK, M6 authored revision, L3 failed initialize cleanup, L8 customMediaUrl rejection, two-window interlock race)
+// ---------------------------------------------------------------------------
+test('QA regressions: lazy SDK load (M5), authored-only proposal revision (M6), customMediaUrl rejection (L8), failed initialize cleanup (L3), and two-window interlock', async () => {
+  // M5: packaged startup with missing mcp-sdk.cjs must NOT throw in createAiBridgeService; only enable() fails cleanly.
+  const lazySvc = createAiBridgeService({ isPackaged: true, allowZeroPort: true });
+  assert.equal(lazySvc.active, false);
+  await assert.rejects(() => lazySvc.enable({ port: 0 }, 1), /mcp-sdk\.cjs|unavailable/i);
+  assert.ok(lazySvc.getStatus().lastError, 'failed lazy SDK load should record lastError');
+
+  // M6: computeAuthoredRevision stays stable across runtime master/blackout/activeCueId edits, changes on cue/rig edits
+  const desk = makeFakeDesk();
+  const rev0 = protocol.computeAuthoredRevision(desk);
+  const afterRuntimeEdits = {
+    ...desk,
+    activeCueId: desk.cues[1].id,
+    look: { ...desk.look, masterDimmer: 0.3, blackout: true, bpm: 155 },
+  };
+  assert.equal(protocol.computeAuthoredRevision(afterRuntimeEdits), rev0, 'runtime look/activeCueId edits must not stale authored proposals');
+  const afterDocEdit = {
+    ...desk,
+    cues: [...desk.cues, { id: 'extra', name: 'Extra', tag: 'X', accent: '#fff', state: { masterDimmer: 0.5 } }],
+  };
+  assert.notEqual(protocol.computeAuthoredRevision(afterDocEdit), rev0, 'authored cue edits must change revision');
+
+  // QA Pass 2 M-A regression: audio-mapping proposal created while human had audienceScan=true must NOT
+  // re-enable audienceScan or lift blackout when re-applied after operator turns audienceScan off & hits blackout
+  const deskWithHumanScan = {
+    ...desk,
+    look: {
+      ...desk.look,
+      blackout: false,
+      masterDimmer: 1,
+      laser: { ...desk.look.laser, enabled: true, audienceScan: true },
+    },
+  };
+  const audioProp = protocol.compileAudioMappingProposal(
+    {
+      action: 'upsert',
+      audioReactive: true,
+      mapping: {
+        id: 'bass-wash',
+        name: 'Bass Wash',
+        enabled: true,
+        source: 'bass',
+        target: { group: 'wash', param: 'dimmer' },
+        amount: 0.6,
+        attackMs: 15,
+        releaseMs: 120,
+        threshold: 0.1,
+        curve: 'linear',
+      },
+    },
+    deskWithHumanScan,
+  );
+  assert.ok(audioProp.candidate.audioMappingPatch, 'compileAudioMappingProposal must include audioMappingPatch');
+  const deskAfterHumanSafetyAction = {
+    ...deskWithHumanScan,
+    look: {
+      ...deskWithHumanScan.look,
+      blackout: true,
+      masterDimmer: 0.25,
+      bpm: 112,
+      laser: { ...deskWithHumanScan.look.laser, audienceScan: false },
+    },
+  };
+  const reappliedAudio = protocol.applyAudioMappingPatchToDesk(
+    audioProp.candidate.audioMappingPatch,
+    deskAfterHumanSafetyAction,
+  );
+  assert.equal(reappliedAudio.look.laser.audienceScan, false, 'M-A: must NEVER re-enable audienceScan');
+  assert.equal(reappliedAudio.look.blackout, true, 'M-A: must preserve operator blackout');
+  assert.equal(reappliedAudio.look.masterDimmer, 0.25, 'M-A: must preserve operator masterDimmer');
+  assert.equal(reappliedAudio.look.bpm, 112, 'M-A: must preserve operator BPM');
+  assert.equal(reappliedAudio.look.audioReactive, true, 'M-A: must apply proposed audioReactive');
+  assert.equal(reappliedAudio.look.audioMap.mappings.length, 1, 'M-A: must apply proposed audio mapping');
+
+  // L8: compileLookProposal rejects AI-supplied non-null customMediaUrl / customMediaType instead of silently overriding
+  assert.throws(
+    () => protocol.compileLookProposal({ led: { customMediaUrl: 'https://evil.example/a.mp4' } }, undefined, desk),
+    /customMediaUrl/i,
+  );
+  assert.throws(
+    () => protocol.compileLookProposal({ led: { customMediaType: 'video' } }, undefined, desk),
+    /customMediaType/i,
+  );
+
+  // L3: 12 failed initialize attempts (missing required Accept header -> 406) must NOT leak or exhaust MAX_SESSIONS (8)
+  const svc = createAiBridgeService({ allowZeroPort: true, rateLimitPerSec: 100 });
+  const { port, token } = await svc.enable({ port: 0 }, 99);
+  try {
+    for (let i = 0; i < 12; i++) {
+      const badInit = await rawHttpRequest({
+        port,
+        headers: {
+          Host: `127.0.0.1:${port}`,
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json', // missing text/event-stream -> fails initialize
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: i + 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'bad', version: '1' } },
+        }),
+      });
+      assert.equal(badInit.status, 406);
+    }
+    assert.equal(svc.getStatus().activeSessions, 0, 'failed initialize requests must not register zombie sessions');
+    const validSession = await initSession(port, token);
+    const listRes = await validSession.call('tools/list', {}, 50);
+    assert.equal(listRes.status, 200);
+  } finally {
+    await svc.disable('l3-cleanup');
+  }
+
+  // Two-window interlock race: window 1 starting DMX blocks window 2 enabling AI bridge synchronously
+  let dmxActive = false;
+  const interlock = createOutputInterlock({ isDmxActive: () => dmxActive });
+  const slowDmx = {
+    get active() { return dmxActive; },
+    ownerId: null,
+    isRunning: () => dmxActive,
+    enable: async (_cfg, id) => {
+      await new Promise((r) => setTimeout(r, 30));
+      dmxActive = true;
+      slowDmx.ownerId = id;
+      return { enabled: true };
+    },
+    shutdown: async () => { dmxActive = false; slowDmx.ownerId = null; return { enabled: false }; },
+    getStatus: () => ({ enabled: dmxActive, state: dmxActive ? 'running' : 'idle', nodes: [] }),
+  };
+  const bridge2 = createAiBridgeService({ allowZeroPort: true, interlock });
+  const dmxH = createDmxIpcHandlers(() => slowDmx, { interlock });
+  const aiH = createAiBridgeIpcHandlers(() => bridge2, () => interlock);
+  const mkEv = (id) => {
+    const frame = { url: 'stageforge://app/' };
+    return { senderFrame: frame, sender: { id, mainFrame: frame, isDestroyed: () => false, getURL: () => 'stageforge://app/', setBackgroundThrottling: () => {} } };
+  };
+  const win1Enable = dmxH.onControl(mkEv(1), { type: 'enable', config: {} });
+  // Immediately while win1 DMX enable is mid-await, win2 tries to enable AI bridge -> MUST be rejected!
+  await assert.rejects(() => aiH.onControl(mkEv(2), { type: 'enable', config: { port: 0 } }), /Stop live DMX output/i);
+  await win1Enable;
+  await dmxH.onControl(mkEv(1), { type: 'disable' });
 });

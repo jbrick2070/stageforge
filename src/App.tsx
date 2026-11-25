@@ -54,7 +54,13 @@ import type { DmxSnapshot } from './components/DmxMonitorDrawer';
 import { LiveDmxBadge } from './components/LiveDmxBadge';
 import { AiProposalBanner } from './components/AiProposalBanner';
 import { useAiBridge, type AiBridgeApi, type AiRevertSnapshot } from './aiBridge/useAiBridge';
-import type { AiProposalCandidate } from './aiBridge/aiBridgeProtocol';
+import {
+  AUDIENCE_SCAN_ERROR,
+  cueEnablesAudienceScan,
+  cueOrFollowChainEnablesAudienceScan,
+  timelineEnablesAudienceScan,
+  type AiProposalCandidate,
+} from './aiBridge/aiBridgeProtocol';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
   DEFAULT_MEASURE_OVERLAY_OPTIONS,
@@ -938,11 +944,19 @@ export const App: React.FC = () => {
     return () => window.clearTimeout(id);
   }, [toast]);
 
+  const followInitiatedByAiRef = useRef(false);
+
   // Trigger a show cue cleanly preserving user's custom media/text/master
   const triggerCue = useCallback((cue: ShowCue, automatic = false, source: 'manual' | 'autoLD' | 'follow' | 'ai' | 'osc' | 'msc' = automatic ? 'autoLD' : 'manual') => {
     const mode = clockModeRef.current;
-    if (automatic && !allows(mode, source, source === 'follow' ? 'cue_follow' : 'auto_ld')) return;
-    if (!automatic && !allows(mode, source, 'go')) return;
+    if (automatic && !allows(mode, source, source === 'follow' ? 'cue_follow' : 'auto_ld')) {
+      if (source !== 'follow') followInitiatedByAiRef.current = false;
+      return;
+    }
+    if (!automatic && !allows(mode, source, 'go')) {
+      if (source !== 'follow') followInitiatedByAiRef.current = false;
+      return;
+    }
     if (!automatic) {
       previewRig();
       engineRef.current?.releaseDirector(false);
@@ -950,8 +964,14 @@ export const App: React.FC = () => {
     }
     const index = cuesRef.current.findIndex(c => c.id === cue.id);
     const allowFollow = !automatic && allows(mode, 'follow', 'cue_follow');
-    setFollow(allowFollow && cue.followSeconds && index >= 0 && index + 1 < cuesRef.current.length
-      ? performance.now() + cue.followSeconds * 1000 : null);
+    const armingFollow = Boolean(allowFollow && cue.followSeconds && index >= 0 && index + 1 < cuesRef.current.length);
+    if (source === 'ai') {
+      followInitiatedByAiRef.current = armingFollow;
+    } else if (source !== 'follow') {
+      followInitiatedByAiRef.current = false;
+    }
+    setFollow(armingFollow
+      ? performance.now() + cue.followSeconds! * 1000 : null);
     if (cue.screen) setScreen({ ...cue.screen });
     if (cue.state.bpm !== undefined) audioEngineRef.current?.setBpm(cue.state.bpm);
     setActiveCueId(cue.id);
@@ -966,12 +986,25 @@ export const App: React.FC = () => {
   const nextCue = followingCue ?? cues[0];
   const previousCue = cues[currentIndex > 0 ? currentIndex - 1 : cues.length - 1];
   useEffect(() => {
+    if (follow === null) {
+      followInitiatedByAiRef.current = false;
+      return;
+    }
     if (typeof follow !== 'number' || !followingCue || replaying.current || !allows(clockModeRef.current, 'follow', 'cue_follow')) return;
     const id = window.setTimeout(() => {
-      if (!replaying.current && allows(clockModeRef.current, 'follow', 'cue_follow')) triggerCue(followingCue, false, 'manual');
+      if (!replaying.current && allows(clockModeRef.current, 'follow', 'cue_follow')) {
+        // Re-check audienceScan if this follow chain was initiated by an AI run command (H1).
+        if (followInitiatedByAiRef.current && cueEnablesAudienceScan(followingCue)) {
+          followInitiatedByAiRef.current = false;
+          setFollow(null);
+          showToast(AUDIENCE_SCAN_ERROR);
+          return;
+        }
+        triggerCue(followingCue, false, followInitiatedByAiRef.current ? 'ai' : 'manual');
+      }
     }, Math.max(0, follow - performance.now()));
     return () => window.clearTimeout(id);
-  }, [follow, followingCue, triggerCue]);
+  }, [follow, followingCue, showToast, triggerCue]);
 
   const applyDeskBpm = useCallback((nextBpm: number) => {
     if (!capabilitiesRef.current.edit) return;
@@ -2750,8 +2783,8 @@ export const App: React.FC = () => {
     resumeTake,
   };
 
-  const applyAiCandidate = useCallback((candidate: AiProposalCandidate) => {
-    if (!capabilitiesRef.current.edit) return;
+  const applyAiCandidate = useCallback((candidate: AiProposalCandidate): boolean => {
+    if (!capabilitiesRef.current.edit) return false;
     if (candidate.kind === 'propose_show' && candidate.show) {
       const file = candidate.show;
       const nextRig = normalizeDesign(file.rig);
@@ -2773,12 +2806,15 @@ export const App: React.FC = () => {
       showControlRef.current.syncFromShowTimeline(file.timeline);
       wallClock.set(0, false);
       setFollow(null);
+      followInitiatedByAiRef.current = false;
       directorArmed.current = false;
       replaying.current = false;
       audioEngineRef.current?.stopAll();
       clearAllBumps();
       expectedMusic.current = file.media?.music ?? NO_MUSIC;
       applyRig(nextRig, true);
+      cuesRef.current = file.cues;
+      activeCueIdRef.current = file.activeCueId;
       setCues(file.cues);
       setActiveCueId(file.activeCueId);
       setCueModified(differsFromCue(look, file.cues.find((c) => c.id === file.activeCueId), wall));
@@ -2803,7 +2839,7 @@ export const App: React.FC = () => {
         activeCamera: file.controls?.camera ?? 'foh',
         volume: file.controls?.volume ?? 0.72,
       };
-      return;
+      return true;
     }
     if ((candidate.kind === 'propose_look' || candidate.kind === 'propose_audio_mapping') && candidate.look) {
       const next = structuredClone(candidate.look);
@@ -2813,12 +2849,14 @@ export const App: React.FC = () => {
       engineRef.current?.setShowState(next);
       audioEngineRef.current?.setBpm(next.bpm);
       aiDeskRefs.current = { ...aiDeskRefs.current, showState: next };
-      return;
+      return true;
     }
     if (candidate.kind === 'propose_cue' && candidate.cues) {
       const nextCues = structuredClone(candidate.cues);
+      cuesRef.current = nextCues;
       setCues(nextCues);
       if (candidate.activeCueId !== undefined) {
+        activeCueIdRef.current = candidate.activeCueId;
         setActiveCueId(candidate.activeCueId);
       }
       aiDeskRefs.current = {
@@ -2826,7 +2864,7 @@ export const App: React.FC = () => {
         cues: nextCues,
         activeCueId: candidate.activeCueId !== undefined ? candidate.activeCueId : aiDeskRefs.current.activeCueId,
       };
-      return;
+      return true;
     }
     if (candidate.kind === 'propose_take' && candidate.timeline) {
       const nextTake = structuredClone(candidate.timeline);
@@ -2841,7 +2879,7 @@ export const App: React.FC = () => {
         music: readMusic(),
       });
       showControlRef.current.syncFromShowTimeline(nextTake);
-      return;
+      return true;
     }
     if (candidate.kind === 'propose_wall_cue' && candidate.stage) {
       const nextStage = structuredClone(candidate.stage);
@@ -2863,38 +2901,49 @@ export const App: React.FC = () => {
       }
       aiDeskRefs.current = { ...aiDeskRefs.current, studioStage: nextStage };
       previewRig();
+      return true;
     }
+    return false;
   }, [applyRig, clearAllBumps, installInterchange, installStage, previewRig, takeDesk, wallClock]);
 
   const restoreAiRevertSnapshot = useCallback((snap: AiRevertSnapshot) => {
     if (!capabilitiesRef.current.edit) return;
     const nextRig = normalizeDesign(snap.rig);
-    const nextLook = structuredClone(snap.look);
+    const nextScreen = snap.screen ? structuredClone(snap.screen) : NO_SCREEN;
+    const nextMusic = snap.music ? structuredClone(snap.music) : NO_MUSIC;
+    const nextExpectedMusic = snap.expectedMusic ? structuredClone(snap.expectedMusic) : nextMusic;
+    const nextLook = wallLook(structuredClone(snap.look), nextScreen);
     timelineRef.current.stop();
     replaying.current = false;
     setFollow(null);
+    followInitiatedByAiRef.current = false;
     wallClock.set(0, false);
     audioEngineRef.current?.stopAll();
     engineRef.current?.restoreScreenTransport(false);
     clearAllBumps();
     installStage(snap.stage);
     installInterchange(snap.interchange);
+    takeMetaExplicitRef.current = Boolean(snap.takeMetaExplicit);
+    expectedMusic.current = nextExpectedMusic;
     timelineRef.current.replace(snap.timeline, {
       look: nextLook,
       cueId: snap.activeCueId,
       camera: snap.camera,
       volume: snap.volume,
       bump: EMPTY_BUMP,
-      screen: readScreen(),
-      music: readMusic(),
+      screen: { ...nextScreen, playing: false },
+      music: { ...nextMusic, playing: false },
     });
     showControlRef.current.syncFromShowTimeline(snap.timeline);
     applyRig(nextRig, true);
+    cuesRef.current = snap.cues;
+    activeCueIdRef.current = snap.activeCueId;
     setCues(snap.cues);
     setActiveCueId(snap.activeCueId);
     setCueModified(false);
     setShowState(nextLook);
     autoDirRef.current = nextLook.autoDirector;
+    setScreen({ ...nextScreen, playing: false });
     setActiveCamera(snap.camera);
     setVolume(snap.volume);
     audioEngineRef.current?.setBpm(nextLook.bpm);
@@ -2929,6 +2978,10 @@ export const App: React.FC = () => {
           timeline: timelineRef.current.timeline,
           camera: cur.activeCamera,
           volume: cur.volume,
+          screen: readScreen(),
+          music: readMusic(),
+          expectedMusic: expectedMusic.current,
+          takeMetaExplicit: takeMetaExplicitRef.current,
           clockMode: clockModeRef.current,
           audioStatus: {
             playing: cur.audioDiscrete.playing,
@@ -2948,19 +3001,32 @@ export const App: React.FC = () => {
       applyCandidate: applyAiCandidate,
       restoreSnapshot: restoreAiRevertSnapshot,
       onGo: () => {
-        const list = cuesRef.current;
-        if (!list.length) return { ok: false, activeCueId: activeCueIdRef.current, message: 'No cues exist.' };
-        const idx = list.findIndex((c) => c.id === activeCueIdRef.current);
-        const target = list[idx >= 0 ? (idx + 1) % list.length : 0];
+        // Single authoritative lookup + follow-chain audienceScan check (H1 + M4).
+        const list = aiDeskRefs.current.cues;
+        if (!list.length) return { ok: false, activeCueId: aiDeskRefs.current.activeCueId, message: 'No cues exist.' };
+        const idx = list.findIndex((c) => c.id === aiDeskRefs.current.activeCueId);
+        const targetIdx = idx >= 0 ? (idx + 1) % list.length : 0;
+        if (cueOrFollowChainEnablesAudienceScan(list, targetIdx)) {
+          return { isError: true, message: AUDIENCE_SCAN_ERROR };
+        }
+        const target = list[targetIdx];
+        cuesRef.current = list;
         triggerCue(target, false, 'ai');
+        aiDeskRefs.current = { ...aiDeskRefs.current, activeCueId: target.id };
         return { ok: true, activeCueId: target.id };
       },
       onBack: () => {
-        const list = cuesRef.current;
-        if (!list.length) return { ok: false, activeCueId: activeCueIdRef.current, message: 'No cues exist.' };
-        const idx = list.findIndex((c) => c.id === activeCueIdRef.current);
-        const target = list[idx > 0 ? idx - 1 : list.length - 1];
+        const list = aiDeskRefs.current.cues;
+        if (!list.length) return { ok: false, activeCueId: aiDeskRefs.current.activeCueId, message: 'No cues exist.' };
+        const idx = list.findIndex((c) => c.id === aiDeskRefs.current.activeCueId);
+        const targetIdx = idx > 0 ? idx - 1 : list.length - 1;
+        if (cueOrFollowChainEnablesAudienceScan(list, targetIdx)) {
+          return { isError: true, message: AUDIENCE_SCAN_ERROR };
+        }
+        const target = list[targetIdx];
+        cuesRef.current = list;
         triggerCue(target, false, 'ai');
+        aiDeskRefs.current = { ...aiDeskRefs.current, activeCueId: target.id };
         return { ok: true, activeCueId: target.id };
       },
       onStop: () => {
@@ -2969,17 +3035,34 @@ export const App: React.FC = () => {
         engineRef.current?.restoreScreenTransport(false);
       },
       onResume: () => {
+        // Guard take resume against audienceScan events (M3).
         if (timelineRef.current.canResume) {
+          if (timelineEnablesAudienceScan(timelineRef.current.timeline)) {
+            return { isError: true, message: AUDIENCE_SCAN_ERROR };
+          }
           aiDeskRefs.current.resumeTake();
-        } else if (!audioEngineRef.current?.getStatus().playing) {
+          return { ok: true };
+        }
+        if (!audioEngineRef.current?.getStatus().playing) {
           audioEngineRef.current?.togglePlayPause();
         }
+        return { ok: true };
       },
       onTriggerCue: ({ cueId, index }) => {
-        const list = cuesRef.current;
-        const target = cueId ? list.find((c) => c.id === cueId) : index !== undefined ? list[index - 1] : undefined;
-        if (!target) return { ok: false, activeCueId: activeCueIdRef.current, message: 'Cue not found.' };
+        const list = aiDeskRefs.current.cues;
+        const targetIdx = cueId
+          ? list.findIndex((c) => c.id === cueId)
+          : index !== undefined && index >= 1 && index <= list.length
+            ? index - 1
+            : -1;
+        if (targetIdx < 0) return { isError: true, message: 'Requested cue was not found.' };
+        if (cueOrFollowChainEnablesAudienceScan(list, targetIdx)) {
+          return { isError: true, message: AUDIENCE_SCAN_ERROR };
+        }
+        const target = list[targetIdx];
+        cuesRef.current = list;
         triggerCue(target, false, 'ai');
+        aiDeskRefs.current = { ...aiDeskRefs.current, activeCueId: target.id };
         return { ok: true, activeCueId: target.id };
       },
       onPlayTake: () => {
@@ -3003,27 +3086,25 @@ export const App: React.FC = () => {
         return { ok: true };
       },
       onSetBlackout: (active?: boolean) => {
-        const nextVal = active !== undefined ? active : !aiDeskRefs.current.showState.blackout;
+        // Pure state updater: apply engine + ref updates outside React setShowState updater (L9).
+        const prev = aiDeskRefs.current.showState;
+        const nextVal = active !== undefined ? active : !prev.blackout;
+        const next = { ...prev, blackout: nextVal };
         previewRig();
         setCueModified(true);
-        setShowState((s) => {
-          const next = { ...s, blackout: nextVal };
-          engineRef.current?.setShowState(next);
-          aiDeskRefs.current = { ...aiDeskRefs.current, showState: next };
-          return next;
-        });
+        aiDeskRefs.current = { ...aiDeskRefs.current, showState: next };
+        engineRef.current?.setShowState(next);
+        setShowState((s) => ({ ...s, blackout: nextVal }));
         return nextVal;
       },
       onSetMaster: (value: number) => {
         const clamped = Math.max(0, Math.min(1, value));
+        const next = { ...aiDeskRefs.current.showState, masterDimmer: clamped };
         previewRig();
         setCueModified(true);
-        setShowState((s) => {
-          const next = { ...s, masterDimmer: clamped };
-          engineRef.current?.setShowState(next);
-          aiDeskRefs.current = { ...aiDeskRefs.current, showState: next };
-          return next;
-        });
+        aiDeskRefs.current = { ...aiDeskRefs.current, showState: next };
+        engineRef.current?.setShowState(next);
+        setShowState((s) => ({ ...s, masterDimmer: clamped }));
         return clamped;
       },
       onSetBpm: (bpm: number) => {

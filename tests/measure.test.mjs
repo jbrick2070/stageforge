@@ -753,4 +753,79 @@ test('QA Pass 1 regressions: C1 sticky inhibit, H1 static beam clearance, H2 cue
     cueBeamRow?.findings.some((f) => f.code === 'beam_audience_clearance'),
     'P2-L5: cue-authored audience focus must raise beam_audience_clearance statically in pre-flight',
   );
+
+  // Codex review-02-sprint-12 R3: horizon laser with wide spreadY and steep tilt=-1 must be caught via full envelope
+  // (steepest ray hits stage floor ahead of audience, while intermediate rays enter audience below 3.0 m)
+  const horizonRig = structuredClone(RIG_TEMPLATES.arena_mainstage);
+  const horizonPod = horizonRig.trussPods.find((p) => p.fixtures.some((f) => f.type === 'laser'));
+  assert.ok(horizonPod, 'arena template has a laser pod');
+  horizonPod.x = 0;
+  horizonPod.baseY = 4.28;
+  horizonPod.z = -4;
+  horizonPod.motorized = false;
+  const horizonLaser = {
+    ...baseShow.laser,
+    enabled: true,
+    audienceScan: false,
+    pattern: 'horizon',
+    tilt: -1,
+    speed: 0.5,
+    rotation: 0,
+    spreadX: 1,
+    spreadY: 1,
+    beamCount: 8,
+  };
+  const horizonEval = evaluateLaserSafety(horizonRig, horizonLaser);
+  assert.equal(horizonEval.level, 'danger', 'R3: full pitch/elevation envelope must flag danger for horizon tilt=-1 spreadY=1');
+  assert.ok(
+    horizonEval.projectors.some((p) => p.entersAudienceBelowThreshold && p.minClearanceM !== null && p.minClearanceM < MIN_AUDIENCE_CLEARANCE_M),
+    'R3: intermediate rays enter audience below 3.0 m',
+  );
+  const horizonPre = evaluatePreflight({
+    rig: horizonRig,
+    cues: [],
+    showState: { ...baseShow, laser: horizonLaser },
+    acks: EMPTY_PREFLIGHT_ACKS,
+  });
+  const horizonLaserRows = horizonPre.rows.filter((r) => r.isLaser);
+  assert.ok(
+    horizonLaserRows.some((r) => r.outcome === 'fail' && r.requiresLaserInhibit),
+    'R3: preflight must require laser inhibit when intermediate horizon envelope rays breach 3.0 m audience clearance',
+  );
+
+  // Codex review-02-sprint-12 R4: unknown trussProfileId / hoistId must NOT silently pass rigging in preflight
+  const unknownTrussRig = structuredClone(cleanRig);
+  unknownTrussRig.trussPods[0].trussProfileId = 'unknown-truss-id';
+  const unknownTrussRep = evaluatePreflight({
+    rig: unknownTrussRig,
+    cues: [],
+    showState: baseShow,
+    acks: EMPTY_PREFLIGHT_ACKS,
+  });
+  const unknownTrussRow = unknownTrussRep.rows.find((r) => r.kind === 'rigging');
+  assert.equal(unknownTrussRow?.outcome, 'warn', 'R4: unknown trussProfileId must warn instead of pass');
+  assert.ok(
+    unknownTrussRow?.findings.some((f) => f.code === 'rigging_unknown'),
+    'R4: rigging row must include rigging_unknown finding for unknown trussProfileId',
+  );
+
+  const unknownHoistRig = structuredClone(cleanRig);
+  unknownHoistRig.trussPods[0].hoistId = 'unknown-hoist-id';
+  const unknownHoistRep = evaluatePreflight({
+    rig: unknownHoistRig,
+    cues: [],
+    showState: baseShow,
+    acks: EMPTY_PREFLIGHT_ACKS,
+  });
+  const unknownHoistRow = unknownHoistRep.rows.find((r) => r.kind === 'rigging');
+  assert.equal(unknownHoistRow?.outcome, 'warn', 'R4: unknown hoistId must warn instead of pass');
+  assert.ok(
+    unknownHoistRow?.findings.some((f) => f.code === 'rigging_unknown'),
+    'R4: rigging row must include rigging_unknown finding for unknown hoistId',
+  );
+  assert.notEqual(
+    unknownHoistRow?.rowFingerprint,
+    evaluatePreflight({ rig: cleanRig, cues: [], showState: baseShow, acks: EMPTY_PREFLIGHT_ACKS }).rows.find((r) => r.kind === 'rigging')?.rowFingerprint,
+    'R4: unknown rigging pods must change rigging rowFingerprint',
+  );
 });
