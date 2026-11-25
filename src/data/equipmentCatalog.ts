@@ -93,6 +93,8 @@ export interface CatalogLaserSpec {
   readonly maxScanAngleDeg: number;
   /** Full-angle beam divergence in milliradians (mrad). */
   readonly divergenceMrad?: number;
+  /** Optional beam diameter at aperture in millimetres (mm), when stated in datasheet. */
+  readonly beamDiameterMm?: number;
   /** IEC 60825-1 laser hazard class ('3B' <= 0.5 W, '4' > 0.5 W). */
   readonly laserClass: '3B' | '4';
   /** Beam-only vs beam + vector graphics capability. */

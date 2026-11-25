@@ -4,6 +4,7 @@ import { buildDmxPatch, DMX_CHANNELS } from '../data/dmxPatch';
 import { getCatalogEntry, getCatalogMode, hasCatalogFixtures, type LaserChannelRole } from '../data/equipmentCatalog';
 import { classifyPhysicalGroup, GENERIC_SIMULATED_LABEL } from '../dmx/physicalDmx';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
+import type { PreflightReport } from '../data/preflight';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
 import { RigConfig } from '../types/show';
 import { DmxOutputSection } from './DmxOutputSection';
@@ -20,6 +21,9 @@ interface DmxMonitorDrawerProps {
   rig: RigConfig;
   dmxStore: LiveStore<DmxSnapshot>;
   liveOutput: LiveDmxControllerApi;
+  preflight?: PreflightReport;
+  liveViolationMessage?: string | null;
+  onOpenPreflight?: () => void;
   onClose: () => void;
 }
 
@@ -52,6 +56,9 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   rig,
   dmxStore,
   liveOutput,
+  preflight,
+  liveViolationMessage,
+  onOpenPreflight,
   onClose,
 }) => {
   const [universe, setUniverse] = useState<1 | 2>(1);
@@ -125,7 +132,14 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
         </button>
       </div>
 
-      <DmxOutputSection output={liveOutput} rig={rig} hasCatalogFixtures={catalogPatched} />
+      <DmxOutputSection
+        output={liveOutput}
+        rig={rig}
+        hasCatalogFixtures={catalogPatched}
+        preflight={preflight}
+        liveViolationMessage={liveViolationMessage}
+        onOpenPreflight={onOpenPreflight}
+      />
 
       <div className="flex items-center justify-between px-3 py-1.5 bg-black/40 border-b border-white/10">
         <div className="flex gap-1">

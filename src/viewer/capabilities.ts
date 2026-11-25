@@ -54,7 +54,8 @@ export type GlobalHotkeyAction =
   | { readonly type: 'cinema' }
   | { readonly type: 'blackout' }
   | { readonly type: 'bump'; readonly key: keyof BumpState }
-  | { readonly type: 'tapTempo' };
+  | { readonly type: 'tapTempo' }
+  | { readonly type: 'measure' };
 
 const CAMERA_HOTKEYS: Readonly<Record<string, CameraPreset>> = Object.freeze({
   Digit1: 'foh',
@@ -100,6 +101,7 @@ export function resolveGlobalHotkey(
   if (capabilities.mutatingHotkeys) {
     if (code === 'Space') return { type: 'blackout' };
     if (code === 'KeyT') return { type: 'tapTempo' };
+    if (code === 'KeyM') return { type: 'measure' };
     if (Object.hasOwn(BUMP_HOTKEYS, code)) {
       return { type: 'bump', key: BUMP_HOTKEYS[code] };
     }

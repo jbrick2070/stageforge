@@ -31,10 +31,13 @@ import {
   podWorldPoint,
   withPlatforms,
 } from '../data/stageDesign';
-import type { PlanPoint, RigConfig, StagePlatform, TrussPodConfig } from '../types/show';
+import type { PlanPoint, RigConfig, ShowState, StagePlatform, TrussPodConfig } from '../types/show';
+import type { IldaClip } from '../data/ilda';
 import type { NativeStage } from '../data/showFile';
 import { GRID_HEIGHT } from '../data/stageEquipment';
 import { placeFixtures } from '../data/fixturePlacement';
+import { computeReachMap, computeVenueBounds, evaluateLaserZones } from '../data/measure';
+import { INITIAL_SHOW_STATE } from '../data/presets';
 import { specToSvgPath, symbolForHardware } from '../data/equipmentSymbols';
 import {
   createSecondaryWall,
@@ -89,6 +92,8 @@ type Draft = { rig: RigConfig; stage?: NativeStage };
 type EditorProps = {
   rig: RigConfig;
   stage?: NativeStage;
+  laserState?: ShowState['laser'];
+  ildaClip?: IldaClip | null;
   /** Return false to keep the designer open (for example when the user declines a discard prompt). */
   onChange: (rig: RigConfig, stage: NativeStage | undefined, replacing: boolean) => boolean | void;
   onClose: () => void;
@@ -340,7 +345,7 @@ function Arrow({ from, to, size }: { from: PlanPoint; to: PlanPoint; size: numbe
   );
 }
 
-export function StageDesigner({ rig, stage, onChange, onClose }: EditorProps) {
+export function StageDesigner({ rig, stage, laserState, ildaClip, onChange, onClose }: EditorProps) {
   const [history, setHistory] = useState(() => ({
     past: [] as Draft[],
     // The designer edits private copies; Cancel discards them without touching the live rig or stage.
@@ -357,6 +362,9 @@ export function StageDesigner({ rig, stage, onChange, onClose }: EditorProps) {
   const [hover, setHover] = useState<PlanPoint>();
   const [snap, setSnap] = useState(0.5);
   const [showFixtures, setShowFixtures] = useState(true);
+  const [showAudienceZone, setShowAudienceZone] = useState(false);
+  const [showLaserNohd, setShowLaserNohd] = useState(false);
+  const [showReachMap, setShowReachMap] = useState(false);
   const [propType, setPropType] = useState<LayoutProp['type']>('inflatable');
   const gridHeight = GRID_HEIGHT[draft.venue];
   const [elevation, setElevation] = useState(() => Math.min(7, gridHeight - 0.8));
@@ -407,6 +415,25 @@ export function StageDesigner({ rig, stage, onChange, onClose }: EditorProps) {
   const planFixtures = useMemo(
     () => (showFixtures && !replaced ? placeFixtures(shownRig) : []),
     [showFixtures, replaced, shownRig],
+  );
+  const planAudienceZone = useMemo(
+    () => (showAudienceZone ? computeVenueBounds(shownRig).audienceZone : null),
+    [showAudienceZone, shownRig],
+  );
+  const planLaserZones = useMemo(
+    () =>
+      showLaserNohd && !replaced
+        ? evaluateLaserZones(
+            shownRig,
+            { ...(laserState ?? INITIAL_SHOW_STATE.laser), enabled: true, intensity: 1 },
+            { stage: shownStage, ildaClip: ildaClip ?? null },
+          ).zones
+        : [],
+    [showLaserNohd, replaced, shownRig, shownStage, laserState, ildaClip],
+  );
+  const planReachMap = useMemo(
+    () => (showReachMap && !replaced ? computeReachMap(shownRig, shownStage) : null),
+    [showReachMap, replaced, shownRig, shownStage],
   );
   const index = selected && !['platform', 'truss', 'wall'].includes(selected.kind) ? Number(selected.id) : -1;
   const platform = selected?.kind === 'platform' ? platforms.find((p) => p.id === selected.id) : undefined;
@@ -987,6 +1014,36 @@ export function StageDesigner({ rig, stage, onChange, onClose }: EditorProps) {
             />
             <span>Fixtures</span>
           </label>
+          <label className="sd-fixtures-toggle" title="Audience keep-out zone (0–3.0 m)">
+            <input
+              type="checkbox"
+              aria-label="Show audience keep-out zone on plan"
+              data-testid="plan-toggle-audience"
+              checked={showAudienceZone}
+              onChange={(e) => setShowAudienceZone(e.target.checked)}
+            />
+            <span>Audience</span>
+          </label>
+          <label className="sd-fixtures-toggle" title="Laser NOHD envelope (static beam, 0.25 s MPE)">
+            <input
+              type="checkbox"
+              aria-label="Show laser NOHD zones on plan"
+              data-testid="plan-toggle-nohd"
+              checked={showLaserNohd}
+              onChange={(e) => setShowLaserNohd(e.target.checked)}
+            />
+            <span>NOHD</span>
+          </label>
+          <label className="sd-fixtures-toggle" title="Approximate moving-head reach map on deck">
+            <input
+              type="checkbox"
+              aria-label="Show fixture reach map on plan"
+              data-testid="plan-toggle-reach"
+              checked={showReachMap}
+              onChange={(e) => setShowReachMap(e.target.checked)}
+            />
+            <span>Reach</span>
+          </label>
           <label className="sd-snap">
             Snap{' '}
             <select aria-label="Grid snap" value={snap} onChange={(e) => setSnap(Number(e.target.value))}>
@@ -1100,6 +1157,120 @@ export function StageDesigner({ rig, stage, onChange, onClose }: EditorProps) {
                       </g>
                     );
                   })}
+                </g>
+              )}
+              {planAudienceZone && (
+                <g
+                  data-testid="plan-audience-zone"
+                  pointerEvents="none"
+                  aria-hidden="true"
+                >
+                  <rect
+                    x={planAudienceZone.minX}
+                    y={planAudienceZone.minZ}
+                    width={planAudienceZone.maxX - planAudienceZone.minX}
+                    height={planAudienceZone.maxZ - planAudienceZone.minZ}
+                    fill="rgba(244, 63, 94, 0.12)"
+                    stroke="#fb7185"
+                    strokeWidth={1.5 * units}
+                    strokeDasharray={`${6 * units} ${4 * units}`}
+                  />
+                  <text
+                    x={(planAudienceZone.minX + planAudienceZone.maxX) / 2}
+                    y={planAudienceZone.minZ + 16 * units}
+                    fontSize={10 * units}
+                    fill="#fda4af"
+                    textAnchor="middle"
+                  >
+                    AUDIENCE KEEP-OUT (0–3.0 m)
+                  </text>
+                </g>
+              )}
+              {planLaserZones.length > 0 && (
+                <g
+                  data-testid="plan-nohd-zones"
+                  pointerEvents="none"
+                  aria-hidden="true"
+                >
+                  {planLaserZones
+                    .filter((z) => z.nohd.canDrawZone && z.planPolygon.length >= 3)
+                    .map((z) => (
+                      <g key={z.projectorKey}>
+                        <polygon
+                          points={z.planPolygon.map((p) => `${p.x},${p.z}`).join(' ')}
+                          fill={z.audienceInsideNohd ? 'rgba(244, 63, 94, 0.14)' : 'rgba(245, 158, 11, 0.12)'}
+                          stroke={z.audienceInsideNohd ? '#fb7185' : '#fbbf24'}
+                          strokeWidth={1.3 * units}
+                          strokeDasharray={`${4 * units} ${3 * units}`}
+                        />
+                        {z.nohd.nohdM !== null && (
+                          <text
+                            x={z.origin.x}
+                            y={z.origin.z + 12 * units}
+                            fontSize={8.5 * units}
+                            fill={z.audienceInsideNohd ? '#fda4af' : '#fcd34d'}
+                            textAnchor="middle"
+                          >
+                            NOHD ~{Math.round(z.nohd.nohdM)}m{z.nohd.assumedAperture ? '*' : ''}
+                          </text>
+                        )}
+                      </g>
+                    ))}
+                  {planLaserZones
+                    .filter((z) => !z.nohd.canDrawZone)
+                    .map((z) => {
+                      const r = 7 * units;
+                      return (
+                        <g key={`unknown:${z.projectorKey}`} data-testid="plan-nohd-unknown">
+                          <polygon
+                            points={`${z.origin.x},${z.origin.z - r} ${z.origin.x + r},${z.origin.z} ${z.origin.x},${z.origin.z + r} ${z.origin.x - r},${z.origin.z}`}
+                            fill="rgba(244, 63, 94, 0.25)"
+                            stroke="#fb7185"
+                            strokeWidth={1.4 * units}
+                            strokeDasharray={`${3 * units} ${2 * units}`}
+                          />
+                          <text
+                            x={z.origin.x}
+                            y={z.origin.z - 10 * units}
+                            fontSize={8 * units}
+                            fill="#fda4af"
+                            textAnchor="middle"
+                          >
+                            NOHD ? (cannot assess)
+                          </text>
+                        </g>
+                      );
+                    })}
+                </g>
+              )}
+              {planReachMap && (planReachMap.unionPolygon.length >= 3 || planReachMap.areas.some((a) => a.kind === 'locus')) && (
+                <g
+                  data-testid="plan-reach-map"
+                  pointerEvents="none"
+                  aria-hidden="true"
+                >
+                  {planReachMap.unionPolygon.length >= 3 && (
+                    <polygon
+                      points={planReachMap.unionPolygon.map((p) => `${p.x},${p.z}`).join(' ')}
+                      fill="rgba(45, 212, 191, 0.09)"
+                      stroke="#2dd4bf"
+                      strokeWidth={1.4 * units}
+                      strokeDasharray={`${5 * units} ${3 * units}`}
+                    />
+                  )}
+                  {planReachMap.areas
+                    .filter((a) => a.kind === 'locus' && a.points.length >= 2)
+                    .map((a) => (
+                      <line
+                        key={a.unitId}
+                        x1={a.points[0].x}
+                        y1={a.points[0].z}
+                        x2={a.points[1].x}
+                        y2={a.points[1].z}
+                        stroke="#38bdf8"
+                        strokeWidth={1.5 * units}
+                      />
+                    ))}
                 </g>
               )}
               {spans.map((t, i) => (

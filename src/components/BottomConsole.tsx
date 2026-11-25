@@ -14,6 +14,7 @@ import {
   ChevronDown,
   ChevronUp,
   Check,
+  Ruler,
 } from 'lucide-react';
 import {
   AudioMapConfig,
@@ -39,6 +40,7 @@ import { LaserProjectorControls } from './LaserProjectorControls';
 import { LaserSafetyChip, LaserSafetyPanel } from './LaserSafetyPanel';
 import { IldaLoader, type IldaControlProps } from './IldaLoader';
 import { evaluateLaserSafety } from '../data/laserSafety';
+import { resolveStudioGeometry } from '../data/studioGeometry';
 import { evaluateLaserScan } from '../data/laserScan';
 import { getCatalogEntry } from '../data/equipmentCatalog';
 import { laserProjectors } from '../data/laserProjectors';
@@ -120,6 +122,8 @@ interface BottomConsoleProps {
   onToggleMic: () => void;
   ilda: Omit<IldaControlProps, 'allBeamOnly'>;
   onSetBump: (key: keyof BumpState, active: boolean) => void;
+  measureEnabled?: boolean;
+  onToggleMeasure?: () => void;
 }
 
 const MOVEMENT_MODES: { id: MovementMode; label: string }[] = [
@@ -291,7 +295,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onResetCue, onHold, follow,
   stage, mainScreen, missingMedia, onApplyWallCue, onRemoveWallCue, take,
   clockMode, tempo, audioStore, audioModStore, onToggleAudioReactive, onChangeAudioMap, onUploadAudio, onToggleMic, ilda,
-  onSetBump,
+  onSetBump, measureEnabled = false, onToggleMeasure,
 }) => {
   const [tab, setTab] = useState<ConsoleTab>('show');
   // Coalesce scrubber drags to one seek per frame; each seek re-resolves the whole desk.
@@ -324,12 +328,13 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   const wallsRunning = take.mode === 'recording' || (take.mode === 'playing' && take.timeMs < take.durationMs);
   const glances = screenGlances(stage, glanceMs, wallsRunning, mainScreen, missingMedia ?? []);
   const marks = useMemo(() => focusMarks(rig), [rig]);
+  const resolvedLaserRig = useMemo(() => resolveStudioGeometry(rig, stage?.layout).rig, [rig, stage?.layout]);
   const laserSafety = useMemo(
-    () => evaluateLaserSafety(rig, state.laser, { ildaClip: ilda.clip, bumpLaser: bump.laser }),
-    [rig, state.laser, ilda.clip, bump.laser],
+    () => evaluateLaserSafety(resolvedLaserRig, state.laser, { ildaClip: ilda.clip, bumpLaser: bump.laser }),
+    [resolvedLaserRig, state.laser, ilda.clip, bump.laser],
   );
   const { allLasersBeamOnly, ildaFlickerWarning } = useMemo(() => {
-    const units = laserProjectors(rig);
+    const units = laserProjectors(resolvedLaserRig);
     const specs = units.map((u) => getCatalogEntry(u.catalogId)?.laser);
     const allBeamOnly = units.length > 0 && specs.every((sp) => sp?.capability === 'beam');
     let flickerWarning: string | null = null;
@@ -339,7 +344,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
       flickerWarning = evaluateLaserScan(Number.isFinite(slowestKpps) ? slowestKpps : 30, peakPts).warning;
     }
     return { allLasersBeamOnly: allBeamOnly, ildaFlickerWarning: flickerWarning };
-  }, [rig, ilda.clip]);
+  }, [resolvedLaserRig, ilda.clip]);
   const [headTarget, setHeadTarget] = useState<'all' | HeadGroup>('all');
   const head = headTarget === 'all' ? state : headLook(state, headTarget);
   const focusMark = marks.find(m => m.id === head.focusMarkId);
@@ -375,6 +380,23 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {onToggleMeasure && (
+            <button
+              type="button"
+              data-testid="console-measure-toggle"
+              aria-pressed={measureEnabled}
+              onClick={onToggleMeasure}
+              title="Toggle live measurements & safety zones (key M)"
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono-tech border cursor-pointer transition ${
+                measureEnabled
+                  ? 'bg-cyan-500/20 border-cyan-400/70 text-cyan-200'
+                  : 'bg-white/5 border-white/10 text-zinc-300 hover:bg-white/10'
+              }`}
+            >
+              <Ruler className="w-3 h-3" aria-hidden="true" />
+              <span>Measure</span>
+            </button>
+          )}
           <button
             onClick={() => setCollapsed((v) => !v)}
             className="p-1 rounded bg-white/5 hover:bg-white/10 text-zinc-300 cursor-pointer"

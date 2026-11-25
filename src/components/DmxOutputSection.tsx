@@ -1,18 +1,47 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, RefreshCw, Search, ShieldAlert, Square, Zap } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Search, ShieldAlert, ShieldCheck, Square, Zap } from 'lucide-react';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
 import { formatArtNetAddress, parseTargetList, type DmxOutputMode } from '../dmx/liveDmx';
 import { GENERIC_SIMULATED_LABEL, summarizePhysicalDrive } from '../dmx/physicalDmx';
+import type { PreflightReport } from '../data/preflight';
 import type { RigConfig } from '../types/show';
+
+export const DMX_ADVANCED_OPEN_STORAGE_KEY = 'stageforge.dmxAdvancedOpen.v1';
+
+function readAdvancedOpen(): boolean {
+  try {
+    return window.localStorage.getItem(DMX_ADVANCED_OPEN_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function saveAdvancedOpen(open: boolean): void {
+  try {
+    window.localStorage.setItem(DMX_ADVANCED_OPEN_STORAGE_KEY, open ? 'true' : 'false');
+  } catch {
+    // Ignore storage errors in private browsing or restricted contexts.
+  }
+}
 
 interface DmxOutputSectionProps {
   output: LiveDmxControllerApi;
   rig?: RigConfig;
   hasCatalogFixtures?: boolean;
+  preflight?: PreflightReport;
+  liveViolationMessage?: string | null;
+  onOpenPreflight?: () => void;
 }
 
-export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output, rig, hasCatalogFixtures }) => {
-  const [expanded, setExpanded] = useState(false);
+export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
+  output,
+  rig,
+  hasCatalogFixtures,
+  preflight,
+  liveViolationMessage,
+  onOpenPreflight,
+}) => {
+  const [advancedOpen, setAdvancedOpen] = useState<boolean>(readAdvancedOpen);
   const [armed, setArmed] = useState(false);
   const physicalSummary = useMemo(() => (rig ? summarizePhysicalDrive(rig) : null), [rig]);
 
@@ -36,17 +65,18 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output, rig,
     disable,
   } = output;
 
-  // Fetch local network interfaces when the output panel is opened in Electron.
+  // Fetch local network interfaces when Advanced is opened in Electron.
   useEffect(() => {
-    if (expanded && hasDesktopBridge) {
+    if (advancedOpen && hasDesktopBridge) {
       void refreshInterfaces();
     }
-  }, [expanded, hasDesktopBridge, refreshInterfaces]);
+  }, [advancedOpen, hasDesktopBridge, refreshInterfaces]);
 
-  // Automatically disarm if output goes live or panel collapses.
+  // Automatically disarm if output goes live, Advanced collapses, or pre-flight stops allowing arming.
+  const canArmByPreflight = preflight ? preflight.canArm : true;
   useEffect(() => {
-    if (isLive || !expanded) setArmed(false);
-  }, [isLive, expanded]);
+    if (isLive || !advancedOpen || !canArmByPreflight) setArmed(false);
+  }, [isLive, advancedOpen, canArmByPreflight]);
 
   const patchSettings = (patch: Parameters<typeof updateSettings>[0]) => {
     setArmed(false);
@@ -62,49 +92,140 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output, rig,
     patchSettings({ artnetTargets: [...existing, ip].join(', ') });
   };
 
+  const preflightLabel = preflight?.badgeLabel ?? 'Not checked';
+  const preflightStatus = preflight?.overallStatus ?? 'not_checked';
+  const preflightBadgeClass =
+    preflightStatus === 'passed'
+      ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-200'
+      : preflightStatus === 'blocked'
+        ? 'border-rose-400/60 bg-rose-500/25 text-rose-100'
+        : preflightStatus === 'warnings'
+          ? 'border-amber-400/55 bg-amber-500/20 text-amber-100'
+          : 'border-white/20 bg-white/10 text-zinc-200';
+
   return (
     <section
       aria-label="Live output"
       data-testid="dmx-output-section"
       className="border-b border-white/10 bg-black/50"
     >
-      <button
-        type="button"
-        data-testid="dmx-output-toggle"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center justify-between px-3 py-1.5 text-left hover:bg-white/5 cursor-pointer"
-      >
-        <span className="flex items-center gap-1.5 font-mono-tech text-[10px] font-semibold tracking-wider text-zinc-200">
-          {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-          OUTPUT
-          <span
-            data-testid="dmx-output-status-pill"
-            className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
-              isLive
-                ? 'bg-rose-600/80 text-white'
-                : 'bg-white/10 text-zinc-400'
-            }`}
-          >
-            {isLive ? 'LIVE' : 'OFF'}
+      {/* Always-visible header bar OUTSIDE the collapsed Advanced section: LIVE status, pre-flight badge, & Blackout & stop */}
+      <div className="px-3 py-2 space-y-1.5 font-mono-tech text-[10px]">
+        <div className="flex flex-wrap items-center justify-between gap-1.5">
+          <span className="flex items-center gap-1.5 font-semibold tracking-wider text-zinc-200">
+            OUTPUT
+            <span
+              data-testid="dmx-output-status-pill"
+              className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                isLive ? 'bg-rose-600/80 text-white' : 'bg-white/10 text-zinc-400'
+              }`}
+            >
+              {isLive ? 'LIVE' : 'OFF'}
+            </span>
           </span>
-        </span>
-        <span className="font-mono-tech text-[9px] text-zinc-400">
-          {isLive
-            ? output.banner.detail
-            : hasDesktopBridge
-              ? 'sACN · Art-Net 4 · USB Pro'
-              : 'USB Pro (Web Serial)'}
-        </span>
-      </button>
 
-      {expanded && (
-        <div className="px-3 pb-2.5 pt-1 space-y-2 font-mono-tech text-[10px] border-t border-white/5 max-h-[300px] overflow-y-auto">
-          {output.banner.stoppedNotice && !isLive && (
-            <p role="alert" data-testid="dmx-output-stopped-notice" className="rounded border border-amber-400/60 bg-amber-950/60 px-2 py-1 text-[9px] text-amber-100">
-              {output.banner.stoppedNotice}. Re-arm and click Go live to resume output.
-            </p>
+          {onOpenPreflight && (
+            <button
+              type="button"
+              data-testid="dmx-preflight-badge"
+              data-preflight-status={preflightStatus}
+              onClick={onOpenPreflight}
+              title={`Open pre-flight check · ${preflight?.calibrationNote ?? 'Hardware calibration deferred.'}`}
+              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-bold cursor-pointer ${preflightBadgeClass}`}
+            >
+              <ShieldCheck className="w-3 h-3" aria-hidden="true" />
+              <span>{preflightLabel}</span>
+            </button>
           )}
+        </div>
+
+        {isLive && (
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[9px] text-rose-200">
+              <span>{output.banner.detail}</span>
+              <span>
+                {desktopStatus?.enabled ? desktopStatus.measuredHz : serialStatus.measuredHz} Hz ·{' '}
+                {desktopStatus?.enabled ? desktopStatus.packetsSent : serialStatus.packetsSent} pkts
+              </span>
+            </div>
+            {desktopStatus?.enabled && desktopStatus.degraded && desktopStatus.lastError && (
+              <div className="text-[9px] text-amber-300">Degraded: {desktopStatus.lastError}</div>
+            )}
+            <button
+              type="button"
+              disabled={busy}
+              data-testid="dmx-output-stop"
+              onClick={() => void disable()}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold cursor-pointer disabled:opacity-50"
+            >
+              <Square className="w-3 h-3 fill-current" aria-hidden="true" />
+              Blackout &amp; stop
+            </button>
+          </div>
+        )}
+
+        {liveViolationMessage && isLive && (
+          <p
+            role="alert"
+            data-testid="dmx-output-live-violation"
+            className="flex items-start gap-1.5 rounded border border-amber-400/70 bg-amber-950/60 px-2 py-1 text-[9px] text-amber-100"
+          >
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" aria-hidden="true" />
+            <span>{liveViolationMessage}</span>
+          </p>
+        )}
+
+        {output.banner.stoppedNotice && !isLive && (
+          <p
+            role="alert"
+            data-testid="dmx-output-stopped-notice"
+            className="rounded border border-amber-400/60 bg-amber-950/60 px-2 py-1 text-[9px] text-amber-100"
+          >
+            {output.banner.stoppedNotice}. Re-arm and click Go live to resume output.
+          </p>
+        )}
+      </div>
+
+      {/* Collapsed Advanced section holding transport settings, experimental note, and Arm / Go live */}
+      <details
+        data-testid="dmx-advanced-details"
+        open={advancedOpen}
+        onToggle={(e) => {
+          const next = e.currentTarget.open;
+          setAdvancedOpen(next);
+          saveAdvancedOpen(next);
+          if (!next) setArmed(false);
+        }}
+        className="border-t border-white/10"
+      >
+        <summary
+          data-testid="dmx-advanced-summary"
+          className="px-3 py-1.5 font-mono-tech text-[10px] font-semibold text-zinc-300 hover:bg-white/5 cursor-pointer select-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"
+        >
+          Advanced: live output to real lights (experimental)
+        </summary>
+
+        {advancedOpen && (
+        <div className="px-3 pb-2.5 pt-1.5 space-y-2 font-mono-tech text-[10px] border-t border-white/5 max-h-[300px] overflow-y-auto">
+          {/* Verbatim experimental & open contribution invitation note */}
+          <p
+            data-testid="dmx-experimental-note"
+            className="rounded border border-amber-400/45 bg-amber-950/35 px-2 py-1.5 text-[9px] text-amber-100/95 leading-snug"
+          >
+            Live output to real lights is experimental. It has only been tested against a local DMX receiver, not real
+            fixtures, and its checks are guidance, not certification. If you like StageForge, want to try it on a real
+            rig, or can improve it, get in touch or open an issue or pull request at{' '}
+            <a
+              href="https://github.com/jbrick2070/stageforge"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline text-cyan-300 hover:text-cyan-200"
+            >
+              github.com/jbrick2070/stageforge
+            </a>
+            . Contributions are welcome.
+          </p>
+
           {physicalSummary ? (
             <div data-testid="dmx-physical-coverage" className="space-y-1">
               {physicalSummary.hasSimulationOnly && (
@@ -141,6 +262,7 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output, rig,
               Unimplemented catalogue fixtures are not driven (simulation only) and output neutral zeros.
             </p>
           ) : null}
+
           {/* Protocol / transport selector */}
           <div className="flex gap-1" role="group" aria-label="Output transport">
             {([
@@ -445,80 +567,74 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output, rig,
             </div>
           </label>
 
-          {/* Live stats */}
-          {isLive && (
-            <div className="rounded bg-rose-950/40 border border-rose-500/40 px-2 py-1 text-[9px] text-rose-100 space-y-0.5">
-              <div className="flex justify-between">
-                <span>Measured rate</span>
-                <span>
-                  {desktopStatus?.enabled ? desktopStatus.measuredHz : serialStatus.measuredHz} Hz ·{' '}
-                  {desktopStatus?.enabled ? desktopStatus.packetsSent : serialStatus.packetsSent} pkts
-                </span>
-              </div>
-              {desktopStatus?.enabled && desktopStatus.degraded && desktopStatus.lastError && (
-                <div className="text-amber-300">Degraded: {desktopStatus.lastError}</div>
-              )}
-            </div>
-          )}
-
           {error && (
             <p role="alert" data-testid="dmx-output-error" className="text-[9px] text-rose-300">
               {error}
             </p>
           )}
 
-          {/* Safety arm -> Go live / Blackout & stop */}
-          {isLive ? (
-            <button
-              type="button"
-              disabled={busy}
-              data-testid="dmx-output-stop"
-              onClick={() => void disable()}
-              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold cursor-pointer disabled:opacity-50"
-            >
-              <Square className="w-3 h-3 fill-current" />
-              Blackout &amp; stop
-            </button>
-          ) : armed ? (
-            <div className="rounded border border-amber-400/50 bg-amber-950/40 p-2 space-y-1.5">
-              <p className="flex items-start gap-1.5 text-[9px] text-amber-200 leading-snug">
-                <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                Live output drives physical lighting rigs. Confirm to start sending frames.
-              </p>
-              <div className="flex gap-1.5">
+          {/* Pre-flight gate status + two-step Safety Arm -> Go live */}
+          {!isLive && (
+            <div className="space-y-1.5">
+              {preflight && !preflight.canArm && (
+                <div className="rounded border border-amber-400/40 bg-amber-950/35 px-2 py-1.5 space-y-1 text-[9px] text-amber-100">
+                  <p>{preflight.blockingReasons[0] ?? 'Complete pre-flight checks before arming output.'}</p>
+                  {onOpenPreflight && (
+                    <button
+                      type="button"
+                      data-testid="dmx-open-preflight"
+                      onClick={onOpenPreflight}
+                      className="rounded border border-cyan-400/50 bg-cyan-500/20 hover:bg-cyan-500/30 px-2 py-0.5 text-[9px] font-bold text-cyan-100 cursor-pointer"
+                    >
+                      Open pre-flight check ({preflightLabel})
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {armed ? (
+                <div className="rounded border border-amber-400/50 bg-amber-950/40 p-2 space-y-1.5">
+                  <p className="flex items-start gap-1.5 text-[9px] text-amber-200 leading-snug">
+                    <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+                    Live output drives physical lighting rigs. Confirm to start sending frames.
+                  </p>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      disabled={busy || !canArmByPreflight}
+                      data-testid="dmx-output-go-live"
+                      onClick={() => void enable()}
+                      className="flex-1 flex items-center justify-center gap-1 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold cursor-pointer disabled:opacity-50"
+                    >
+                      <Zap className="w-3 h-3" aria-hidden="true" />
+                      {busy ? 'Starting…' : 'Go live'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setArmed(false)}
+                      className="px-2.5 py-1 rounded bg-white/10 hover:bg-white/15 text-zinc-200 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
                 <button
                   type="button"
-                  disabled={busy}
-                  data-testid="dmx-output-go-live"
-                  onClick={() => void enable()}
-                  className="flex-1 flex items-center justify-center gap-1 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold cursor-pointer disabled:opacity-50"
+                  disabled={busy || !canArmByPreflight || (settings.mode === 'serial' && !hasWebSerial)}
+                  data-testid="dmx-output-arm"
+                  onClick={() => setArmed(true)}
+                  className="w-full py-1.5 rounded border border-amber-400/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-100 font-semibold cursor-pointer disabled:opacity-40"
                 >
-                  <Zap className="w-3 h-3" />
-                  {busy ? 'Starting…' : 'Go live'}
+                  Arm output · {preflightLabel}
                 </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => setArmed(false)}
-                  className="px-2.5 py-1 rounded bg-white/10 hover:bg-white/15 text-zinc-200 cursor-pointer"
-                >
-                  Cancel
-                </button>
-              </div>
+              )}
             </div>
-          ) : (
-            <button
-              type="button"
-              disabled={busy || (settings.mode === 'serial' && !hasWebSerial)}
-              data-testid="dmx-output-arm"
-              onClick={() => setArmed(true)}
-              className="w-full py-1.5 rounded border border-amber-400/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-100 font-semibold cursor-pointer disabled:opacity-40"
-            >
-              Arm output
-            </button>
           )}
         </div>
-      )}
+        )}
+      </details>
     </section>
   );
 };

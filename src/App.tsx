@@ -53,6 +53,20 @@ import { allowsNegativeAmount } from './engine/audioModulation';
 import type { DmxSnapshot } from './components/DmxMonitorDrawer';
 import { LiveDmxBadge } from './components/LiveDmxBadge';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import {
+  DEFAULT_MEASURE_OVERLAY_OPTIONS,
+  isMeasureOverlayActive,
+  type MeasureOverlayOptions,
+} from './engine/measureOverlay';
+import { evaluateLaserZones, type MeasureSnapshot } from './data/measure';
+import {
+  EMPTY_PREFLIGHT_ACKS,
+  evaluatePreflight,
+  type PreflightAcknowledgementState,
+  type PreflightRow,
+} from './data/preflight';
+import { computePowerReport, riggingPowerCsv } from './data/powerReport';
+import { evaluateRigLoads } from './data/rigLoads';
 import { loadShopStockState, saveShopStockState, type ShopStockState } from './data/shopStock';
 import { useLiveDmxOutput } from './dmx/useLiveDmxOutput';
 import {
@@ -77,6 +91,8 @@ const StageDesigner = deferredComponent(() => import('./components/StageDesigner
 const RigBuilderDrawer = deferredComponent(() => import('./components/RigBuilderDrawer').then((m) => m.RigBuilderDrawer));
 const DmxMonitorDrawer = deferredComponent(() => import('./components/DmxMonitorDrawer').then((m) => m.DmxMonitorDrawer));
 const ShowControlDrawer = deferredComponent(() => import('./components/ShowControlDrawer').then((m) => m.ShowControlDrawer));
+const MeasureOverlayHud = deferredComponent(() => import('./components/MeasureOverlayHud').then((m) => m.MeasureOverlayHud));
+const PreflightPanel = deferredComponent(() => import('./components/PreflightPanel').then((m) => m.PreflightPanel));
 import { createLiveStore } from './state/liveTelemetry';
 import { deferredComponent } from './components/deferred';
 import { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } from './data/presets';
@@ -291,6 +307,7 @@ export const App: React.FC = () => {
     audio: createLiveStore<AudioMetrics>(EMPTY_AUDIO),
     audioMod: createLiveStore<AudioModulationTelemetry>(EMPTY_AUDIO_MOD_TELEMETRY),
     dmx: createLiveStore<DmxSnapshot>(EMPTY_DMX),
+    measure: createLiveStore<MeasureSnapshot | null>(null),
   }), []);
   const [audioDiscrete, setAudioDiscrete] = useState(INITIAL_DISCRETE_AUDIO);
   const [volume, setVolume] = useState(0.72);
@@ -302,6 +319,12 @@ export const App: React.FC = () => {
   const [showControlOpen, setShowControlOpen] = useState(false);
   const [costModalOpen, setCostModalOpen] = useState(false);
   const [costModalRetry, setCostModalRetry] = useState(0);
+  const [measureOptions, setMeasureOptions] = useState<MeasureOverlayOptions>(DEFAULT_MEASURE_OVERLAY_OPTIONS);
+  const measureOptionsRef = useRef(measureOptions);
+  measureOptionsRef.current = measureOptions;
+  const [preflightOpen, setPreflightOpen] = useState(false);
+  const [preflightAcks, setPreflightAcks] = useState<PreflightAcknowledgementState>(EMPTY_PREFLIGHT_ACKS);
+  const [liveSafetyViolation, setLiveSafetyViolation] = useState<string | null>(null);
   const CostEstimatorModal = useMemo(() => createLazyCostEstimatorModal(), [costModalRetry]);
   // Probe once when idle for an optional demo/track.json map (~1 KB); never fetches audio on boot.
   // Skipped in read-only pitch viewer mode.
@@ -437,9 +460,218 @@ export const App: React.FC = () => {
     setToast(msg);
   }, []);
 
-  const liveDmx = useLiveDmxOutput(engineRef, showToast, capabilities.liveOutput, clearAllBumps);
+  const preflightRef = useRef<ReturnType<typeof evaluatePreflight> | null>(null);
+  const liveDmx = useLiveDmxOutput(
+    engineRef,
+    showToast,
+    capabilities.liveOutput,
+    clearAllBumps,
+    () => {
+      const rep = preflightRef.current;
+      if (!rep) return { allowed: false, reason: 'Run pre-flight check before starting live DMX output.' };
+      return { allowed: rep.canArm, reason: rep.blockingReasons[0] };
+    },
+  );
   const liveDmxRef = useRef(liveDmx);
   liveDmxRef.current = liveDmx;
+
+  // Memoize heavy static rigging/power reports on rig + stage layout only so console faders never recompute them.
+  const preflightLoads = useMemo(() => evaluateRigLoads(rig, studioStage, { applyD8Derate: true }), [rig, studioStage]);
+  const preflightPower = useMemo(() => computePowerReport(rig, studioStage), [rig, studioStage]);
+  // Only safety-relevant aim/laser fields feed pre-flight (using full output so dimming never hides a beam hazard).
+  const preflightShowSnapshot = useMemo<ShowState>(
+    () => ({
+      ...INITIAL_SHOW_STATE,
+      focusMarkId: showState.focusMarkId,
+      movementMode: showState.movementMode,
+      manualPan: showState.manualPan,
+      manualTilt: showState.manualTilt,
+      beamZoom: showState.beamZoom,
+      movingGroups: showState.movingGroups,
+      laser: showState.laser,
+      beamIntensity: 1,
+      washIntensity: 1,
+      masterDimmer: 1,
+      blackout: false,
+    }),
+    [
+      showState.focusMarkId,
+      showState.movementMode,
+      showState.manualPan,
+      showState.manualTilt,
+      showState.beamZoom,
+      showState.movingGroups,
+      showState.laser,
+    ],
+  );
+
+  // Evaluate pre-flight across EVERY fixture group and laser projector regardless of Measure overlay visibility.
+  const preflightReport = useMemo(
+    () =>
+      evaluatePreflight({
+        rig,
+        stage: studioStage,
+        cues,
+        showState: preflightShowSnapshot,
+        ildaClip,
+        dmxSettings: liveDmx.settings,
+        loads: preflightLoads,
+        power: preflightPower,
+        acks: preflightAcks,
+      }),
+    [rig, studioStage, cues, preflightShowSnapshot, ildaClip, liveDmx.settings, preflightLoads, preflightPower, preflightAcks],
+  );
+  preflightRef.current = preflightReport;
+
+  // Session-sticky physical DMX 0 laser inhibit list (plus live fail-safe auto-inhibit for any laser
+  // that becomes unassessed, breaching, audience-scanning, or unacknowledged while live DMX output is active).
+  const effectiveInhibitedLasers = useMemo(() => {
+    const keys = new Set<string>(preflightReport.inhibitedLaserKeys);
+    if (liveDmx.isLive) {
+      for (const row of preflightReport.rows) {
+        if (!row.isLaser || !row.projectorKey) continue;
+        const currentlyAcked =
+          preflightReport.checked &&
+          !preflightReport.stale &&
+          !row.requiresLaserInhibit &&
+          !row.hardBlock &&
+          preflightAcks.acknowledgedLasers[row.projectorKey] === row.rowFingerprint;
+        if (row.requiresLaserInhibit || row.hardBlock || !currentlyAcked) {
+          keys.add(row.projectorKey);
+        }
+      }
+    }
+    return Array.from(keys);
+  }, [preflightReport, preflightAcks.acknowledgedLasers, liveDmx.isLive]);
+  const effectiveInhibitedLasersRef = useRef<readonly string[]>(effectiveInhibitedLasers);
+  effectiveInhibitedLasersRef.current = effectiveInhibitedLasers;
+
+  // Enforce session-inhibited laser physical DMX zeroing in StageEngine (no cue/bump bypass).
+  useEffect(() => {
+    engineRef.current?.setInhibitedLasers(effectiveInhibitedLasers);
+  }, [effectiveInhibitedLasers]);
+
+  // Sync lazy 3D Measure & Safety Zones overlay with StageEngine (zero GPU cost when all off).
+  useEffect(() => {
+    engineRef.current?.setMeasureOverlay(measureOptions);
+    if (!isMeasureOverlayActive(measureOptions)) {
+      live.measure.set(null);
+    }
+  }, [measureOptions, live.measure]);
+
+  // Continuous live monitoring while physical DMX output is active (re-evaluates even when overlay is off).
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const overlayOn = isMeasureOverlayActive(measureOptions);
+    engine.setLiveSafetyMonitor(liveDmx.isLive);
+    if (!overlayOn && !liveDmx.isLive) {
+      engine.setMeasureListener(undefined);
+      return;
+    }
+    engine.setMeasureListener((snap) => {
+      if (isMeasureOverlayActive(measureOptionsRef.current)) {
+        live.measure.set(snap);
+      }
+      if (liveDmxRef.current.isLive) {
+        const rep = preflightRef.current;
+        if (rep && (rep.overallStatus === 'blocked' || rep.stale)) {
+          setLiveSafetyViolation(
+            rep.blockingReasons[0] ?? 'Pre-flight safety check is failing or stale while live output is active.',
+          );
+        } else if (snap.audienceBreachCount > 0) {
+          setLiveSafetyViolation(
+            `${snap.audienceBreachCount} beam(s) entered the audience keep-out volume (< 3.0 m) while output is live.`,
+          );
+        }
+      }
+    });
+    return () => {
+      engine.setMeasureListener(undefined);
+    };
+  }, [live.measure, liveDmx.isLive, measureOptions]);
+
+  // Immediately flag live violation if a hard fail or stale config appears while output is live; clear on stop.
+  useEffect(() => {
+    if (!liveDmx.isLive) {
+      setLiveSafetyViolation(null);
+      return;
+    }
+    if (preflightReport.overallStatus === 'blocked' || preflightReport.stale) {
+      setLiveSafetyViolation(
+        preflightReport.blockingReasons[0] ?? 'Pre-flight safety check became failing or stale while live output is active.',
+      );
+    }
+  }, [liveDmx.isLive, preflightReport]);
+
+  const laserZonesForHud = useMemo(() => {
+    if (!measureOptions.showLaserNohd) return [];
+    return evaluateLaserZones(rig, { ...showState.laser, enabled: true, intensity: 1 }, {
+      stage: studioStage,
+      ildaClip,
+    }).zones;
+  }, [measureOptions.showLaserNohd, rig, showState.laser, studioStage, ildaClip]);
+
+  const toggleMeasureOverlay = useCallback(() => {
+    setMeasureOptions((prev) => {
+      const nextEnabled = !prev.enabled;
+      if (!nextEnabled) {
+        return { ...DEFAULT_MEASURE_OVERLAY_OPTIONS };
+      }
+      return { ...prev, enabled: true };
+    });
+  }, []);
+
+  const handleRunPreflightCheck = useCallback(() => {
+    const rev = preflightRef.current?.configRevision ?? null;
+    setPreflightAcks((prev) => {
+      // Preserve still-valid per-row fingerprints while locking checkedRevision to current config.
+      return {
+        ...prev,
+        checked: true,
+        checkedRevision: rev,
+      };
+    });
+    if (preflightRef.current && preflightRef.current.overallStatus !== 'blocked') {
+      setLiveSafetyViolation(null);
+    }
+  }, []);
+
+  const handleToggleRowAck = useCallback((row: PreflightRow, checked: boolean) => {
+    setPreflightAcks((prev) => {
+      const nextRows = { ...prev.acknowledgedRows };
+      if (checked) nextRows[row.id] = row.rowFingerprint;
+      else delete nextRows[row.id];
+      return { ...prev, acknowledgedRows: nextRows };
+    });
+  }, []);
+
+  const handleToggleLaserAck = useCallback((projectorKey: string, checked: boolean) => {
+    const row = preflightRef.current?.rows.find((r) => r.isLaser && r.projectorKey === projectorKey);
+    if (!row) return;
+    setPreflightAcks((prev) => {
+      const nextLasers = { ...prev.acknowledgedLasers };
+      if (checked) nextLasers[projectorKey] = row.rowFingerprint;
+      else delete nextLasers[projectorKey];
+      return { ...prev, acknowledgedLasers: nextLasers };
+    });
+  }, []);
+
+  const handleToggleLaserInhibit = useCallback((projectorKey: string, inhibited: boolean) => {
+    const rev = preflightRef.current?.configRevision;
+    if (!rev) return;
+    setPreflightAcks((prev) => {
+      const nextInhibited = { ...prev.inhibitedLasers };
+      const nextAcked = { ...prev.acknowledgedLasers };
+      if (inhibited) {
+        nextInhibited[projectorKey] = rev;
+        delete nextAcked[projectorKey];
+      } else {
+        delete nextInhibited[projectorKey];
+      }
+      return { ...prev, inhibitedLasers: nextInhibited, acknowledgedLasers: nextAcked };
+    });
+  }, []);
 
   useEffect(() => {
     engineRef.current?.setIldaSettings(ildaMode, ildaFps);
@@ -1166,10 +1398,16 @@ export const App: React.FC = () => {
       throw error;
     }
     engineRef.current = engine;
+    // Apply initial safety & overlay bindings immediately after engine construction (effects above run before mount).
+    engine.setInhibitedLasers(effectiveInhibitedLasersRef.current);
+    engine.setMeasureOverlay(measureOptionsRef.current);
+    engine.setLiveSafetyMonitor(liveDmxRef.current.isLive);
     // Read-only probe for browser tests: `?probe` exposes each head's beam axis & render metrics.
     const probe = new URLSearchParams(window.location.search).has('probe');
     if (probe) (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe = {
       beamAxes: () => engine.beamAxes(),
+      measureSnapshot: () => engine.getMeasureSnapshot(false),
+      preflightReport: () => preflightRef.current,
       audioModulation: () => engine.getAudioModulationSnapshot(),
       fixtureParams: (group?: AudioTargetGroup) => engine.getFixtureParams(group),
       dmxSnapshot: () => ({ u1: Array.from(engine.dmxUniverse1), u2: Array.from(engine.dmxUniverse2) }),
@@ -1313,6 +1551,9 @@ export const App: React.FC = () => {
         case 'tapTempo':
           handleTapTempo();
           break;
+        case 'measure':
+          toggleMeasureOverlay();
+          break;
         case 'cinema':
           setCinemaMode((v) => !v);
           break;
@@ -1350,7 +1591,7 @@ export const App: React.FC = () => {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', releaseBumps);
     };
-  }, [clearAllBumps, handleTapTempo, previewRig, setSourceBump]);
+  }, [clearAllBumps, handleTapTempo, previewRig, setSourceBump, toggleMeasureOverlay]);
 
   const handleCamera = (cam: CameraPreset) => {
     previewRig();
@@ -1981,6 +2222,8 @@ export const App: React.FC = () => {
       setDmxDrawerOpen(false);
       setShowControlOpen(false);
       setCostModalOpen(false);
+      setPreflightOpen(false);
+      setMeasureOptions(DEFAULT_MEASURE_OVERLAY_OPTIONS);
       setFilesOpen(false);
       setCueEditor(false);
       setDesignerRig(null);
@@ -2259,7 +2502,6 @@ export const App: React.FC = () => {
       const { equipmentInventoryCsv } = await import('./data/equipmentInventory');
       downloadStageFile(rig.name, 'equipment.csv', new Blob([equipmentInventoryCsv(rig, studioStage, shopStock)], { type: 'text/csv;charset=utf-8' }));
     } else if (action === 'riggingPowerCsv') {
-      const { riggingPowerCsv } = await import('./data/powerReport');
       downloadStageFile(rig.name, 'rigging-power.csv', new Blob([riggingPowerCsv(rig, studioStage)], { type: 'text/csv;charset=utf-8' }));
     } else if (action === 'patchSheetCsv') {
       const { buildShowPaperwork, patchSheetCsv } = await import('./data/showPaperwork');
@@ -2582,6 +2824,9 @@ export const App: React.FC = () => {
         costModalOpen={costModalOpen}
         oneNightCostLabel={oneNightCostLabel}
         cinemaMode={cinemaMode}
+        measureEnabled={isMeasureOverlayActive(measureOptions)}
+        preflightLabel={preflightReport.badgeLabel}
+        preflightStatus={preflightReport.overallStatus}
         availableDemoTrackTitle={availableDemoTrack?.map.title ?? null}
         demoTrackSectionCount={availableDemoTrack?.map.sections.length ?? 0}
         demoTrackLoading={demoTrackLoading}
@@ -2630,6 +2875,8 @@ export const App: React.FC = () => {
         }}
         onToggleCostModal={() => setCostModalOpen((v) => !v)}
         onToggleCinemaMode={() => setCinemaMode((v) => !v)}
+        onToggleMeasure={toggleMeasureOverlay}
+        onOpenPreflight={() => setPreflightOpen(true)}
       />
 
       {/* Live Status Toast & Blackout Pill */}
@@ -2675,6 +2922,13 @@ export const App: React.FC = () => {
         busy={liveDmx.busy}
         hasCatalogFixtures={hasCatalogFixtures(rig)}
         hasSimulationOnly={summarizePhysicalDrive(rig).hasSimulationOnly}
+        preflightLabel={preflightReport.badgeLabel}
+        preflightStatus={preflightReport.overallStatus}
+        liveViolationMessage={liveSafetyViolation}
+        onOpenPreflight={() => {
+          setCinemaMode(false);
+          setPreflightOpen(true);
+        }}
         onStop={() => {
           clearAllBumps();
           void liveDmx.disable();
@@ -2685,6 +2939,36 @@ export const App: React.FC = () => {
           setDmxDrawerOpen(true);
         }}
       />
+
+      {/* Lazy Measure & Safety Zones HUD (mounted only while Measure or a zone toggle is active) */}
+      {!cinemaMode && isMeasureOverlayActive(measureOptions) && (
+        <ErrorBoundary label="Measure overlay" onReset={() => setMeasureOptions(DEFAULT_MEASURE_OVERLAY_OPTIONS)} onExportRig={() => downloadRig(rig)}>
+          <MeasureOverlayHud
+            options={measureOptions}
+            measureStore={live.measure}
+            laserZones={laserZonesForHud}
+            onChangeOptions={(patch) => setMeasureOptions((prev) => ({ ...prev, ...patch }))}
+            onClose={() => setMeasureOptions(DEFAULT_MEASURE_OVERLAY_OPTIONS)}
+          />
+        </ErrorBoundary>
+      )}
+
+      {/* Visible Pre-flight Safety Gate Panel */}
+      {preflightOpen && (
+        <ErrorBoundary label="Pre-flight check" onReset={() => setPreflightOpen(false)} onExportRig={() => downloadRig(rig)}>
+          <PreflightPanel
+            open={preflightOpen}
+            report={preflightReport}
+            acks={preflightAcks}
+            liveViolationMessage={liveSafetyViolation}
+            onRunCheck={handleRunPreflightCheck}
+            onToggleRowAck={handleToggleRowAck}
+            onToggleLaserAck={handleToggleLaserAck}
+            onToggleLaserInhibit={handleToggleLaserInhibit}
+            onClose={() => setPreflightOpen(false)}
+          />
+        </ErrorBoundary>
+      )}
 
       {/* Clock-ownership indicator when chasing external timecode or driven by external cue caller */}
       <ClockBadge
@@ -2746,6 +3030,9 @@ export const App: React.FC = () => {
             rig={rig}
             dmxStore={live.dmx}
             liveOutput={liveDmx}
+            preflight={preflightReport}
+            liveViolationMessage={liveSafetyViolation}
+            onOpenPreflight={() => setPreflightOpen(true)}
             onClose={() => setDmxDrawerOpen(false)}
           />
         </ErrorBoundary>
@@ -2765,7 +3052,7 @@ export const App: React.FC = () => {
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
       {designerRig && (
         <ErrorBoundary label="Stage Designer" onReset={() => setDesignerRig(null)} onExportRig={() => downloadRig(rig)}>
-          <StageDesigner rig={designerRig} stage={studioStage} onClose={() => setDesignerRig(null)} onChange={(design, stage, replacing) => {
+          <StageDesigner rig={designerRig} stage={studioStage} laserState={showState.laser} ildaClip={ildaClip} onClose={() => setDesignerRig(null)} onChange={(design, stage, replacing) => {
             if (!capabilitiesRef.current.edit) return;
             const next = normalizeDesign(design);
             // A new blank design replaces the authored overlay and its wall cues, even if the user then
@@ -2798,6 +3085,8 @@ export const App: React.FC = () => {
               stage={studioStage}
               cues={cues}
               timeline={timeline.timeline}
+              preflight={preflightReport}
+              preflightAcks={preflightAcks}
               shopStock={shopStock}
               onChangeShopStock={updateShopStock}
               onChangeRig={(next) => {
@@ -2983,6 +3272,8 @@ export const App: React.FC = () => {
             if (!capabilitiesRef.current.edit) return;
             setSourceBump('ui', 'local', key, active);
           }}
+          measureEnabled={isMeasureOverlayActive(measureOptions)}
+          onToggleMeasure={toggleMeasureOverlay}
         />
       )}
       </>

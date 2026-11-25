@@ -5,12 +5,14 @@ import { placeFixtures } from './fixturePlacement';
 import {
   ildaScanTangents,
   LASER_APERTURE_Z_M,
-  LASER_BEAM_LENGTH_M,
   LASER_ILDA_ROLL_SCALE,
   laserFanHalfAngles,
   laserPitchEnvelope,
 } from './laserAim';
 import { laserProjectorKey } from './laserProjectors';
+import { computeVenueBounds, intersectRayAudienceZone, venueAudienceEndZ } from './venueBounds';
+
+export { venueAudienceEndZ };
 
 /**
  * Commonly cited minimum vertical clearance above audience-accessible floor surfaces
@@ -80,28 +82,6 @@ export function laserClassFor(opticalPowerW: number): LaserClass {
   return opticalPowerW > 0.5 ? '4' : '3B';
 }
 
-function venueAudienceEndZ(rig: Pick<RigConfig, 'venue' | 'stageDepth'>): number {
-  const start = rig.stageDepth / 2;
-  switch (rig.venue) {
-    case 'club':
-      return Math.max(start + 12, 22);
-    case 'theatre':
-      return Math.max(start + 18, 30);
-    case 'warehouse':
-      return Math.max(start + 26, 35);
-    case 'festival':
-      return Math.max(start + 40, 50);
-    case 'arena':
-    default:
-      return Math.max(start + 35, 45);
-  }
-}
-
-/**
- * Given a projector origin, yaw (rad), pitch (rad, + = down), and local ray elevation/azimuth offsets,
- * compute the lowest world Y reached by the ray over audience Z in [zStart, zEnd] (clamped at 0 floor).
- * Returns null if the ray never crosses z >= zStart within LASER_BEAM_LENGTH_M.
- */
 /**
  * Exported for unit parity testing against THREE.Euler(pitchRad, yaw, 0, 'YXZ').
  * Applies pitch around local X first, then yaw around world Y — matching StageEngine's `root.rotation.order = 'YXZ'`.
@@ -131,57 +111,35 @@ export function laserRayWorldDirection(
 }
 
 function lowestAudienceHeightForRay(
+  originX: number,
   originY: number,
   originZ: number,
   yaw: number,
   pitchRad: number,
   localAzimuthRad: number,
   localElevationRad: number,
-  audienceStartZ: number,
-  audienceEndZ: number,
+  zone: ReturnType<typeof computeVenueBounds>['audienceZone'],
+  maxRayLengthM: number,
 ): number | null {
-  const { dy, dz } = laserRayWorldDirection(yaw, pitchRad, localAzimuthRad, localElevationRad);
+  const { dx, dy, dz } = laserRayWorldDirection(yaw, pitchRad, localAzimuthRad, localElevationRad);
 
   // Aperture sits at local (0, 0, LASER_APERTURE_Z_M) rotated by Euler(pitchRad, yaw, 0, 'YXZ').
   const cp = Math.cos(pitchRad);
   const sp = Math.sin(pitchRad);
   const cy = Math.cos(yaw);
+  const sy = Math.sin(yaw);
+  const apX = originX + LASER_APERTURE_Z_M * cp * sy;
   const apY = originY - LASER_APERTURE_Z_M * sp;
   const apZ = originZ + LASER_APERTURE_Z_M * cp * cy;
 
-  if (!Number.isFinite(dy) || !Number.isFinite(dz)) return null;
-  return computeSegmentMinY(apY, apZ, dy, dz, audienceStartZ, audienceEndZ);
-}
-
-function computeSegmentMinY(
-  apY: number,
-  apZ: number,
-  dy: number,
-  dz: number,
-  audienceStartZ: number,
-  audienceEndZ: number,
-): number | null {
-  // Ray parameterized by s in [0, LASER_BEAM_LENGTH_M]: y(s) = apY + s*dy, z(s) = apZ + s*dz.
-  // Find interval of s where z(s) in [audienceStartZ, audienceEndZ].
-  let sMin = 0;
-  let sMax = LASER_BEAM_LENGTH_M;
-
-  if (Math.abs(dz) < 1e-6) {
-    if (apZ < audienceStartZ || apZ > audienceEndZ) return null;
-  } else {
-    const sA = (audienceStartZ - apZ) / dz;
-    const sB = (audienceEndZ - apZ) / dz;
-    const lo = Math.min(sA, sB);
-    const hi = Math.max(sA, sB);
-    sMin = Math.max(sMin, lo);
-    sMax = Math.min(sMax, hi);
-    if (sMin > sMax) return null;
-  }
-
-  // Linear function on [sMin, sMax] achieves its minimum at an endpoint; floor is at y = 0.
-  const yStart = apY + sMin * dy;
-  const yEnd = apY + sMax * dy;
-  return Math.max(0, Math.min(yStart, yEnd));
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz)) return null;
+  const crossing = intersectRayAudienceZone(
+    { x: apX, y: apY, z: apZ },
+    { x: dx, y: dy, z: dz },
+    zone,
+    maxRayLengthM,
+  );
+  return crossing.minClearanceM;
 }
 
 function worstLevel(a: LaserSafetyLevel, b: LaserSafetyLevel): LaserSafetyLevel {
@@ -196,11 +154,14 @@ export interface EvaluateLaserSafetyOptions {
   ildaScanScale?: number;
   /** True when momentary Laser bump is held. */
   bumpLaser?: boolean;
+  /** Maximum ray distance in metres; defaults to Infinity (clipped strictly to venue audience bounds). */
+  maxRayLengthM?: number;
 }
 
 /**
  * Pure IEC 60825 / ANSI Z136 audience-scanning safety evaluator across every laser projector in the rig.
- * Evaluates worst-case animation angles (including roll) so indicators are stable and testable in Node.
+ * Evaluates worst-case animation angles (including roll) over the venue's full audience zone
+ * using the shared `venueBounds.ts` ray-crossing kernel so 3D overlays, plan zones, and pre-flight agree.
  */
 export function evaluateLaserSafety(
   rig: RigConfig,
@@ -211,8 +172,11 @@ export function evaluateLaserSafety(
     (p) => p.group.type === 'laser' || p.group.type === 'floor_laser',
   );
 
-  const audienceStartZ = rig.stageDepth / 2;
-  const audienceEndZ = venueAudienceEndZ(rig);
+  const bounds = computeVenueBounds(rig);
+  const maxRayLengthM =
+    options.maxRayLengthM !== undefined && Number.isFinite(options.maxRayLengthM) && options.maxRayLengthM > 0
+      ? options.maxRayLengthM
+      : Infinity;
 
   const laserEnabled = Boolean(options.bumpLaser || (laser.enabled && laser.intensity > 0.01));
   const clip = options.ildaClip ?? null;
@@ -300,14 +264,15 @@ export function evaluateLaserSafety(
     let minClearanceM: number | null = null;
     for (const az of [-halfAzimuthRad, 0, halfAzimuthRad]) {
       const clearance = lowestAudienceHeightForRay(
+        unit.position.x,
         originY,
         unit.position.z,
         unit.yaw,
         pitchEnv.maxPitchRad,
         az,
         lowestElevationRad,
-        audienceStartZ,
-        audienceEndZ,
+        bounds.audienceZone,
+        maxRayLengthM,
       );
       if (clearance !== null) {
         minClearanceM = minClearanceM === null ? clearance : Math.min(minClearanceM, clearance);

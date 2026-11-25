@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AudioLines, Camera, ChevronDown, ChevronLeft, ChevronRight, Clock, DollarSign, DraftingCompass, Eye, EyeOff, Layers, Mic, Music2, Pause,
-  Play, Radio, RotateCcw, SlidersHorizontal, Sparkles, Upload, Wrench, FolderOpen,
+  Play, Radio, RotateCcw, Ruler, ShieldCheck, SlidersHorizontal, Sparkles, Upload, Wrench, FolderOpen,
 } from 'lucide-react';
 import { AudioMetrics, CameraPreset, MusicRef } from '../types/show';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
@@ -47,6 +47,9 @@ interface TopBarProps {
   costModalOpen: boolean;
   oneNightCostLabel: string;
   cinemaMode: boolean;
+  measureEnabled?: boolean;
+  preflightLabel?: string;
+  preflightStatus?: 'not_checked' | 'blocked' | 'warnings' | 'passed';
   availableDemoTrackTitle?: string | null;
   demoTrackSectionCount?: number;
   demoTrackLoading?: boolean;
@@ -69,6 +72,8 @@ interface TopBarProps {
   onToggleShowControl: () => void;
   onToggleCostModal: () => void;
   onToggleCinemaMode: () => void;
+  onToggleMeasure?: () => void;
+  onOpenPreflight?: () => void;
 }
 
 export const CAMERAS: { id: CameraPreset; label: string }[] = [
@@ -89,10 +94,10 @@ export const TopBar: React.FC<TopBarProps> = ({
   fpsStore, fixtureCount, laserCount, audioStore, getLinkedMusic, getTrackDuration, onSeekTrack, volume, bpm, tempo,
   openingBar, openingTotalBars, openingBeforeDownbeat, blackout, autoDirector, audioReactive,
   activeCamera, rigDrawerOpen, dmxDrawerOpen, showControlOpen, clockMode, costModalOpen, oneNightCostLabel,
-  cinemaMode, availableDemoTrackTitle, demoTrackSectionCount = 0, demoTrackLoading, demoTrackProgress,
+  cinemaMode, measureEnabled = false, preflightLabel, preflightStatus = 'not_checked', availableDemoTrackTitle, demoTrackSectionCount = 0, demoTrackLoading, demoTrackProgress,
   onTogglePlay, onStartDemo, onStartDemoTrack, onJumpDemoSection, onDesignStage, onShowFiles, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
   onToggleAutoDirector, onToggleAudioReactive, onSelectCamera, onToggleRigDrawer,
-  onToggleDmxDrawer, onToggleShowControl, onToggleCostModal, onToggleCinemaMode,
+  onToggleDmxDrawer, onToggleShowControl, onToggleCostModal, onToggleCinemaMode, onToggleMeasure, onOpenPreflight,
 }) => {
   const fps = useLive(fpsStore);
   const audio = useLive(audioStore);
@@ -347,6 +352,34 @@ export const TopBar: React.FC<TopBarProps> = ({
         </label>
         <button className="transport-btn" aria-label="Rig builder" aria-expanded={rigDrawerOpen} onClick={onToggleRigDrawer}><Wrench /><span>Rig<span className="tool-name-detail"> builder</span></span></button>
         <button className="transport-btn" aria-label="DMX monitor" aria-expanded={dmxDrawerOpen} onClick={onToggleDmxDrawer}><Radio /><span>DMX</span></button>
+        {onToggleMeasure && (
+          <button
+            type="button"
+            className="transport-btn"
+            data-testid="topbar-measure-toggle"
+            aria-label="Measure overlay"
+            aria-pressed={measureEnabled}
+            title="Live measurements & safety zones (key M)"
+            onClick={onToggleMeasure}
+          >
+            <Ruler /><span className="tool-name-detail">Measure</span>
+          </button>
+        )}
+        {onOpenPreflight && preflightLabel && (
+          <button
+            type="button"
+            className="transport-btn preflight-status-btn"
+            data-testid="topbar-preflight-badge"
+            data-preflight-status={preflightStatus}
+            aria-label={`Pre-flight status: ${preflightLabel}`}
+            title={`Pre-flight gate: ${preflightLabel} · Hardware calibration deferred: simulated aim may not match real fixture aim.`}
+            onClick={onOpenPreflight}
+          >
+            <ShieldCheck />
+            <span className="preflight-status-dot" aria-hidden="true" />
+            <span className="tool-name-detail">{preflightLabel}</span>
+          </button>
+        )}
         <button className="transport-btn" aria-label="Gear, cost and crew" aria-expanded={costModalOpen} title={`Gear, inventory & cost · ${oneNightCostLabel}`} onClick={onToggleCostModal}><DollarSign /><span>Gear<span className="tool-name-detail"> &amp; cost</span></span></button>
         <button className="transport-btn" aria-label="Show control" aria-expanded={showControlOpen} title={`Show control · ${clockMode}`} onClick={onToggleShowControl}><Clock /><span>Sync</span></button>
         <button className="transport-btn" aria-label="Cinema mode" title="Cinema mode (H)" onClick={onToggleCinemaMode}><EyeOff /></button>

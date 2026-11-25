@@ -86,6 +86,7 @@ test('resolveGlobalHotkey enforces the viewer allow-list and preserves all edito
     ['KeyL', { type: 'bump', key: 'laser' }, null],
     ['KeyD', { type: 'bump', key: 'motorDrop' }, null],
     ['KeyT', { type: 'tapTempo' }, null],
+    ['KeyM', { type: 'measure' }, null],
     // Unmapped & prototype-property keys: null in both modes
     ['KeyA', null, null],
     ['KeyZ', null, null],

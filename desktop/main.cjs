@@ -30,6 +30,7 @@ const exportsBySuffix = [
   ['.instrument-schedule.csv', 'Export instrument schedule', [{ name: 'CSV table', extensions: ['csv'] }]],
   ['.channel-hookup.csv', 'Export channel hookup', [{ name: 'CSV table', extensions: ['csv'] }]],
   ['.cue-sheet.csv', 'Export cue sheet', [{ name: 'CSV table', extensions: ['csv'] }]],
+  ['.commissioning-record.csv', 'Export commissioning record', [{ name: 'CSV table', extensions: ['csv'] }]],
   ['.patch.csv', 'Export channel patch', [{ name: 'CSV table', extensions: ['csv'] }]],
   ['.equipment.csv', 'Export equipment list', [{ name: 'CSV table', extensions: ['csv'] }]],
   ['.rigging-power.csv', 'Export rigging and power report', [{ name: 'CSV table', extensions: ['csv'] }]],
@@ -139,8 +140,10 @@ function createWindow() {
     if (showControl && showControl.active) void showControl.shutdown();
   });
   wc.setWindowOpenHandler(({ url }) => {
-    // The rig drawer links to the speaker manufacturer's product specifications.
+    // The rig drawer links to the speaker manufacturer's product specifications,
+    // and the show format / experimental DMX note link to this repository.
     if (URL.canParse(url) && (new URL(url).origin === 'https://www.l-acoustics.com' ||
+        url === 'https://github.com/jbrick2070/stageforge' ||
         url === 'https://github.com/jbrick2070/stageforge/blob/main/docs/show-format.md')) {
       void shell.openExternal(url).catch(() => {});
     }

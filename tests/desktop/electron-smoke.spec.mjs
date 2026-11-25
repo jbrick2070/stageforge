@@ -392,21 +392,59 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
     await dmxPage.waitForTimeout(1000);
     expect(packets.length).toBe(0);
 
-    // 2. Open DMX monitor -> Output -> sACN unicast 127.0.0.1 -> Arm -> Go live.
+    // 2. Open DMX monitor -> Advanced starts collapsed -> expand Advanced (remembered) -> complete pre-flight gate -> sACN unicast 127.0.0.1 -> Arm -> Go live.
     await dmxPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
-    await dmxPage.getByTestId('dmx-output-toggle').click();
+    const advDetails = dmxPage.getByTestId('dmx-advanced-details');
+    await expect(advDetails).not.toHaveAttribute('open', '');
+    await dmxPage.getByTestId('dmx-advanced-summary').click();
+    await expect(advDetails).toHaveAttribute('open', '');
+    await expect(dmxPage.getByTestId('dmx-experimental-note')).toContainText('Live output to real lights is experimental.');
+
+    // Verify open state of Advanced is remembered across closing & reopening DMX monitor.
+    await dmxPage.getByRole('button', { name: 'Close DMX monitor', exact: true }).click();
+    await dmxPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
+    await expect(dmxPage.getByTestId('dmx-advanced-details')).toHaveAttribute('open', '');
+
+    // Arm output MUST be disabled until pre-flight gate is completed.
+    await expect(dmxPage.getByTestId('dmx-output-arm')).toBeDisabled();
+
+    // Configure transport first (so transport settings are bound into pre-flight revision).
     await dmxPage.getByTestId('dmx-output-mode-sacn').click();
     await dmxPage.getByTestId('dmx-output-iface').selectOption('127.0.0.1');
     await dmxPage.getByTestId('dmx-output-sacn-unicast').click();
     await dmxPage.getByTestId('dmx-output-sacn-targets').fill('127.0.0.1');
+
+    // Run pre-flight check, acknowledge non-laser warnings, and inhibit unassessed lasers.
+    await dmxPage.getByTestId('dmx-open-preflight').click();
+    const pfPanel = dmxPage.getByTestId('preflight-panel');
+    await expect(pfPanel).toBeVisible();
+    await pfPanel.getByTestId('preflight-run-check').click();
+    const ackBoxes = pfPanel.locator('input[type="checkbox"][data-testid^="preflight-ack-"]');
+    for (let i = 0; i < (await ackBoxes.count()); i++) await ackBoxes.nth(i).check();
+    const laserBoxes = pfPanel.locator('input[type="checkbox"][data-testid^="preflight-laser-inhibit-"]');
+    for (let i = 0; i < (await laserBoxes.count()); i++) await laserBoxes.nth(i).check();
+    await expect(pfPanel.getByTestId('preflight-eligibility')).toContainText('Eligible to arm');
+    await pfPanel.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(pfPanel).toBeHidden();
+
+    await expect(dmxPage.getByTestId('dmx-output-arm')).toBeEnabled();
     await dmxPage.getByTestId('dmx-output-arm').click();
     await dmxPage.getByTestId('dmx-output-go-live').click();
 
-    // 3. LIVE badge appears and remains visible in cinema mode (H).
+    // 3. LIVE badge, Pre-flight badge, and Blackout & stop stay visible outside collapsed Advanced AND in cinema mode (H).
     await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
     await expect(dmxPage.getByTestId('live-dmx-badge')).toContainText('LIVE · sACN');
+    await expect(dmxPage.getByTestId('live-preflight-badge')).toBeVisible();
+    // Collapse Advanced while output is live -> LIVE status, Pre-flight badge, and Blackout & stop MUST stay visible!
+    await dmxPage.getByTestId('dmx-advanced-summary').click();
+    await expect(dmxPage.getByTestId('dmx-advanced-details')).not.toHaveAttribute('open', '');
+    await expect(dmxPage.getByTestId('dmx-output-status-pill')).toContainText('LIVE');
+    await expect(dmxPage.getByTestId('dmx-preflight-badge')).toBeVisible();
+    await expect(dmxPage.getByTestId('dmx-output-stop')).toBeVisible();
+    await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
     await dmxPage.getByRole('button', { name: 'Cinema mode', exact: true }).click();
     await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
+    await expect(dmxPage.getByTestId('live-preflight-badge')).toBeVisible();
     await dmxPage.getByRole('button', { name: 'Show desk' }).click();
 
     if (!packaged) {
@@ -442,7 +480,24 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       expect(packets.length).toBe(afterDisableCount);
 
       // 5. Re-enable and forcibly crash the renderer: main process MUST still send blackout + terminate.
-      await dmxPage.getByTestId('dmx-output-toggle').click();
+      // (Re-expand Advanced first; step 4 triggered a cue which may make pre-flight stale, so refresh if needed.)
+      if ((await dmxPage.getByTestId('dmx-advanced-details').getAttribute('open')) === null) {
+        await dmxPage.getByTestId('dmx-advanced-summary').click();
+      }
+      if (await dmxPage.getByTestId('dmx-output-arm').isDisabled()) {
+        await dmxPage.getByTestId('dmx-open-preflight').click();
+        const pf2 = dmxPage.getByTestId('preflight-panel');
+        await pf2.getByTestId('preflight-run-check').click();
+        const ack2 = pf2.locator('input[type="checkbox"][data-testid^="preflight-ack-"]');
+        for (let i = 0; i < (await ack2.count()); i++) {
+          if (!(await ack2.nth(i).isChecked())) await ack2.nth(i).check();
+        }
+        const las2 = pf2.locator('input[type="checkbox"][data-testid^="preflight-laser-inhibit-"]');
+        for (let i = 0; i < (await las2.count()); i++) {
+          if (!(await las2.nth(i).isChecked())) await las2.nth(i).check();
+        }
+        await pf2.getByRole('button', { name: 'Done', exact: true }).click();
+      }
       await dmxPage.getByTestId('dmx-output-arm').click();
       await dmxPage.getByTestId('dmx-output-go-live').click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
@@ -663,6 +718,7 @@ test('Gear & production Inventory loads under stageforge:// CSP, prints via wind
     { radio: 'Instrument schedule', suffix: '.instrument-schedule.csv', title: 'Export instrument schedule', header: 'Position,Mount #,Fixture #' },
     { radio: 'Channel hookup', suffix: '.channel-hookup.csv', title: 'Export channel hookup', header: 'Fixture #,Position,Unit #' },
     { radio: 'Cue sheet', suffix: '.cue-sheet.csv', title: 'Export cue sheet', header: 'Cue #,Name,Tag,Follow' },
+    { radio: 'Commissioning record', suffix: '.commissioning-record.csv', title: 'Export commissioning record', header: 'Row ID,Category,Item,Location' },
   ];
   for (const check of pwChecks) {
     await pwPanel.getByRole('radio', { name: new RegExp(check.radio) }).click({ force: true });

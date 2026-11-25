@@ -120,3 +120,67 @@ export function aimTiltOnly(local: Vec3, isFloor: boolean, pivot = HEAD_PIVOT): 
   const raw = Math.atan2(dir * vz, dir * vy);
   return Math.max(-TILT_LIMIT, Math.min(TILT_LIMIT, raw));
 }
+
+export interface AimReachabilityResult {
+  readonly reachable: boolean;
+  readonly clampedTilt: boolean;
+  readonly offAxisFixed: boolean;
+  readonly unclampedTiltRad: number;
+  readonly resolvedPanRad: number;
+  readonly resolvedTiltRad: number;
+}
+
+/**
+ * Evaluate whether a target point in a fixture's local root frame is physically reachable
+ * within its pan/tilt/motion limits (before clamping), reusing the exact `aimAngles`/`aimTiltOnly` math.
+ */
+export function evaluateAimReachability(
+  local: Vec3,
+  isFloor: boolean,
+  motion: 'pan-tilt' | 'tilt' | 'fixed',
+  pivot = HEAD_PIVOT,
+): AimReachabilityResult {
+  const dir = isFloor ? 1 : -1;
+  const vx = local.x;
+  const vy = local.y - dir * pivot;
+  const vz = local.z;
+  const len = Math.hypot(vx, vy, vz);
+  if (len < 1e-6) {
+    return {
+      reachable: true,
+      clampedTilt: false,
+      offAxisFixed: false,
+      unclampedTiltRad: 0,
+      resolvedPanRad: 0,
+      resolvedTiltRad: 0,
+    };
+  }
+
+  if (motion === 'tilt') {
+    const rawTilt = Math.atan2(dir * vz, dir * vy);
+    const clampedTilt = Math.abs(rawTilt) > TILT_LIMIT + 1e-6;
+    const lateralAngle = Math.atan2(Math.abs(vx), Math.hypot(vy, vz));
+    // A single-axis batten can only aim strictly in its local YZ plane (small lateral tolerance for beam width).
+    const offAxisFixed = lateralAngle > (15 * Math.PI) / 180;
+    return {
+      reachable: !clampedTilt && !offAxisFixed,
+      clampedTilt,
+      offAxisFixed,
+      unclampedTiltRad: rawTilt,
+      resolvedPanRad: 0,
+      resolvedTiltRad: Math.max(-TILT_LIMIT, Math.min(TILT_LIMIT, rawTilt)),
+    };
+  }
+
+  const rawTilt = Math.acos(Math.max(-1, Math.min(1, (dir * vy) / len)));
+  const solved = aimAngles(local, isFloor, 0, 0, pivot);
+  const clampedTilt = rawTilt > TILT_LIMIT + 1e-6;
+  return {
+    reachable: !clampedTilt,
+    clampedTilt,
+    offAxisFixed: false,
+    unclampedTiltRad: rawTilt,
+    resolvedPanRad: solved.pan,
+    resolvedTiltRad: solved.tilt,
+  };
+}

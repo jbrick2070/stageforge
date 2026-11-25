@@ -136,10 +136,10 @@ test('Plot plan prints first at true scale (A4 & Letter), matches Patch Sheet ad
 
   expect(a4Metrics.firstSectionId).toBe('plot');
   expect(a4Metrics.paper).toBe('a4');
-  expect(a4Metrics.sheetText).toBe('Sheet 1 of 6');
-  // L2 regression: every one of the 6 sheets in book mode carries its "Sheet k of 6" label.
-  for (let i = 0; i < 6; i++) {
-    expect(a4Metrics.sheetHeaders[i]).toContain(`Sheet ${i + 1} of 6`);
+  expect(a4Metrics.sheetText).toBe('Sheet 1 of 7');
+  // L2 regression: every one of the 7 sheets in book mode carries its "Sheet k of 7" label.
+  for (let i = 0; i < 7; i++) {
+    expect(a4Metrics.sheetHeaders[i]).toContain(`Sheet ${i + 1} of 7`);
   }
   expect(a4Metrics.downstageText).toContain('DOWNSTAGE / AUDIENCE');
   expect(a4Metrics.disclaimerText).toContain('Design guidance: not for construction');

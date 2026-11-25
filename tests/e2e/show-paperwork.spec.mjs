@@ -103,8 +103,8 @@ test('Paperwork tab supports 4-tab keyboard nav, 5 sub-sheets, CSV exports, and 
   });
   expect(bookPrint).toEqual({
     sheetCount: 1,
-    sectionCount: 6,
-    sectionIds: ['plot', 'patch', 'instrument', 'hookup', 'power', 'cues'],
+    sectionCount: 7,
+    sectionIds: ['plot', 'patch', 'instrument', 'hookup', 'power', 'cues', 'commissioning'],
     hasPlotSvg: true,
     hasAllTheads: true,
     rootDisplay: 'none',

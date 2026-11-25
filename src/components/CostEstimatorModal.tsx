@@ -9,6 +9,13 @@ import { computePowerReport } from '../data/powerReport';
 import { evaluateRigLoads } from '../data/rigLoads';
 import { DEFAULT_SHOP_STATE, type ShopStockState } from '../data/shopStock';
 import { buildShowPaperwork } from '../data/showPaperwork';
+import {
+  EMPTY_PREFLIGHT_ACKS,
+  evaluatePreflight,
+  type PreflightAcknowledgementState,
+  type PreflightReport,
+} from '../data/preflight';
+import { INITIAL_SHOW_STATE } from '../data/presets';
 import { loadTitleBlock, saveTitleBlock, type PlotTitleBlockState } from '../data/plotPlan';
 import { CostCrewPanel } from './CostCrewPanel';
 import { InventoryPanel } from './InventoryPanel';
@@ -58,6 +65,8 @@ export interface CostEstimatorModalProps {
   stage?: NativeStage;
   cues?: ShowCue[];
   timeline?: ShowTimeline;
+  preflight?: PreflightReport;
+  preflightAcks?: PreflightAcknowledgementState;
   shopStock?: ShopStockState;
   onChangeShopStock?: (next: ShopStockState) => void;
   onChangeRig?: (next: RigConfig) => void;
@@ -74,6 +83,8 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
   stage,
   cues = NO_CUES,
   timeline,
+  preflight: passedPreflight,
+  preflightAcks = EMPTY_PREFLIGHT_ACKS,
   shopStock = DEFAULT_SHOP_STATE,
   onChangeShopStock,
   onChangeRig,
@@ -88,6 +99,7 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
   paperworkSheetRef.current = paperworkSheet;
   const [paperworkPrintMode, setPaperworkPrintMode] = useState<PaperworkPrintMode>('patch');
   const [titleBlock, setTitleBlock] = useState<PlotTitleBlockState>(loadTitleBlock);
+  const [testerName, setTesterName] = useState('');
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inventoryTabRef = useRef<HTMLButtonElement>(null);
   const riggingTabRef = useRef<HTMLButtonElement>(null);
@@ -119,6 +131,21 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
     }
   }, [activeTab, rig, stage, cues, timeline, loads, power]);
   const paperwork = paperworkBuild.value;
+  // Share a single frozen pre-flight snapshot between the Commissioning sheet preview, print, and CSV.
+  const preflight = useMemo(() => {
+    if (passedPreflight) return passedPreflight;
+    if (activeTab !== 'paperwork') return undefined;
+    return evaluatePreflight({
+      rig,
+      stage,
+      cues,
+      showState: INITIAL_SHOW_STATE,
+      loads,
+      power,
+      applyD8Derate,
+      acks: preflightAcks,
+    });
+  }, [passedPreflight, activeTab, rig, stage, cues, loads, power, applyD8Derate, preflightAcks]);
 
   const tabRefFor = (tab: GearTab) =>
     tab === 'inventory'
@@ -382,6 +409,10 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
                 rig={rig}
                 stage={stage}
                 paperwork={paperwork}
+                preflight={preflight}
+                preflightAcks={preflightAcks}
+                testerName={testerName}
+                onChangeTesterName={setTesterName}
                 activeSheet={paperworkSheet}
                 onChangeSheet={handlePaperworkSheetChange}
                 titleBlock={titleBlock}
@@ -422,6 +453,9 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
           paperwork={paperwork}
           mode={paperworkPrintMode}
           titleBlock={titleBlock}
+          preflight={preflight}
+          preflightAcks={preflightAcks}
+          testerName={testerName}
         />
       )}
     </>

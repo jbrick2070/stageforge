@@ -135,3 +135,40 @@ export function aerialGain(optics: ReturnType<typeof fixtureOptics>, zoom: numbe
   const scaled = (optics.gain * live * (live + 1)) / (zoom * zoom * base * (base + 1));
   return Number.isFinite(scaled) ? Math.min(MAX_AERIAL_GAIN, Math.max(0, scaled)) : optics.gain;
 }
+
+/**
+ * Shared mesh zoom scale factor used by both `StageEngine.updateScene` and `measure.ts`
+ * so reported beam angles always match the rendered volumetric cone.
+ */
+export function beamZoomScale(kind: MovingHeadKind, effZoom: number): number {
+  const z = Number.isFinite(effZoom) ? Math.max(0, Math.min(1, effZoom)) : 0;
+  return kind === 'wash' ? 0.75 + z * 0.85 : 0.42 + z * 1.35;
+}
+
+/**
+ * Effective full beam angle in degrees for a moving head given its `fixtureOptics()` result
+ * and live `zoomScale` (`beamMesh.scale.x`). Works for both configured and legacy optics.
+ */
+export function effectiveBeamAngleDeg(
+  optics: Pick<ReturnType<typeof fixtureOptics>, 'length' | 'nearRadius' | 'farRadius'>,
+  zoomScale: number,
+): number {
+  const safeZoom = Number.isFinite(zoomScale) && zoomScale > 0 ? zoomScale : 1;
+  const slope = ((optics.farRadius - optics.nearRadius) / Math.max(1e-6, optics.length)) * safeZoom;
+  return (2 * Math.atan(Math.max(1e-6, slope)) * 180) / Math.PI;
+}
+
+/**
+ * Return explicitly configured or verified catalogue luminous flux (lumens), or `null` when
+ * photometric data is absent (never falls back to the 10,000 lm legacy preview default).
+ */
+export function resolvedPhotometricLumens(group: {
+  type: FixtureType | FloorFxType;
+  catalogId?: string;
+  optics?: FixtureOptics;
+}): number | null {
+  const resolved = resolveOptics(group);
+  const raw = resolved?.lumens ?? resolved?.profile?.lumens;
+  if (raw === undefined || !Number.isFinite(raw) || raw <= 0) return null;
+  return Math.min(MAX_LUMENS, raw);
+}

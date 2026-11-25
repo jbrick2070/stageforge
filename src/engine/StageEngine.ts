@@ -70,7 +70,23 @@ import { encodeLaserDmxChannels, ildaScanTangents, LASER_ILDA_ROLL_SCALE, LASER_
 import { flickerIntensityMultiplier, laserRefreshHz } from '../data/laserScan';
 import { DEFAULT_LASER_COLORS, DEFAULT_LASER_RESOLUTION, laserProjectorKey } from '../data/laserProjectors';
 import { BeamPools } from './beamPools';
-import { aerialGain, fixtureOptics, resolveOptics } from '../data/fixtureOptics';
+import { aerialGain, beamZoomScale, fixtureOptics, resolvedPhotometricLumens, resolveOptics } from '../data/fixtureOptics';
+import {
+  buildMeasureSnapshot,
+  buildSceneRaySurfaces,
+  computeReachMap,
+  evaluateLaserZones,
+  type EngineHeadSample,
+  type MeasureSnapshot,
+  type ReachMapResult,
+  type SceneRaySurfaces,
+} from '../data/measure';
+import {
+  DEFAULT_MEASURE_OVERLAY_OPTIONS,
+  isMeasureOverlayActive,
+  MeasureOverlay3D,
+  type MeasureOverlayOptions,
+} from './measureOverlay';
 import { fitAuthoredFoh, LED_DISPLAY_MATERIAL_NAME } from './fohFraming';
 import { buildScenicPiece, ScenicPiece } from './scenicProps';
 import { SPEAKER_PROFILES } from '../data/speakerProfiles';
@@ -89,8 +105,19 @@ import {
 } from './audioModulation';
 
 interface MovingFixtureInstance {
+  unitId: string;
+  fixtureNumber: number;
+  groupId: string;
+  podId: string | null;
+  positionName: string;
+  label: string;
+  modelName: string;
   type: 'beam' | 'wash';
   optics: ReturnType<typeof fixtureOptics>;
+  configuredLumens: number | null;
+  lensOffsetY: number;
+  appliedDimmer: number;
+  lastZoomScale: number;
   isFloor: boolean;
   index: number;
   fanPosition: number;
@@ -325,6 +352,22 @@ export class StageEngine {
   private ledPhaseOffset = 0;
   private laserSpeedPhaseOffsets: number[] = [];
   private laserRotPhaseOffsets: number[] = [];
+  private inhibitedLaserKeys = new Set<string>();
+  private measureOptions: MeasureOverlayOptions = DEFAULT_MEASURE_OVERLAY_OPTIONS;
+  private measureOverlay: MeasureOverlay3D | null = null;
+  private measureListener?: (snapshot: MeasureSnapshot) => void;
+  private liveSafetyMonitorEnabled = false;
+  private measureSurfacesCache: SceneRaySurfaces | null = null;
+  private measureReachCache: ReachMapResult | null = null;
+  private lastNohdKey = '';
+  private lastNohdZones: ReturnType<typeof evaluateLaserZones>['zones'] = [];
+  private ildaClipRevision = 0;
+  private measureRigRevision = 0;
+  private lastMeasureTickMs = -Infinity;
+  private measureOriginScratch = new THREE.Vector3();
+  private measureDirScratch = new THREE.Vector3();
+  private measureMountScratch = new THREE.Vector3();
+  private measureProjScratch = new THREE.Vector3();
   private appliedLaserProjectorKeys: string[] = [];
   private appliedLaserProjectorCount = 0;
   private appliedParams = {
@@ -641,6 +684,7 @@ export class StageEngine {
   public setIldaClip(clip: IldaClip | null) {
     this.detachIldaMeshes();
     this.activeIldaClip = clip;
+    this.ildaClipRevision++;
     this.ildaPlayTime = 0;
     if (clip) this.attachIldaToLaserUnits();
   }
@@ -791,6 +835,181 @@ export class StageEngine {
     if (!group) return copyAll();
     const all = copyAll();
     return { master: all.master, legacyBoost: all.legacyBoost, ...all[group] };
+  }
+
+  /** Set the session-inhibited laser projector keys whose physical DMX channels are forced to 0 (no cue/bump bypass). */
+  public setInhibitedLasers(keys: readonly string[]) {
+    this.inhibitedLaserKeys.clear();
+    for (const k of keys) this.inhibitedLaserKeys.add(k);
+  }
+
+  /** Configure the 3D Measure & Safety Zones overlay. Lazy-allocates on enable and removes+disposes when all off. */
+  public setMeasureOverlay(options: MeasureOverlayOptions) {
+    this.measureOptions = options;
+    const active = isMeasureOverlayActive(options);
+    if (!active) {
+      if (this.measureOverlay) {
+        this.scene.remove(this.measureOverlay.group);
+        this.measureOverlay.dispose();
+        this.measureOverlay = null;
+      }
+      return;
+    }
+    if (!this.measureOverlay) {
+      this.measureOverlay = new MeasureOverlay3D();
+      this.scene.add(this.measureOverlay.group);
+    }
+    // Force immediate refresh on next tick (or right now if already initialized).
+    this.lastMeasureTickMs = -Infinity;
+    this.refreshMeasureOverlayAndSnapshot(performance.now());
+  }
+
+  /** Register a throttled (<=10 Hz) MeasureSnapshot subscriber (HUD or live safety monitor). */
+  public setMeasureListener(listener?: (snapshot: MeasureSnapshot) => void) {
+    this.measureListener = listener;
+    if (listener) {
+      this.lastMeasureTickMs = -Infinity;
+    }
+  }
+
+  /** Enable continuous <=10 Hz measurement snapshots while live DMX is active, independent of overlay visibility. */
+  public setLiveSafetyMonitor(enabled: boolean) {
+    this.liveSafetyMonitorEnabled = enabled;
+    if (enabled) this.lastMeasureTickMs = -Infinity;
+  }
+
+  private getMeasureSurfaces(): SceneRaySurfaces | null {
+    if (!this.currentRig) return null;
+    if (!this.measureSurfacesCache) {
+      this.measureSurfacesCache = buildSceneRaySurfaces(this.currentRig, this.lastRebuildStage);
+    }
+    return this.measureSurfacesCache;
+  }
+
+  private sampleMeasureHeads(projectToScreen: boolean): EngineHeadSample[] {
+    const out: EngineHeadSample[] = new Array(this.movingFixtures.length);
+    const origin = this.measureOriginScratch;
+    const dir = this.measureDirScratch;
+    const mount = this.measureMountScratch;
+    const proj = this.measureProjScratch;
+    for (let i = 0; i < this.movingFixtures.length; i++) {
+      const fx = this.movingFixtures[i];
+      const sign = fx.isFloor ? 1 : -1;
+      fx.root.updateWorldMatrix(true, false);
+      fx.head.updateWorldMatrix(true, false);
+      fx.root.getWorldPosition(mount);
+      // Lens origin matches BeamPools.add (local (0, sign * lensOffsetY, 0) in head/beam frame).
+      origin.set(0, sign * fx.lensOffsetY, 0).applyMatrix4(fx.head.matrixWorld);
+      dir.set(0, sign, 0).transformDirection(fx.head.matrixWorld).normalize();
+      let screenX: number | null = null;
+      let screenY: number | null = null;
+      let inView = false;
+      if (projectToScreen) {
+        proj.copy(origin).project(this.camera);
+        inView = proj.z >= -1 && proj.z <= 1 && Math.abs(proj.x) <= 1.05 && Math.abs(proj.y) <= 1.05;
+        screenX = (proj.x + 1) * 0.5;
+        screenY = (1 - proj.y) * 0.5;
+      }
+      out[i] = {
+        unitId: fx.unitId,
+        fixtureNumber: fx.fixtureNumber,
+        groupId: fx.groupId,
+        podId: fx.podId,
+        positionName: fx.positionName,
+        label: fx.label,
+        modelName: fx.modelName,
+        type: fx.type,
+        motion: fx.motion,
+        isFloor: fx.isFloor,
+        mountPosition: { x: mount.x, y: mount.y, z: mount.z },
+        lensOrigin: { x: origin.x, y: origin.y, z: origin.z },
+        direction: { x: dir.x, y: dir.y, z: dir.z },
+        panRad: fx.currentPan,
+        tiltRad: fx.currentTilt,
+        zoomScale: fx.lastZoomScale,
+        optics: fx.optics,
+        configuredLumens: fx.configuredLumens,
+        appliedDimmer: fx.appliedDimmer,
+        emittedVisible: fx.beamMesh.visible,
+        screenX,
+        screenY,
+        inView,
+      };
+    }
+    return out;
+  }
+
+  /** Compute a fresh immutable MeasureSnapshot on demand (used by `?probe` and 10 Hz HUD/monitor). */
+  public getMeasureSnapshot(projectHitPoints = false): MeasureSnapshot | null {
+    if (!this.currentRig) return null;
+    const surfaces = this.getMeasureSurfaces();
+    if (!surfaces) return null;
+    const samples = this.sampleMeasureHeads(false);
+    const snap = buildMeasureSnapshot(samples, this.currentRig, surfaces, performance.now());
+    if (!projectHitPoints) return snap;
+
+    const proj = this.measureProjScratch;
+    const withScreen = snap.units.map((u) => {
+      const target = u.hitPoint ?? u.lensOrigin;
+      proj.set(target.x, target.y, target.z).project(this.camera);
+      const inView = proj.z >= -1 && proj.z <= 1 && Math.abs(proj.x) <= 1.0 && Math.abs(proj.y) <= 1.0;
+      return {
+        ...u,
+        screenX: inView ? (proj.x + 1) * 0.5 : null,
+        screenY: inView ? (1 - proj.y) * 0.5 : null,
+        inView,
+      };
+    });
+    return { ...snap, units: withScreen };
+  }
+
+  private refreshMeasureOverlayAndSnapshot(nowMs: number) {
+    const overlayActive = isMeasureOverlayActive(this.measureOptions);
+    if (!overlayActive && !this.liveSafetyMonitorEnabled) return;
+    if (nowMs - this.lastMeasureTickMs < 100) return; // <= 10 Hz cap
+    this.lastMeasureTickMs = nowMs;
+
+    if (!this.currentRig) return;
+    const snap = this.getMeasureSnapshot(this.measureOptions.enabled);
+    if (!snap) return;
+
+    if (this.measureOverlay && overlayActive) {
+      const opts = this.measureOptions;
+      this.measureOverlay.updateRays(snap.units, opts.enabled && opts.showRays, opts.selectedUnitId);
+      this.measureOverlay.updateAudienceZone(snap.bounds, opts.showAudienceZone);
+      if (opts.showLaserNohd) {
+        const s = this.currentState.laser;
+        const projKey = s.projectors ? JSON.stringify(s.projectors) : '';
+        const nohdKey = `${this.measureRigRevision}:${this.ildaClipRevision}:${s.pattern}:${s.beamCount}:${s.speed.toFixed(3)}:${s.spreadX.toFixed(2)}:${s.spreadY.toFixed(2)}:${s.tilt.toFixed(2)}:${s.rotation.toFixed(2)}:${s.audienceScan}:${projKey}`;
+        if (nohdKey !== this.lastNohdKey) {
+          this.lastNohdKey = nohdKey;
+          this.lastNohdZones = evaluateLaserZones(this.currentRig, { ...s, enabled: true, intensity: 1 }, {
+            stage: this.lastRebuildStage,
+            ildaClip: this.activeIldaClip,
+          }).zones;
+        }
+        this.measureOverlay.updateLaserNohd(this.lastNohdZones, true, nohdKey);
+      } else {
+        this.measureOverlay.updateLaserNohd([], false, '');
+      }
+      if (opts.showReachMap) {
+        if (!this.measureReachCache) {
+          this.measureReachCache = computeReachMap(this.currentRig, this.lastRebuildStage);
+        }
+        this.measureOverlay.updateReachMap(
+          this.measureReachCache,
+          opts.selectedUnitId,
+          true,
+          String(this.measureRigRevision),
+        );
+      } else {
+        this.measureOverlay.updateReachMap({ deckY: 0, areas: [], unionPolygon: [] }, null, false, '');
+      }
+    }
+
+    if (this.measureListener) {
+      this.measureListener(snap);
+    }
   }
 
   /** Test probe: each moving head's beam axis in world space (origin at the tilt pivot). */
@@ -1236,6 +1455,12 @@ export class StageEngine {
       old.stageDepth === rig.stageDepth && old.venue === rig.venue && old.audioRig === rig.audioRig &&
       old.ledWall === rig.ledWall && old.trussPods === rig.trussPods && old.floorFx === rig.floorFx) return;
     this.beamPools?.dispose();
+    this.measureSurfacesCache = null;
+    this.measureReachCache = null;
+    this.lastNohdKey = '';
+    this.lastNohdZones = [];
+    this.measureRigRevision++;
+    this.lastMeasureTickMs = -Infinity;
     this.detachIldaMeshes();
     this.batcher?.clear();
     this.releaseGroup(this.rigGroup);
@@ -1587,7 +1812,17 @@ export class StageEngine {
             width,
             physicalClass,
             resolveOptics(fg),
-            fg.catalogId
+            fg.catalogId,
+            {
+              unitId: `${pod.id}:${fg.id}:${i}`,
+              fixtureNumber: globalMovingIndex,
+              groupId: fg.id,
+              podId: pod.id,
+              positionName: pod.name,
+              label: `${pod.name} · ${fg.modelName} #${i + 1}`,
+              modelName: fg.modelName,
+              configuredLumens: resolvedPhotometricLumens(fg),
+            },
           );
           inst.root.position.copy(slot.pos);
           inst.root.rotation.y = slot.rotY;
@@ -1704,7 +1939,17 @@ export class StageEngine {
             width,
             physicalClass,
             resolveOptics(fx),
-            fx.catalogId
+            fx.catalogId,
+            {
+              unitId: `floor:${fx.id}:${i}`,
+              fixtureNumber: globalMovingIndex,
+              groupId: fx.id,
+              podId: null,
+              positionName: 'Stage floor',
+              label: `Floor · ${fx.modelName} #${i + 1}`,
+              modelName: fx.modelName,
+              configuredLumens: resolvedPhotometricLumens(fx),
+            },
           );
           fb.root.position.set(px, py, pz);
           this.rigGroup.add(nameFixtureUnit(fb.root, fx, i, start));
@@ -1825,7 +2070,17 @@ export class StageEngine {
     dmxWidth: number,
     physicalClass: PhysicalGroupClassification,
     profile?: FixtureOptics,
-    catalogId?: string
+    catalogId?: string,
+    meta?: {
+      unitId: string;
+      fixtureNumber: number;
+      groupId: string;
+      podId: string | null;
+      positionName: string;
+      label: string;
+      modelName: string;
+      configuredLumens: number | null;
+    },
   ): MovingFixtureInstance {
     const root = new THREE.Group();
     const dir = isFloor ? 1 : -1;
@@ -1920,8 +2175,19 @@ export class StageEngine {
     head.add(beamMesh);
 
     return {
+      unitId: meta?.unitId ?? `head:${index}`,
+      fixtureNumber: meta?.fixtureNumber ?? index + 1,
+      groupId: meta?.groupId ?? `group:${index}`,
+      podId: meta?.podId ?? null,
+      positionName: meta?.positionName ?? (isFloor ? 'Stage floor' : 'Truss'),
+      label: meta?.label ?? `${type} #${index + 1}`,
+      modelName: meta?.modelName ?? type,
       type,
       optics,
+      configuredLumens: meta?.configuredLumens ?? null,
+      lensOffsetY: parts.lensOffsetY,
+      appliedDimmer: 0,
+      lastZoomScale: 1,
       isFloor,
       index,
       fanPosition,
@@ -2565,7 +2831,9 @@ export class StageEngine {
       const finalInt = Math.min(1.6, dimmer * master * groupStrobeGate * (1.0 + audioBoost * 0.48));
 
       fx.beamMat.uniforms.uColor.value.copy(tempCol);
-      const zoomScale = fx.type === 'wash' ? 0.75 + effZoom * 0.85 : 0.42 + effZoom * 1.35;
+      const zoomScale = beamZoomScale(fx.type, effZoom);
+      fx.lastZoomScale = zoomScale;
+      fx.appliedDimmer = THREE.MathUtils.clamp(finalInt, 0, 1);
       const emitted = finalInt * aerialGain(fx.optics, zoomScale);
       fx.beamMat.uniforms.uIntensity.value = emitted;
       fx.beamMat.uniforms.uHaze.value = effHaze;
@@ -2805,7 +3073,14 @@ export class StageEngine {
         writeDmxChannels(uBuf, l.dmxStart, l.dmxWidth, dmxBytes);
         const ps = this.physicalUnitScratch;
         ps.blackout = blackoutActive;
-        writePhysicalUnitBytes(physBuf, uBuf, l.dmxStart, l.dmxWidth, l.physicalClass, ps, this.physicalDmxScratch);
+        if (this.inhibitedLaserKeys.has(l.key)) {
+          // Session-inhibited laser projector: force physical DMX to neutral 0 with no cue/bump bypass.
+          const ch = l.dmxStart - 1;
+          const clampedW = Math.min(l.dmxWidth, physBuf.length - ch);
+          if (ch >= 0 && clampedW > 0) physBuf.fill(0, ch, ch + clampedW);
+        } else {
+          writePhysicalUnitBytes(physBuf, uBuf, l.dmxStart, l.dmxWidth, l.physicalClass, ps, this.physicalDmxScratch);
+        }
       }
     }
     const laserInt = this.laserUnits.length ? maxLaserInt : baseLaserInt;
@@ -3039,6 +3314,7 @@ export class StageEngine {
       }
     }
     this.controls.update();
+    this.refreshMeasureOverlayAndSnapshot(performance.now());
     return master > 0;
   }
 
@@ -3052,7 +3328,20 @@ export class StageEngine {
     }
     this.resizeObserver?.disconnect();
     this.controls?.dispose();
+    if (this.measureOverlay) {
+      this.scene.remove(this.measureOverlay.group);
+      this.measureOverlay.dispose();
+      this.measureOverlay = null;
+    }
+    this.measureListener = undefined;
+    this.liveSafetyMonitorEnabled = false;
     this.beamPools?.dispose();
+    this.measureSurfacesCache = null;
+    this.measureReachCache = null;
+    this.lastNohdKey = '';
+    this.lastNohdZones = [];
+    this.measureRigRevision++;
+    this.lastMeasureTickMs = -Infinity;
     this.detachIldaMeshes();
     this.activeIldaClip = null;
     this.batcher?.dispose();

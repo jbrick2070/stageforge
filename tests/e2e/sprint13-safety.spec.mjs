@@ -48,7 +48,7 @@ test('L1: startup loads zero deferred editor panel chunks until a panel is opene
   await expect(page.getByLabel('DMX monitor')).toBeVisible();
   await expect(page.getByTestId('dmx-monitor-mode-sim')).toBeVisible();
   await expect(page.getByTestId('dmx-monitor-mode-phys')).toBeVisible();
-  await page.getByTestId('dmx-output-toggle').click();
+  await page.getByTestId('dmx-advanced-summary').click();
   await expect(page.getByTestId('dmx-physical-coverage')).toBeVisible();
   expect(loadedScripts.length).toBeGreaterThanOrEqual(startupCount);
   console.log(`L1 startup JS: ${startupCount} scripts, ${startupBytes} bytes`);

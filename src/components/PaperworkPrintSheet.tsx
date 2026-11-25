@@ -13,10 +13,16 @@ import {
   type PlotTitleBlockState,
 } from '../data/plotPlan';
 import { LASER_SAFETY_DISCLAIMER } from '../data/laserSafety';
+import {
+  commissioningActionLabel,
+  EMPTY_PREFLIGHT_ACKS,
+  type PreflightAcknowledgementState,
+  type PreflightReport,
+} from '../data/preflight';
 import { PlotPlanPage } from './PlotPlanPage';
 import { RiggingPowerPrintContent } from './RiggingPowerPrintSheet';
 
-export type PaperworkViewId = 'plot' | PaperworkSheetId;
+export type PaperworkViewId = 'plot' | PaperworkSheetId | 'commissioning';
 export type PaperworkPrintMode = PaperworkViewId | 'book';
 
 interface PaperworkPrintSheetProps {
@@ -25,6 +31,9 @@ interface PaperworkPrintSheetProps {
   paperwork: ShowPaperwork;
   mode: PaperworkPrintMode;
   titleBlock?: PlotTitleBlockState;
+  preflight?: PreflightReport;
+  preflightAcks?: PreflightAcknowledgementState;
+  testerName?: string;
 }
 
 function formatLocalDate(): string {
@@ -61,9 +70,13 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
   paperwork,
   mode,
   titleBlock = DEFAULT_TITLE_BLOCK,
+  preflight,
+  preflightAcks = EMPTY_PREFLIGHT_ACKS,
+  testerName = '',
 }) => {
   const generatedDate = formatLocalDate();
   const isBook = mode === 'book';
+  const totalBookSheets = preflight ? 7 : 6;
   const show = (id: PaperworkViewId) => isBook || mode === id;
   const needPlot = show('plot');
   const plotPlan = useMemo(
@@ -74,10 +87,10 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
             titleBlock,
             generatedDate,
             sheetNumber: 1,
-            totalSheets: isBook ? 6 : 1,
+            totalSheets: isBook ? totalBookSheets : 1,
           })
         : null,
-    [needPlot, paperwork, rig, stage, titleBlock, generatedDate, isBook],
+    [needPlot, paperwork, rig, stage, titleBlock, generatedDate, isBook, totalBookSheets],
   );
 
   if (typeof document === 'undefined') return null;
@@ -105,7 +118,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
               <h1>{paperwork.rigName} — Patch Sheet</h1>
               <p className="print-meta">
                 Venue: {paperwork.venue.toUpperCase()} · {paperwork.totals.unitCount} fixtures · Date: {generatedDate}
-                {isBook ? ' · Sheet 2 of 6' : ''}
+                {isBook ? ` · Sheet 2 of ${totalBookSheets}` : ''}
               </p>
             </div>
             <p className="print-disclaimer">{PAPERWORK_SIMULATED_MAP_NOTICE}</p>
@@ -192,7 +205,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
               <p className="print-meta">
                 Venue: {paperwork.venue.toUpperCase()} · {paperwork.positions.length} positions ·{' '}
                 {paperwork.totals.unitCount} fixtures · Date: {generatedDate}
-                {isBook ? ' · Sheet 3 of 6' : ''}
+                {isBook ? ` · Sheet 3 of ${totalBookSheets}` : ''}
               </p>
             </div>
             <p className="print-disclaimer">
@@ -277,7 +290,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
               <h1>{paperwork.rigName} — Channel Hookup</h1>
               <p className="print-meta">
                 Venue: {paperwork.venue.toUpperCase()} · {paperwork.totals.unitCount} channels · Date: {generatedDate}
-                {isBook ? ' · Sheet 4 of 6' : ''}
+                {isBook ? ` · Sheet 4 of ${totalBookSheets}` : ''}
               </p>
             </div>
             <p className="print-disclaimer">
@@ -355,7 +368,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
             loads={paperwork.loads}
             power={paperwork.power}
             generatedDate={generatedDate}
-            sheetLabel={isBook ? 'Sheet 5 of 6' : undefined}
+            sheetLabel={isBook ? `Sheet 5 of ${totalBookSheets}` : undefined}
           />
         </div>
       )}
@@ -369,7 +382,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
                 Venue: {paperwork.venue.toUpperCase()} · {paperwork.totals.cueCount} cues
                 {paperwork.timelineFrameRate ? ` · Take TC @ ${paperwork.timelineFrameRate} fps` : ''} · Date:{' '}
                 {generatedDate}
-                {isBook ? ' · Sheet 6 of 6' : ''}
+                {isBook ? ` · Sheet 6 of ${totalBookSheets}` : ''}
               </p>
             </div>
             <p className="print-disclaimer">
@@ -427,6 +440,75 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
               LASER SAFETY: One or more cues enable crowd scanning. {LASER_SAFETY_DISCLAIMER}
             </footer>
           )}
+        </div>
+      )}
+
+      {show('commissioning') && preflight && (
+        <div className="print-section" data-paperwork-section="commissioning">
+          <header className="print-header">
+            <div>
+              <h1>{paperwork.rigName} — Commissioning Record</h1>
+              <p className="print-meta">
+                Venue: {paperwork.venue.toUpperCase()} · Status: {preflight.badgeLabel} · Rev: {preflight.configRevision} · Date: {generatedDate}
+                {isBook ? ` · Sheet 7 of ${totalBookSheets}` : ''}
+              </p>
+            </div>
+            <p className="print-disclaimer">
+              {preflight.calibrationNote} {preflight.lsoNotice}
+            </p>
+          </header>
+
+          <div className="print-summary">
+            <div>
+              <strong>Pre-flight Status</strong>
+              <span>{preflight.badgeLabel} ({preflight.counts.pass} pass · {preflight.counts.warn} warn · {preflight.counts.fail} fail)</span>
+            </div>
+            <div>
+              <strong>Tester / Technician</strong>
+              <span>{testerName.trim() || '____________________________'}</span>
+            </div>
+            <div>
+              <strong>Date</strong>
+              <span>{titleBlock.date || generatedDate}</span>
+            </div>
+            <div>
+              <strong>Signature</strong>
+              <span>____________________________</span>
+            </div>
+          </div>
+
+          <table>
+            <caption>Pre-flight Commissioning Check Results ({preflight.evaluatorVersion})</caption>
+            <thead>
+              <tr>
+                <th scope="col">Category</th>
+                <th scope="col">Item</th>
+                <th scope="col">Location</th>
+                <th scope="col">Outcome</th>
+                <th scope="col">Operator Action</th>
+                <th scope="col">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preflight.rows.map((row) => {
+                const action = commissioningActionLabel(row, preflight, preflightAcks);
+                return (
+                  <tr key={row.id}>
+                    <td>{row.kind}</td>
+                    <td className="print-wrap">{row.label}</td>
+                    <td className="print-wrap">{row.location}</td>
+                    <td>{row.outcome.toUpperCase()}</td>
+                    <td className="print-wrap">{action}</td>
+                    <td className="print-wrap">{row.summary}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          <footer className="print-footnote">
+            Informational commissioning record only — never persisted as enabled. {preflight.disclaimer}
+          </footer>
         </div>
       )}
     </section>,

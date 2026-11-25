@@ -21,6 +21,13 @@ import {
   type ShowPaperwork,
 } from '../data/showPaperwork';
 import { RIGGING_DISCLAIMER, statusLabelText } from '../data/rigLoads';
+import {
+  commissioningActionLabel,
+  commissioningRecordCsv,
+  EMPTY_PREFLIGHT_ACKS,
+  type PreflightAcknowledgementState,
+  type PreflightReport,
+} from '../data/preflight';
 import type { PaperworkPrintMode, PaperworkViewId } from './PaperworkPrintSheet';
 import { PlotPlanPage } from './PlotPlanPage';
 
@@ -28,6 +35,10 @@ interface PaperworkPanelProps {
   rig: RigConfig;
   stage?: NativeStage;
   paperwork: ShowPaperwork;
+  preflight?: PreflightReport;
+  preflightAcks?: PreflightAcknowledgementState;
+  testerName?: string;
+  onChangeTesterName?: (name: string) => void;
   activeSheet: PaperworkViewId;
   onChangeSheet: (next: PaperworkViewId) => void;
   titleBlock: PlotTitleBlockState;
@@ -84,6 +95,13 @@ const SHEET_OPTIONS: ReadonlyArray<{
     csvSuffix: 'cue-sheet.csv',
     csvNotice: 'Exported cue sheet CSV.',
   },
+  {
+    id: 'commissioning',
+    label: 'Commissioning record',
+    shortLabel: 'Commission',
+    csvSuffix: 'commissioning-record.csv',
+    csvNotice: 'Exported commissioning record CSV.',
+  },
 ];
 
 function formatTodayLocal(): string {
@@ -109,6 +127,10 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
   rig,
   stage,
   paperwork,
+  preflight,
+  preflightAcks = EMPTY_PREFLIGHT_ACKS,
+  testerName = '',
+  onChangeTesterName,
   activeSheet,
   onChangeSheet,
   titleBlock,
@@ -122,6 +144,7 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
 
   const currentMeta = SHEET_OPTIONS.find((s) => s.id === activeSheet) ?? SHEET_OPTIONS[1];
   const isPlot = activeSheet === 'plot';
+  const totalBookSheets = preflight ? 7 : 6;
 
   const plotPreview = useMemo(() => {
     if (!isPlot) return null;
@@ -130,9 +153,9 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
       titleBlock,
       generatedDate: today,
       sheetNumber: 1,
-      totalSheets: 6,
+      totalSheets: totalBookSheets,
     });
-  }, [isPlot, paperwork, rig, stage, titleBlock, today]);
+  }, [isPlot, paperwork, rig, stage, titleBlock, today, totalBookSheets]);
 
   const handleExportCsv = () => {
     if (activeSheet === 'plot' || !currentMeta.csvSuffix || !currentMeta.csvNotice) return;
@@ -141,7 +164,15 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
     else if (activeSheet === 'instrument') csv = instrumentScheduleCsv(paperwork);
     else if (activeSheet === 'hookup') csv = channelHookupCsv(paperwork);
     else if (activeSheet === 'cues') csv = cueSheetCsv(paperwork);
-    else csv = riggingPowerCsv(rig, stage, paperwork.loads, paperwork.power);
+    else if (activeSheet === 'commissioning') {
+      if (!preflight) return;
+      csv = commissioningRecordCsv(preflight, preflightAcks, {
+        rigName: paperwork.rigName,
+        venue: paperwork.venue,
+        testerName,
+        date: titleBlock.date || today,
+      });
+    } else csv = riggingPowerCsv(rig, stage, paperwork.loads, paperwork.power);
 
     downloadStageFile(rig.name, currentMeta.csvSuffix, new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     setExportNotice(currentMeta.csvNotice);
@@ -343,7 +374,7 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
             <div className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-100 flex flex-wrap items-center justify-between gap-2">
               <span>
                 True-scale vector plot ({plotPreview.titleBlock.scaleLabel}, {plotPreview.geometry.paperLabel} landscape).
-                In the print dialog, choose {plotPreview.geometry.paperLabel} landscape, 10 mm margins, and 100% (&ldquo;Actual size&rdquo;) scale; &ldquo;Print full book&rdquo; puts this plan first as Sheet 1 of 6.
+                In the print dialog, choose {plotPreview.geometry.paperLabel} landscape, 10 mm margins, and 100% (&ldquo;Actual size&rdquo;) scale; &ldquo;Print full book&rdquo; puts this plan first as Sheet 1 of {preflight ? 7 : 6}.
               </span>
               {plotPreview.oversizeNote && (
                 <span className="font-semibold text-amber-200">{plotPreview.oversizeNote}</span>
@@ -878,6 +909,101 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {activeSheet === 'commissioning' && (
+          <div data-testid="commissioning-record-sheet" className="space-y-3">
+            {!preflight ? (
+              <p className="text-xs text-zinc-400">Commissioning record unavailable.</p>
+            ) : (
+              <>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                  <label className="flex flex-col gap-1 text-[11px] text-zinc-300">
+                    <span className="font-mono-tech text-[10px] uppercase text-zinc-400">Tester / Technician</span>
+                    <input
+                      type="text"
+                      aria-label="Commissioning tester name"
+                      data-testid="commissioning-tester-name"
+                      maxLength={120}
+                      value={testerName}
+                      placeholder="Name for printable record"
+                      onChange={(e) => onChangeTesterName?.(e.target.value)}
+                      className="gear-touch-control rounded-md border border-white/15 bg-black/60 px-2 py-1 text-xs text-white placeholder:text-zinc-500"
+                    />
+                  </label>
+                  <div className="flex flex-col justify-center gap-0.5 font-mono-tech text-[11px]">
+                    <span className="text-[10px] uppercase text-zinc-400">Pre-flight Status</span>
+                    <span className="text-white font-semibold">
+                      {preflight.badgeLabel} · Rev {preflight.configRevision}
+                    </span>
+                  </div>
+                  <div className="flex flex-col justify-center gap-0.5 font-mono-tech text-[11px]">
+                    <span className="text-[10px] uppercase text-zinc-400">Date &amp; Signature</span>
+                    <span className="text-zinc-300">{titleBlock.date || today} · Signature line on print</span>
+                  </div>
+                </div>
+
+                <p className="rounded-lg border border-amber-400/35 bg-amber-950/25 px-3 py-2 text-[11px] text-amber-100/90">
+                  {preflight.calibrationNote} {preflight.lsoNotice} Informational only — never persisted as enabled.
+                </p>
+
+                <div className="overflow-x-auto">
+                  <table className="inventory-table w-full text-left border-collapse text-xs">
+                    <caption className="text-left font-mono-tech text-[11px] text-zinc-400 pb-2">
+                      Commissioning Record ({preflight.evaluatorVersion}) — identical rows exported to CSV &amp; print
+                    </caption>
+                    <thead>
+                      <tr className="border-b border-white/15 font-mono-tech text-[10px] uppercase text-zinc-400">
+                        <th scope="col" className="py-2 pr-3">Category</th>
+                        <th scope="col" className="py-2 pr-3">Item</th>
+                        <th scope="col" className="py-2 pr-3">Location</th>
+                        <th scope="col" className="py-2 pr-3">Outcome</th>
+                        <th scope="col" className="py-2 pr-3">Operator Action</th>
+                        <th scope="col" className="py-2">Summary</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/10">
+                      {preflight.rows.map((row) => {
+                        const action = commissioningActionLabel(row, preflight, preflightAcks);
+                        return (
+                          <tr key={row.id} className="hover:bg-white/5">
+                            <td data-label="Category" className="py-2 pr-3 font-mono-tech text-zinc-300 uppercase">
+                              <span>{row.kind}</span>
+                            </td>
+                            <td data-label="Item" className="py-2 pr-3 text-white font-medium">
+                              <span>{row.label}</span>
+                            </td>
+                            <td data-label="Location" className="py-2 pr-3 text-zinc-300">
+                              <span>{row.location}</span>
+                            </td>
+                            <td data-label="Outcome" className="py-2 pr-3 font-mono-tech font-semibold">
+                              <span
+                                className={
+                                  row.outcome === 'pass'
+                                    ? 'text-emerald-300'
+                                    : row.outcome === 'warn'
+                                      ? 'text-amber-300'
+                                      : 'text-rose-300'
+                                }
+                              >
+                                {row.outcome.toUpperCase()}
+                              </span>
+                            </td>
+                            <td data-label="Action" className="py-2 pr-3 font-mono-tech text-cyan-200">
+                              <span>{action}</span>
+                            </td>
+                            <td data-label="Summary" className="py-2 text-zinc-300">
+                              <span>{row.summary}</span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>

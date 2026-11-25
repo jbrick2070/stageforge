@@ -46,6 +46,7 @@ export function useLiveDmxOutput(
   onToast: (message: string) => void,
   enabled = true,
   onBeforeDisable?: () => void,
+  canArmCheck?: () => { allowed: boolean; reason?: string },
 ): LiveDmxControllerApi {
   const hasDesktopBridge = Boolean(typeof window !== 'undefined' && window.stageforgeDesktop);
   const hasWebSerial = isWebSerialSupported();
@@ -53,6 +54,8 @@ export function useLiveDmxOutput(
   enabledRef.current = enabled;
   const onBeforeDisableRef = useRef(onBeforeDisable);
   onBeforeDisableRef.current = onBeforeDisable;
+  const canArmCheckRef = useRef(canArmCheck);
+  canArmCheckRef.current = canArmCheck;
 
   const [settings, setSettings] = useState<DmxOutputSettings>(() => loadDmxOutputSettings(hasDesktopBridge));
   const [interfaces, setInterfaces] = useState<DmxNetworkInterfaceBridge[]>([]);
@@ -236,6 +239,11 @@ export function useLiveDmxOutput(
 
   const enable = useCallback(async (): Promise<boolean> => {
     if (!enabledRef.current) return false;
+    const preCheck = canArmCheckRef.current?.();
+    if (preCheck && !preCheck.allowed) {
+      setError(preCheck.reason ?? 'Complete pre-flight checks before starting live DMX output.');
+      return false;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -249,8 +257,12 @@ export function useLiveDmxOutput(
           rateHz: Math.min(44, Math.max(1, settings.rateHz)),
           allowAllDevices: settings.serialAllowAll,
         });
-        if (!mountedRef.current || !enabledRef.current) {
+        const postCheck = canArmCheckRef.current?.();
+        if (!mountedRef.current || !enabledRef.current || (postCheck && !postCheck.allowed)) {
           void serialRef.current?.disable();
+          if (mountedRef.current && postCheck && !postCheck.allowed) {
+            setError(postCheck.reason ?? 'Pre-flight state changed while opening serial output.');
+          }
           return false;
         }
         setSerialStatus(status);
@@ -266,6 +278,11 @@ export function useLiveDmxOutput(
         await serialRef.current.disable();
       }
       if (!enabledRef.current) return false;
+      const midCheck = canArmCheckRef.current?.();
+      if (midCheck && !midCheck.allowed) {
+        setError(midCheck.reason ?? 'Pre-flight state changed before starting output.');
+        return false;
+      }
       const config = settings.mode === 'sacn'
         ? {
             protocol: 'sacn' as const,
@@ -292,8 +309,12 @@ export function useLiveDmxOutput(
           };
 
       const status = await bridge.dmxControl({ type: 'enable', config });
-      if (!mountedRef.current || !enabledRef.current) {
+      const postNetCheck = canArmCheckRef.current?.();
+      if (!mountedRef.current || !enabledRef.current || (postNetCheck && !postNetCheck.allowed)) {
         void bridge.dmxControl({ type: 'disable' }).catch(() => {});
+        if (mountedRef.current && postNetCheck && !postNetCheck.allowed) {
+          setError(postNetCheck.reason ?? 'Pre-flight state changed while starting network output.');
+        }
         return false;
       }
       setDesktopStatus(status);

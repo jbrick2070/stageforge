@@ -1,4 +1,6 @@
-# Live DMX Output (Milestone 4)
+# Live DMX Output (Experimental)
+
+> **Experimental feature:** Live output to real lights has only been tested against a local DMX receiver (`127.0.0.1`), not real fixtures, and its pre-flight checks are guidance, not certification. Transport settings and Arm / Go live controls live inside the collapsed **"Advanced: live output to real lights (experimental)"** section of the DMX Monitor drawer so simulator users are never shown live output controls by default. The manual hardware checklist at the bottom of this document is still unticked.
 
 StageForge outputs its live 2-universe DMX512 desk state (Universes 1 and 2, 512 slots each) over:
 
@@ -29,8 +31,8 @@ StageForge separates its **simulation / DMX monitor buffers** (`dmxUniverse1/2`)
 
 ## Safety Model
 
-1. **Off by default:** StageForge never auto-enables DMX output on launch. Transport configuration (interface, universes, targets) is remembered in `localStorage`, but the enabled/live state is never persisted.
-2. **Two-step arming:** Starting live output requires clicking **Arm output**, then confirming **Go live**.
+1. **Off by default & tucked under Advanced:** StageForge never auto-enables DMX output on launch. Transport settings and **Arm output / Go live** sit inside a collapsed **Advanced: live output to real lights (experimental)** disclosure (`localStorage` remembers only whether Advanced is expanded, never armed or live state). The **LIVE** badge, **Pre-flight status badge**, any live safety warning, and **Blackout & stop** always stay outside the collapsed section and visible while output is live.
+2. **Visible pre-flight gate & two-step arming:** **Arm output** stays disabled (and `useLiveDmxOutput.enable()` rejects activation) until the [pre-flight safety check](measure.md) has been run for the current rig/patch/look/aim revision, zero hard failures exist (patch conflicts/overflow, rigging overload/uplift, electrical circuit/feeder overload, or active laser audience scanning), every warning is explicitly acknowledged, and every laser projector is individually addressed (acknowledged when assessed & clear, or inhibited to physical DMX `0` with no cue/bump bypass). Starting live output still requires clicking **Arm output**, then confirming **Go live**. Continuous live monitoring raises a persistent warning next to the **LIVE** badge if a check starts failing while output is active.
 3. **Always-visible LIVE indicator:** Whenever any live output is active, a fixed top-right **LIVE** badge with a one-click **Blackout & stop** button stays visible—including in Cinema mode (`H`). If output stops automatically due to heartbeat loss, a persistent **"Output stopped: app stopped responding"** notice appears until dismissed or re-enabled.
 4. **Hard 44 Hz rate ceiling:** Both the UI/config validator and the main-process `hrtime` inter-frame guard refuse to emit faster than 44 Hz (`22.727 ms` minimum spacing). On Windows, default 15.6 ms timer granularity may yield ~32 Hz measured output when targeting 40 Hz; the badge displays measured Hz.
 5. **Emergency blackout (`Space`, desk toggle, OSC `/stageforge/blackout`, MSC `ALL_OFF`):**

@@ -89,6 +89,7 @@ The stage opens in blackout. To preview the rig before playback, open **Rig buil
 | 1–6 | Select show camera |
 | 7 | Inspect the PA up close |
 | H | Toggle cinema mode |
+| M | Toggle live measurements & safety zones |
 
 ## Xbox controller
 
@@ -104,6 +105,10 @@ Connect a standard-mapped Xbox controller by USB or Bluetooth, focus the show, a
 | B / X / Y | Hold blinders / laser hit / CO₂ |
 | LT / RT | Hold smoke / strobe |
 | View / Menu | Toggle Auto-LD / cinema mode |
+
+## Contributing
+
+Live output to real lights is experimental. It has only been tested against a local DMX receiver, not real fixtures, and its checks are guidance, not certification. If you like StageForge, want to try it on a real rig, or can improve it, get in touch or open an issue or pull request at [github.com/jbrick2070/stageforge](https://github.com/jbrick2070/stageforge). Contributions are welcome.
 
 ## License
 

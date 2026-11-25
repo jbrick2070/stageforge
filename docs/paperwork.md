@@ -1,10 +1,10 @@
 # StageForge Show Paperwork
 
-StageForge generates a six-sheet production paperwork book directly from the same resolved rig geometry, fixture placements, rigging load solver, electrical power report, and show cue stack used by the 3D engine, MVR 1.6 export, and DXF plan export.
+StageForge generates a seven-sheet production paperwork book directly from the same resolved rig geometry, fixture placements, rigging load solver, electrical power report, show cue stack, and pre-flight commissioning snapshot used by the 3D engine, MVR 1.6 export, and DXF plan export.
 
 Access paperwork in **Gear & production → Paperwork** (or download individual CSV tables from **Show files → Exchange formats**).
 
-## The Production Book (Six Sheets)
+## The Production Book (Seven Sheets)
 
 | Sheet | Sort Order / Contents | CSV Filename | Print Page |
 |---|---|---|---|
@@ -14,6 +14,7 @@ Access paperwork in **Gear & production → Paperwork** (or download individual 
 | **4. Channel Hookup** | Fixture # / Console Channel (`1..N`) | `<rig>.channel-hookup.csv` | Landscape (`@page wide`) |
 | **5. Power & Load Report** | Overhead hoist points, truss spans, other flown loads, 3-phase balance & circuits | `<rig>.rigging-power.csv` | Portrait |
 | **6. Cue Sheet** | Cue stack order (`1..N`) | `<rig>.cue-sheet.csv` | Portrait |
+| **7. Commissioning Record** | Frozen pre-flight safety check results, operator actions, tester name, date & signature line ([measure.md](measure.md)) | `<rig>.commissioning-record.csv` | Portrait |
 
 ## True-Scale Plot Plan (Sheet 1)
 
