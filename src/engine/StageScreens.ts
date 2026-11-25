@@ -59,12 +59,18 @@ export class WallPlayer {
   private material?: THREE.ShaderMaterial;
   /** URL that failed to decode; show the slate until a different URL arrives. */
   private brokenUrl: string | null = null;
+  private videoSrgbDecode = false;
 
   constructor(
     readonly id: string,
     private readonly fallbackTex: THREE.Texture,
     private readonly onError?: (message: string) => void,
   ) {}
+
+  setVideoSrgbDecode(enabled: boolean) {
+    this.videoSrgbDecode = Boolean(enabled);
+    this.bindTexture();
+  }
 
   bind(material: THREE.ShaderMaterial) {
     this.material = material;
@@ -76,6 +82,10 @@ export class WallPlayer {
     const active = this.texture ?? this.missingTex;
     this.material.uniforms.uCustomTex.value = active ?? this.fallbackTex;
     this.material.uniforms.uHasCustom.value = active ? 1 : 0;
+    if (this.material.uniforms.uCustomTexDecode) {
+      const isVideo = Boolean(this.texture && this.state.kind === 'video');
+      this.material.uniforms.uCustomTexDecode.value = isVideo && this.videoSrgbDecode ? 1.0 : 0.0;
+    }
   }
 
   private isMissing() {

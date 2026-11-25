@@ -232,6 +232,8 @@ export class RenderBatcher {
   private enabled = true;
   private proxiesEnabled = true;
   private previousHook: THREE.Scene['onBeforeRender'];
+  private syncObserver: ((ms: number, uploadBytes: number) => void) | null = null;
+  private lastSyncUploadBytes = 0;
 
   constructor(private scene: THREE.Scene, private minGroup = 2) {
     this.group.name = 'Render batches';
@@ -241,8 +243,20 @@ export class RenderBatcher {
     this.previousHook = scene.onBeforeRender;
     scene.onBeforeRender = (...args) => {
       this.previousHook.apply(scene, args);
-      this.sync();
+      const obs = this.syncObserver;
+      if (obs) {
+        const t0 = performance.now();
+        this.sync();
+        obs(performance.now() - t0, this.lastSyncUploadBytes);
+      } else {
+        this.sync();
+      }
     };
+  }
+
+  /** Optional probe hook: zero overhead when null. */
+  setSyncObserver(observer: ((ms: number, uploadBytes: number) => void) | null) {
+    this.syncObserver = observer;
   }
 
   /** Register an instanced shader proxy (e.g. volumetric beam cones). Rebuilds if a root is active. */
@@ -447,6 +461,7 @@ export class RenderBatcher {
    * shader-proxy attributes, and fit the batch's culling sphere around the instances that are shown.
    */
   sync() {
+    this.lastSyncUploadBytes = 0;
     const root = this.root;
     for (const batch of this.batches) {
       const { mesh, sources, released, geometries, materials, lampSettings, proxyState, localSphere } = batch;
@@ -554,12 +569,19 @@ export class RenderBatcher {
           }
         }
       }
-      if (matricesChanged) mesh.instanceMatrix.needsUpdate = true;
-      if (colorsChanged && mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      if (matricesChanged) {
+        mesh.instanceMatrix.needsUpdate = true;
+        this.lastSyncUploadBytes += (mesh.instanceMatrix.array as Float32Array).byteLength;
+      }
+      if (colorsChanged && mesh.instanceColor) {
+        mesh.instanceColor.needsUpdate = true;
+        this.lastSyncUploadBytes += (mesh.instanceColor.array as Float32Array).byteLength;
+      }
       if (proxyState) {
         for (let a = 0; a < proxyState.attributes.length; a++) {
           if (proxyState.dirty[a]) {
             proxyState.attributes[a].needsUpdate = true;
+            this.lastSyncUploadBytes += (proxyState.attributes[a].array as Float32Array).byteLength;
             proxyState.dirty[a] = false;
           }
         }

@@ -48,12 +48,16 @@ export function evaluateLaserScan(scanSpeedKpps: number | undefined, framePoints
 /**
  * Modulate preview intensity when a projector is flickering (< 30 Hz optical refresh).
  * Returns a multiplier in [0.45, 1.0]; returns 1.0 when refreshHz >= 30 Hz.
+ * When `flashLimited` is true (default preview safety), returns the constant time-average
+ * `1 - 0.275 * severity` so low-kpps ILDA shimmer does not strobe above 3 Hz while keeping
+ * `evaluateLaserScan()` diagnostic refresh-rate warnings unchanged.
  */
-export function flickerIntensityMultiplier(refreshHz: number, timeSec: number): number {
+export function flickerIntensityMultiplier(refreshHz: number, timeSec: number, flashLimited = false): number {
   if (!Number.isFinite(refreshHz) || refreshHz >= LASER_FLICKER_THRESHOLD_HZ) return 1.0;
   const hz = Math.max(2, refreshHz);
   // Subtle visible scan-rate shimmer proportional to how far below 30 Hz we are.
   const severity = Math.min(1, (LASER_FLICKER_THRESHOLD_HZ - hz) / LASER_FLICKER_THRESHOLD_HZ);
+  if (flashLimited) return 1.0 - severity * 0.275;
   const wave = 0.5 + 0.5 * Math.sin(timeSec * hz * Math.PI * 2);
   return 1.0 - severity * 0.55 * (1.0 - wave);
 }

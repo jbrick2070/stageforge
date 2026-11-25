@@ -1,5 +1,12 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StageEngine } from './engine/StageEngine';
+import {
+  loadRenderSettings,
+  parseRenderSettings,
+  resolveEffectiveFullRateStrobe,
+  saveRenderSettings,
+  type RenderSettings,
+} from './engine/renderSettings';
 import { AudioEngine } from './audio/AudioEngine';
 import {
   analyzeFileBeatGrid,
@@ -222,6 +229,52 @@ export const App: React.FC = () => {
   const [viewerMode, setViewerMode] = useState<boolean>(() => isViewerUrlSearch(window.location.search));
   const viewerModeRef = useRef(viewerMode);
   viewerModeRef.current = viewerMode;
+
+  // Device-local renderer preferences (Sprint 15: never serialized into show files)
+  const [renderSettings, setRenderSettings] = useState<RenderSettings>(() => loadRenderSettings());
+  const renderSettingsRef = useRef(renderSettings);
+  renderSettingsRef.current = renderSettings;
+  // Session-only opt-in for full-rate strobe preview (never persisted; always off under reduced motion / viewer / XR)
+  const [fullRateStrobeOptIn, setFullRateStrobeOptIn] = useState(false);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState<boolean>(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      : false,
+  );
+  const [webglContextLost, setWebglContextLost] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mql = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const onChange = (e: MediaQueryListEvent) => setPrefersReducedMotion(e.matches);
+    setPrefersReducedMotion(mql.matches);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, []);
+
+  const effectiveFullRateStrobe = resolveEffectiveFullRateStrobe({
+    userOptIn: fullRateStrobeOptIn,
+    prefersReducedMotion,
+    xrPresenting: false,
+    viewerMode,
+  });
+  const effectiveFullRateStrobeRef = useRef(effectiveFullRateStrobe);
+  effectiveFullRateStrobeRef.current = effectiveFullRateStrobe;
+
+  const updateRenderSettings = useCallback((patch: Partial<RenderSettings>) => {
+    setRenderSettings((prev) => {
+      const next = parseRenderSettings({ ...prev, ...patch });
+      renderSettingsRef.current = next;
+      // Never write localStorage in read-only Pitch Viewer mode.
+      if (!viewerModeRef.current) saveRenderSettings(next);
+      engineRef.current?.setRenderSettings(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    engineRef.current?.setFullRateStrobePreview(effectiveFullRateStrobe);
+  }, [effectiveFullRateStrobe]);
   const capabilities = useMemo(() => capabilitiesForMode(viewerMode ? 'viewer' : 'editor'), [viewerMode]);
   const capabilitiesRef = useRef(capabilities);
   capabilitiesRef.current = capabilities;
@@ -1426,7 +1479,15 @@ export const App: React.FC = () => {
             }
           }
         },
-        showToast
+        showToast,
+        {
+          renderSettings: renderSettingsRef.current,
+          fullRateStrobePreview: effectiveFullRateStrobeRef.current,
+          onContextLossChange: (lost) => {
+            setWebglContextLost(lost);
+            if (!lost) showToast('Graphics context restored');
+          },
+        },
       );
     } catch (error) {
       audio.dispose();
@@ -1457,6 +1518,39 @@ export const App: React.FC = () => {
       primaryScreen: () => engine.screenTransport(),
       hangs: () => engine.hangDiagnostics(),
       renderStats: () => engine.renderStats(),
+      graphicsProbe: () => engine.graphicsProbe(),
+      measureFrames: (options?: { warmupFrames?: number; sampleFrames?: number; gpu?: boolean }) =>
+        engine.measureFrames(options),
+      setRenderSettings: (patch: Partial<RenderSettings>) => updateRenderSettings(patch),
+      setFullRateStrobePreview: (enabled: boolean) => setFullRateStrobeOptIn(Boolean(enabled)),
+      resetParticles: (seed?: number) => engine.resetParticles(seed),
+      stepAndReadLuminance: (dtMs: number) => engine.stepAndReadLuminance(dtMs),
+      patchShowState: (patch: Partial<ShowState>) => {
+        setShowState((prev) => {
+          const next: ShowState = {
+            ...prev,
+            ...patch,
+            laser: patch.laser ? { ...prev.laser, ...patch.laser } : prev.laser,
+            led: patch.led ? { ...prev.led, ...patch.led } : prev.led,
+            atmo: patch.atmo ? { ...prev.atmo, ...patch.atmo } : prev.atmo,
+            motors: patch.motors ? { ...prev.motors, ...patch.motors } : prev.motors,
+          };
+          showStateRef.current = next;
+          engine.setShowState(next);
+          return next;
+        });
+      },
+      setProbeBump: (patch: Partial<BumpState>) => {
+        engine.setBumpState({
+          blinder: Boolean(patch.blinder),
+          strobe: Boolean(patch.strobe),
+          co2: Boolean(patch.co2),
+          smoke: Boolean(patch.smoke),
+          laser: Boolean(patch.laser),
+          motorDrop: Boolean(patch.motorDrop),
+        });
+      },
+      loadIldaClip: (clip: IldaClip | null) => engine.setIldaClip(clip),
       rig: () => structuredClone(rigRef.current),
       capabilities: () => ({ ...capabilitiesRef.current }),
       viewerMode: () => viewerModeRef.current,
@@ -3215,6 +3309,15 @@ export const App: React.FC = () => {
           onRelinkMedia={onRelink}
           onError={showToast}
           onExitViewer={exitViewer}
+          displaySettings={{
+            settings: renderSettings,
+            onChangeSettings: updateRenderSettings,
+            fullRateOptIn: fullRateStrobeOptIn,
+            effectiveFullRate: effectiveFullRateStrobe,
+            prefersReducedMotion,
+            viewerMode: true,
+            onSetFullRateOptIn: setFullRateStrobeOptIn,
+          }}
         />
       ) : (
       <>
@@ -3297,6 +3400,15 @@ export const App: React.FC = () => {
         onToggleCinemaMode={() => setCinemaMode((v) => !v)}
         onToggleMeasure={toggleMeasureOverlay}
         onOpenPreflight={() => setPreflightOpen(true)}
+        displaySettings={{
+          settings: renderSettings,
+          onChangeSettings: updateRenderSettings,
+          fullRateOptIn: fullRateStrobeOptIn,
+          effectiveFullRate: effectiveFullRateStrobe,
+          prefersReducedMotion,
+          viewerMode: false,
+          onSetFullRateOptIn: setFullRateStrobeOptIn,
+        }}
       />
 
       {/* Live Status Toast & Blackout Pill */}
@@ -3359,6 +3471,37 @@ export const App: React.FC = () => {
           setDmxDrawerOpen(true);
         }}
       />
+
+      {/* Always-visible Full-Rate Strobe Preview warning badge (even in cinema mode) */}
+      {effectiveFullRateStrobe && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="full-rate-strobe-badge"
+          className="fixed bottom-3 right-3 z-50 flex items-center gap-2 rounded-lg border border-amber-400/80 bg-amber-950/95 px-2.5 py-1.5 shadow-2xl font-mono-tech text-[11px] text-amber-100"
+        >
+          <span className="font-bold tracking-wider">FULL-RATE STROBE</span>
+          <button
+            type="button"
+            data-testid="full-rate-strobe-disable-badge"
+            onClick={() => setFullRateStrobeOptIn(false)}
+            className="rounded border border-amber-300/60 bg-amber-500/25 hover:bg-amber-500/40 px-2 py-0.5 text-[10px] font-bold text-amber-50 cursor-pointer"
+          >
+            Limit ≤ 3/s
+          </button>
+        </div>
+      )}
+
+      {/* WebGL context-loss notice */}
+      {webglContextLost && (
+        <div
+          role="alert"
+          data-testid="webgl-context-lost-banner"
+          className="fixed top-16 left-1/2 -translate-x-1/2 z-[75] rounded-lg border border-rose-400/80 bg-rose-950/95 px-3 py-2 shadow-2xl font-mono-tech text-xs text-rose-100"
+        >
+          Graphics context lost — rendering paused while the browser recovers.
+        </div>
+      )}
 
       {/* Lazy Measure & Safety Zones HUD (mounted only while Measure or a zone toggle is active) */}
       {!cinemaMode && isMeasureOverlayActive(measureOptions) && (

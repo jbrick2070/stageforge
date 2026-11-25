@@ -7,6 +7,7 @@ import { AudioMetrics, CameraPreset, MusicRef } from '../types/show';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
 import type { BeatGridStatus, LiveBpmStatus } from '../audio/tempoEngine';
 import type { ClockMode } from '../showControl/clockOwner';
+import { DisplaySettingsPopover, type DisplaySettingsPopoverProps } from './DisplaySettingsPopover';
 
 export interface TempoControlProps {
   canHalfTime: boolean;
@@ -74,6 +75,7 @@ interface TopBarProps {
   onToggleCinemaMode: () => void;
   onToggleMeasure?: () => void;
   onOpenPreflight?: () => void;
+  displaySettings?: DisplaySettingsPopoverProps;
 }
 
 export const CAMERAS: { id: CameraPreset; label: string }[] = [
@@ -97,7 +99,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   cinemaMode, measureEnabled = false, preflightLabel, preflightStatus = 'not_checked', availableDemoTrackTitle, demoTrackSectionCount = 0, demoTrackLoading, demoTrackProgress,
   onTogglePlay, onStartDemo, onStartDemoTrack, onJumpDemoSection, onDesignStage, onShowFiles, onUploadAudio, onToggleMic, onVolumeChange, onBpmChange,
   onToggleAutoDirector, onToggleAudioReactive, onSelectCamera, onToggleRigDrawer,
-  onToggleDmxDrawer, onToggleShowControl, onToggleCostModal, onToggleCinemaMode, onToggleMeasure, onOpenPreflight,
+  onToggleDmxDrawer, onToggleShowControl, onToggleCostModal, onToggleCinemaMode, onToggleMeasure, onOpenPreflight, displaySettings,
 }) => {
   const fps = useLive(fpsStore);
   const audio = useLive(audioStore);
@@ -382,6 +384,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         )}
         <button className="transport-btn" aria-label="Gear, cost and crew" aria-expanded={costModalOpen} title={`Gear, inventory & cost · ${oneNightCostLabel}`} onClick={onToggleCostModal}><DollarSign /><span>Gear<span className="tool-name-detail"> &amp; cost</span></span></button>
         <button className="transport-btn" aria-label="Show control" aria-expanded={showControlOpen} title={`Show control · ${clockMode}`} onClick={onToggleShowControl}><Clock /><span>Sync</span></button>
+        {displaySettings && <DisplaySettingsPopover {...displaySettings} />}
         <button className="transport-btn" aria-label="Cinema mode" title="Cinema mode (H)" onClick={onToggleCinemaMode}><EyeOff /></button>
       </nav>
     </header>

@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { buildPlatformDeck, type SharedMaterials } from './geometryBuilders';
+import { buildScenicPiece } from './scenicProps';
 import { LED_DISPLAY_MATERIAL_NAME } from './fohFraming';
-import type { FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show';
+import type { FloorFxUnit, MountedFixtureGroup, RigConfig, StageProp } from '../types/show';
 
 export const MAX_GLB_CABINET_BACK_INSTANCES = 2000;
 
@@ -70,7 +71,14 @@ export function stageSnapshot(rig: RigConfig, roots: THREE.Object3D[], mats: Sha
 
   function copyNode(source: THREE.Object3D, index: number): THREE.Object3D | undefined {
     if (source.userData.kind === 'venue' || source instanceof THREE.Light || source instanceof THREE.Camera) return;
-    const children = source.userData.kind === 'platforms' ? buildPlatformDeck(rig, mats, true).children : source.children;
+    let sourceForChildren = source;
+    if (source.userData.scenicProp && source.userData.scenicTier === 'low') {
+      // Always export canonical high-detail scenery regardless of preview tier.
+      sourceForChildren = buildScenicPiece(source.userData.scenicProp as StageProp, mats.fixtureBody, 'high').root;
+    }
+    const children = sourceForChildren.userData.kind === 'platforms'
+      ? buildPlatformDeck(rig, mats, true).children
+      : sourceForChildren.children;
     let node: THREE.Object3D;
     if (source instanceof THREE.Mesh) {
       const mapped = Array.isArray(source.material) ? source.material.map(materialFor) : null;

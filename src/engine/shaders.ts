@@ -307,12 +307,19 @@ export const LED_WALL_FRAG = /* glsl */ `
   uniform sampler2D uCustomTex;
   uniform sampler2D uTextTex;
   uniform float uHasCustom;
+  uniform float uCustomTexDecode;
+  uniform float uFlashLimited;
   uniform float uAspect;
   uniform vec2 uCanvasPixels;
   uniform vec2 uCabinetGrid;
   uniform bool uPixelSnap;
 
   varying vec2 vUv;
+
+  vec3 srgbToLinear(vec3 c) {
+    vec3 clamped = clamp(c, 0.0, 1.0);
+    return mix(clamped / 12.92, pow((clamped + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), clamped));
+  }
 
   vec2 mediaUV(vec2 uv, float sourceAspect) {
     float ratio = uAspect / sourceAspect;
@@ -429,11 +436,12 @@ export const LED_WALL_FRAG = /* glsl */ `
       col = mix(c1, c2, 0.32) * (0.65 + 0.65 * pow(f, 2.0)) * (0.85 + uBass * 0.8);
     } else if (uMode < 4.5) {
       // 4: Kinetic Strobe Bars & Chevrons
-      float chev = abs(uv.x - 0.5) * 6.0 - uv.y * 2.2 + t * 2.6;
-      float band = pow(0.5 + 0.5 * sin(chev * 6.28318), 6.0);
-      float beatFlash = uBeatPulse * 1.2;
+      float chevSpeed = uFlashLimited > 0.5 ? 0.55 : 2.6;
+      float chev = abs(uv.x - 0.5) * 6.0 - uv.y * 2.2 + t * chevSpeed;
+      float band = pow(0.5 + 0.5 * sin(chev * 6.28318), uFlashLimited > 0.5 ? 2.5 : 6.0);
+      float beatFlash = uFlashLimited > 0.5 ? 0.0 : uBeatPulse * 1.2;
       vec3 c = mix(uColorA, uColorB, step(0.5, fract(chev * 0.5)));
-      col = mix(c * band * 1.4, vec3(1.0), clamp(beatFlash * band * 0.75, 0.0, 0.85));
+      col = mix(c * band * (uFlashLimited > 0.5 ? 1.0 : 1.4), vec3(1.0), clamp(beatFlash * band * 0.75, 0.0, 0.85));
     } else if (uMode < 5.5) {
       // 5: Sacred Mandala / Kaleidoscope
       float r = length(p);
@@ -456,7 +464,11 @@ export const LED_WALL_FRAG = /* glsl */ `
       if (uHasCustom > 0.5) {
         vec2 size = max(vec2(textureSize(uCustomTex, 0)), vec2(1.0));
         vec2 imageUV = mediaUV(uv, size.x / size.y);
-        col = texture2D(uCustomTex, imageUV).rgb * inFrame(imageUV) * (1.05 + uBeatPulse * 0.25);
+        vec3 sampled = texture2D(uCustomTex, imageUV).rgb;
+        if (uCustomTexDecode > 0.5) {
+          sampled = srgbToLinear(sampled);
+        }
+        col = sampled * inFrame(imageUV) * (1.05 + uBeatPulse * 0.25);
       } else {
         col = mix(uColorA, uColorB, uv.x) * 0.25;
       }

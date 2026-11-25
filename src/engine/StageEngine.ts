@@ -4,6 +4,8 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 
 import {
   AudioMetrics,
@@ -100,11 +102,62 @@ import {
   createAudioModulationFrame,
   createAudioModulationState,
   evaluateAudioModulation,
+  rawManualStrobeOscillator,
   stepCombinedStrobeGate,
   stepDeliveredStrobeGate,
   type AudioModulationFrame,
   type AudioModulationState,
 } from './audioModulation';
+import {
+  createPreviewFlashOutput,
+  createPreviewFlashState,
+  evaluatePreviewFlash,
+  type PreviewFlashOutput,
+  type PreviewFlashState,
+} from './previewFlash';
+import {
+  DEFAULT_RENDER_SETTINGS,
+  estimateRenderTargetBytes,
+  parseRenderSettings,
+  resolveBloomScale,
+  resolveEffectiveAa,
+  shouldRunBloom,
+  type RenderSettings,
+} from './renderSettings';
+import {
+  computeFrameLuminanceGrid,
+  FrameProfilerSession,
+  GpuTimerRing,
+  type FrameLuminanceGrid,
+  type FrameMeasureReport,
+} from './renderProbe';
+
+/** UnrealBloomPass with an independent resolution scale factor (1 or 0.5) so only bloom internal targets scale. */
+class ScaledBloomPass extends UnrealBloomPass {
+  private scaleFactor: 1 | 0.5;
+  constructor(resolution: THREE.Vector2, strength: number, radius: number, threshold: number, scaleFactor: 1 | 0.5) {
+    super(
+      new THREE.Vector2(
+        Math.max(2, Math.round(resolution.x * scaleFactor)),
+        Math.max(2, Math.round(resolution.y * scaleFactor)),
+      ),
+      strength,
+      radius,
+      threshold,
+    );
+    this.scaleFactor = scaleFactor;
+  }
+  public setScaleFactor(scaleFactor: 1 | 0.5, width: number, height: number) {
+    this.scaleFactor = scaleFactor;
+    this.setSize(width, height);
+  }
+  public override setSize(width: number, height: number) {
+    super.setSize(
+      Math.max(2, Math.round(width * this.scaleFactor)),
+      Math.max(2, Math.round(height * this.scaleFactor)),
+    );
+  }
+}
 
 interface MovingFixtureInstance {
   unitId: string;
@@ -232,7 +285,23 @@ export class StageEngine {
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
   private composer: EffectComposer;
-  private bloomPass: UnrealBloomPass;
+  private renderPass: RenderPass;
+  private bloomPass: ScaledBloomPass | null = null;
+  private outputPass: OutputPass;
+  private fxaaPass: ShaderPass | null = null;
+  private renderSettings: RenderSettings = { ...DEFAULT_RENDER_SETTINGS };
+  private effectiveFullRateStrobe = false;
+  private contextAntialias = false;
+  private composerSamplesRequested = 2;
+  private contextLost = false;
+  private onContextLossChange?: (lost: boolean) => void;
+  private handleContextLostBound?: (event: Event) => void;
+  private handleContextRestoredBound?: () => void;
+  private gpuTimer: GpuTimerRing | null = null;
+  private profiler: FrameProfilerSession | null = null;
+  private readPixelsBuf: Uint8Array | null = null;
+  private readPixelsW = 0;
+  private readPixelsH = 0;
   private renderTier: RenderTier;
   private modelCache: FixtureModelCache;
   private mats: SharedMaterials;
@@ -242,7 +311,7 @@ export class StageEngine {
   private lastRebuildStage?: NativeStage;
   private beamPools?: BeamPools;
   private spillFluxGain = 1;
-  private scenicPieces = new Map<string, ScenicPiece & { kind: string; phase: number }>();
+  private scenicPieces = new Map<string, ScenicPiece & { kind: string; phase: number; tier: RenderTier }>();
   private deckTrim: THREE.MeshBasicMaterial | null = null;
   private scenicKey: THREE.SpotLight;
   private sideFills: THREE.SpotLight[] = [];
@@ -346,10 +415,24 @@ export class StageEngine {
   private physicalDmxScratch: number[] = [];
   private physicalUnitScratch: PhysicalUnitState = { blackout: false };
 
-  // Audio-reactive modulation state (preallocated for zero per-frame allocations)
+  // Audio-reactive modulation & preview-only flash limiter state (preallocated for zero per-frame allocations)
   private audioModState: AudioModulationState = createAudioModulationState();
   private audioModFrame: AudioModulationFrame = createAudioModulationFrame();
   private combinedStrobeScratch = { gate: 1.0, flashOn: false, limited: false };
+  private previewFlashState: PreviewFlashState = createPreviewFlashState();
+  private previewFlashOut: PreviewFlashOutput = createPreviewFlashOutput();
+  private primaryColorScratch = new THREE.Color();
+  private accentColorScratch = new THREE.Color();
+  private beamPrimaryScratch = new THREE.Color();
+  private beamAccentScratch = new THREE.Color();
+  private washPrimaryScratch = new THREE.Color();
+  private washAccentScratch = new THREE.Color();
+  private tempColScratch = new THREE.Color();
+  private previewTempColScratch = new THREE.Color();
+  private warmAmberColor = new THREE.Color(0xffbe55);
+  private whiteColor = new THREE.Color(0xffffff);
+  private stageTintScratch = new THREE.Color();
+  private hoistWorldPosScratch = new THREE.Vector3();
   private beamPhaseOffset = 0;
   private washPhaseOffset = 0;
   private ledPhaseOffset = 0;
@@ -441,12 +524,20 @@ export class StageEngine {
     initialState: ShowState,
     audioGetter: (dt: number) => AudioMetrics,
     onFrameTelemetry?: (metrics: AudioMetrics, fps: number) => void,
-    private onMediaError?: (message: string) => void
+    private onMediaError?: (message: string) => void,
+    options?: {
+      renderSettings?: Partial<RenderSettings>;
+      fullRateStrobePreview?: boolean;
+      onContextLossChange?: (lost: boolean) => void;
+    },
   ) {
     this.container = container;
     this.currentState = initialState;
     this.audioGetter = audioGetter;
     this.onFrameTelemetry = onFrameTelemetry;
+    this.onContextLossChange = options?.onContextLossChange;
+    this.renderSettings = parseRenderSettings(options?.renderSettings);
+    this.effectiveFullRateStrobe = Boolean(options?.fullRateStrobePreview);
 
     const width = Math.max(1, container.clientWidth);
     const height = Math.max(1, container.clientHeight);
@@ -455,9 +546,11 @@ export class StageEngine {
     this.renderTier = detectRenderTier();
     this.modelCache = new FixtureModelCache(this.renderTier);
 
-    // Renderer configured for HDR concert lighting + crisp specular reflections
+    // Renderer configured for HDR concert lighting; default canvas MSAA is disabled because
+    // EffectComposer renders to offscreen targets and OutputPass draws a single fullscreen quad.
+    this.contextAntialias = false;
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: this.contextAntialias,
       powerPreference: 'high-performance',
       alpha: false,
     });
@@ -470,6 +563,33 @@ export class StageEngine {
     // Count a whole frame (scene plus every bloom and output pass), not just the last pass.
     this.renderer.info.autoReset = false;
     container.appendChild(this.renderer.domElement);
+
+    this.handleContextLostBound = (event: Event) => {
+      event.preventDefault();
+      this.contextLost = true;
+      if (this.rafId !== null) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = null;
+      }
+      this.gpuTimer?.onContextLost();
+      if (this.profiler) {
+        const p = this.profiler;
+        this.profiler = null;
+        this.batcher?.setSyncObserver(null);
+        p.finish(this.gpuTimer);
+      }
+      this.onContextLossChange?.(true);
+    };
+    this.handleContextRestoredBound = () => {
+      this.contextLost = false;
+      this.gpuTimer?.dispose();
+      this.gpuTimer = new GpuTimerRing(this.renderer.getContext());
+      this.updateTourTextTexture(this.lastTourText);
+      this.onContextLossChange?.(false);
+      if (this.rafId === null) this.startLoop();
+    };
+    this.renderer.domElement.addEventListener('webglcontextlost', this.handleContextLostBound);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this.handleContextRestoredBound);
 
     // Scene & deep arena atmosphere
     this.scene = new THREE.Scene();
@@ -525,20 +645,14 @@ export class StageEngine {
       this.orbitAuto = false;
     });
 
-    // Post-processing: HDR Render -> UnrealBloomPass -> OutputPass
+    // Post-processing: HDR Render -> optional ScaledBloomPass -> OutputPass -> optional FXAA
     this.composer = new EffectComposer(this.renderer);
     this.composer.setPixelRatio(dpr);
-    this.composer.renderTarget1.samples = 2;
-    this.composer.renderTarget2.samples = 2;
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(width, height),
-      initialState.bloomStrength,
-      0.38,
-      0.66
-    );
-    this.composer.addPass(this.bloomPass);
-    this.composer.addPass(new OutputPass());
+    this.renderPass = new RenderPass(this.scene, this.camera);
+    this.outputPass = new OutputPass();
+    this.composer.addPass(this.renderPass);
+    this.composer.addPass(this.outputPass);
+    this.applyOutputPipeline(width, height, dpr, initialState.bloomStrength);
 
     // Subtle ambient fill + dramatic real-time stage lights
     this.scene.add(this.houseAmbient);
@@ -588,7 +702,8 @@ export class StageEngine {
     });
 
     this.scene.add(this.rigGroup);
-    this.particles = new AtmosphericParticles();
+    this.particles = new AtmosphericParticles(this.renderTier);
+    this.particles.setFallingCo2(this.renderSettings.fallingCo2);
     this.scene.add(this.particles.group);
 
     this.rebuildRig(initialRig);
@@ -608,6 +723,109 @@ export class StageEngine {
     }
   }
 
+  private updateFxaaResolution() {
+    if (!this.fxaaPass) return;
+    const drawW = Math.max(1, this.renderer.domElement.width);
+    const drawH = Math.max(1, this.renderer.domElement.height);
+    const res = this.fxaaPass.material.uniforms.resolution?.value as THREE.Vector2 | undefined;
+    if (res) res.set(1 / drawW, 1 / drawH);
+  }
+
+  private applyOutputPipeline(width: number, height: number, dpr: number, bloomStrength: number) {
+    const effectiveAa = resolveEffectiveAa(this.renderSettings.aa);
+    const requestedSamples = effectiveAa === 'msaa' ? 2 : 0;
+    const samplesChanged =
+      this.composer.renderTarget1.samples !== requestedSamples ||
+      this.composer.renderTarget2.samples !== requestedSamples;
+    this.composerSamplesRequested = requestedSamples;
+
+    if (samplesChanged) {
+      this.composer.renderTarget1.samples = requestedSamples;
+      this.composer.renderTarget2.samples = requestedSamples;
+      // Three.js r187 only reallocates multisample buffers after disposing existing render targets.
+      this.composer.renderTarget1.dispose();
+      this.composer.renderTarget2.dispose();
+    }
+
+    const bloomScale = resolveBloomScale(this.renderSettings.bloom, this.renderTier);
+    if (bloomScale === 0) {
+      if (this.bloomPass) {
+        this.composer.removePass(this.bloomPass);
+        this.bloomPass.dispose();
+        this.bloomPass = null;
+      }
+    } else {
+      const drawW = Math.max(2, Math.round(width * dpr));
+      const drawH = Math.max(2, Math.round(height * dpr));
+      if (!this.bloomPass) {
+        this.bloomPass = new ScaledBloomPass(
+          new THREE.Vector2(drawW, drawH),
+          bloomStrength,
+          0.38,
+          0.66,
+          bloomScale,
+        );
+        const outputIdx = this.composer.passes.indexOf(this.outputPass);
+        this.composer.insertPass(this.bloomPass, outputIdx >= 0 ? outputIdx : 1);
+      } else {
+        this.bloomPass.setScaleFactor(bloomScale, drawW, drawH);
+      }
+      this.bloomPass.strength = bloomStrength;
+      this.bloomPass.enabled = shouldRunBloom(this.renderSettings.bloom, bloomStrength, this.renderTier);
+    }
+
+    // FXAA strictly follows OutputPass (operates on tone-mapped sRGB values) and never stacks with MSAA.
+    if (effectiveAa === 'fxaa') {
+      if (!this.fxaaPass) {
+        this.fxaaPass = new ShaderPass(FXAAShader);
+        this.composer.addPass(this.fxaaPass);
+      }
+      this.fxaaPass.enabled = true;
+      this.updateFxaaResolution();
+    } else if (this.fxaaPass) {
+      this.composer.removePass(this.fxaaPass);
+      this.fxaaPass.dispose();
+      this.fxaaPass = null;
+    }
+  }
+
+  public setRenderSettings(partial: Partial<RenderSettings>) {
+    const next = parseRenderSettings({ ...this.renderSettings, ...partial });
+    const prev = this.renderSettings;
+    this.renderSettings = next;
+    const w = Math.max(1, this.container.clientWidth);
+    const h = Math.max(1, this.container.clientHeight);
+    const dpr = this.renderer.getPixelRatio();
+    if (prev.bloom !== next.bloom || prev.aa !== next.aa) {
+      this.applyOutputPipeline(w, h, dpr, this.currentState.bloomStrength);
+    }
+    if (prev.fallingCo2 !== next.fallingCo2) {
+      this.particles.setFallingCo2(next.fallingCo2);
+    }
+    if (prev.videoSrgbDecode !== next.videoSrgbDecode) {
+      this.bindScreenTexture();
+      for (const player of this.secondaryPlayers.values()) {
+        player.setVideoSrgbDecode(next.videoSrgbDecode);
+      }
+    }
+  }
+
+  public getRenderSettings(): RenderSettings {
+    return { ...this.renderSettings };
+  }
+
+  /**
+   * Toggle preview-only full-rate strobe opt-in (already policy-resolved against reduced-motion / viewer / XR).
+   * Never affects physical DMX output buffers or AudioModulationState.
+   */
+  public setFullRateStrobePreview(enabled: boolean) {
+    this.effectiveFullRateStrobe = Boolean(enabled);
+  }
+
+  public getFullRateStrobePreview(): boolean {
+    return this.effectiveFullRateStrobe;
+  }
+
   private handleResize() {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
@@ -620,22 +838,31 @@ export class StageEngine {
     this.composer.setPixelRatio(dpr);
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
+    this.updateFxaaResolution();
   }
 
   /**
    * Read-only GPU/memory stats exposed via `?probe` for Playwright budget & leak assertions.
    * `calls` and `triangles` cover the whole last frame (scene, bloom and output passes).
+   * `visibleMeshes` counts meshes whose full ancestor chain is visible AND whose layer intersects `camera.layers`
+   * (excluding hidden layer-31 batch originals, while remaining an eligible-mesh count prior to frustum culling).
    */
   public renderStats() {
     let objects = 0, meshes = 0, visibleMeshes = 0, autoUpdating = 0;
-    this.scene.traverse((node) => {
+    const camLayers = this.camera.layers;
+    const walk = (node: THREE.Object3D, ancestorVisible: boolean) => {
       objects++;
       if (node.matrixAutoUpdate) autoUpdating++;
+      const selfVisible = ancestorVisible && node.visible;
       if ((node as THREE.Mesh).isMesh) {
         meshes++;
-        if (node.visible) visibleMeshes++;
+        if (selfVisible && node.layers.test(camLayers)) visibleMeshes++;
       }
-    });
+      for (let i = 0; i < node.children.length; i++) {
+        walk(node.children[i], selfVisible);
+      }
+    };
+    walk(this.scene, true);
     return {
       tier: this.renderTier,
       calls: this.renderer.info.render.calls,
@@ -648,6 +875,190 @@ export class StageEngine {
       visibleMeshes,
       autoUpdating,
       batching: this.batcher?.stats() ?? null,
+    };
+  }
+
+  /**
+   * Comprehensive Sprint 15 graphics configuration & resource snapshot (probe only).
+   * Reports drawing-buffer/CSS sizes, DPR, tier, backend, AA/bloom settings, active passes,
+   * particle counts/caps, ILDA segment counts, and estimated offscreen render-target bytes.
+   */
+  public graphicsProbe() {
+    const stats = this.renderStats();
+    const gl = this.renderer.getContext();
+    const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+    const drawW = this.renderer.domElement.width;
+    const drawH = this.renderer.domElement.height;
+    const cssW = Math.max(1, this.container.clientWidth);
+    const cssH = Math.max(1, this.container.clientHeight);
+    const maxSamples = isWebGL2 ? Number(gl.getParameter(gl.MAX_SAMPLES)) : 0;
+    const effectiveSamples = isWebGL2 ? Math.min(this.composerSamplesRequested, maxSamples) : 0;
+
+    // Count eligible meshes that pass camera frustum culling right now (on-demand only).
+    const frustum = new THREE.Frustum();
+    const projScreen = new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    frustum.setFromProjectionMatrix(projScreen);
+    const camLayers = this.camera.layers;
+    let submittedMeshes = 0;
+    const walkSubmitted = (node: THREE.Object3D, ancestorVisible: boolean) => {
+      const selfVisible = ancestorVisible && node.visible;
+      if (!selfVisible) return;
+      if ((node as THREE.Mesh).isMesh && node.layers.test(camLayers)) {
+        const m = node as THREE.Mesh;
+        if (!m.frustumCulled || frustum.intersectsObject(m)) submittedMeshes++;
+      }
+      for (let i = 0; i < node.children.length; i++) walkSubmitted(node.children[i], true);
+    };
+    walkSubmitted(this.scene, true);
+
+    const activePasses: string[] = [];
+    for (const p of this.composer.passes) {
+      if (!p.enabled) continue;
+      if (p === this.renderPass) activePasses.push('RenderPass');
+      else if (p === this.bloomPass) activePasses.push('UnrealBloomPass');
+      else if (p === this.outputPass) activePasses.push('OutputPass');
+      else if (p === this.fxaaPass) activePasses.push('FXAAPass');
+      else activePasses.push(p.constructor?.name ?? 'Pass');
+    }
+
+    const bloomScale = resolveBloomScale(this.renderSettings.bloom, this.renderTier);
+    const bloomAllocated = this.bloomPass !== null;
+    const bloomActive = Boolean(this.bloomPass && this.bloomPass.enabled);
+
+    let ildaActiveProjectors = 0;
+    let ildaVisibleSegments = 0;
+    let ildaBakedSegments = 0;
+    if (this.bakedIlda) {
+      ildaBakedSegments = Math.floor(this.bakedIlda.positionAttr.count / 2);
+      for (const l of this.laserUnits) {
+        if (l.ildaMesh?.visible) {
+          ildaActiveProjectors++;
+          ildaVisibleSegments += Math.floor(l.ildaMesh.geometry.drawRange.count / 2);
+        }
+      }
+    }
+
+    let debugRenderer: string | null = null;
+    try {
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      if (dbg) debugRenderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL));
+    } catch { /* ignore */ }
+
+    const particles = this.particles.getStats();
+    const renderTargetBytesEstimate = estimateRenderTargetBytes({
+      drawingWidth: drawW,
+      drawingHeight: drawH,
+      samples: effectiveSamples,
+      bloomScale: bloomAllocated ? bloomScale : 0,
+      bloomAllocated,
+    });
+
+    return {
+      schemaVersion: 1 as const,
+      backend: isWebGL2 ? 'webgl2' : 'webgl1',
+      tier: this.renderTier,
+      stats,
+      submittedMeshes,
+      cssSize: { width: cssW, height: cssH },
+      drawingBufferSize: { width: drawW, height: drawH },
+      devicePixelRatio: typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1,
+      rendererPixelRatio: this.renderer.getPixelRatio(),
+      contextAntialias: this.contextAntialias,
+      composerSamplesRequested: this.composerSamplesRequested,
+      composerSamplesEffective: effectiveSamples,
+      maxSamples,
+      aaEffective: resolveEffectiveAa(this.renderSettings.aa),
+      bloomAllocated,
+      bloomActive,
+      bloomScale,
+      bloomStrength: this.currentState.bloomStrength,
+      activePasses,
+      fullRateStrobePreview: this.effectiveFullRateStrobe,
+      previewFlashLimiting: this.previewFlashOut.activeLimiting,
+      settings: this.getRenderSettings(),
+      particles,
+      ilda: {
+        activeProjectors: ildaActiveProjectors,
+        visibleSegments: ildaVisibleSegments,
+        bakedSegments: ildaBakedSegments,
+      },
+      resources: {
+        renderTargetBytesEstimate,
+      },
+      gpuTimerStatus: this.gpuTimer?.getStatus() ?? (isWebGL2 ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') ? 'ok' : 'unsupported') : 'unsupported'),
+      gpuTimerPending: this.gpuTimer?.pendingCount() ?? 0,
+      contextLost: this.contextLost,
+      debugRenderer,
+    };
+  }
+
+  /**
+   * Warmed per-frame CPU-phase + async GPU-timer benchmark (probe only; zero overhead when idle).
+   */
+  public measureFrames(options?: { warmupFrames?: number; sampleFrames?: number; gpu?: boolean }): Promise<FrameMeasureReport> {
+    if (this.profiler) {
+      throw new Error('A frame measurement session is already running.');
+    }
+    if (this.contextLost) {
+      throw new Error('Cannot measure frames while WebGL context is lost.');
+    }
+    const warmup = options?.warmupFrames ?? 60;
+    const frames = options?.sampleFrames ?? 240;
+    if (options?.gpu !== false && !this.gpuTimer) {
+      this.gpuTimer = new GpuTimerRing(this.renderer.getContext());
+    }
+    const session = new FrameProfilerSession(warmup, frames);
+    this.profiler = session;
+    this.batcher?.setSyncObserver((ms, uploadBytes) => {
+      const p = this.profiler;
+      if (!p) return;
+      p.curBatchSyncMs += ms;
+      p.curUploadBytes += uploadBytes;
+    });
+    return session.promise;
+  }
+
+  /** Reset particle RNG streams and pools to a deterministic seed (probe only). */
+  public resetParticles(seed?: number) {
+    this.particles.reset(seed);
+  }
+
+  /**
+   * Deterministic presentation-step + post-bloom luminance readback hook (`?probe` only).
+   * Advances simulation by `dtMs`, renders synchronously through the full output chain,
+   * and returns an 8×8 WCAG luminance/red grid alongside current physical DMX bytes.
+   */
+  public stepAndReadLuminance(dtMs: number): {
+    elapsedMs: number;
+    grid: FrameLuminanceGrid;
+    previewFlashLimiting: boolean;
+    physicalDmxU1: number[];
+    physicalDmxU2: number[];
+  } {
+    if (this.standby) throw new Error('stepAndReadLuminance called while StageEngine is in standby');
+    const safeDtMs = Math.max(1, Math.min(250, Number.isFinite(dtMs) ? dtMs : 16.667));
+    const dt = safeDtMs / 1000;
+    this.elapsed += dt;
+    const audio = this.audioGetter(dt);
+    this.renderer.info.reset();
+    if (this.updateScene(dt, audio, dt)) this.composer.render(0);
+    else this.clearStage();
+
+    const gl = this.renderer.getContext();
+    const w = Math.max(1, this.renderer.domElement.width);
+    const h = Math.max(1, this.renderer.domElement.height);
+    if (!this.readPixelsBuf || this.readPixelsW !== w || this.readPixelsH !== h) {
+      this.readPixelsBuf = new Uint8Array(w * h * 4);
+      this.readPixelsW = w;
+      this.readPixelsH = h;
+    }
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, this.readPixelsBuf);
+    return {
+      elapsedMs: this.elapsed * 1000,
+      grid: computeFrameLuminanceGrid(this.readPixelsBuf, w, h, 8, 8),
+      previewFlashLimiting: this.previewFlashOut.activeLimiting,
+      physicalDmxU1: Array.from(this.physicalDmxU1),
+      physicalDmxU2: Array.from(this.physicalDmxU2),
     };
   }
 
@@ -837,7 +1248,10 @@ export class StageEngine {
   public setShowState(state: ShowState) {
     if (state.autoDirector && !this.currentState.autoDirector) this.manualFadeStart = undefined;
     this.currentState = state;
-    this.bloomPass.strength = state.bloomStrength;
+    if (this.bloomPass) {
+      this.bloomPass.strength = state.bloomStrength;
+      this.bloomPass.enabled = shouldRunBloom(this.renderSettings.bloom, state.bloomStrength, this.renderTier);
+    }
     if (state.led.tourText !== this.lastTourText) {
       this.updateTourTextTexture(state.led.tourText);
     }
@@ -1293,9 +1707,13 @@ export class StageEngine {
 
   private bindScreenTexture() {
     const texture = this.customTex ?? this.missingScreenTex;
+    const decodeVideo = Boolean(this.customTex && this.customVideoEl && this.renderSettings.videoSrgbDecode);
     for (const material of this.ledWallMats) {
       material.uniforms.uCustomTex.value = texture ?? this.textTex;
       material.uniforms.uHasCustom.value = texture ? 1 : 0;
+      if (material.uniforms.uCustomTexDecode) {
+        material.uniforms.uCustomTexDecode.value = decodeVideo ? 1.0 : 0.0;
+      }
     }
   }
 
@@ -1439,7 +1857,7 @@ export class StageEngine {
     const props = rig.props ?? [];
     const desired = new Map(props.map(p => [p.id, p]));
     for (const [id, old] of this.scenicPieces) {
-      if (desired.get(id)?.kind === old.kind) continue;
+      if (desired.get(id)?.kind === old.kind && old.tier === this.renderTier) continue;
       old.root.removeFromParent();
       this.releaseGroup(old.root);
       this.scenicPieces.delete(id);
@@ -1447,11 +1865,18 @@ export class StageEngine {
     for (const [i, prop] of props.entries()) {
       let piece = this.scenicPieces.get(prop.id);
       if (!piece) {
-        piece = { ...buildScenicPiece(prop, this.mats.fixtureBody), kind: prop.kind, phase: i * 1.91 };
+        piece = {
+          ...buildScenicPiece(prop, this.mats.fixtureBody, this.renderTier),
+          kind: prop.kind,
+          phase: i * 1.91,
+          tier: this.renderTier,
+        };
         this.scenicPieces.set(prop.id, piece);
         piece.root.name = PROP_CATALOG[prop.kind].label;
-        piece.root.userData = { kind: prop.kind, id: prop.id };
+        piece.root.userData = { kind: prop.kind, id: prop.id, scenicProp: prop, scenicTier: this.renderTier };
         this.scene.add(piece.root);
+      } else {
+        piece.root.userData.scenicProp = prop;
       }
       piece.root.position.set(prop.x, stageSurfaceHeight(rig, prop.x, prop.z) + 0.003, prop.z);
       piece.root.rotation.y = THREE.MathUtils.degToRad(prop.rotation);
@@ -1478,7 +1903,11 @@ export class StageEngine {
       if (!ids.has(id)) { player.dispose(); this.secondaryPlayers.delete(id); }
     }
     for (const id of ids) {
-      if (!this.secondaryPlayers.has(id)) this.secondaryPlayers.set(id, new WallPlayer(id, this.textTex, this.onMediaError));
+      if (!this.secondaryPlayers.has(id)) {
+        const player = new WallPlayer(id, this.textTex, this.onMediaError);
+        player.setVideoSrgbDecode(this.renderSettings.videoSrgbDecode);
+        this.secondaryPlayers.set(id, player);
+      }
     }
   }
 
@@ -2036,7 +2465,7 @@ export class StageEngine {
     this.laserSpeedPhaseOffsets = new Array(this.laserUnits.length).fill(0);
     this.laserRotPhaseOffsets = new Array(this.laserUnits.length).fill(0);
     if (this.activeIldaClip) this.attachIldaToLaserUnits();
-    this.particles.setEmitters(smokeEmitters, co2Emitters);
+    this.particles.setEmitters(smokeEmitters, co2Emitters, rig.stageHeight);
     this.beamPools = new BeamPools(this.movingFixtures.length, rig.stageWidth, rig.stageDepth, rig.stageHeight, rig.platforms);
     this.spillFluxGain = this.movingFixtures.reduce((total, fx) => total + fx.optics.fluxRatio, 0)
       / Math.max(1, this.movingFixtures.length);
@@ -2098,6 +2527,8 @@ export class StageEngine {
         uCustomTex: { value: this.customTex ?? this.missingScreenTex ?? this.textTex },
         uTextTex: { value: this.textTex },
         uHasCustom: { value: (this.customTex || this.missingScreenTex) ? 1 : 0 },
+        uCustomTexDecode: { value: (this.customTex && this.customVideoEl && this.renderSettings.videoSrgbDecode) ? 1.0 : 0.0 },
+        uFlashLimited: { value: this.effectiveFullRateStrobe ? 0.0 : 1.0 },
         uAspect: { value: surface.width / surface.height },
         uCanvasPixels: { value: new THREE.Vector2(surface.pixelsWide, surface.pixelsHigh) },
         uCabinetGrid: { value: new THREE.Vector2(surface.columns, surface.rows) },
@@ -2594,6 +3025,10 @@ export class StageEngine {
 
   private startLoop() {
     const animate = (now: number) => {
+      if (this.contextLost) {
+        this.rafId = null;
+        return;
+      }
       this.rafId = requestAnimationFrame(animate);
       const elapsed = this.lastFrameTime ? (now - this.lastFrameTime) / 1000 : 1 / 60;
       this.lastFrameTime = now;
@@ -2610,10 +3045,44 @@ export class StageEngine {
         this.fpsAccum = 0;
       }
 
+      const prof = this.profiler;
+      if (prof) {
+        prof.beginFrame(performance.now());
+        this.gpuTimer?.poll((gpuMs) => prof.recordGpuSample(gpuMs));
+      }
+
       const audio = this.audioGetter(audioDt);
       this.renderer.info.reset();
-      if (this.updateScene(dt, audio, audioDt)) this.composer.render();
-      else this.clearStage();
+      const simStart = prof ? performance.now() : 0;
+      const shouldRender = this.updateScene(dt, audio, audioDt);
+      if (prof) {
+        // Subtract crowd and particle sub-phases so simMs does not double-count them.
+        prof.curSimMs = Math.max(0, performance.now() - simStart - prof.curCrowdMs - prof.curParticlesMs);
+      }
+
+      const renderStart = prof ? performance.now() : 0;
+      const gpuStarted = prof && shouldRender ? (this.gpuTimer?.beginFrame() ?? false) : false;
+      try {
+        if (shouldRender) this.composer.render();
+        else this.clearStage();
+      } finally {
+        if (gpuStarted) this.gpuTimer?.endFrame();
+      }
+      if (prof) {
+        // batchSyncMs ran inside Scene.onBeforeRender during composer.render(); subtract to avoid double-counting.
+        prof.curRenderSubmitMs = Math.max(0, performance.now() - renderStart - prof.curBatchSyncMs);
+        prof.curUploadBytes += this.particles.getStats().uploadBytes;
+        const done = prof.endFrame(
+          performance.now(),
+          this.renderer.info.render.calls,
+          this.renderer.info.render.triangles,
+          this.gpuTimer,
+        );
+        if (done) {
+          this.profiler = null;
+          this.batcher?.setSyncObserver(null);
+        }
+      }
 
       this.pushDmxFrame(dt);
 
@@ -2667,12 +3136,14 @@ export class StageEngine {
     const beatPulse = s.audioReactive && audio.playing ? audio.beatPulse : 0.15 * Math.max(0, Math.sin(t * (s.bpm / 60) * Math.PI));
     const effHaze = blackoutActive ? 0 : (mod.active && mod.haze.mapped ? mod.haze.level : s.atmo.hazeLevel);
 
-    const primaryColor = new THREE.Color(s.primaryColor);
-    const accentColor = new THREE.Color(s.accentColor);
-    const tempCol = new THREE.Color();
+    const primaryColor = this.primaryColorScratch.set(s.primaryColor);
+    const accentColor = this.accentColorScratch.set(s.accentColor);
+    const tempCol = this.tempColScratch;
+    const previewTempCol = this.previewTempColScratch;
 
     // Global Strobe gate (enforces <= 3 flashes/s across mappings, manual strobeRate, and strobe bump
     // before both rendering and physical DMX encoding via shared audioModState.lastGlobalStrobeEdgeMs).
+    // NEVER depends on fullRateStrobePreview so physical DMX output is byte-for-byte invariant.
     const effectiveStrobe = b.strobe ? 0.92 : s.strobeRate;
     const combinedStrobe = stepCombinedStrobeGate(
       this.audioModState,
@@ -2686,6 +3157,42 @@ export class StageEngine {
     if (combinedStrobe.limited) {
       mod.flashLimited = true;
     }
+
+    // Preview-only flash governor (Sprint 15): caps visual strobe, laser blanking, ILDA shimmer,
+    // LED strobe_bars, blinder mashing, blackout recovery, and rapid cue/color flips at <= 3/s by default,
+    // without touching physical DMX buffers or AudioModulationState.
+    const previewLimited = !this.effectiveFullRateStrobe;
+    const rawEffBlinder = (b.blinder ? 1.0 : (mod.active && mod.blinder.mapped ? mod.blinder.dimmer : s.blinderLevel)) * master;
+    const effLedBrightRaw = mod.active && mod.ledWall.brightnessMapped ? mod.ledWall.brightness : s.led.brightness;
+    const rawLedBright = s.led.enabled ? effLedBrightRaw * master : 0;
+    const rawBeamIntBase = mod.active && mod.beam.dimmerMapped ? mod.beam.dimmer : s.beamIntensity;
+    const rawWashIntBase = mod.active && mod.wash.dimmerMapped ? mod.wash.dimmer : s.washIntensity;
+    const rawUnmappedLaserStrobe = mod.active && mod.laser.strobe.mapped ? 0 : s.laser.strobe;
+    const previewFlash = evaluatePreviewFlash(
+      this.previewFlashState,
+      {
+        dtSec: audioDt,
+        tSec: t,
+        audioGlobalEdgeMs: this.audioModState.lastGlobalStrobeEdgeMs,
+        limited: previewLimited,
+        blackout: blackoutActive || darkOpening,
+        master,
+        blinder: rawEffBlinder,
+        ledBright: rawLedBright,
+        beatPulse,
+        beamIntensity: rawBeamIntBase,
+        washIntensity: rawWashIntBase,
+        laserStrobe: rawUnmappedLaserStrobe,
+        primaryColor,
+        accentColor,
+      },
+      this.previewFlashOut,
+    );
+    const previewMaster = previewFlash.master;
+    const previewPrimaryColor = previewFlash.primaryColor;
+    const previewAccentColor = previewFlash.accentColor;
+    const rawPreviewFlashOn = !previewLimited && effectiveStrobe > 0.03 ? rawManualStrobeOscillator(effectiveStrobe, t) : strobeFlashOn;
+    const previewStrobeGate = !previewLimited && effectiveStrobe > 0.03 ? (rawPreviewFlashOn ? 1.35 : 0.06) : strobeGate;
 
     // 1. Update Kinetic Chain Hoist Motors & Truss Positions
     this.trussPods.forEach((pod, idx) => {
@@ -2740,9 +3247,8 @@ export class StageEngine {
 
       // Update dynamic steel hoist chains so they stay vertical and locked straight to roofY!
       for (const h of pod.hoists) {
-        const worldPos = new THREE.Vector3();
-        h.root.getWorldPosition(worldPos);
-        const chainLen = Math.max(0.5, this.roofY - worldPos.y - 0.32);
+        h.root.getWorldPosition(this.hoistWorldPosScratch);
+        const chainLen = Math.max(0.5, this.roofY - this.hoistWorldPosScratch.y - 0.32);
         h.chainMesh.scale.y = chainLen;
         // Counter-rotate chain slightly so steel hoist stays plumb vertical toward ceiling!
         h.root.rotation.z = -pod.currentTiltZ;
@@ -2781,11 +3287,22 @@ export class StageEngine {
         mod.flashLimited = true;
       }
       const groupDmxStrobe = strobeMapped || b.strobe ? 0 : Math.round(effectiveStrobe * 255);
+      const previewGroupStrobeGate = previewLimited
+        ? groupStrobeGate
+        : (strobeMapped ? (b.strobe ? previewStrobeGate : groupStrobeGate) : previewStrobeGate);
+      const primaryScratch = kind === 'beam' ? this.beamPrimaryScratch : this.washPrimaryScratch;
+      const accentScratch = kind === 'beam' ? this.beamAccentScratch : this.washAccentScratch;
+      const groupPrimary = look.primaryColor === s.primaryColor ? primaryColor : primaryScratch.set(look.primaryColor);
+      const groupAccent = look.accentColor === s.accentColor ? accentColor : accentScratch.set(look.accentColor);
+      const previewGroupPrimary = look.primaryColor === s.primaryColor ? previewPrimaryColor : groupPrimary;
+      const previewGroupAccent = look.accentColor === s.accentColor ? previewAccentColor : groupAccent;
       return {
         look, focus, moveSpd: baseMoveSpd, phaseOffset, effSpeedNorm, spread: 0.25 + look.movementSpread * 1.15,
-        effZoom, colorMix, tiltOffset, gMod, strobeMapped, groupStrobeGate, groupDmxStrobe,
-        primary: look.primaryColor === s.primaryColor ? primaryColor : new THREE.Color(look.primaryColor),
-        accent: look.accentColor === s.accentColor ? accentColor : new THREE.Color(look.accentColor),
+        effZoom, colorMix, tiltOffset, gMod, strobeMapped, groupStrobeGate, previewGroupStrobeGate, groupDmxStrobe,
+        primary: groupPrimary,
+        accent: groupAccent,
+        previewPrimary: previewGroupPrimary,
+        previewAccent: previewGroupAccent,
       };
     };
     const groups = { beam: opticsLook('beam'), wash: opticsLook('wash') };
@@ -2793,7 +3310,7 @@ export class StageEngine {
     for (const fx of this.movingFixtures) {
       const {
         look, focus, moveSpd, phaseOffset, spread, effZoom, colorMix, tiltOffset,
-        gMod, groupStrobeGate, groupDmxStrobe, primary, accent,
+        gMod, groupStrobeGate, previewGroupStrobeGate, groupDmxStrobe, primary, accent, previewPrimary, previewAccent,
       } = groups[fx.type];
       const i = fx.index;
       const count = Math.max(1, this.movingFixtures.length);
@@ -2892,18 +3409,23 @@ export class StageEngine {
       fx.yoke.rotation.y = fx.currentPan;
       fx.head.rotation.x = fx.currentTilt;
 
-      // Fixture color resolution
+      // Fixture color resolution (DMX uses authored color; preview uses flash-governed color)
       if (look.colorSplitMode === 'solid') {
         tempCol.copy(primary);
+        previewTempCol.copy(previewPrimary);
       } else if (look.colorSplitMode === 'alternate') {
         tempCol.copy(i % 2 === 0 ? primary : accent);
+        previewTempCol.copy(i % 2 === 0 ? previewPrimary : previewAccent);
       } else if (look.colorSplitMode === 'gradient') {
         tempCol.copy(primary).lerp(accent, norm);
+        previewTempCol.copy(previewPrimary).lerp(previewAccent, norm);
       } else {
         tempCol.setHSL((norm + t * 0.12) % 1, 0.96, 0.55);
+        previewTempCol.copy(tempCol);
       }
       if (colorMix > 0) {
         tempCol.lerp(accent, colorMix);
+        previewTempCol.lerp(previewAccent, colorMix);
       }
 
       const firstPair = fx.openingStep === DEMO_BLACKOUT_STEPS;
@@ -2911,19 +3433,23 @@ export class StageEngine {
       let baseInt = gMod?.dimmerMapped
         ? gMod.dimmer
         : (fx.type === 'beam' ? s.beamIntensity : s.washIntensity);
+      let previewBaseInt = fx.type === 'beam' ? previewFlash.beamIntensity : previewFlash.washIntensity;
       if (demo && firstPair && fx.type === 'wash' && demoOpeningStep! < 128) {
         baseInt = THREE.MathUtils.lerp(s.beamIntensity, baseInt, demoFade(demoOpeningStep!, 96, 128));
+        previewBaseInt = THREE.MathUtils.lerp(previewFlash.beamIntensity, previewBaseInt, demoFade(demoOpeningStep!, 96, 128));
       }
       // Release each lantern from its last rendered level, including fixtures still out.
       if (demo) fx.directedDimmer = groupGain * baseInt;
       const dimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, baseInt, manualMix) : baseInt;
+      const previewDimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, previewBaseInt, manualMix) : previewBaseInt;
       const finalInt = Math.min(1.6, dimmer * master * groupStrobeGate * (1.0 + audioBoost * 0.48));
+      const previewFinalInt = Math.min(1.6, previewDimmer * previewMaster * previewGroupStrobeGate * (1.0 + audioBoost * 0.48));
 
-      fx.beamMat.uniforms.uColor.value.copy(tempCol);
+      fx.beamMat.uniforms.uColor.value.copy(previewTempCol);
       const zoomScale = beamZoomScale(fx.type, effZoom);
       fx.lastZoomScale = zoomScale;
       fx.appliedDimmer = THREE.MathUtils.clamp(finalInt, 0, 1);
-      const emitted = finalInt * aerialGain(fx.optics, zoomScale);
+      const emitted = previewFinalInt * aerialGain(fx.optics, zoomScale);
       fx.beamMat.uniforms.uIntensity.value = emitted;
       fx.beamMat.uniforms.uHaze.value = effHaze;
       fx.beamMat.uniforms.uTime.value = t;
@@ -2933,10 +3459,10 @@ export class StageEngine {
       fx.beamMesh.scale.set(zoomScale, 1, zoomScale);
       fx.beamMesh.visible = emitted > 0.001;
       // The pool shader already spreads incident power across the footprint.
-      this.beamPools?.add(fx.beamMesh, fx.type, fx.isFloor, tempCol, finalInt * fx.optics.fluxRatio, fx.optics);
+      this.beamPools?.add(fx.beamMesh, fx.type, fx.isFloor, previewTempCol, previewFinalInt * fx.optics.fluxRatio, fx.optics);
 
       // Glowing optical fixture lens
-      fx.lensMat.color.copy(tempCol).multiplyScalar(finalInt * fx.optics.fluxRatio * 2.6);
+      fx.lensMat.color.copy(previewTempCol).multiplyScalar(previewFinalInt * fx.optics.fluxRatio * 2.6);
 
       // Invalid or conflicting fixture footprints have start 0 and make no writes.
       // Clamp writes strictly to fx.dmxWidth so narrow catalogue modes (e.g. 1–6 ch PARs) never overwrite neighbours.
@@ -3008,8 +3534,17 @@ export class StageEngine {
       const effSpreadY = lMod?.spreadMapped ? lMod.spreadY : s.laser.spreadY;
       const effSpeed = lMod?.speedMapped ? lMod.speed : s.laser.speed;
       const effRotation = lMod?.rotationMapped ? lMod.rotation : s.laser.rotation;
-      // Never write shader uStrobe when laser strobe is audio-mapped (shader strobe runs 4–30 Hz); gate intensity instead.
+      // DMX strobe rate: zero when audio-mapped, raw look strobe otherwise (invariant of preview setting).
       const effLaserStrobe = lMod?.strobe.mapped ? 0 : s.laser.strobe;
+      // Preview laser blanking: when preview-limited, disable 4-30 Hz shader blanked() and gate via global <= 3/s preview multiplier.
+      const previewLaserEnabled = (s.laser.enabled || b.laser) && previewMaster > 0.01;
+      const previewLaserGate =
+        previewLimited && !lMod?.strobe.mapped && !b.laser ? previewFlash.laserStrobeMultiplier : 1;
+      const previewUnitBaseLaserInt = previewLaserEnabled
+        ? Math.min(1.5, (b.laser ? 1.0 : unitEffIntBase) * previewMaster * (1.0 + audioBoost * 0.38) * unitStrobeGate * previewLaserGate)
+        : 0;
+      const previewUnitInt = Math.min(1.5, previewUnitBaseLaserInt * laserPowerPresence(l.laserSpec));
+      const previewShaderLaserStrobe = previewFlash.bypassLaserShaderStrobe ? 0 : effLaserStrobe;
 
       if (lMod?.speedMapped) {
         this.laserSpeedPhaseOffsets[ui] = (this.laserSpeedPhaseOffsets[ui] ?? 0) + dt * ((0.45 + effSpeed * 2.6) - (0.45 + s.laser.speed * 2.6));
@@ -3040,8 +3575,8 @@ export class StageEngine {
       const shaderColorMode = this.applyLaserColors(
         l.singleColor,
         override?.colorMode ?? s.laser.colorMode,
-        primaryColor,
-        accentColor,
+        previewPrimaryColor,
+        previewAccentColor,
         override?.colorA ?? s.laser.colorA,
         override?.colorB ?? s.laser.colorB,
         su.uColorA.value,
@@ -3062,31 +3597,31 @@ export class StageEngine {
         const dr = this.bakedIlda.drawRangeFor(ildaFrameIdx, effectiveMode, this.ildaDrawRangeScratch);
         const frameRange = this.bakedIlda.frameRanges[ildaFrameIdx];
         const refreshHz = laserRefreshHz(l.laserSpec?.scanSpeedKpps, frameRange.sourcePointCount);
-        const flicker = flickerIntensityMultiplier(refreshHz, t);
+        const flicker = flickerIntensityMultiplier(refreshHz, t, previewLimited);
 
         l.ildaMesh.geometry.setDrawRange(dr.start, dr.count);
         const tangents = ildaScanTangents(l.laserSpec?.maxScanAngleDeg, effSpreadX, effSpreadY);
         l.ildaMesh.scale.set(tangents.scaleX, tangents.scaleY, 1);
         l.ildaMesh.rotation.z = effRotation * Math.sin(t * (0.4 + s.laser.speed * 1.4) + speedPhaseOff * 0.54 + l.index) * LASER_ILDA_ROLL_SCALE;
-        l.ildaMesh.visible = laserEnabled && unitBaseLaserInt > 0.001 && dr.count > 0;
+        l.ildaMesh.visible = previewLaserEnabled && previewUnitBaseLaserInt > 0.001 && dr.count > 0;
 
         const hazeGain = 0.35 + 0.65 * effHaze;
-        const ildaGain = Math.min(1.5, unitInt * flicker * hazeGain);
+        const ildaGain = Math.min(1.5, previewUnitInt * flicker * hazeGain);
         if (l.singleColor) {
           l.ildaMat.color.copy(l.singleColor).multiplyScalar(ildaGain);
         } else {
           l.ildaMat.color.setRGB(ildaGain, ildaGain, ildaGain);
         }
-        l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(unitInt * flicker * 2.6);
+        l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(previewUnitInt * flicker * 2.6);
       } else {
         if (l.ildaMesh) l.ildaMesh.visible = false;
         const shapes = this.laserShape(override?.patternSegments ?? s.laser.patternSegments ?? DEFAULT_LASER_RESOLUTION);
         l.sheetMesh.geometry = shapes.sheet;
         l.coneMesh.geometry = shapes.cone;
         l.innerConeMesh.geometry = shapes.cone;
-        l.sheetMesh.visible = laserEnabled && !isConePattern;
-        l.coneMesh.visible = laserEnabled && isConePattern;
-        l.innerConeMesh.visible = laserEnabled && s.laser.pattern === 'dual_cones' && count > 1;
+        l.sheetMesh.visible = previewLaserEnabled && previewUnitInt > 0.001 && !isConePattern;
+        l.coneMesh.visible = previewLaserEnabled && previewUnitInt > 0.001 && isConePattern;
+        l.innerConeMesh.visible = previewLaserEnabled && previewUnitInt > 0.001 && s.laser.pattern === 'dual_cones' && count > 1;
 
         // Subtle roll rotation on sheet patterns when rotation slider > 0 (phase-continuous under modulation)
         const rotPhase = t * s.laser.rotation + rotPhaseOff;
@@ -3098,7 +3633,7 @@ export class StageEngine {
         l.sheetMesh.rotation.z = rollAngle;
 
         // Update sheet uniforms
-        su.uIntensity.value = unitInt;
+        su.uIntensity.value = previewUnitInt;
         su.uHaze.value = effHaze;
         su.uTime.value = t;
         su.uPhaseOffset.value = speedPhaseOff;
@@ -3107,8 +3642,8 @@ export class StageEngine {
         su.uSpeed.value = s.laser.speed;
         su.uSpreadX.value = effSpreadX;
         su.uSpreadY.value = effSpreadY;
-        su.uStrobe.value = effLaserStrobe;
-        su.uAudioPulse.value = beatPulse;
+        su.uStrobe.value = previewShaderLaserStrobe;
+        su.uAudioPulse.value = previewFlash.beatPulse;
 
         // Update cone / dual cone uniforms
         for (const [cm, dirMult] of [
@@ -3119,7 +3654,7 @@ export class StageEngine {
           cu.uColorA.value.copy(dirMult < 0 ? su.uColorB.value : su.uColorA.value);
           cu.uColorB.value.copy(dirMult < 0 ? su.uColorA.value : su.uColorB.value);
           cu.uColorMode.value = su.uColorMode.value;
-          cu.uIntensity.value = unitInt;
+          cu.uIntensity.value = previewUnitInt;
           cu.uHaze.value = effHaze;
           cu.uTime.value = t;
           cu.uPhaseOffset.value = speedPhaseOff;
@@ -3130,18 +3665,28 @@ export class StageEngine {
           cu.uSpreadX.value = effSpreadX;
           cu.uSpreadY.value = effSpreadY;
           cu.uRotation.value = s.laser.rotation * dirMult;
-          cu.uStrobe.value = effLaserStrobe;
-          cu.uAudioPulse.value = beatPulse;
+          cu.uStrobe.value = previewShaderLaserStrobe;
+          cu.uAudioPulse.value = previewFlash.beatPulse;
         }
 
-        l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(unitInt * 2.6);
+        l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(previewUnitInt * 2.6);
       }
 
-      // Write Laser DMX Universe channels using unscaled unitBaseLaserInt (never visual power presence),
-      // clamped strictly to l.dmxWidth.
+      // Write Laser DMX Universe channels using unscaled authored unitBaseLaserInt & authored colors
+      // (never preview flash slew or visual power presence), clamped strictly to l.dmxWidth.
       const uBuf = l.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
       const physBuf = l.dmxUniverse === 1 ? this.physicalDmxU1 : this.physicalDmxU2;
       if (l.dmxStart > 0) {
+        const dmxColorMode = this.applyLaserColors(
+          l.singleColor,
+          override?.colorMode ?? s.laser.colorMode,
+          primaryColor,
+          accentColor,
+          override?.colorA ?? s.laser.colorA,
+          override?.colorB ?? s.laser.colorB,
+          tempCol,
+          previewTempCol,
+        );
         const dv = this.laserDmxScratchValues;
         dv.enabled = laserEnabled;
         dv.intensity = Math.min(1, unitBaseLaserInt);
@@ -3153,10 +3698,10 @@ export class StageEngine {
         dv.tilt = s.laser.tilt;
         dv.beamCount = count;
         dv.strobe = effLaserStrobe;
-        dv.colorR = su.uColorA.value.r;
-        dv.colorG = su.uColorA.value.g;
-        dv.colorB = su.uColorA.value.b;
-        dv.colorModeIndex = shaderColorMode;
+        dv.colorR = tempCol.r;
+        dv.colorG = tempCol.g;
+        dv.colorB = tempCol.b;
+        dv.colorModeIndex = dmxColorMode;
         dv.scanRateNorm = l.laserSpec ? Math.min(1, l.laserSpec.scanSpeedKpps / 40) : 0;
         const dmxBytes = encodeLaserDmxChannels(l.resolvedMode, dv, l.dmxScratch);
         writeDmxChannels(uBuf, l.dmxStart, l.dmxWidth, dmxBytes);
@@ -3175,10 +3720,11 @@ export class StageEngine {
     const laserInt = this.laserUnits.length ? maxLaserInt : baseLaserInt;
 
     // 4. Update Audience Blinders & LED Strobes
-    const effBlinder = (b.blinder ? 1.0 : (mod.active && mod.blinder.mapped ? mod.blinder.dimmer : s.blinderLevel)) * master;
-    const warmAmber = new THREE.Color(0xffbe55);
+    const effBlinder = rawEffBlinder;
+    const previewBlinder = previewFlash.blinder;
+    const warmAmber = this.warmAmberColor;
     for (const bl of this.blinders) {
-      bl.lensMat.color.copy(warmAmber).multiplyScalar(effBlinder * 4.2);
+      bl.lensMat.color.copy(warmAmber).multiplyScalar(previewBlinder * 4.2);
       if (bl.start) {
         bl.buffer[bl.start - 1] = Math.round(effBlinder * 255);
         const ps = this.physicalUnitScratch;
@@ -3187,7 +3733,7 @@ export class StageEngine {
         writePhysicalUnitBytes(bl.physBuffer, bl.buffer, bl.start, bl.width ?? 1, bl.physicalClass, ps, this.physicalDmxScratch);
       }
     }
-    this.blinderLight.intensity = effBlinder * 75;
+    this.blinderLight.intensity = previewBlinder * 75;
 
     const strobeBarAudioMapped = mod.active && (mod.strobeBar.strobe.mapped || mod.strobeBar.dimmerMapped);
     const rawStrobeBarBright = strobeBarAudioMapped
@@ -3208,6 +3754,14 @@ export class StageEngine {
     const strobeBarBright = barGateLimited ? 0 : rawStrobeBarBright;
     const strobeBarDmxRate = strobeBarAudioMapped || b.strobe ? 0 : Math.round(255 * effectiveStrobe);
     const strobeBarFlash = !barGateLimited && (strobeBarAudioMapped ? strobeBarBright > 0.01 : (effectiveStrobe > 0.03 && strobeFlashOn));
+    const previewStrobeBarFlash = previewLimited
+      ? strobeBarFlash
+      : (strobeBarAudioMapped ? (b.strobe ? rawPreviewFlashOn : strobeBarFlash) : (effectiveStrobe > 0.03 && rawPreviewFlashOn));
+    const previewStrobeBarBright = previewLimited
+      ? (barGateLimited ? 0 : (master > 1e-4 ? rawStrobeBarBright * (previewMaster / master) : 0))
+      : (effectiveStrobe > 0.03
+          ? (rawPreviewFlashOn ? 3.8 * previewMaster : 0)
+          : strobeBarBright);
     for (const st of this.strobes) {
       if (st.start) {
         const w = st.width ?? 2;
@@ -3219,64 +3773,73 @@ export class StageEngine {
         ps.blackout = blackoutActive;
         writePhysicalUnitBytes(st.physBuffer, st.buffer, st.start, w, st.physicalClass, ps, this.physicalDmxScratch);
       }
-      const strobeLensWhite = strobeBarAudioMapped
-        ? (b.strobe && strobeFlashOn) || (mod.strobeBar.strobe.mapped && mod.strobeBar.strobe.gateOn)
-        : strobeFlashOn;
+      const strobeLensWhite = previewLimited
+        ? (strobeBarAudioMapped
+            ? (b.strobe && strobeFlashOn) || (mod.strobeBar.strobe.mapped && mod.strobeBar.strobe.gateOn)
+            : strobeFlashOn)
+        : (strobeBarAudioMapped
+            ? (b.strobe && rawPreviewFlashOn) || (mod.strobeBar.strobe.mapped && mod.strobeBar.strobe.gateOn)
+            : rawPreviewFlashOn);
       st.lensMat.color
-        .copy(strobeLensWhite ? new THREE.Color(0xffffff) : primaryColor)
-        .multiplyScalar(strobeBarBright);
+        .copy(strobeLensWhite ? this.whiteColor : previewPrimaryColor)
+        .multiplyScalar(previewStrobeBarBright);
     }
-    this.strobeLight.intensity = strobeBarFlash ? 65 * master * Math.min(1, strobeBarBright / Math.max(0.01, 3.8 * master)) : 0;
+    this.strobeLight.intensity = previewStrobeBarFlash
+      ? 65 * previewMaster * Math.min(1, previewStrobeBarBright / Math.max(0.01, 3.8 * previewMaster))
+      : 0;
 
     // 5. Update Concert LED Video Wall Shaders
-    const effLedBright = mod.active && mod.ledWall.brightnessMapped ? mod.ledWall.brightness : s.led.brightness;
-    const ledBright = s.led.enabled ? effLedBright * master : 0;
+    const ledBright = rawLedBright;
+    const previewLedBright = previewFlash.ledBright;
     const effLedSpeed = mod.active && mod.ledWall.speedMapped ? mod.ledWall.speed : s.led.speed;
     if (mod.active && mod.ledWall.speedMapped) {
       this.ledPhaseOffset += dt * ((0.4 + effLedSpeed * 2.2) - (0.4 + s.led.speed * 2.2));
     }
-    for (const player of this.secondaryPlayers.values()) player.setMaster(master);
+    for (const player of this.secondaryPlayers.values()) player.setMaster(previewMaster);
     const ledModeNum = LED_MODE_INDEX[s.led.visualMode];
+    const ledFlashLimitedUniform = previewFlash.ledFlashLimited ? 1.0 : 0.0;
     for (const m of this.ledWallMats) {
       m.uniforms.uTime.value = t;
       m.uniforms.uPhaseOffset.value = this.ledPhaseOffset;
       m.uniforms.uMode.value = ledModeNum;
-      m.uniforms.uBrightness.value = ledBright;
+      m.uniforms.uBrightness.value = previewLedBright;
       m.uniforms.uSpeed.value = s.led.speed;
-      m.uniforms.uColorA.value.copy(primaryColor);
-      m.uniforms.uColorB.value.copy(accentColor);
+      m.uniforms.uColorA.value.copy(previewPrimaryColor);
+      m.uniforms.uColorB.value.copy(previewAccentColor);
       m.uniforms.uBass.value = s.audioReactive && audio.playing ? audio.bass : 0.35 + 0.2 * Math.sin(t * 3.1);
       m.uniforms.uMid.value = s.audioReactive && audio.playing ? audio.mid : 0.35 + 0.2 * Math.cos(t * 2.4);
       m.uniforms.uHigh.value = s.audioReactive && audio.playing ? audio.high : 0.28 + 0.2 * Math.sin(t * 4.5);
-      m.uniforms.uBeatPulse.value = beatPulse;
+      m.uniforms.uBeatPulse.value = previewFlash.beatPulse;
+      if (m.uniforms.uFlashLimited) m.uniforms.uFlashLimited.value = ledFlashLimitedUniform;
     }
 
     // 6. Stage Dynamic Spill Lights & DJ Booth Strip
     const rigHasLight = this.movingFixtures.length > 0;
-    const effBeamIntSpill = mod.active && mod.beam.dimmerMapped ? mod.beam.dimmer : s.beamIntensity;
-    const effWashIntSpill = mod.active && mod.wash.dimmerMapped ? mod.wash.dimmer : s.washIntensity;
-    const spillStrobeGate =
-      !b.strobe && mod.active && (mod.strobeBar.strobe.mapped || mod.strobeBar.dimmerMapped || (mod.beam.strobe.mapped && mod.wash.strobe.mapped))
-        ? (mod.strobeBar.strobe.mapped
-            ? (strobeBarFlash ? 1.35 : 0.06)
-            : (mod.beam.strobe.mapped && mod.wash.strobe.mapped
-                ? (groups.beam.groupStrobeGate >= 0.5 || groups.wash.groupStrobeGate >= 0.5 ? 1.35 : 0.06)
-                : 1.0))
-        : Math.max(groups.beam.groupStrobeGate, groups.wash.groupStrobeGate);
+    const effBeamIntSpill = previewFlash.beamIntensity;
+    const effWashIntSpill = previewFlash.washIntensity;
+    const spillStrobeGate = previewLimited
+      ? (!b.strobe && mod.active && (mod.strobeBar.strobe.mapped || mod.strobeBar.dimmerMapped || (mod.beam.strobe.mapped && mod.wash.strobe.mapped))
+          ? (mod.strobeBar.strobe.mapped
+              ? (strobeBarFlash ? 1.35 : 0.06)
+              : (mod.beam.strobe.mapped && mod.wash.strobe.mapped
+                  ? (groups.beam.groupStrobeGate >= 0.5 || groups.wash.groupStrobeGate >= 0.5 ? 1.35 : 0.06)
+                  : 1.0))
+          : Math.max(groups.beam.groupStrobeGate, groups.wash.groupStrobeGate))
+      : Math.max(groups.beam.previewGroupStrobeGate, groups.wash.previewGroupStrobeGate);
     const activeLightPower = ((rigHasLight ? (effBeamIntSpill * 0.55 + effWashIntSpill * 0.72) * this.spillFluxGain : 0) +
-      (this.laserUnits.length ? laserInt * 0.09 : 0)) * master * spillStrobeGate * roomGain;
-    this.stagePrimaryLight.color.copy(primaryColor);
-    this.stagePrimaryLight.intensity = activeLightPower * (24 + beatPulse * 14);
-    this.stageAccentLight.color.copy(accentColor);
-    this.stageAccentLight.intensity = activeLightPower * (20 + beatPulse * 12);
-    this.ledSpillLight.color.copy(primaryColor).lerp(accentColor, 0.5);
-    this.ledSpillLight.intensity = this.ledWallMats.length ? ledBright * (16 + beatPulse * 10) : 0;
-    this.scenicKey.intensity = activeLightPower * 168 + effBlinder * 80;
-    for (const light of this.sideFills) light.intensity = activeLightPower * 113 + effBlinder * 70;
-    this.deckTrim?.color.copy(accentColor).multiplyScalar(master * roomGain * 0.42);
+      (this.laserUnits.length ? laserInt * 0.09 : 0)) * previewMaster * spillStrobeGate * roomGain;
+    this.stagePrimaryLight.color.copy(previewPrimaryColor);
+    this.stagePrimaryLight.intensity = activeLightPower * (24 + previewFlash.beatPulse * 14);
+    this.stageAccentLight.color.copy(previewAccentColor);
+    this.stageAccentLight.intensity = activeLightPower * (20 + previewFlash.beatPulse * 12);
+    this.ledSpillLight.color.copy(previewPrimaryColor).lerp(previewAccentColor, 0.5);
+    this.ledSpillLight.intensity = this.ledWallMats.length ? previewLedBright * (16 + previewFlash.beatPulse * 10) : 0;
+    this.scenicKey.intensity = activeLightPower * 168 + previewBlinder * 80;
+    for (const light of this.sideFills) light.intensity = activeLightPower * 113 + previewBlinder * 70;
+    this.deckTrim?.color.copy(previewAccentColor).multiplyScalar(previewMaster * roomGain * 0.42);
 
     if (this.djStripMat) {
-      this.djStripMat.color.copy(primaryColor).multiplyScalar(master * roomGain * (1.2 + beatPulse * 0.9));
+      this.djStripMat.color.copy(previewPrimaryColor).multiplyScalar(previewMaster * roomGain * (1.2 + previewFlash.beatPulse * 0.9));
     }
 
     for (const piece of this.scenicPieces.values()) {
@@ -3285,13 +3848,15 @@ export class StageEngine {
         piece.air.rotation.z = Math.sin(t * 0.72 + piece.phase) * travel;
         piece.air.scale.z = 1 + Math.sin(t * 0.98 + piece.phase) * 0.007;
       }
-      if (piece.lamps) piece.lamps.emissiveIntensity = master * roomGain * (1.35 + beatPulse * 0.38);
+      if (piece.lamps) piece.lamps.emissiveIntensity = previewMaster * roomGain * (1.35 + previewFlash.beatPulse * 0.38);
     }
 
     // 8. Animated Silhouetted Arena Crowd Bounce!
+    const prof = this.profiler;
+    const crowdStart = prof ? performance.now() : 0;
     if (this.crowdMesh && this.crowdBaseTransforms.length > 0) {
       // A seated house sways rather than jumps.
-      const bounceAmp = (s.audioReactive && audio.playing ? 0.06 + audio.bass * 0.16 : 0.045) * (0.5 + master * 0.5)
+      const bounceAmp = (s.audioReactive && audio.playing ? 0.06 + audio.bass * 0.16 : 0.045) * (0.5 + previewMaster * 0.5)
         * (this.crowdSeated ? 0.12 : 1);
       const bounceFreq = (s.bpm / 60) * Math.PI * 2;
       for (let i = 0; i < this.crowdBaseTransforms.length; i++) {
@@ -3304,7 +3869,11 @@ export class StageEngine {
         this.crowdMesh.setMatrixAt(i, this.crowdDummy.matrix);
       }
       this.crowdMesh.instanceMatrix.needsUpdate = true;
+      if (prof) {
+        prof.curUploadBytes += (this.crowdMesh.instanceMatrix.array as Float32Array).byteLength;
+      }
     }
+    if (prof) prof.curCrowdMs = performance.now() - crowdStart;
 
     // 9. Smoke Machines, Haze, & CO2 Cryo Cannons
     // Emergency blackout suppresses CO2, smoke, and haze after all modulation and bumps (preserving programmed levels underneath).
@@ -3318,9 +3887,11 @@ export class StageEngine {
       ps.smoke = effSmoke;
       writePhysicalUnitBytes(fx.physBuffer, fx.buffer, fx.start, fx.width ?? 1, fx.physicalClass, ps, this.physicalDmxScratch);
     }
-    const stageTint = primaryColor.clone().lerp(accentColor, 0.35);
+    const particlesStart = prof ? performance.now() : 0;
+    const stageTint = this.stageTintScratch.copy(previewPrimaryColor).lerp(previewAccentColor, 0.35);
     this.particles.group.visible = roomGain > 0 || effSmoke > 0 || effCo2;
     this.particles.update(dt, t, effHaze, effSmoke, effCo2, stageTint, activeLightPower);
+    if (prof) prof.curParticlesMs = performance.now() - particlesStart;
 
     // Update arena fog slightly with haze density for rich depth
     (this.scene.fog as THREE.FogExp2).density = 0.008 + effHaze * 0.015;
@@ -3411,7 +3982,7 @@ export class StageEngine {
     }
     this.controls.update();
     this.refreshMeasureOverlayAndSnapshot(performance.now());
-    return master > 0;
+    return previewMaster > 0;
   }
 
   public dispose() {
@@ -3422,6 +3993,23 @@ export class StageEngine {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
+    if (this.profiler) {
+      const p = this.profiler;
+      this.profiler = null;
+      this.batcher?.setSyncObserver(null);
+      p.finish(this.gpuTimer);
+    }
+    this.gpuTimer?.dispose();
+    this.gpuTimer = null;
+    if (this.renderer?.domElement) {
+      if (this.handleContextLostBound) {
+        this.renderer.domElement.removeEventListener('webglcontextlost', this.handleContextLostBound);
+      }
+      if (this.handleContextRestoredBound) {
+        this.renderer.domElement.removeEventListener('webglcontextrestored', this.handleContextRestoredBound);
+      }
+    }
+    this.readPixelsBuf = null;
     this.resizeObserver?.disconnect();
     this.controls?.dispose();
     if (this.measureOverlay) {

@@ -21,6 +21,13 @@ export const HAZE_MIN_RELEASE_MS = 2000;
  *   (<= 0.2 -> >= 0.8 -> <= 0.2, delta >= 0.6) takes >= 343 ms (<= 2.91 full flashes / s).
  */
 export const FLASH_REFRACTORY_MS = 334;
+
+export function rawManualStrobeOscillator(effectiveStrobe: number, tSec: number): boolean {
+  const clamped = clamp01(effectiveStrobe);
+  if (clamped <= 0.03) return false;
+  const freq = 3.5 + clamped * 24.0;
+  return Math.sin(tSec * freq * Math.PI * 2) > 0.25;
+}
 export const FLASH_ON_MS = 50;
 export const FLASH_TRIGGER_ON = 0.2;
 export const FLASH_TRIGGER_REARM = 0.1;
@@ -673,8 +680,7 @@ export function stepCombinedStrobeGate(
     res.limited = tMs < state.manualStrobe.limitedUntilMs;
     return res;
   }
-  const freq = 3.5 + clamp01(effectiveStrobe) * 24.0;
-  const oscSignal = Math.sin(tSec * freq * Math.PI * 2) > 0.25 ? 1 : 0;
+  const oscSignal = rawManualStrobeOscillator(effectiveStrobe, tSec) ? 1 : 0;
   const limited = stepStrobeGate(state.manualStrobe, oscSignal, tMs, MANUAL_STROBE_SCRATCH, state);
   res.flashOn = state.manualStrobe.gateOn;
   res.gate = res.flashOn ? 1.35 : 0.06;

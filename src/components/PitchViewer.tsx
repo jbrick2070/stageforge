@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { CAMERAS } from './TopBar';
 import { DeskDialog } from './ShowFiles';
+import { DisplaySettingsPopover, type DisplaySettingsPopoverProps } from './DisplaySettingsPopover';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
 import { useCapabilities } from '../viewer/capabilities';
 import type { AudioMetrics, CameraPreset, ShowCue } from '../types/show';
@@ -71,6 +72,7 @@ export interface PitchViewerProps {
   onRelinkMedia: (files: File[]) => string;
   onError: (msg: string) => void;
   onExitViewer: () => void;
+  displaySettings?: DisplaySettingsPopoverProps;
 }
 
 const GLANCE_LABEL: Record<ScreenGlanceState, string> = { play: 'Play', hold: 'Hold', missing: 'Missing', none: 'Empty' };
@@ -108,6 +110,7 @@ export const PitchViewer: React.FC<PitchViewerProps> = ({
   onRelinkMedia,
   onError,
   onExitViewer,
+  displaySettings,
 }) => {
   const capabilities = useCapabilities();
   const fps = useLive(fpsStore);
@@ -291,6 +294,7 @@ export const PitchViewer: React.FC<PitchViewerProps> = ({
             </select>
             <ChevronDown />
           </label>
+          {displaySettings && <DisplaySettingsPopover {...displaySettings} />}
           <button
             type="button"
             className="transport-btn"

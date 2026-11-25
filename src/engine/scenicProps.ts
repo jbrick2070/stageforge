@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { StageProp } from '../types/show';
+import type { RenderTier } from './hardwareMaterials';
 
 export interface ScenicPiece {
   root: THREE.Group;
@@ -8,13 +9,59 @@ export interface ScenicPiece {
   air?: THREE.Object3D;
 }
 
+export interface ScenicLodParams {
+  tubeRowsPerPanel: number;
+  tubeSides: number;
+  cupRadialSegments: number;
+  cupTubularSegments: number;
+  starRings: number;
+  starSectors: number;
+  starWrinkleAmp: number;
+  bulbWidthSegments: number;
+  bulbHeightSegments: number;
+}
+
+/**
+ * Tiered scenery tessellation parameters (Sprint 15):
+ * - High tier is byte-identical to the original geometry.
+ * - Low tier keeps tubeSides a multiple of 5 (4 samples per rib), even rows per panel (seam on joint),
+ *   starSectors a multiple of 10 (tips & inner corners exact), even starRings (equator seam), and
+ *   zero high-frequency wrinkle (prevents aliasing below 80 sectors).
+ */
+export function scenicLodParams(tier: RenderTier = 'high'): ScenicLodParams {
+  if (tier === 'low') {
+    return {
+      tubeRowsPerPanel: 6,
+      tubeSides: 20,
+      cupRadialSegments: 6,
+      cupTubularSegments: 10,
+      starRings: 18,
+      starSectors: 60,
+      starWrinkleAmp: 0,
+      bulbWidthSegments: 8,
+      bulbHeightSegments: 6,
+    };
+  }
+  return {
+    tubeRowsPerPanel: 12,
+    tubeSides: 40,
+    cupRadialSegments: 8,
+    cupTubularSegments: 18,
+    starRings: 42,
+    starSectors: 150,
+    starWrinkleAmp: 0.022,
+    bulbWidthSegments: 14,
+    bulbHeightSegments: 9,
+  };
+}
+
 const tau = Math.PI * 2;
 const point = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 
 // Inflatable tubes swell between sewn panels. Section frames follow the bent centreline.
-function fabricTube(curve: THREE.CatmullRomCurve3, radius: (t: number) => number, panels: number) {
-  const rows = panels * 12;
-  const sides = 40;
+function fabricTube(curve: THREE.CatmullRomCurve3, radius: (t: number) => number, panels: number, lod: ScenicLodParams) {
+  const rows = panels * lod.tubeRowsPerPanel;
+  const sides = lod.tubeSides;
   const geo = new THREE.TubeGeometry(curve, rows, 1, sides, false);
   const positions = geo.attributes.position;
   const shades: number[] = [];
@@ -39,9 +86,9 @@ function fabricTube(curve: THREE.CatmullRomCurve3, radius: (t: number) => number
   return geo;
 }
 
-function foilStar() {
+function foilStar(lod: ScenicLodParams) {
   const positions: number[] = [], shades: number[] = [], triangles: number[] = [];
-  const rings = 42, sectors = 150;
+  const rings = lod.starRings, sectors = lod.starSectors;
   for (let row = 0; row <= rings; row++) {
     const a = Math.PI * row / rings;
     const spread = Math.sin(a);
@@ -53,7 +100,7 @@ function foilStar() {
       const radius = 2.48 * 1.07 * Math.sin(Math.PI / 5) /
         (1.07 * Math.sin(Math.PI / 5 - d) + 2.48 * Math.sin(d));
       const seam = Math.pow(spread, 62);
-      const wrinkle = Math.sin(35 * angle + 4 * a) * 0.022 * Math.pow(spread, 5);
+      const wrinkle = lod.starWrinkleAmp > 0 ? Math.sin(35 * angle + 4 * a) * lod.starWrinkleAmp * Math.pow(spread, 5) : 0;
       const r = radius * spread * (1 + wrinkle);
       positions.push(Math.cos(angle) * r, Math.sin(angle) * r,
         0.85 * Math.cos(a) * (1 - 0.32 * petal * spread) + wrinkle);
@@ -87,7 +134,8 @@ function rod(parent: THREE.Group, a: THREE.Vector3, b: THREE.Vector3, radius: nu
   parent.add(mesh);
 }
 
-export function buildScenicPiece(prop: StageProp, hardware: THREE.Material): ScenicPiece {
+export function buildScenicPiece(prop: StageProp, hardware: THREE.Material, tier: RenderTier = 'high'): ScenicPiece {
+  const lod = scenicLodParams(tier);
   const root = new THREE.Group();
   const inflatable = ['tentacle', 'arch', 'star'].includes(prop.kind);
   const fabric = new THREE.MeshStandardMaterial({
@@ -103,8 +151,12 @@ export function buildScenicPiece(prop: StageProp, hardware: THREE.Material): Sce
     ]);
     const radius = (t: number) => 0.012 + 0.96 * Math.pow(1 - t, 0.85);
     const air = new THREE.Group();
-    air.add(new THREE.Mesh(fabricTube(curve, radius, 13), fabric));
-    const cups = new THREE.InstancedMesh(new THREE.TorusGeometry(1, 0.22, 8, 18), fabric.clone(), 26);
+    air.add(new THREE.Mesh(fabricTube(curve, radius, 13, lod), fabric));
+    const cups = new THREE.InstancedMesh(
+      new THREE.TorusGeometry(1, 0.22, lod.cupRadialSegments, lod.cupTubularSegments),
+      fabric.clone(),
+      26,
+    );
     cups.material.vertexColors = false;
     cups.material.color.set('#e5b9a6');
     const dummy = new THREE.Object3D();
@@ -131,13 +183,13 @@ export function buildScenicPiece(prop: StageProp, hardware: THREE.Material): Sce
       point(-3.5, -0.05, 0), point(-3.45, 2.3, 0), point(-2.48, 4.0, 0),
       point(0, 4.9, 0), point(2.48, 4.0, 0), point(3.45, 2.3, 0), point(3.5, -0.05, 0),
     ]);
-    const air = new THREE.Mesh(fabricTube(curve, () => 0.58, 17), fabric);
+    const air = new THREE.Mesh(fabricTube(curve, () => 0.58, 17, lod), fabric);
     root.add(air);
     for (const x of [-3.5, 3.5]) box(root, [1.3, 0.13, 1.3], [x, 0.065, 0], hardware);
     return { root, fabric, air };
   }
   if (prop.kind === 'star') {
-    const air = new THREE.Mesh(foilStar(), fabric);
+    const air = new THREE.Mesh(foilStar(lod), fabric);
     air.position.y = 3.12;
     root.add(air);
     for (const sign of [-1, 1]) {
@@ -150,7 +202,11 @@ export function buildScenicPiece(prop: StageProp, hardware: THREE.Material): Sce
     box(root, [1.45, 0.16, 1.05], [0, 0.08, 0], hardware);
     box(root, [0.84, 4.3, 0.35], [0, 2.25, 0], hardware);
     const lamps = new THREE.MeshStandardMaterial({ color: prop.color, emissive: prop.color, roughness: 0.34 });
-    const bulbs = new THREE.InstancedMesh(new THREE.SphereGeometry(0.12, 14, 9), lamps, 16);
+    const bulbs = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.12, lod.bulbWidthSegments, lod.bulbHeightSegments),
+      lamps,
+      16,
+    );
     const matrix = new THREE.Matrix4();
     for (let i = 0; i < 16; i++) {
       bulbs.setMatrixAt(i, matrix.makeTranslation(i % 2 ? 0.2 : -0.2, 0.48 + 0.51 * Math.floor(i / 2), 0.19));
