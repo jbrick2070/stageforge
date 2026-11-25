@@ -32,6 +32,7 @@ import {
   VOLUMETRIC_BEAM_VERT,
 } from './shaders';
 import { LED_ANGULAR_DEFINE } from './ledWallResponse';
+import { DeckSheenController, type DeckSheenStats } from './deckSheen';
 import {
   SharedMaterials,
   buildPlatformDeck,
@@ -325,6 +326,7 @@ export class StageEngine {
   private renderTier: RenderTier;
   private modelCache: FixtureModelCache;
   private mats: SharedMaterials;
+  private deckSheen!: DeckSheenController;
   private environmentTarget: THREE.WebGLRenderTarget;
   private currentRig?: RigConfig;
   private lastRebuildSource?: RigConfig;
@@ -628,6 +630,7 @@ export class StageEngine {
         this.gpuTimer = new GpuTimerRing(this.renderer.getContext());
       }
       this.updateTourTextTexture(this.lastTourText);
+      this.deckSheen?.onContextRestored(this.mats?.stageDeck);
       if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
@@ -734,6 +737,13 @@ export class StageEngine {
       tier: this.renderTier,
       maxAnisotropy: this.renderer.capabilities.getMaxAnisotropy(),
     });
+    this.deckSheen = new DeckSheenController(
+      this.renderTier,
+      this.renderer.capabilities.getMaxAnisotropy(),
+    );
+    if (this.renderSettings.deckSheen) {
+      this.deckSheen.apply(this.mats.stageDeck, true);
+    }
 
     // Tour text offscreen texture for LED wall mode 6
     this.textCanvas = document.createElement('canvas');
@@ -857,6 +867,9 @@ export class StageEngine {
     }
     if (prev.ledAngularResponse !== next.ledAngularResponse) {
       this.applyLedAngularResponse(next.ledAngularResponse);
+    }
+    if (prev.deckSheen !== next.deckSheen) {
+      this.deckSheen.apply(this.mats.stageDeck, next.deckSheen);
     }
   }
 
@@ -1093,6 +1106,7 @@ export class StageEngine {
       secondaryMaterialCount: Math.max(0, this.allLedMaterials.length - this.ledWallMats.length),
       primaryCenter,
     };
+    const deckSheen: DeckSheenStats = this.deckSheen.getStats();
 
     return {
       schemaVersion: 1 as const,
@@ -1120,6 +1134,7 @@ export class StageEngine {
       particles,
       prismPools,
       ledWalls,
+      deckSheen,
       ilda: {
         activeProjectors: ildaActiveProjectors,
         visibleSegments: ildaVisibleSegments,
@@ -1128,6 +1143,7 @@ export class StageEngine {
       resources: {
         renderTargetBytesEstimate,
         prismPoolExtraBufferBytes: prismPools.extraBufferBytes,
+        deckSheenExtraTextureBytes: deckSheen.extraTextureBytes,
       },
       gpuTimerStatus: this.gpuTimer?.getStatus() ?? (isWebGL2 ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') ? 'ok' : 'unsupported') : 'unsupported'),
       gpuTimerPending: this.gpuTimer?.pendingCount() ?? 0,
@@ -3228,6 +3244,7 @@ export class StageEngine {
         this.gpuTimer = new GpuTimerRing(this.renderer.getContext());
       }
       this.updateTourTextTexture(this.lastTourText);
+      this.deckSheen?.onContextRestored(this.mats?.stageDeck);
       if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
@@ -4514,6 +4531,7 @@ export class StageEngine {
     for (const piece of this.scenicPieces.values()) this.releaseGroup(piece.root);
     this.scenicPieces.clear();
     this.modelCache?.dispose();
+    this.deckSheen?.dispose(this.mats?.stageDeck);
     disposeSharedMaterials(this.mats);
     this.environmentTarget?.dispose();
     if (this.composer) {

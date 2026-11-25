@@ -7,6 +7,17 @@ export type RenderTier = 'high' | 'low';
 export const HARDWARE_ATLAS_SEED = 0x5f2a8c1d;
 export const STAGE_DECK_SEED = 0x71b3e905;
 
+/** Canonical stage marley deck PBR parameters shared across live renderer, Sprint 18 sheen, and GLB export. */
+export const STAGE_DECK_BASE_ROUGHNESS = 0.55;
+export const STAGE_DECK_BASE_METALNESS = 0.08;
+export const STAGE_DECK_REPEAT_X = 6;
+export const STAGE_DECK_REPEAT_Y = 3;
+export const STAGE_DECK_SHEEN_NORMAL_SCALE = 0.16;
+
+/** Sprint 18 optional deck-sheen texture payload ceilings (0.10 MiB low tier, 0.70 MiB high tier). */
+export const DECK_SHEEN_LOW_MAX_BYTES = 104_857;
+export const DECK_SHEEN_HIGH_MAX_BYTES = 734_003;
+
 /**
  * Horizontal UV bands in the shared hardware PBR trim-sheet atlas.
  * Band 0 sits at v = [0, 1/8) and band 7 at v = [7/8, 1].
@@ -81,6 +92,30 @@ export function detectRenderTier(): RenderTier {
 
 export function atlasSizeForTier(tier: RenderTier): number {
   return tier === 'low' ? 256 : 512;
+}
+
+export function deckSheenSizeForTier(tier: RenderTier): number {
+  return tier === 'low' ? 128 : 256;
+}
+
+/** Exact RGBA8 base + full mip-chain payload bytes for a square power-of-two CanvasTexture. */
+export function estimateMipmappedRgbaBytes(size: number): number {
+  let s = Math.max(0, Math.floor(size));
+  if (s === 0) return 0;
+  let total = 0;
+  while (s >= 1) {
+    total += s * s * 4;
+    if (s === 1) break;
+    s = Math.max(1, s >> 1);
+  }
+  return total;
+}
+
+/** Application texture payload bytes added when Sprint 18 deck sheen is enabled (excludes driver alignment overhead). */
+export function estimateDeckSheenTextureBytes(tier: RenderTier, enabled: boolean): number {
+  if (!enabled) return 0;
+  const perMap = estimateMipmappedRgbaBytes(deckSheenSizeForTier(tier));
+  return tier === 'high' ? perMap * 2 : perMap;
 }
 
 export function maxPixelRatioForTier(tier: RenderTier): number {
@@ -373,6 +408,174 @@ export function generateDeckPixels(size: number, seed: number = STAGE_DECK_SEED)
   }
 
   return data;
+}
+
+export interface GeneratedDeckSheenMaps {
+  tier: RenderTier;
+  size: number;
+  /** RGBA8 linear bytes (R=G=B=roughness, A=255), size * size * 4. */
+  roughness: Uint8ClampedArray;
+  /** RGBA8 linear tangent-space normal bytes on 'high' tier (size * size * 4), or null on 'low' tier. */
+  normal: Uint8ClampedArray | null;
+  textureCount: 1 | 2;
+  estimatedBytes: number;
+}
+
+/**
+ * Generate byte-deterministic stage marley roughness (128² low / 256² high) and weak normal (256² high only)
+ * maps registered 1:1 with `generateDeckPixels(atlasSizeForTier(tier), seed)` by replaying its exact PRNG stream
+ * and 2×2 box-downsampling so panel seams and scuffs interrupt specular highlights cleanly without shimmer.
+ */
+export function generateDeckSheenMaps(
+  tier: RenderTier,
+  seed: number = STAGE_DECK_SEED,
+): GeneratedDeckSheenMaps {
+  const albedoSize = atlasSizeForTier(tier);
+  const size = deckSheenSizeForTier(tier);
+  const rand = mulberry32(seed);
+  const half = albedoSize >> 1;
+
+  const roughHi = new Float32Array(albedoSize * albedoSize);
+  const heightHi = tier === 'high' ? new Float32Array(albedoSize * albedoSize) : null;
+
+  // 1. Replay exact per-pixel grain loop (albedoSize * albedoSize rand() draws).
+  for (let y = 0; y < albedoSize; y++) {
+    const v = (y + 0.5) / albedoSize;
+    const distBorderY = Math.min(y, albedoSize - y);
+    const distMidY = Math.abs(y - half);
+    const seamDistY = Math.min(distBorderY, distMidY);
+    const rollY = Math.cos(v * Math.PI * 2) * 0.011;
+
+    for (let x = 0; x < albedoSize; x++) {
+      const r0 = rand();
+      const u = (x + 0.5) / albedoSize;
+      const distBorderX = Math.min(x, albedoSize - x);
+      const distMidX = Math.abs(x - half);
+      const seamDist = Math.min(distBorderX, distMidX, seamDistY);
+
+      const roll = Math.sin(u * Math.PI * 2) * 0.014 + rollY + Math.sin((u + v) * Math.PI * 4) * 0.007;
+      const micro = (r0 - 0.5) * 0.020;
+
+      let rough = STAGE_DECK_BASE_ROUGHNESS + roll + micro;
+      let h = 0.5 + roll * 0.55 + micro * 0.30;
+
+      if (seamDist === 0) {
+        rough = 0.72;
+        h = 0.34;
+      } else if (seamDist === 1) {
+        rough = 0.65;
+        h = 0.42;
+      } else if (seamDist === 2) {
+        rough = Math.min(0.62, rough + 0.022);
+        h += 0.022;
+      }
+
+      const idx = y * albedoSize + x;
+      roughHi[idx] = rough;
+      if (heightHi) heightHi[idx] = h;
+    }
+  }
+
+  // 2. Replay exact scuff stroke loop (6 rand() draws per scuff: x0, y0, len, dx, dy, alpha).
+  const scuffCount = Math.round((albedoSize / 512) * 650);
+  const stampScuff = (px: number, py: number, deltaRough: number, deltaH: number, weight: number) => {
+    if (px < 0 || px >= albedoSize || py < 0 || py >= albedoSize) return;
+    const idx = py * albedoSize + px;
+    const nextR = roughHi[idx] + deltaRough * weight;
+    roughHi[idx] = nextR < 0.44 ? 0.44 : nextR > 0.74 ? 0.74 : nextR;
+    if (heightHi) {
+      const nextH = heightHi[idx] + deltaH * weight;
+      heightHi[idx] = nextH < 0.25 ? 0.25 : nextH > 0.75 ? 0.75 : nextH;
+    }
+  };
+
+  for (let i = 0; i < scuffCount; i++) {
+    const x0 = rand() * albedoSize;
+    const y0 = rand() * albedoSize;
+    const len = (8 + rand() * 24) * (albedoSize / 512);
+    const dx = (rand() - 0.5) * len;
+    const dy = (rand() - 0.5) * len;
+    const alpha = 0.012 + rand() * 0.025;
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy)));
+    const strength = (alpha - 0.012) / 0.025; // 0..1
+    // Deterministic mix: burnished heel marks (smoother) vs abraded scuff marks (matte).
+    const burnished = i % 3 !== 0;
+    const deltaRough = burnished ? -(0.055 + strength * 0.045) : (0.048 + strength * 0.042);
+    const deltaH = burnished ? -(0.024 + strength * 0.020) : (0.018 + strength * 0.016);
+
+    for (let s = 0; s <= steps; s++) {
+      const px = Math.floor(x0 + (dx * s) / steps);
+      const py = Math.floor(y0 + (dy * s) / steps);
+      stampScuff(px, py, deltaRough, deltaH, 1.0);
+      stampScuff(px - 1, py, deltaRough, deltaH, 0.45);
+      stampScuff(px + 1, py, deltaRough, deltaH, 0.45);
+      stampScuff(px, py - 1, deltaRough, deltaH, 0.45);
+      stampScuff(px, py + 1, deltaRough, deltaH, 0.45);
+    }
+  }
+
+  // 3. 2×2 box-filter downsample from albedoSize (512/256) to size (256/128) to suppress sub-texel shimmer.
+  const roughness = new Uint8ClampedArray(size * size * 4);
+  const heightDown = heightHi ? new Float32Array(size * size) : null;
+
+  for (let y = 0; y < size; y++) {
+    const y0 = y * 2;
+    const y1 = y0 + 1;
+    for (let x = 0; x < size; x++) {
+      const x0 = x * 2;
+      const x1 = x0 + 1;
+      const i00 = y0 * albedoSize + x0;
+      const i10 = y0 * albedoSize + x1;
+      const i01 = y1 * albedoSize + x0;
+      const i11 = y1 * albedoSize + x1;
+
+      const avgRough = 0.25 * (roughHi[i00] + roughHi[i10] + roughHi[i01] + roughHi[i11]);
+      const clampedRough = avgRough < 0.44 ? 0.44 : avgRough > 0.74 ? 0.74 : avgRough;
+      const rByte = clampByte(clampedRough * 255);
+      const outIdx = (y * size + x) * 4;
+      roughness[outIdx] = rByte;
+      roughness[outIdx + 1] = rByte;
+      roughness[outIdx + 2] = rByte;
+      roughness[outIdx + 3] = 255;
+
+      if (heightDown && heightHi) {
+        heightDown[y * size + x] = 0.25 * (heightHi[i00] + heightHi[i10] + heightHi[i01] + heightHi[i11]);
+      }
+    }
+  }
+
+  // 4. High tier only: weak periodic tangent-space normal map (flipY = true sign convention matching atlas).
+  let normal: Uint8ClampedArray | null = null;
+  if (tier === 'high' && heightDown) {
+    normal = new Uint8ClampedArray(size * size * 4);
+    const slopeStrength = 1.15;
+    for (let y = 0; y < size; y++) {
+      const yUp = (y - 1 + size) % size;
+      const yDn = (y + 1) % size;
+      for (let x = 0; x < size; x++) {
+        const xLt = (x - 1 + size) % size;
+        const xRt = (x + 1) % size;
+        const dx = (heightDown[y * size + xRt] - heightDown[y * size + xLt]) * slopeStrength;
+        const dy = (heightDown[yDn * size + x] - heightDown[yUp * size + x]) * slopeStrength;
+        const invLen = 1 / Math.hypot(dx, dy, 1);
+        const idx = (y * size + x) * 4;
+        normal[idx] = clampByte((-dx * invLen * 0.5 + 0.5) * 255);
+        normal[idx + 1] = clampByte((dy * invLen * 0.5 + 0.5) * 255);
+        normal[idx + 2] = clampByte((invLen * 0.5 + 0.5) * 255);
+        normal[idx + 3] = 255;
+      }
+    }
+  }
+
+  const textureCount: 1 | 2 = tier === 'high' ? 2 : 1;
+  return {
+    tier,
+    size,
+    roughness,
+    normal,
+    textureCount,
+    estimatedBytes: estimateDeckSheenTextureBytes(tier, true),
+  };
 }
 
 /** Convert an RGBA pixel buffer into a CanvasTexture in browsers, or null in headless Node. */

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { buildPlatformDeck, type SharedMaterials } from './geometryBuilders';
+import { STAGE_DECK_BASE_ROUGHNESS } from './hardwareMaterials';
 import { buildScenicPiece } from './scenicProps';
 import { LED_DISPLAY_MATERIAL_NAME } from './fohFraming';
 import type { FloorFxUnit, MountedFixtureGroup, RigConfig, StageProp } from '../types/show';
@@ -57,6 +58,12 @@ export function stageSnapshot(rig: RigConfig, roots: THREE.Object3D[], mats: Sha
       if (copy instanceof THREE.MeshStandardMaterial) {
         // Keep albedo + roughness/metalness atlas in GLB while stripping normal maps to keep files compact.
         copy.normalMap = null;
+        if (source === mats.stageDeck) {
+          // Device-local experimental deckSheen must not alter production GLB exports.
+          copy.roughnessMap = null;
+          copy.roughness = STAGE_DECK_BASE_ROUGHNESS;
+          copy.normalScale.set(1, 1);
+        }
       }
       if (copy instanceof THREE.MeshBasicMaterial || copy instanceof THREE.MeshStandardMaterial) {
         // Light lenses in the HDR renderer can exceed glTF's base-color range.

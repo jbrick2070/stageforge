@@ -13,6 +13,10 @@ import {
   createHardwareMaterials,
   generateDeckPixels,
   pixelsToCanvasTexture,
+  STAGE_DECK_BASE_METALNESS,
+  STAGE_DECK_BASE_ROUGHNESS,
+  STAGE_DECK_REPEAT_X,
+  STAGE_DECK_REPEAT_Y,
   STAGE_DECK_SEED,
   type RenderTier,
 } from './hardwareMaterials';
@@ -57,7 +61,7 @@ export function createSharedMaterials(options: SharedMaterialOptions = {}): Shar
       deckTex.name = 'stage-deck-marley';
       deckTex.wrapS = THREE.RepeatWrapping;
       deckTex.wrapT = THREE.RepeatWrapping;
-      deckTex.repeat.set(6, 3);
+      deckTex.repeat.set(STAGE_DECK_REPEAT_X, STAGE_DECK_REPEAT_Y);
     }
 
     // Stamp the perforations into a mipmapped surface so the grille resolves at FOH distance.
@@ -127,8 +131,8 @@ export function createSharedMaterials(options: SharedMaterialOptions = {}): Shar
     stageDeck: new THREE.MeshStandardMaterial({
       color: deckTex ? 0xffffff : 0x373b40,
       map: deckTex,
-      metalness: 0.08,
-      roughness: 0.55,
+      metalness: STAGE_DECK_BASE_METALNESS,
+      roughness: STAGE_DECK_BASE_ROUGHNESS,
     }),
     speakerCabinet: new THREE.MeshStandardMaterial({
       color: 0x27292e,

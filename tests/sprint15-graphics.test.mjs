@@ -70,6 +70,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       videoSrgbDecode: false,
       prismPools: false,
       ledAngularResponse: false,
+      deckSheen: false,
     });
 
     const hostile = renderSettings.parseRenderSettings({
@@ -79,6 +80,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       videoSrgbDecode: 1,
       prismPools: 'true',
       ledAngularResponse: 1,
+      deckSheen: 'on',
     });
     assert.deepEqual(hostile, def);
 
@@ -89,6 +91,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       videoSrgbDecode: true,
       prismPools: true,
       ledAngularResponse: true,
+      deckSheen: true,
     });
     assert.deepEqual(valid, {
       bloom: 'half',
@@ -97,6 +100,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       videoSrgbDecode: true,
       prismPools: true,
       ledAngularResponse: true,
+      deckSheen: true,
     });
 
     assert.equal(renderSettings.shouldRunBloom('auto', 0, 'high'), false);
