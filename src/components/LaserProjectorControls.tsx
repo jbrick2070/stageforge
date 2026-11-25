@@ -57,7 +57,7 @@ export function LaserProjectorControls({ rig, laser, onPatch }: {
         <span>{selectedLaserSpec.opticalPowerW < 1 ? `${Math.round(selectedLaserSpec.opticalPowerW * 1000)} mW` : `${selectedLaserSpec.opticalPowerW} W`}</span>
         <span>{selectedLaserSpec.colorType === 'single' ? `${selectedLaserSpec.wavelengthNm ?? 520} nm` : 'RGB'}</span>
         <span>{selectedLaserSpec.scanSpeedKpps} kpps</span>
-        <span>{selectedLaserSpec.maxScanAngleDeg}° max</span>
+        <span>{selectedLaserSpec.maxScanAngleDeg !== undefined ? `${selectedLaserSpec.maxScanAngleDeg}° max` : 'Scan angle n/a'}</span>
         <span>Class {selectedLaserSpec.laserClass}</span>
         <span>{selectedLaserSpec.capability === 'beam' ? 'Beam only' : 'Beam + Graphic'}</span>
       </div>

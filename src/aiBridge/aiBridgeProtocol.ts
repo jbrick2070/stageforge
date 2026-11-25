@@ -23,6 +23,7 @@ import {
 import {
   catalogLedPanels,
   EQUIPMENT_CATALOG,
+  type CatalogEntry,
 } from '../data/equipmentCatalog';
 import { HOIST_PROFILES, TRUSS_PROFILES } from '../data/rigCatalog';
 import { focusMarks } from '../engine/focusAim';
@@ -940,7 +941,7 @@ export function buildAiCatalogSummary(category = 'all') {
   const result: Record<string, unknown> = {};
   const includeFixtures = category === 'all' || ['beam', 'wash', 'blinder', 'strobe', 'laser', 'co2', 'smoke', 'hazer'].includes(category);
   if (includeFixtures) {
-    result.fixtures = EQUIPMENT_CATALOG
+    result.fixtures = (EQUIPMENT_CATALOG as readonly CatalogEntry[])
       .filter((e) => e.category !== 'led_panel')
       .filter((e) => category === 'all' || e.renderTypes.includes(category as never) || e.category === category)
       .map((e) => ({

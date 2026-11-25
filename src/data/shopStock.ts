@@ -4,6 +4,8 @@ import {
   EQUIPMENT_CATALOG,
   getCatalogEntry,
   LEGACY_DEFAULTS,
+  type CatalogCategory,
+  type CatalogEntry,
   type HardwareType,
 } from './equipmentCatalog';
 import type { NativeStage } from './showFile';
@@ -161,6 +163,86 @@ const TOURING_STOCK: Readonly<Record<string, number>> = {
   'kvant-spectrum': 4,
 };
 
+type StockTier = 'club' | 'regional' | 'touring';
+
+const TIER_CATEGORY_DEFAULTS: Readonly<Record<StockTier, Readonly<Record<CatalogCategory, number>>>> = {
+  club: {
+    beam: 8,
+    spot: 4,
+    profile: 4,
+    wash: 8,
+    led_par: 16,
+    led_batten: 6,
+    strobe: 6,
+    blinder: 4,
+    followspot: 1,
+    led_panel: 48,
+    hazer: 2,
+    fogger: 2,
+    co2_jet: 4,
+    laser: 2,
+  },
+  regional: {
+    beam: 24,
+    spot: 12,
+    profile: 12,
+    wash: 20,
+    led_par: 32,
+    led_batten: 16,
+    strobe: 16,
+    blinder: 12,
+    followspot: 2,
+    led_panel: 140,
+    hazer: 4,
+    fogger: 4,
+    co2_jet: 8,
+    laser: 4,
+  },
+  touring: {
+    beam: 48,
+    spot: 32,
+    profile: 24,
+    wash: 40,
+    led_par: 64,
+    led_batten: 32,
+    strobe: 32,
+    blinder: 24,
+    followspot: 4,
+    led_panel: 320,
+    hazer: 8,
+    fogger: 8,
+    co2_jet: 16,
+    laser: 8,
+  },
+};
+
+function defaultStockForEntry(entry: CatalogEntry, tier: StockTier): number {
+  if (entry.category === 'laser') {
+    const powerW = entry.laser?.opticalPowerW ?? 0;
+    if (tier === 'club') return powerW <= 3 ? 2 : 0;
+    if (tier === 'regional') return powerW <= 15 ? 4 : 0;
+    return powerW >= 25 ? 4 : 8;
+  }
+  return TIER_CATEGORY_DEFAULTS[tier][entry.category];
+}
+
+function mergeStockWithDefaults(
+  overrides: Readonly<Record<string, number>>,
+  tier: StockTier,
+): Readonly<Record<string, number>> {
+  const merged: Record<string, number> = {};
+  for (const entry of EQUIPMENT_CATALOG) {
+    merged[entry.id] = Object.hasOwn(overrides, entry.id)
+      ? overrides[entry.id]
+      : defaultStockForEntry(entry, tier);
+  }
+  return Object.freeze(merged);
+}
+
+const RESOLVED_CLUB_STOCK = mergeStockWithDefaults(CLUB_STOCK, 'club');
+const RESOLVED_REGIONAL_STOCK = mergeStockWithDefaults(REGIONAL_STOCK, 'regional');
+const RESOLVED_TOURING_STOCK = mergeStockWithDefaults(TOURING_STOCK, 'touring');
+
 export const SHOP_PRESETS: readonly ShopPresetMeta[] = [
   {
     id: 'unlimited',
@@ -176,7 +258,7 @@ export const SHOP_PRESETS: readonly ShopPresetMeta[] = [
     shortName: 'Local Club Shop',
     description: 'Small-venue inventory: 4–12 fixtures per model, compact lasers only.',
     illustrative: true,
-    stock: CLUB_STOCK,
+    stock: RESOLVED_CLUB_STOCK,
   },
   {
     id: 'regional',
@@ -184,7 +266,7 @@ export const SHOP_PRESETS: readonly ShopPresetMeta[] = [
     shortName: 'Regional House',
     description: 'Mid-size theatre & festival inventory: 12–24 fixtures per model.',
     illustrative: true,
-    stock: REGIONAL_STOCK,
+    stock: RESOLVED_REGIONAL_STOCK,
   },
   {
     id: 'touring',
@@ -192,14 +274,14 @@ export const SHOP_PRESETS: readonly ShopPresetMeta[] = [
     shortName: 'Arena Vendor',
     description: 'Large touring inventory: 24–48 moving lights, 300+ LED tiles, Class 4 lasers.',
     illustrative: true,
-    stock: TOURING_STOCK,
+    stock: RESOLVED_TOURING_STOCK,
   },
 ];
 
 export const DEFAULT_SHOP_STATE: ShopStockState = {
   profileId: 'unlimited',
   allowOverStock: false,
-  customStock: { ...REGIONAL_STOCK },
+  customStock: { ...RESOLVED_REGIONAL_STOCK },
 };
 
 export function getShopPreset(id: ShopProfileId): ShopPresetMeta | undefined {
@@ -212,7 +294,7 @@ export function shopProfileLabel(state: ShopStockState): string {
 }
 
 export function createCustomStockFrom(presetId: Exclude<ShopProfileId, 'unlimited' | 'custom'> = 'regional'): Record<string, number> {
-  const source = getShopPreset(presetId)?.stock ?? REGIONAL_STOCK;
+  const source = getShopPreset(presetId)?.stock ?? RESOLVED_REGIONAL_STOCK;
   const out: Record<string, number> = Object.create(null);
   for (const entry of EQUIPMENT_CATALOG) {
     out[entry.id] = source[entry.id] ?? 0;
@@ -301,7 +383,7 @@ export function resolveShopStock(state: ShopStockState): Map<string, number> | n
   const source =
     state.profileId === 'custom'
       ? state.customStock
-      : getShopPreset(state.profileId)?.stock ?? REGIONAL_STOCK;
+      : getShopPreset(state.profileId)?.stock ?? RESOLVED_REGIONAL_STOCK;
   for (const entry of EQUIPMENT_CATALOG) {
     const qty = clampStockInt(source[entry.id]);
     map.set(entry.id, qty ?? 0);

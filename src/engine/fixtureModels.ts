@@ -409,10 +409,39 @@ export const MODEL_SPECS: Readonly<Record<string, ModelSpec>> = {
   },
 };
 
+/** Nearest existing 3D model spec reused by expanded catalogue entries for each body family. */
+export const FAMILY_DEFAULT_MODEL_ID: Readonly<Record<CatalogBodyFamily, string>> = {
+  'moving-beam': 'claypaky-sharpy',
+  'moving-spot': 'robe-bmfl-spot',
+  'moving-profile': 'robe-t1-profile',
+  'moving-wash': 'martin-mac-aura-xb',
+  followspot: 'robe-bmfl-followspot',
+  'led-par': 'etc-colorsource-par',
+  'led-batten': 'glp-impression-x4-bar-20',
+  'strobe-panel': 'glp-jdc1',
+  'blinder-4lite': 'chauvet-strike-4',
+  'led-panel': 'roe-bp2-v2',
+  'hazer-box': 'mdg-atme',
+  'fogger-box': 'martin-jem-zr45',
+  'co2-jet': 'magicfx-co2jet-ii',
+  'laser-head': 'kvant-clubmax',
+};
+
 /** Resolve the physical ModelSpec for a fixture/FX group. Legacy groups keep HEAD_PIVOT for exact aim compatibility. */
 export function resolveModelSpec(type: HardwareType, catalogId?: string): ModelSpec {
   const known = catalogId && Object.hasOwn(MODEL_SPECS, catalogId) ? MODEL_SPECS[catalogId] : undefined;
   if (known) return known;
+
+  const entry = getCatalogEntry(catalogId);
+  if (entry) {
+    const familyModelId = FAMILY_DEFAULT_MODEL_ID[entry.body];
+    if (Object.hasOwn(MODEL_SPECS, familyModelId)) {
+      const base = MODEL_SPECS[familyModelId];
+      return entry.motion && entry.motion !== base.motion
+        ? { ...base, motion: entry.motion }
+        : base;
+    }
+  }
 
   const fallbackId = LEGACY_DEFAULTS[type];
   const baseSpec = Object.hasOwn(MODEL_SPECS, fallbackId) ? MODEL_SPECS[fallbackId] : MODEL_SPECS['claypaky-sharpy'];
@@ -1145,7 +1174,11 @@ export class FixtureModelCache {
   }
 }
 
-/** Verify every catalogId resolves cleanly (helper for diagnostics/tests). */
+/** Verify every catalogId resolves cleanly (either directly in MODEL_SPECS or via its body-family default). */
 export function hasModelSpecForCatalogId(id: string): boolean {
-  return Boolean(getCatalogEntry(id) && Object.hasOwn(MODEL_SPECS, id));
+  const entry = getCatalogEntry(id);
+  if (!entry) return false;
+  if (Object.hasOwn(MODEL_SPECS, id)) return true;
+  const familyModelId = FAMILY_DEFAULT_MODEL_ID[entry.body];
+  return Boolean(familyModelId && Object.hasOwn(MODEL_SPECS, familyModelId));
 }

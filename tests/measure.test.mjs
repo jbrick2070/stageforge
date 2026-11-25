@@ -829,3 +829,160 @@ test('QA Pass 1 regressions: C1 sticky inhibit, H1 static beam clearance, H2 cue
     'R4: unknown rigging pods must change rigging rowFingerprint',
   );
 });
+
+test('Sprint 14b laser NOHD safety property: unverified divergence/diameter or null aperture always yields unknown hazard & pre-flight fail', async () => {
+  const { EQUIPMENT_CATALOG, formatCatalogSpecBadges, getCatalogEntry, isFieldUnverified } =
+    await vite.ssrLoadModule('/src/data/equipmentCatalog.ts');
+  const { ildaScanTangents } = await vite.ssrLoadModule('/src/data/laserAim.ts');
+  const { createBlankDesign } = await vite.ssrLoadModule('/src/data/stageDesign.ts');
+  const { INITIAL_SHOW_STATE } = presetsMod;
+
+  const lasers = EQUIPMENT_CATALOG.filter((e) => e.category === 'laser');
+  assert.ok(lasers.length >= 15, '6 original + 9 expanded lasers');
+
+  // Explicit expected list of expanded lasers that MUST yield unknown NOHD (QA H1 & L4 — never derived from implementation).
+  const expectedExpandedUnknownIds = new Set([
+    'laser-arena-01',   // < 1.1 mrad upper-bound divergence (QA H1)
+    'laser-club-01',    // divergence convention unstated
+    'laser-club-03',    // < 2 mrad divergence & < 5 mm diameter upper bounds
+    'laser-outdoor-01', // beamDiameterMm: null + < 1.4 mrad divergence
+    'laser-outdoor-02', // divergence full/half angle unstated
+    'laser-outdoor-03', // divergence full/half angle unstated
+  ]);
+  const expectedExpandedComputedIds = new Set([
+    'laser-club-02',
+    'laser-tour-01',
+    'laser-tour-02',
+  ]);
+
+  const actualExpandedUnknownIds = [];
+  for (const entry of lasers) {
+    const rig = createBlankDesign();
+    rig.trussPods = [{
+      id: 'p-las',
+      name: 'Laser Bar',
+      shape: 'box',
+      width: 6,
+      x: 0,
+      baseY: 6,
+      z: -2,
+      rotationY: 0,
+      motorized: false,
+      motorMinY: 6,
+      motorMaxY: 6,
+      fixtures: [{
+        id: 'f-las',
+        type: 'laser',
+        modelName: `${entry.manufacturer} ${entry.model}`,
+        catalogId: entry.id,
+        dmxMode: entry.modes[0].name,
+        dmxChannels: entry.modes[0].channels,
+        count: 1,
+        dmxUniverse: 2,
+        dmxStartChannel: 1,
+      }],
+    }];
+    const laserShow = {
+      ...INITIAL_SHOW_STATE,
+      laser: { ...INITIAL_SHOW_STATE.laser, enabled: true, audienceScan: false, pitch: -0.35 },
+    };
+    const { zones } = evaluateLaserZones(rig, laserShow.laser);
+    assert.equal(zones.length, 1, `${entry.id} evaluates 1 laser zone`);
+    const zone = zones[0];
+    const pf = evaluatePreflight({ rig, cues: [], showState: laserShow, acks: EMPTY_PREFLIGHT_ACKS });
+    const laserRow = pf.rows.find((r) => r.kind === 'laser');
+
+    const isExpanded = expectedExpandedUnknownIds.has(entry.id) || expectedExpandedComputedIds.has(entry.id);
+    const mustBeUnknown =
+      isExpanded
+        ? expectedExpandedUnknownIds.has(entry.id)
+        : isFieldUnverified(entry, 'laser.opticalPowerW') ||
+          isFieldUnverified(entry, 'laser.divergenceMrad') ||
+          isFieldUnverified(entry, 'laser.beamDiameterMm') ||
+          entry.laser.divergenceMrad === undefined ||
+          entry.laser.beamDiameterMm === null;
+
+    if (mustBeUnknown) {
+      assert.equal(zone.nohd.status, 'unknown', `${entry.id} unverified/null NOHD field must yield unknown`);
+      assert.equal(zone.nohd.canDrawZone, false, `${entry.id} unknown NOHD must not draw zone`);
+      assert.equal(laserRow?.outcome, 'fail', `${entry.id} unknown NOHD must fail pre-flight`);
+      assert.equal(laserRow?.requiresLaserInhibit, true, `${entry.id} unknown NOHD requires laser inhibit`);
+      if (isExpanded) actualExpandedUnknownIds.push(entry.id);
+    } else {
+      assert.ok(zone.nohd.status === 'computed' || zone.nohd.status === 'assumed', `${entry.id} verified laser computes NOHD`);
+      assert.equal(zone.nohd.canDrawZone, true);
+    }
+
+    // QA M2: lasers with omitted maxScanAngleDeg surface pre-flight warning and use conservative 60 deg ILDA clearance.
+    if (entry.laser.maxScanAngleDeg === undefined) {
+      assert.ok(
+        laserRow?.findings.some((f) => f.code === 'laser_scan_angle_unknown'),
+        `${entry.id} omitted maxScanAngleDeg must emit laser_scan_angle_unknown warning`,
+      );
+    }
+
+    // Optional maxScanAngleDeg (omitted on two expanded lasers) evaluates cleanly without NaN.
+    const tangents = ildaScanTangents(entry.laser.maxScanAngleDeg, 0.8, 0.6);
+    assert.ok(Number.isFinite(tangents.tanHalfX) && tangents.tanHalfX > 0, `${entry.id} valid scan tangents`);
+  }
+
+  assert.deepEqual(
+    actualExpandedUnknownIds.sort(),
+    [...expectedExpandedUnknownIds].sort(),
+    'all 6 expanded unknown-NOHD lasers (including QA H1 laser-arena-01) produce unknown status',
+  );
+
+  // QA M2 regression: evaluateLaserSafety evaluates unknown maxScanAngleDeg conservatively at 60 deg (wider than 45 deg).
+  const { evaluateLaserSafety } = laserSafetyMod;
+  const wideIldaClip = {
+    name: 'wide.ild',
+    frames: [],
+    bounds: { minX: -1, maxX: 1, minY: -1, maxY: 0.5, hasLitPoints: true },
+    totalPoints: 100,
+    maxPointsPerFrame: 100,
+    hasStationaryFrame: false,
+  };
+  const makeLaserRig = (catalogId) => {
+    const r = createBlankDesign();
+    const e = getCatalogEntry(catalogId);
+    r.trussPods = [{
+      id: 'p-l', name: 'L', shape: 'box', width: 6, x: 0, baseY: 6.5, z: -2, rotationY: 0,
+      motorized: false, motorMinY: 6.5, motorMaxY: 6.5,
+      fixtures: [{ id: 'f-l', type: 'laser', modelName: e.model, catalogId, dmxMode: e.modes[0].name, dmxChannels: e.modes[0].channels, count: 1, dmxUniverse: 2, dmxStartChannel: 1 }],
+    }];
+    return r;
+  };
+  const unknownAngleSafety = evaluateLaserSafety(makeLaserRig('laser-arena-01'), { ...INITIAL_SHOW_STATE.laser, enabled: true, pitch: -0.05, spreadX: 1, spreadY: 1, rotation: 0 }, { ildaClip: wideIldaClip });
+  const sixtyDegSafety = evaluateLaserSafety(makeLaserRig('laser-tour-01'), { ...INITIAL_SHOW_STATE.laser, enabled: true, pitch: -0.05, spreadX: 1, spreadY: 1, rotation: 0 }, { ildaClip: wideIldaClip });
+  assert.equal(
+    unknownAngleSafety.projectors[0].minClearanceM,
+    sixtyDegSafety.projectors[0].minClearanceM,
+    'QA M2: unknown maxScanAngleDeg matches conservative 60 deg clearance envelope',
+  );
+
+  // QA M6 regression: omitted beamDiameterMm with apertureUnverified: true must yield unknown (not assumed 5 mm).
+  const unvOmittedAperture = computeLaserNohd({
+    opticalPowerW: 5,
+    divergenceMrad: 1.0,
+    beamDiameterMm: undefined,
+    apertureUnverified: true,
+  });
+  assert.equal(unvOmittedAperture.status, 'unknown', 'QA M6: apertureUnverified must override assumed-5mm fallback');
+  assert.equal(unvOmittedAperture.canDrawZone, false);
+
+  // laser-outdoor-01 has beamDiameterMm: null, so it stays unknown on its own merits even if divergence were verified.
+  const triton = getCatalogEntry('laser-outdoor-01');
+  assert.equal(triton.laser.beamDiameterMm, null);
+  const tritonNohdOnlyAperture = computeLaserNohd({
+    opticalPowerW: triton.laser.opticalPowerW,
+    divergenceMrad: triton.laser.divergenceMrad,
+    beamDiameterMm: triton.laser.beamDiameterMm,
+  });
+  assert.equal(tritonNohdOnlyAperture.status, 'unknown');
+  assert.equal(tritonNohdOnlyAperture.canDrawZone, false);
+
+  // laser-arena-01 flags laser.laserClass as unverified and formatCatalogSpecBadges reflects it.
+  const arenaLaser = getCatalogEntry('laser-arena-01');
+  const classBadge = formatCatalogSpecBadges(arenaLaser).find((b) => /^Class /.test(b.text));
+  assert.equal(classBadge?.unverified, true, 'unverified laser.laserClass surfaces ? badge');
+});

@@ -792,3 +792,45 @@ test('QA regression (M6): computeLedCabinetDemand uses authored main-led wall su
   const inv = computeInventory(rig, stage, clubShop);
   assert.equal(inv.shortages.filter((s) => s.stockKey === 'roe-bp2-v2').length, 0);
 });
+
+test('Sprint 14b shop stock defaults preserve all 34 legacy counts and populate every expanded entry', () => {
+  const club = SHOP_PRESETS.find((p) => p.id === 'club').stock;
+  const regional = SHOP_PRESETS.find((p) => p.id === 'regional').stock;
+  const touring = SHOP_PRESETS.find((p) => p.id === 'touring').stock;
+
+  // Spot-check original 34 literal counts stay byte-exact.
+  assert.equal(club['claypaky-sharpy'], 8);
+  assert.equal(club['kvant-clubmax'], 0);
+  assert.equal(club['roe-bp2-v2'], 48);
+  assert.equal(regional['kvant-clubmax'], 4);
+  assert.equal(regional['kvant-spectrum'], 0);
+  assert.equal(touring['kvant-spectrum'], 4);
+  assert.equal(touring['roe-cb5'], 300);
+
+  // Every new Sprint 14b entry has > 0 stock in Touring; high-power lasers (> 3 W) stay 0 in Club.
+  for (const entry of EQUIPMENT_CATALOG.slice(34)) {
+    assert.ok(touring[entry.id] > 0, `${entry.id} has positive touring stock`);
+    assert.ok(Number.isInteger(regional[entry.id]) && regional[entry.id] >= 0, `${entry.id} valid regional stock`);
+    if (entry.category === 'laser' && entry.laser.opticalPowerW > 3) {
+      assert.equal(club[entry.id], 0, `high-power laser ${entry.id} has 0 club stock`);
+    }
+    if (entry.category === 'laser' && entry.laser.opticalPowerW <= 3) {
+      assert.ok(club[entry.id] > 0, `compact laser ${entry.id} has positive club stock`);
+    }
+  }
+
+  // Legacy 34-key persisted customStock parses cleanly and seeds the 50 new IDs from Regional defaults.
+  const legacyCustom = {};
+  for (const entry of EQUIPMENT_CATALOG.slice(0, 34)) {
+    legacyCustom[entry.id] = entry.id === 'claypaky-sharpy' ? 12 : 3;
+  }
+  const parsed = parseShopStockState(JSON.stringify({
+    profileId: 'custom',
+    allowOverStock: false,
+    customStock: legacyCustom,
+  }));
+  assert.equal(parsed.profileId, 'custom');
+  assert.equal(parsed.customStock['claypaky-sharpy'], 12, 'preserves legacy saved custom qty');
+  assert.equal(parsed.customStock['hazer-water-01'], regional['hazer-water-01'], 'seeds new IDs from regional default');
+  assert.ok(parsed.customStock['profile-compact-01'] > 0, 'new expanded entries are non-zero in migrated custom shop');
+});

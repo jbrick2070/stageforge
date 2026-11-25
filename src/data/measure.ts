@@ -150,7 +150,17 @@ export function computeLaserNohd(input: LaserNohdInput): LaserNohdResult {
 
   let apertureMm: number;
   let assumedAperture = false;
-  if (beamDiameterMm === undefined) {
+  if (apertureUnverified) {
+    return {
+      status: 'unknown',
+      nohdM: null,
+      nohdPointSourceM: null,
+      apertureMm: null,
+      assumedAperture: false,
+      canDrawZone: false,
+      reason: 'Cannot assess: unverified aperture beam diameter.',
+    };
+  } else if (beamDiameterMm === undefined) {
     if (!allowAssumedAperture) {
       return {
         status: 'unknown',
@@ -165,7 +175,6 @@ export function computeLaserNohd(input: LaserNohdInput): LaserNohdResult {
     apertureMm = DEFAULT_ASSUMED_APERTURE_MM;
     assumedAperture = true;
   } else if (
-    apertureUnverified ||
     beamDiameterMm === null ||
     !Number.isFinite(beamDiameterMm) ||
     beamDiameterMm <= 0

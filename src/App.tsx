@@ -1160,6 +1160,14 @@ export const App: React.FC = () => {
   const stopDeskPlayback = () => {
     setFollow(null);
     followInitiatedByAiRef.current = false;
+    // Disarm Auto-LD unconditionally even when no recorded take is running so stopping demo
+    // playback never enters the automatic cue-cycling branch (Codex review-04 R4).
+    directorArmed.current = false;
+    if (autoDirRef.current) {
+      engineRef.current?.releaseDirector(true);
+      autoDirRef.current = false;
+      setShowState(s => (s.autoDirector ? { ...s, autoDirector: false } : s));
+    }
     // Call timeline.stop() unconditionally (not gated on React `mode` state which can lag a render; QA M4).
     timelineRef.current.stop();
     replaying.current = false;

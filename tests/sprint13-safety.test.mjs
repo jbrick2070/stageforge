@@ -727,8 +727,9 @@ test('QA M-3 & M-4: legacy full snapshots preserve omitted ShowState fields, and
   assert.equal(Object.hasOwn(applied, 'movingGroups'), false, 'full snapshot without movingGroups clears stale movingGroups');
   assert.equal(Object.hasOwn(applied, 'focusMarkId'), false, 'full snapshot without focusMarkId clears stale focusMarkId');
 
-  // Codex review-03 Previous R5 regression: an already-saved ambiguous 4-subsystem delta `{ laser, motors, atmo, led }`
-  // without full-snapshot scalar fields MUST preserve unchanged optional fields (`movingGroups`, `focusMarkId`, `audioMap`).
+  // Codex review-03 Previous R5 & review-04 R3 regressions:
+  // Both a 4-subsystem delta AND an historical 8-key captured-cue delta (`masterDimmer`, `primaryColor`,
+  // `beamIntensity`, `movementMode`, `laser`, `motors`, `atmo`, `led`) MUST preserve unchanged optional fields.
   const savedFourSubsystemDelta = {
     laser: structuredClone(baseLook.laser),
     motors: structuredClone(baseLook.motors),
@@ -740,6 +741,23 @@ test('QA M-3 & M-4: legacy full snapshots preserve omitted ShowState fields, and
   assert.deepEqual(afterSavedDelta.movingGroups, liveWithMap.movingGroups, 'saved 4-subsystem delta must preserve movingGroups');
   assert.equal(afterSavedDelta.focusMarkId, 'mark-center', 'saved 4-subsystem delta must preserve focusMarkId');
   assert.equal(afterSavedDelta.audioMap?.mappings?.length, 1, 'saved 4-subsystem delta must preserve audioMap');
+
+  const historicalEightKeyDelta = {
+    masterDimmer: 0.75,
+    primaryColor: '#ff0055',
+    beamIntensity: 0.85,
+    movementMode: 'circle',
+    laser: structuredClone(baseLook.laser),
+    motors: structuredClone(baseLook.motors),
+    atmo: structuredClone(baseLook.atmo),
+    led: structuredClone(baseLook.led),
+  };
+  const afterEightKey = cueLookMod.applyTimelineLookPatch(liveWithMap, JSON.parse(JSON.stringify(historicalEightKeyDelta)));
+  assert.equal(afterEightKey.masterDimmer, 0.75);
+  assert.equal(afterEightKey.primaryColor, '#ff0055');
+  assert.deepEqual(afterEightKey.movingGroups, liveWithMap.movingGroups, 'R3: 8-key delta must preserve movingGroups');
+  assert.equal(afterEightKey.focusMarkId, 'mark-center', 'R3: 8-key delta must preserve focusMarkId');
+  assert.equal(afterEightKey.audioMap?.mappings?.length, 1, 'R3: 8-key delta must preserve audioMap');
 
   // M-4: legacy cue with masterDimmer + motors (no led/atmo) still replaces podTargets (captured=true) AND preserves live audioMap!
   const withPodTarget = {
@@ -1145,17 +1163,21 @@ test('Codex review-03 R1 regression: rapid 50 ms strobe press/release cycles can
     id: 'par-1ch',
     type: 'wash',
     catalogId: 'etc-colorsource-par',
-    dmxModeName: '1-Ch',
+    dmxMode: '1-Ch',
+    dmxChannels: 1,
     count: 1,
     dmxUniverse: 1,
     dmxStartChannel: 1,
   });
+  assert.equal(parClass.status, 'implemented', 'R5: ETC ColorSource PAR 1-Ch must classify as implemented physical personality');
   const physBuf = new Uint8Array(512);
   const simBuf = new Uint8Array(512);
 
   // Alternate 50 ms strobe bump held / 50 ms released across 2.0 seconds at 10 ms steps.
   const dt = 0.01;
   const risingEdgeTimesMs = [];
+  let maxDeliveredByte = 0;
+  let minDeliveredByte = 255;
   let prevBright = true; // starts steady at 0.9 * 255 = 230
   for (let step = 0; step < 200; step++) {
     const tMs = step * 10;
@@ -1163,7 +1185,8 @@ test('Codex review-03 R1 regression: rapid 50 ms strobe press/release cycles can
     const effectiveStrobe = held ? 0.92 : 0;
     audioMod.evaluateAudioModulation(look, metrics, state, dt, frame);
     const combined = audioMod.stepCombinedStrobeGate(state, effectiveStrobe, tMs / 1000, false);
-    const finalInt = Math.max(0, Math.min(1, look.washIntensity * look.masterDimmer * combined.gate));
+    const deliveredGate = audioMod.stepDeliveredStrobeGate(state, 'wash', combined.gate, false);
+    const finalInt = Math.max(0, Math.min(1, look.washIntensity * look.masterDimmer * deliveredGate));
     physBuf.fill(0);
     physicalDmx.writePhysicalUnitBytes(physBuf, simBuf, 1, 1, parClass, {
       blackout: false,
@@ -1173,12 +1196,19 @@ test('Codex review-03 R1 regression: rapid 50 ms strobe press/release cycles can
       b: 1,
     });
     const dmxByte = physBuf[0];
+    if (dmxByte > maxDeliveredByte) maxDeliveredByte = dmxByte;
+    if (dmxByte < minDeliveredByte) minDeliveredByte = dmxByte;
     const bright = dmxByte >= 180;
     if (bright && !prevBright) {
       risingEdgeTimesMs.push(state.clockMs);
     }
     prevBright = bright;
   }
+
+  // R5: verify actual nonzero physical bright & dark DMX bytes were delivered (not all-zero simulation-only).
+  assert.ok(maxDeliveredByte >= 200, `R5: expected nonzero bright physical DMX >= 200, got ${maxDeliveredByte}`);
+  assert.ok(minDeliveredByte <= 30, `R5: expected dark physical trough <= 30, got ${minDeliveredByte}`);
+  assert.ok(risingEdgeTimesMs.length >= 2, `R5: expected >= 2 real physical bright transitions over 2 s, got ${risingEdgeTimesMs.length}`);
 
   // Over any rolling 1.0 s window, delivered physical bright rising edges must stay <= 3/s.
   for (let i = 0; i < risingEdgeTimesMs.length; i++) {
@@ -1261,4 +1291,82 @@ test('Codex review-03 R1 regression: rapid 50 ms strobe press/release cycles can
     const inWin = mixedEdges.filter((t) => t >= mixedEdges[i] && t < mixedEdges[i] + 1000);
     assert.ok(inWin.length <= 3, `mixed audio+manual strobe exceeded 3 edges/s: ${JSON.stringify(mixedEdges)}`);
   }
+
+  // Codex review-04 R1 regression: alternating audioReactive on/off every 50 ms on an ETC ColorSource PAR 1-Ch
+  // with an enabled energy->wash strobe mapping and silent audio must stay <= 3 physical rising edges per rolling 1 s.
+  const sR1 = audioMod.createAudioModulationState();
+  const fR1 = audioMod.createAudioModulationFrame();
+  const washMappedLook = {
+    ...look,
+    strobeRate: 0,
+    audioMap: {
+      mappings: [{
+        id: 'w-strobe',
+        name: 'Energy -> wash strobe',
+        enabled: true,
+        source: 'energy',
+        target: { group: 'wash', param: 'strobe' },
+        amount: 1,
+        attackMs: 0,
+        releaseMs: 10,
+        threshold: 0.2,
+        curve: 'linear',
+      }],
+    },
+  };
+  const r1Edges = [];
+  let r1MaxByte = 0;
+  let r1MinByte = 255;
+  let r1PrevBright = true;
+  for (let step = 0; step < 200; step++) {
+    const tMs = step * 10;
+    const reactiveOn = Math.floor(tMs / 50) % 2 === 0;
+    const curLook = { ...washMappedLook, audioReactive: reactiveOn };
+    audioMod.evaluateAudioModulation(curLook, { ...metrics, playing: true, energy: 0 }, sR1, 0.01, fR1);
+    const comb = audioMod.stepCombinedStrobeGate(sR1, 0, tMs / 1000, false);
+    const rawGroupGate = fR1.active && fR1.wash.strobe.mapped ? (fR1.wash.strobe.gateOn ? 1.35 : 0.06) : comb.gate;
+    const deliveredGate = audioMod.stepDeliveredStrobeGate(sR1, 'wash', rawGroupGate, false);
+    const finalInt = Math.max(0, Math.min(1, curLook.washIntensity * curLook.masterDimmer * deliveredGate));
+    physBuf.fill(0);
+    physicalDmx.writePhysicalUnitBytes(physBuf, simBuf, 1, 1, parClass, {
+      blackout: false,
+      dimmer: finalInt,
+      r: 1,
+      g: 1,
+      b: 1,
+    });
+    const dmxByte = physBuf[0];
+    if (dmxByte > r1MaxByte) r1MaxByte = dmxByte;
+    if (dmxByte < r1MinByte) r1MinByte = dmxByte;
+    const bright = dmxByte >= 180;
+    if (bright && !r1PrevBright) r1Edges.push(sR1.clockMs);
+    r1PrevBright = bright;
+  }
+  assert.ok(r1MaxByte >= 200, `R1: expected bright physical byte >= 200, got ${r1MaxByte}`);
+  assert.ok(r1MinByte <= 30, `R1: expected dark physical trough <= 30, got ${r1MinByte}`);
+  for (let i = 0; i < r1Edges.length; i++) {
+    const inWin = r1Edges.filter((t) => t >= r1Edges[i] && t < r1Edges[i] + 1000);
+    assert.ok(inWin.length <= 3, `R1: toggling audioReactive produced ${inWin.length} physical flashes/s: ${JSON.stringify(r1Edges)}`);
+  }
+
+  // Codex review-04 R2 regression: manual strobe release while an audio beam-strobe mapping pulses every 340 ms
+  // must restore the unmapped wash gate cleanly to 1.0 instead of staying dimmed at 0.06 forever.
+  const sR2 = audioMod.createAudioModulationState();
+  const fR2 = audioMod.createAudioModulationFrame();
+  let washRestoredAtMs = -1;
+  for (let step = 0; step < 300; step++) {
+    const tMs = step * 10;
+    const energy = (tMs % 340) < 10 ? 1.0 : 0;
+    const manualStrobe = tMs < 100 ? 0.92 : 0;
+    audioMod.evaluateAudioModulation(mappedLook, { ...metrics, playing: true, energy }, sR2, 0.01, fR2);
+    const comb = audioMod.stepCombinedStrobeGate(sR2, manualStrobe, tMs / 1000, false);
+    const deliveredWash = audioMod.stepDeliveredStrobeGate(sR2, 'wash', comb.gate, false);
+    if (tMs >= 100 && deliveredWash >= 0.99 && washRestoredAtMs < 0) {
+      washRestoredAtMs = tMs;
+    }
+  }
+  assert.ok(
+    washRestoredAtMs >= 100 && washRestoredAtMs <= 800,
+    `R2: manual strobe release must restore unmapped wash gate within 800 ms, got ${washRestoredAtMs}`,
+  );
 });

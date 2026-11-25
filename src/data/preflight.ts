@@ -3,6 +3,7 @@ import type { IldaClip } from './ilda';
 import type { NativeStage } from './showFile';
 import { formatCsv, type CsvValue } from './csv';
 import { buildDmxPatch } from './dmxPatch';
+import { getCatalogEntry } from './equipmentCatalog';
 import { classifyPhysicalGroup, GENERIC_SIMULATED_LABEL, SIMULATION_ONLY_LABEL } from '../dmx/physicalDmx';
 import { computePowerReport, type PowerReport } from './powerReport';
 import { evaluateRigLoads, RIGGING_DISCLAIMER, type RigLoadsReport } from './rigLoads';
@@ -725,6 +726,15 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       });
       outcome = 'fail';
       requiresLaserInhibit = true;
+    }
+
+    const laserEntry = getCatalogEntry(zone.catalogId);
+    if (laserEntry?.laser && laserEntry.laser.maxScanAngleDeg === undefined) {
+      findings.push({
+        code: 'laser_scan_angle_unknown',
+        outcome: 'warn',
+        message: 'Maximum scan angle is not stated on the datasheet; ILDA audience clearance is evaluated conservatively at 60°.',
+      });
     }
 
     // Physical DMX status for this laser group

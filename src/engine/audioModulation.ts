@@ -152,6 +152,9 @@ export interface AudioModulationState {
   clockMs: number;
   lastGlobalStrobeEdgeMs: number;
   manualStrobeGate: number;
+  deliveredBeamGate: number;
+  deliveredWashGate: number;
+  deliveredBarGate: number;
   slots: AudioFollowerSlot[];
   manualStrobe: StrobeGateState;
   beamStrobe: StrobeGateState;
@@ -332,6 +335,9 @@ export function createAudioModulationState(): AudioModulationState {
     clockMs: 0,
     lastGlobalStrobeEdgeMs: -Infinity,
     manualStrobeGate: 1.0,
+    deliveredBeamGate: 1.0,
+    deliveredWashGate: 1.0,
+    deliveredBarGate: 1.0,
     slots,
     manualStrobe: createStrobeGateState(),
     beamStrobe: createStrobeGateState(),
@@ -365,6 +371,9 @@ export function cloneAudioModulationState(src: AudioModulationState): AudioModul
   copy.clockMs = src.clockMs;
   copy.lastGlobalStrobeEdgeMs = src.lastGlobalStrobeEdgeMs;
   copy.manualStrobeGate = src.manualStrobeGate;
+  copy.deliveredBeamGate = src.deliveredBeamGate;
+  copy.deliveredWashGate = src.deliveredWashGate;
+  copy.deliveredBarGate = src.deliveredBarGate;
   for (let i = 0; i < MAX_AUDIO_MAPPINGS; i++) {
     copy.slots[i].id = src.slots[i]?.id ?? '';
     copy.slots[i].envelope = src.slots[i]?.envelope ?? 0;
@@ -643,7 +652,11 @@ export function stepCombinedStrobeGate(
     // rapid strobe press/release cycles cannot bypass the photosensitivity ceiling (Codex R1).
     if (state.manualStrobeGate < 0.5) {
       const gateReady = tMs - state.manualStrobe.lastEdgeMs >= FLASH_REFRACTORY_MS;
-      const globalReady = tMs - state.lastGlobalStrobeEdgeMs >= FLASH_REFRACTORY_MS;
+      // Allow restoration on an already-admitted same-frame global edge (matching stepStrobeGate)
+      // so another audio-mapped group pulsing every ~340 ms cannot starve manual release forever (Codex review-04 R2).
+      const globalReady =
+        tMs === state.lastGlobalStrobeEdgeMs ||
+        tMs - state.lastGlobalStrobeEdgeMs >= FLASH_REFRACTORY_MS;
       if (!gateReady || !globalReady) {
         state.manualStrobe.limitedUntilMs = tMs + FLASH_LIMITED_HOLD_MS;
         res.gate = 0.06;
@@ -668,6 +681,49 @@ export function stepCombinedStrobeGate(
   state.manualStrobeGate = res.gate;
   res.limited = limited;
   return res;
+}
+
+/**
+ * Post-composition strobe transition limiter enforcing <= 3 bright rising edges/s across ANY source
+ * switch (toggling `audioReactive`, switching cues between mapped and unmapped strobes, releasing
+ * bumps, or mixing audio + manual gates). Zero per-frame allocations (Codex review-04 R1).
+ */
+export function stepDeliveredStrobeGate(
+  state: AudioModulationState,
+  channel: 'beam' | 'wash' | 'bar',
+  desiredGate: number,
+  blackout: boolean,
+): number {
+  if (blackout) {
+    // Preserve delivered gate across blackout so toggling blackout in a trough cannot bypass refractory.
+    return desiredGate;
+  }
+  const tMs = state.clockMs;
+  const prev =
+    channel === 'beam'
+      ? state.deliveredBeamGate
+      : channel === 'wash'
+        ? state.deliveredWashGate
+        : state.deliveredBarGate;
+  let delivered = desiredGate;
+  if (prev < 0.5 && desiredGate >= 0.5) {
+    const globalReady =
+      tMs === state.lastGlobalStrobeEdgeMs ||
+      tMs - state.lastGlobalStrobeEdgeMs >= FLASH_REFRACTORY_MS;
+    if (!globalReady) {
+      state.manualStrobe.limitedUntilMs = Math.max(
+        state.manualStrobe.limitedUntilMs,
+        tMs + FLASH_LIMITED_HOLD_MS,
+      );
+      delivered = 0.06;
+    } else {
+      state.lastGlobalStrobeEdgeMs = tMs;
+    }
+  }
+  if (channel === 'beam') state.deliveredBeamGate = delivered;
+  else if (channel === 'wash') state.deliveredWashGate = delivered;
+  else state.deliveredBarGate = delivered;
+  return delivered;
 }
 
 /**

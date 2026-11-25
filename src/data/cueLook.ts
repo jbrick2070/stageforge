@@ -30,15 +30,31 @@ export function normalizeLookAudioMap(look: ShowState): ShowState {
  * - Partial patches inherit `audioMap` when omitted, replace it when non-empty, and clear it when `{ mappings: [] }`.
  */
 export function applyTimelineLookPatch(prior: ShowState, patch: Partial<ShowState>): ShowState {
-  // Distinguish a genuine full timeline snapshot (which always carries core scalar look keys
-  // alongside the 4 subsystems, even in legacy v1-v7 shows without bpm) from an already-saved
-  // ambiguous 4-subsystem delta `{ laser, motors, atmo, led }` so unchanged optional fields survive.
+  // Distinguish a genuine full timeline snapshot (which carries the complete historical ShowState
+  // scalar field set alongside the 4 subsystems, allowing legacy v1-v7 omission of `bpm`) from
+  // partial deltas (including historical 8-key captured-cue deltas) so unchanged optional fields
+  // (`movingGroups`, `focusMarkId`, `audioMap`) survive replay and seek (Codex review-04 R3).
   const full =
     isFullLookSnapshot(patch) &&
     patch.masterDimmer !== undefined &&
-    patch.primaryColor !== undefined &&
+    patch.blackout !== undefined &&
+    patch.autoDirector !== undefined &&
+    patch.audioReactive !== undefined &&
     patch.beamIntensity !== undefined &&
-    patch.movementMode !== undefined;
+    patch.washIntensity !== undefined &&
+    patch.beamZoom !== undefined &&
+    patch.goboPrism !== undefined &&
+    patch.primaryColor !== undefined &&
+    patch.accentColor !== undefined &&
+    patch.colorSplitMode !== undefined &&
+    patch.movementMode !== undefined &&
+    patch.movementSpeed !== undefined &&
+    patch.movementSpread !== undefined &&
+    patch.manualPan !== undefined &&
+    patch.manualTilt !== undefined &&
+    patch.strobeRate !== undefined &&
+    patch.blinderLevel !== undefined &&
+    patch.bloomStrength !== undefined;
   // Always merge over `prior` so legacy v1-v7 snapshots missing required fields (e.g. bpm) never drop them to undefined,
   // while clearing optional top-level fields omitted by a full snapshot so stale live overrides cannot leak across seeks.
   const next: ShowState = { ...prior, ...patch };

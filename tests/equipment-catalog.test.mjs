@@ -13,10 +13,12 @@ after(() => compiler.close());
 
 const {
   CATALOG_BY_ID,
+  CATALOG_CATEGORY_LABELS,
   CATALOG_ID_PATTERN,
   DEFAULT_LED_PANEL_ID,
   EQUIPMENT_CATALOG,
   LEGACY_DEFAULTS,
+  catalogDisplayName,
   catalogForRenderType,
   catalogLedPanels,
   checkCatalogChannelDrift,
@@ -27,12 +29,19 @@ const {
 } = await compiler.ssrLoadModule('/src/data/equipmentCatalog.ts');
 const { addPatchedUnits, allocateDmx, buildDmxPatch, groupFootprint, repatchGroup, writeDmxChannels } =
   await compiler.ssrLoadModule('/src/data/dmxPatch.ts');
+const { dxfBlockName, symbolForHardware, symbolForLedPanel } =
+  await compiler.ssrLoadModule('/src/data/equipmentSymbols.ts');
+const { computeInventory } = await compiler.ssrLoadModule('/src/data/equipmentInventory.ts');
 const { aerialGain, catalogOptics, fixtureOptics, MAX_AERIAL_GAIN, REFERENCE_OPTICS, resolveOptics } =
   await compiler.ssrLoadModule('/src/data/fixtureOptics.ts');
+const { laserClassFor } = await compiler.ssrLoadModule('/src/data/laserSafety.ts');
 const { calculateProductionEstimate } = await compiler.ssrLoadModule('/src/data/productionEstimator.ts');
-const { FIXTURE_CATALOG, FLOOR_FX_CATALOG, RIG_TEMPLATES } = await compiler.ssrLoadModule('/src/data/presets.ts');
+const { FIXTURE_CATALOG, FLOOR_FX_CATALOG, INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } =
+  await compiler.ssrLoadModule('/src/data/presets.ts');
 const { parseRigJson } = await compiler.ssrLoadModule('/src/data/rigImport.ts');
-const { pruneInterchangeFixtureSpecs } = await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { makeShowFile, parseShowFile, pruneInterchangeFixtureSpecs } =
+  await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { buildShowPaperwork } = await compiler.ssrLoadModule('/src/data/showPaperwork.ts');
 const { createBlankDesign } = await compiler.ssrLoadModule('/src/data/stageDesign.ts');
 
 const ALL_HARDWARE_TYPES = new Set([...Object.keys(FIXTURE_CATALOG), ...Object.keys(FLOOR_FX_CATALOG)]);
@@ -145,7 +154,254 @@ test('equipment catalogue entries are unique, well-formed, sourced in docs/equip
     assert.ok(catalogForRenderType(type).length >= 1, `catalogForRenderType(${type}) non-empty`);
   }
   assert.ok(getCatalogEntry(DEFAULT_LED_PANEL_ID)?.category === 'led_panel');
-  assert.ok(catalogLedPanels().length >= 2);
+  assert.ok(catalogLedPanels().length >= 12);
+});
+
+test('Sprint 14b catalogue expansion: 84 entries, sane ranges, neutral swappable IDs, and full symbol/DXF/inventory/paperwork/show-file coverage', async () => {
+  assert.equal(EQUIPMENT_CATALOG.length, 84, '34 original + 50 Sprint 14b entries (DS-3000RGB MK5 deduped)');
+  const validCategories = new Set(Object.keys(CATALOG_CATEGORY_LABELS));
+  const originalIds = new Set(EQUIPMENT_CATALOG.slice(0, 34).map((e) => e.id));
+  assert.equal(originalIds.size, 34);
+
+  // Generic category words allowed in neutral IDs; manufacturer and distinctive model tokens are disallowed.
+  const allowedGenericTokens = new Set([
+    'hazer', 'fog', 'fogger', 'lowfog', 'co2', 'jet', 'laser', 'panel', 'profile', 'spot', 'beam',
+    'wash', 'batten', 'par', 'ellipsoidal', 'blinder', 'strobe', 'water', 'oil', 'ice',
+    'chilled', 'tour', 'stadium', 'moving', 'fixed', 'club', 'outdoor', 'indoor', 'arena',
+    'mesh', 'floor', 'compact', 'led', 'hybrid', 'tilt', 'static', 'zoom', 'single',
+  ]);
+
+  const expandedEntries = EQUIPMENT_CATALOG.slice(34);
+  assert.equal(expandedEntries.length, 50);
+
+  for (const entry of EQUIPMENT_CATALOG) {
+    assert.ok(validCategories.has(entry.category), `${entry.id} valid category ${entry.category}`);
+    assert.ok(entry.sources.length >= 1, `${entry.id} has non-empty sources`);
+    if (entry.weightKg !== undefined) {
+      assert.ok(Number.isFinite(entry.weightKg) && entry.weightKg >= 0.1 && entry.weightKg <= 500, `${entry.id} sane weightKg`);
+    }
+    if (entry.powerW !== undefined) {
+      assert.ok(Number.isFinite(entry.powerW) && entry.powerW >= 1 && entry.powerW <= 20000, `${entry.id} sane powerW`);
+    }
+    if (entry.optics) {
+      if (entry.optics.lumens !== undefined) {
+        assert.ok(Number.isFinite(entry.optics.lumens) && entry.optics.lumens >= 1 && entry.optics.lumens <= 1_000_000, `${entry.id} sane lumens`);
+      }
+      if (entry.optics.beamDeg !== undefined) {
+        assert.ok(Number.isFinite(entry.optics.beamDeg) && entry.optics.beamDeg >= 0.1 && entry.optics.beamDeg <= 179, `${entry.id} sane beamDeg`);
+      }
+      if (entry.optics.zoomDeg !== undefined) {
+        const [lo, hi] = entry.optics.zoomDeg;
+        assert.ok(Number.isFinite(lo) && Number.isFinite(hi) && lo >= 0.1 && hi <= 179 && lo < hi, `${entry.id} sane zoomDeg`);
+      }
+    }
+    if (entry.panel) {
+      assert.ok(entry.panel.pitchMm >= 0.5 && entry.panel.pitchMm <= 30, `${entry.id} sane panel pitchMm`);
+    }
+    if (entry.laser) {
+      assert.ok(entry.laser.opticalPowerW >= 0.01 && entry.laser.opticalPowerW <= 200, `${entry.id} sane laser opticalPowerW`);
+      assert.ok(entry.laser.scanSpeedKpps >= 5 && entry.laser.scanSpeedKpps <= 120, `${entry.id} sane laser kpps`);
+      if (entry.laser.maxScanAngleDeg !== undefined) {
+        assert.ok(entry.laser.maxScanAngleDeg >= 5 && entry.laser.maxScanAngleDeg <= 120, `${entry.id} sane laser scan angle`);
+      }
+      if (entry.laser.divergenceMrad !== undefined) {
+        assert.ok(entry.laser.divergenceMrad >= 0.05 && entry.laser.divergenceMrad <= 20, `${entry.id} sane laser divergence`);
+      }
+      if (entry.laser.beamDiameterMm !== undefined && entry.laser.beamDiameterMm !== null) {
+        assert.ok(entry.laser.beamDiameterMm >= 0.5 && entry.laser.beamDiameterMm <= 50, `${entry.id} sane laser beamDiameterMm`);
+      }
+      assert.equal(entry.laser.laserClass, laserClassFor(entry.laser.opticalPowerW), `${entry.id} laserClass coherent`);
+    }
+  }
+
+  // Neutral-ID swappability check for all 50 Sprint 14b entries: no manufacturer or model identifiers in IDs.
+  for (const entry of expandedEntries) {
+    const idTokens = entry.id.split('-');
+    const brandModelTokens = `${entry.manufacturer} ${entry.model}`
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 3 && !allowedGenericTokens.has(t));
+    for (const token of brandModelTokens) {
+      assert.equal(
+        idTokens.some((seg) => seg === token || (!allowedGenericTokens.has(seg) && seg.includes(token))),
+        false,
+        `expanded entry id "${entry.id}" must stay neutral (contains "${token}" from "${entry.manufacturer} ${entry.model}")`,
+      );
+    }
+    for (const seg of idTokens) {
+      if (/^\d+$/.test(seg)) {
+        assert.ok(Number(seg) >= 1 && Number(seg) <= 99, `${entry.id} numeric suffix is a small index, not a spec number`);
+      } else {
+        assert.ok(allowedGenericTokens.has(seg), `${entry.id} segment "${seg}" is a neutral role/category word`);
+      }
+    }
+  }
+
+  // Every single entry (all 84) builds plan symbol, DXF block name, inventory row, paperwork row, and round-trips through showFile.
+  for (const entry of EQUIPMENT_CATALOG) {
+    if (entry.category === 'led_panel') {
+      const sym = symbolForLedPanel(entry.id);
+      assert.ok(sym.plan.length > 0 && sym.size.w > 0 && sym.size.h > 0, `${entry.id} LED symbol`);
+      const rig = createBlankDesign();
+      rig.ledWall = {
+        enabled: true,
+        width: 4,
+        height: 3,
+        curved: false,
+        sideWings: false,
+        cabinets: {
+          cabinetId: entry.id,
+          columns: 4,
+          rows: 3,
+          widthMm: entry.panel.widthMm,
+          heightMm: entry.panel.heightMm,
+          pixelsWide: entry.panel.pixelsWide,
+          pixelsHigh: entry.panel.pixelsHigh,
+        },
+      };
+      const inv = computeInventory(rig);
+      assert.ok(inv.other.some((r) => r.catalogId === entry.id), `${entry.id} inventory LED row`);
+      const pw = buildShowPaperwork(rig, SHOW_CUES);
+      assert.ok(pw.power.totals.totalW > 0, `${entry.id} paperwork power`);
+      const reloaded = parseShowFile(JSON.stringify(makeShowFile(rig, SHOW_CUES, INITIAL_SHOW_STATE, null)));
+      assert.equal(reloaded.rig.ledWall.cabinets.cabinetId, entry.id);
+      continue;
+    }
+
+    const rt = entry.renderTypes[0];
+    const mode = entry.modes[0];
+    assert.ok(symbolForHardware(rt, entry.id).plan.length > 0, `${entry.id} plan symbol`);
+    assert.match(dxfBlockName(rt, entry.id), /^SF_[A-Z0-9_]+$/, `${entry.id} DXF block name`);
+
+    const isFloorOnly = rt === 'hazer' || rt === 'smoke' || rt === 'co2' || rt === 'floor_laser' || rt === 'floor_beam';
+    const group = {
+      id: `g-${entry.id}`,
+      type: rt,
+      modelName: catalogDisplayName(entry),
+      catalogId: entry.id,
+      dmxMode: mode.name,
+      dmxChannels: mode.channels,
+      count: 1,
+      dmxUniverse: 1,
+      dmxStartChannel: 1,
+      ...(isFloorOnly ? { x: 0, z: 0, spread: 0 } : {}),
+    };
+    const rig = isFloorOnly ? rigWith([], [group]) : rigWith([group], []);
+    const inv = computeInventory(rig);
+    assert.equal(inv.models.length, 1, `${entry.id} inventory row`);
+    assert.equal(inv.models[0].catalogId, entry.id);
+    assert.ok(inv.models[0].unitWeightKg > 0 && inv.models[0].unitPowerW > 0, `${entry.id} positive weight/power`);
+
+    const pw = buildShowPaperwork(rig, SHOW_CUES);
+    assert.equal(pw.units.length, 1, `${entry.id} paperwork unit row`);
+    assert.equal(pw.patchRows.length, 1, `${entry.id} patch sheet row`);
+    assert.equal(pw.instrumentRows.length, 1, `${entry.id} instrument schedule row`);
+
+    const parsed = parseShowFile(JSON.stringify(makeShowFile(rig, SHOW_CUES, INITIAL_SHOW_STATE, null)));
+    const parsedGroup = isFloorOnly ? parsed.rig.floorFx[0] : parsed.rig.trussPods[0].fixtures[0];
+    assert.equal(parsedGroup.catalogId, entry.id);
+    assert.equal(parsedGroup.dmxMode, mode.name);
+  }
+
+  // Omitted powerW/lumens entries fall back cleanly to estimated allowances without inventing values.
+  const noPowerProfile = getCatalogEntry('profile-tour-03');
+  assert.equal(noPowerProfile.powerW, undefined);
+  assert.equal(noPowerProfile.optics.lumens, undefined);
+  const noPowerRig = rigWith([{
+    id: 'g-np',
+    type: 'beam',
+    modelName: catalogDisplayName(noPowerProfile),
+    catalogId: noPowerProfile.id,
+    dmxMode: noPowerProfile.modes[0].name,
+    dmxChannels: noPowerProfile.modes[0].channels,
+    count: 1,
+    dmxUniverse: 1,
+    dmxStartChannel: 1,
+  }]);
+  const npInv = computeInventory(noPowerRig);
+  assert.equal(npInv.models[0].powerSource, 'allowance');
+  assert.equal(npInv.models[0].weightSource, 'datasheet');
+
+  // Legacy fixtures & all stock templates continue loading cleanly unchanged.
+  for (const fixtureFile of ['legacy-v1.stageforge.show.json', 'legacy-v2.stageforge.show.json', 'native-authoring-v3.stageforge.show.json']) {
+    const raw = await readFile(new URL(`./fixtures/${fixtureFile}`, import.meta.url), 'utf8');
+    const loaded = parseShowFile(raw);
+    assert.ok(loaded.rig.trussPods.length > 0, `${fixtureFile} loads unchanged`);
+  }
+  for (const [key, tpl] of Object.entries(RIG_TEMPLATES)) {
+    const parsed = parseRigJson(JSON.stringify(tpl));
+    assert.equal(parsed.name, tpl.name, `stock template ${key} parses unchanged`);
+  }
+});
+
+test('Sprint 14b QA regressions: dataset cross-check (H1), no layout on unverified modes (M3), and docs/equipment.md table parity', async () => {
+  const candidatesRaw = await readFile(
+    new URL('../docs/research/catalogue-candidates-2026-11-24.json', import.meta.url),
+    'utf8',
+  );
+  const candidates = JSON.parse(candidatesRaw);
+  const docs = await readFile(new URL('../docs/equipment.md', import.meta.url), 'utf8');
+
+  // M3 invariant: no catalogue DMX mode that carries a channel role `layout` may be flagged unverified.
+  for (const entry of EQUIPMENT_CATALOG) {
+    const unv = new Set(entry.unverified);
+    entry.modes.forEach((m, idx) => {
+      if (m.layout) {
+        assert.equal(
+          unv.has(`modes[${idx}].channels`),
+          false,
+          `${entry.id} mode[${idx}] (${m.name}) has layout so channels must not be unverified`,
+        );
+      }
+    });
+  }
+
+  // Dataset cross-check: every non-duplicate candidate matches catalog weight/power/laser specs,
+  // and any laser whose evidence/unverified states a '<' upper-bound divergence is flagged unverified (H1).
+  const byManufacturerModel = new Map(
+    EQUIPMENT_CATALOG.map((e) => [`${e.manufacturer.toLowerCase()}::${e.model.toLowerCase()}`, e]),
+  );
+  for (const cand of candidates) {
+    const entry = byManufacturerModel.get(`${cand.manufacturer.toLowerCase()}::${cand.model.toLowerCase()}`);
+    assert.ok(entry, `candidate "${cand.manufacturer} ${cand.model}" present in EQUIPMENT_CATALOG`);
+    if (cand.weightKg !== null) {
+      assert.equal(entry.weightKg, cand.weightKg, `${entry.id} weightKg matches research dataset`);
+    }
+    if (cand.powerW !== null && !(cand.verification?.missing ?? []).some((m) => m.startsWith('powerW='))) {
+      assert.equal(entry.powerW, cand.powerW, `${entry.id} powerW matches research dataset`);
+    }
+    if (cand.laser) {
+      assert.equal(entry.laser.opticalPowerW, cand.laser.opticalPowerW, `${entry.id} opticalPowerW matches dataset`);
+      if (cand.laser.beamDiameterMm === null) {
+        assert.equal(entry.laser.beamDiameterMm, null, `${entry.id} preserves null beamDiameterMm`);
+      }
+      const hasUpperBoundDiv =
+        /<\s*\d/.test(cand.evidence ?? '') && /mrad/i.test(cand.evidence ?? '') ||
+        (cand.unverified ?? []).some((u) => /divergence/i.test(u));
+      if (hasUpperBoundDiv && entry.id !== 'laserworld-ds-3000rgb') {
+        assert.ok(
+          entry.unverified.includes('laser.divergenceMrad'),
+          `${entry.id} upper-bound/unverified divergence must flag laser.divergenceMrad (QA H1)`,
+        );
+      }
+    }
+  }
+
+  // docs/equipment.md table row unverified column matches entry.unverified for every single entry.
+  for (const entry of EQUIPMENT_CATALOG) {
+    const rowRe = new RegExp(`^\\|\\s*\`${entry.id}\`\\s*\\|.*$`, 'm');
+    const match = docs.match(rowRe);
+    assert.ok(match, `docs/equipment.md has table row for ${entry.id}`);
+    const cols = match[0].split('|').map((s) => s.trim()).filter(Boolean);
+    const unvCol = cols[cols.length - 1];
+    if (entry.unverified.length === 0) {
+      assert.equal(unvCol, '—', `docs/equipment.md unverified column for ${entry.id} should be —`);
+    } else {
+      for (const path of entry.unverified) {
+        assert.ok(unvCol.includes(`\`${path}\``), `docs/equipment.md row for ${entry.id} lists \`${path}\``);
+      }
+    }
+  }
 });
 
 test('repatchGroup keeps address when space fits, moves when needed, rejects when full, and never merges mismatched models', () => {

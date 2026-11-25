@@ -1215,6 +1215,20 @@ test('AI bridge boots off, blocks live DMX arming, serves MCP tools/proposals/re
     const stateAfterStop = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 60, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
     expect(JSON.parse(stateAfterStop.json.result.content[0].text).cues.activeCueId).toBe('smoke-follow-a');
 
+    // Codex review-04 R4 regression: start built-in demo (enables Auto-LD with no recorded take),
+    // then send MCP `stop` -> audio stops AND Auto-LD is disarmed (`autoDirector === false`).
+    await aiPage.getByRole('button', { name: 'Play demo', exact: true }).click();
+    await expect.poll(async () => {
+      const st = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 61, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
+      return JSON.parse(st.json.result.content[0].text).audio?.playing === true;
+    }, { timeout: 5000 }).toBe(true);
+    const stopDemoRes = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 62, method: 'tools/call', params: { name: 'stop', arguments: {} } }, sid);
+    expect(stopDemoRes.json.result.isError).toBeUndefined();
+    const stateAfterDemoStop = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 63, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
+    const parsedAfterDemoStop = JSON.parse(stateAfterDemoStop.json.result.content[0].text);
+    expect(parsedAfterDemoStop.audio?.playing).toBe(false);
+    expect(parsedAfterDemoStop.look?.autoDirector).toBe(false);
+
     // 6. capture_frame returns a real decodable JPEG image block (SOI FF D8 FF).
     const capRes = await postMcp(aiPort, token, {
       jsonrpc: '2.0',

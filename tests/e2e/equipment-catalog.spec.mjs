@@ -116,3 +116,35 @@ test('select a real catalogue moving head, LED panel preset, verify DMX warning 
   await expect(page.getByRole('button', { name: /Choose equipment model for Robe MegaPointe/ }).first()).toContainText('39 ch');
   await expect(page.getByRole('combobox', { name: 'Panel model' })).toHaveValue('roe-bp2-v2');
 });
+
+test('expanded Sprint 14b catalogue works on a 390px phone picker and 12-panel LED cabinet selector', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Rig builder', exact: true }).click();
+  await page.getByRole('button', { name: /Club Stage \(300 Cap\)/ }).click();
+
+  // Open equipment picker on a beam group, search for an expanded profile, and verify no horizontal overflow.
+  const trigger = page.getByRole('button', { name: /Choose equipment model for Sharpy X-Beam 350/ }).first();
+  await trigger.click();
+  const picker = page.getByRole('dialog', { name: /Equipment catalogue for/ });
+  await expect(picker).toBeVisible();
+  const overflow = await picker.evaluate((el) => el.scrollWidth - el.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+
+  // Filter by Profile category chip and apply the first non-default profile model without hard-coding brand names.
+  await picker.getByRole('button', { name: 'Profile', exact: true }).click();
+  const profileButtons = picker.locator('button[aria-pressed]');
+  expect(await profileButtons.count()).toBeGreaterThanOrEqual(8);
+  await profileButtons.last().click();
+  await picker.getByRole('button', { name: 'Apply model' }).click();
+  await expect(picker).toBeHidden();
+
+  // LED cabinet selector exposes all 12 catalogue LED panels and applies an expanded outdoor panel cleanly.
+  await page.getByRole('button', { name: 'Build from LED cabinets' }).click();
+  const panelSelect = page.getByRole('combobox', { name: 'Panel model' });
+  const optionCount = await panelSelect.locator('option').count();
+  expect(optionCount).toBeGreaterThanOrEqual(13); // Custom + 12 catalogue LED panels
+  await panelSelect.selectOption('panel-outdoor-01');
+  await expect(page.getByRole('spinbutton', { name: 'Cabinet width (px)', exact: true })).toHaveValue('128');
+  await expect(page.getByRole('spinbutton', { name: 'Cabinet height (px)', exact: true })).toHaveValue('256');
+});

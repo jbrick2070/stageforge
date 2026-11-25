@@ -211,7 +211,10 @@ export function evaluateLaserSafety(
     if (clip && clip.bounds.hasLitPoints) {
       const sx = options.ildaScanScale ?? laser.spreadX;
       const sy = options.ildaScanScale ?? laser.spreadY;
-      const { tanHalfX, tanHalfY } = ildaScanTangents(spec?.maxScanAngleDeg, sx, sy);
+      // When a catalogue laser datasheet omits maxScanAngleDeg, evaluate ILDA clearance conservatively
+      // at 60° (matching the widest catalogued galvo scanners) rather than narrowing to the 45° preview default.
+      const safetyScanAngleDeg = spec ? (spec.maxScanAngleDeg ?? 60) : undefined;
+      const { tanHalfX, tanHalfY } = ildaScanTangents(safetyScanAngleDeg, sx, sy);
       const maxRoll = Math.min(Math.PI / 2, Math.max(0, Number.isFinite(laser.rotation) ? laser.rotation : 0) * LASER_ILDA_ROLL_SCALE);
 
       // Compute worst-case lowest & highest normalized Y tangent across ILDA bounding corners rotated by [-maxRoll, +maxRoll].

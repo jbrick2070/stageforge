@@ -101,6 +101,7 @@ import {
   createAudioModulationState,
   evaluateAudioModulation,
   stepCombinedStrobeGate,
+  stepDeliveredStrobeGate,
   type AudioModulationFrame,
   type AudioModulationState,
 } from './audioModulation';
@@ -2767,9 +2768,18 @@ export class StageEngine {
       const colorMix = gMod?.colorMixMapped ? gMod.colorMix : 0;
       const tiltOffset = gMod?.tiltMapped ? gMod.tiltOffset : 0;
       const strobeMapped = Boolean(gMod?.strobe.mapped);
-      const groupStrobeGate = strobeMapped
+      const rawGroupStrobeGate = strobeMapped
         ? (b.strobe ? strobeGate : (gMod!.strobe.gateOn ? 1.35 : 0.06))
         : strobeGate;
+      const groupStrobeGate = stepDeliveredStrobeGate(
+        this.audioModState,
+        kind,
+        rawGroupStrobeGate,
+        blackoutActive,
+      );
+      if (groupStrobeGate < 0.5 && rawGroupStrobeGate >= 0.5) {
+        mod.flashLimited = true;
+      }
       const groupDmxStrobe = strobeMapped || b.strobe ? 0 : Math.round(effectiveStrobe * 255);
       return {
         look, focus, moveSpd: baseMoveSpd, phaseOffset, effSpeedNorm, spread: 0.25 + look.movementSpread * 1.15,

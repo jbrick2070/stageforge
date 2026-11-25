@@ -36,6 +36,7 @@ const {
   buildMovingModelParts,
   buildStaticModelParts,
   countTriangles,
+  FAMILY_DEFAULT_MODEL_ID,
   FixtureModelCache,
   hasModelSpecForCatalogId,
   MODEL_SPECS,
@@ -49,6 +50,13 @@ test('every catalogue entry and legacy type has a 3D model spec, SVG/DXF symbol,
   for (const entry of EQUIPMENT_CATALOG) {
     assert.ok(hasModelSpecForCatalogId(entry.id), `missing ModelSpec for ${entry.id}`);
     assert.ok(familySet.has(entry.body), `missing family ${entry.body} in ALL_BODY_FAMILIES`);
+    const resolvedSpec = resolveModelSpec(entry.renderTypes[0] ?? 'beam', entry.id);
+    assert.equal(resolvedSpec.family, entry.body, `${entry.id} resolved spec family matches entry.body`);
+    if (Object.hasOwn(MODEL_SPECS, entry.id)) {
+      assert.equal(resolvedSpec.id, entry.id, `${entry.id} keeps dedicated ModelSpec`);
+    } else {
+      assert.equal(resolvedSpec.id, FAMILY_DEFAULT_MODEL_ID[entry.body], `${entry.id} reuses body-family default model`);
+    }
     const sym = symbolFor(entry.body, entry.id);
     assert.ok(sym.plan.length > 0, `${entry.id} has plan symbol`);
     assert.ok(sym.elevation.length > 0, `${entry.id} has elevation symbol`);
@@ -57,6 +65,15 @@ test('every catalogue entry and legacy type has a 3D model spec, SVG/DXF symbol,
       assert.ok(specToSvgPath(p, false).startsWith('M'), `${entry.id} valid SVG path`);
     }
   }
+  assert.equal(Object.keys(MODEL_SPECS).length, 34, 'all 34 original entries preserve dedicated ModelSpecs');
+  // Static theatrical ellipsoidals & static LED batten resolve to fixed motion rather than pan-tilt or tilt.
+  assert.equal(resolveModelSpec('wash', 'ellipsoidal-led-01').motion, 'fixed');
+  assert.equal(resolveModelSpec('wash', 'ellipsoidal-led-02').motion, 'fixed');
+  assert.equal(resolveModelSpec('wash', 'batten-static-01').motion, 'fixed', 'QA M1: static LED batten stays fixed');
+  assert.equal(resolveModelSpec('wash', 'batten-tilt-01').motion, 'tilt', 'tilting LED batten keeps tilt motion');
+  // Unknown forward-compatible catalogId still falls back cleanly to LEGACY_DEFAULTS[type].
+  assert.equal(resolveModelSpec('beam', 'unknown-future-model-99').id, LEGACY_DEFAULTS.beam);
+  assert.equal(resolveModelSpec('wash', 'unknown-future-model-99').id, LEGACY_DEFAULTS.wash);
 
   for (const type of Object.keys(LEGACY_DEFAULTS)) {
     const legacySpec = resolveModelSpec(type, undefined);
@@ -110,10 +127,10 @@ test('createSharedMaterials runs in Node without DOM and procedural PBR textures
   assert.deepEqual(d1, d2, 'stage deck texture is byte-deterministic');
 });
 
-test('all 30 catalogue 3D models build cleanly in Node within high/low triangle budgets and obey pivot & floor contracts', () => {
+test('all catalogue 3D models build cleanly in Node within high/low triangle budgets and obey pivot & floor contracts', () => {
   for (const tier of ['high', 'low']) {
     for (const entry of EQUIPMENT_CATALOG) {
-      const spec = MODEL_SPECS[entry.id];
+      const spec = resolveModelSpec(entry.renderTypes[0] ?? 'beam', entry.id);
       if (entry.category === 'led_panel') {
         const back = buildLedCabinetBackGeometry(entry.panel.widthMm / 1000, entry.panel.heightMm / 1000, tier);
         const tris = countTriangles(back);
@@ -189,7 +206,7 @@ test('all 30 catalogue 3D models build cleanly in Node within high/low triangle 
 test('catalogue pan-tilt heads converge on focus points with per-model pivotY and battens aim tilt-only', () => {
   const target = new THREE.Vector3(2.5, 1.2, 4.0);
   for (const entry of EQUIPMENT_CATALOG) {
-    const spec = MODEL_SPECS[entry.id];
+    const spec = resolveModelSpec(entry.renderTypes[0] ?? 'beam', entry.id);
     if (spec.motion === 'pan-tilt') {
       const parts = buildMovingModelParts(spec, false, 'high');
       const root = new THREE.Group();
