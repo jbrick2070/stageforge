@@ -73,13 +73,19 @@ export function applyDemoLighting(state: ShowState, pos: DemoPosition): ShowStat
   const groove = id === 'groove';
   const openingStep = pos.openingStep ?? pos.step;
   const stepInSection = pos.stepInSection ?? (pos.barInSection * 16 + pos.stepInBar);
-  const wingFade = demoFade(openingStep, 64, 128);
+  // Separate the one-time opening reveal (index 0 intro + index 1 post-intro groove LED fade)
+  // from section-relative choreography so repeated `intro` or `groove` roles behave consistently at equal progress.
+  const isOpeningIntro = intro && (pos.isOpening ?? pos.sectionIndex === 0);
+  const isOpeningGroove = groove && (pos.isOpeningTransition ?? (pos.sectionIndex === 1 && openingStep < 1_000_000));
+  const sectionSteps = Math.max(16, pos.sectionBars * 16);
+  const introStep = isOpeningIntro ? openingStep : (stepInSection * 128) / sectionSteps;
+  const wingFade = demoFade(introStep, 64, 128);
   // Bars 1–2 are dark. The backlight pair rises in bars 3–4, then the wings join.
-  const level = intro ? 0.26 * demoFade(openingStep, DEMO_BLACKOUT_STEPS, 56) + 0.12 * wingFade :
+  const level = intro ? 0.26 * demoFade(introStep, DEMO_BLACKOUT_STEPS, 56) + 0.12 * wingFade :
     rest ? 0.025 : look.level[0] + (look.level[1] - look.level[0]) * ease;
   const wash = 0.035 + level * (peak ? 0.70 : 0.48);
-  const washFade = demoFade(openingStep, 96, 128);
-  const ledFade = demoFade(openingStep, 128, 224);
+  const washFade = demoFade(introStep, 96, 128);
+  const ledFade = isOpeningIntro || isOpeningGroove ? demoFade(openingStep, 128, 224) : 1;
   const accentColor = intro ? fadeColor(look.colors[1], looks.groove.colors[1], wingFade) :
     id === 'build' ? fadeColor(looks.groove.colors[1], look.colors[1], demoFade(stepInSection, 0, 32)) : look.colors[1];
   const accent = peak && pos.barInSection % 4 === 0 && pos.stepInBar < 2;
@@ -99,10 +105,10 @@ export function applyDemoLighting(state: ShowState, pos: DemoPosition): ShowStat
       spreadX: peak ? 0.87 : 0.52, spreadY: 0.35 + level * 0.26, speed: 0.1 + level * 0.38,
       tilt: 0.16, rotation: 0.24, strobe: 0, audienceScan: false },
     motors: { ...state.motors, mode: look.motor, speed: 0.18 + level * 0.39 },
-    atmo: { ...state.atmo, hazeLevel: (0.40 + 0.21 * level) * (intro ? demoFade(openingStep, DEMO_BLACKOUT_STEPS, 48) : 1),
-      smokeOutput: intro ? 0 : groove ? 0.045 * ledFade : peak ? 0.20 : 0.045,
+    atmo: { ...state.atmo, hazeLevel: (0.40 + 0.21 * level) * (intro ? demoFade(introStep, DEMO_BLACKOUT_STEPS, 48) : 1),
+      smokeOutput: intro ? 0 : groove ? 0.045 * (isOpeningGroove ? ledFade : 1) : peak ? 0.20 : 0.045,
       co2Active: false, co2AutoOnDrop: peak },
-    led: { ...state.led, enabled: !intro && (!groove || ledFade > 0), visualMode: look.screen,
-      brightness: level * 0.72 * (intro || groove ? ledFade : 1), speed: 0.07 + level * 0.48 },
+    led: { ...state.led, enabled: !intro && (!groove || !isOpeningGroove || ledFade > 0), visualMode: look.screen,
+      brightness: level * 0.72 * (isOpeningIntro || isOpeningGroove ? ledFade : intro ? 0 : 1), speed: 0.07 + level * 0.48 },
   };
 }

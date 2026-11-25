@@ -10,6 +10,8 @@ export interface BeatGrid {
   bpm: number;
   offsetMs: number;
   source: 'offline' | 'manual';
+  /** Optional absolute playback timestamp (ms) anchored as Beat 1 so BPM changes preserve the downbeat anchor. */
+  anchorMs?: number;
 }
 
 export type BeatGridStatus =
@@ -54,26 +56,43 @@ export function doubleTimeBpm(bpm: number): number | null {
   return next >= BPM_MIN && next <= BPM_MAX ? next : null;
 }
 
-/** Shift a beat grid's downbeat offset by `deltaMs` (e.g. ±10 ms or ±50 ms). */
+/** Shift a beat grid's downbeat offset by `deltaMs` (e.g. ±10 ms or ±50 ms), preserving 4-beat bar phase. */
 export function nudgeBeatGrid(grid: BeatGrid, deltaMs: number): BeatGrid {
-  const beatMs = 60000 / grid.bpm;
-  const nextOffset = (((grid.offsetMs + deltaMs) % beatMs) + beatMs) % beatMs;
-  return { ...grid, offsetMs: Math.round(nextOffset * 10) / 10 };
+  const barMs = (60000 / grid.bpm) * 4;
+  const safeDelta = Number.isFinite(deltaMs) ? deltaMs : 0;
+  const baseAnchor = grid.anchorMs !== undefined && Number.isFinite(grid.anchorMs) ? grid.anchorMs : grid.offsetMs;
+  const nextAnchor = baseAnchor + safeDelta;
+  const nextOffset = (((grid.offsetMs + safeDelta) % barMs) + barMs) % barMs;
+  return {
+    ...grid,
+    offsetMs: nextOffset,
+    anchorMs: nextAnchor,
+  };
 }
 
-/** Anchor the beat grid so `playbackMs` becomes Beat 1 (downbeat). */
+/** Anchor the beat grid so `playbackMs` becomes Beat 1 (downbeat), preserving 4-beat bar phase. */
 export function setBeatGridDownbeat(grid: BeatGrid, playbackMs: number): BeatGrid {
-  const beatMs = 60000 / grid.bpm;
+  const barMs = (60000 / grid.bpm) * 4;
   const safeMs = Number.isFinite(playbackMs) ? playbackMs : 0;
-  const nextOffset = ((safeMs % beatMs) + beatMs) % beatMs;
-  return { ...grid, offsetMs: Math.round(nextOffset * 10) / 10 };
+  const nextOffset = ((safeMs % barMs) + barMs) % barMs;
+  return { ...grid, offsetMs: nextOffset, anchorMs: safeMs };
+}
+
+/** Update a beat grid to a new BPM while keeping the anchored downbeat timestamp aligned to Beat 1. */
+export function retimeBeatGrid(grid: BeatGrid, nextBpm: number): BeatGrid {
+  if (!Number.isFinite(nextBpm) || nextBpm <= 0) return grid;
+  const barMs = (60000 / nextBpm) * 4;
+  const base = grid.anchorMs !== undefined && Number.isFinite(grid.anchorMs) ? grid.anchorMs : grid.offsetMs;
+  const nextOffset = ((base % barMs) + barMs) % barMs;
+  return { ...grid, bpm: nextBpm, offsetMs: nextOffset };
 }
 
 /** Compute continuous beat phase and integer beat index at `playbackMs`. */
 export function beatGridPhase(grid: BeatGrid, playbackMs: number): { beatIndex: number; phase: number; isDownbeat: boolean } {
   const raw = ((playbackMs - grid.offsetMs) * grid.bpm) / 60000;
-  const beatIndex = Math.floor(raw);
-  const phase = raw - beatIndex;
+  // Tiny epsilon avoids IEEE-754 floor-underflow (e.g. -1e-15 -> -1) at exact anchored downbeat boundaries.
+  const beatIndex = Math.floor(raw + 1e-9);
+  const phase = Math.max(0, Math.min(1 - 1e-9, raw - beatIndex));
   const isDownbeat = ((beatIndex % 4) + 4) % 4 === 0;
   return { beatIndex, phase, isDownbeat };
 }

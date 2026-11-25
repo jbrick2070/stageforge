@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { X, Radio } from 'lucide-react';
 import { buildDmxPatch, DMX_CHANNELS } from '../data/dmxPatch';
 import { getCatalogEntry, getCatalogMode, hasCatalogFixtures, type LaserChannelRole } from '../data/equipmentCatalog';
+import { classifyPhysicalGroup, GENERIC_SIMULATED_LABEL } from '../dmx/physicalDmx';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
 import { RigConfig } from '../types/show';
@@ -10,6 +11,8 @@ import { DmxOutputSection } from './DmxOutputSection';
 export interface DmxSnapshot {
   u1: Uint8Array;
   u2: Uint8Array;
+  physU1?: Uint8Array;
+  physU2?: Uint8Array;
 }
 
 interface DmxMonitorDrawerProps {
@@ -19,6 +22,8 @@ interface DmxMonitorDrawerProps {
   liveOutput: LiveDmxControllerApi;
   onClose: () => void;
 }
+
+const EMPTY_UNIVERSE = new Uint8Array(512);
 
 const LASER_ROLE_LABELS: Record<LaserChannelRole, string> = {
   unused: 'Reserved',
@@ -51,6 +56,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
 }) => {
   const [universe, setUniverse] = useState<1 | 2>(1);
   const [view, setView] = useState<'grid' | 'patch'>('grid');
+  const [bufferMode, setBufferMode] = useState<'simulated' | 'physical'>('simulated');
   const [bank, setBank] = useState(0);
   const dmx = useLive(dmxStore);
 
@@ -64,25 +70,39 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
       const resolvedMode = entry ? getCatalogMode(entry, row.group.dmxMode) : undefined;
       const modeLayout = resolvedMode?.layout;
       const isUnmappedLaser = Boolean(entry?.laser && resolvedMode && !resolvedMode.legacy && !modeLayout?.length);
+      const phys = classifyPhysicalGroup(row.group);
       for (let address = Math.max(1, row.start); address <= Math.min(row.end, 512); address++) {
         const index = Math.floor((address - row.start) / row.width);
         const offset = (address - row.start) % row.width;
-        const channel = modeLayout && offset < modeLayout.length
-          ? LASER_ROLE_LABELS[modeLayout[offset]]
-          : isUnmappedLaser
-            ? 'Unmapped (safe 0)'
-            : DMX_CHANNELS[row.group.type][offset] ?? 'Reserved';
+        let channel: string;
+        if (bufferMode === 'physical') {
+          if (phys.status === 'simulation-only') {
+            channel = 'Not driven (simulation only · 0)';
+          } else if (phys.status === 'implemented' && phys.personality) {
+            channel = phys.personality.channelNames[offset] ?? 'Reserved';
+          } else {
+            channel = DMX_CHANNELS[row.group.type][offset] ?? 'Reserved';
+          }
+        } else {
+          channel = modeLayout && offset < modeLayout.length
+            ? LASER_ROLE_LABELS[modeLayout[offset]]
+            : isUnmappedLaser
+              ? 'Unmapped (safe 0)'
+              : DMX_CHANNELS[row.group.type][offset] ?? 'Reserved';
+        }
         const disabled = patch.unitStart(row.group, index) ? '' : ' · output disabled';
         names[address - 1].push(`${row.group.modelName} #${index + 1} · ${channel}${disabled}`);
       }
     }
     return names.map(parts => parts.join(' / ') || 'Unpatched');
-  }, [patch, rows]);
+  }, [bufferMode, patch, rows]);
   if (!open) return null;
   const invalid = rows.some(row => row.conflicts.length > 0 || row.end > 512);
   const catalogPatched = hasCatalogFixtures(rig);
 
-  const data = universe === 1 ? dmx.u1 : dmx.u2;
+  const data = bufferMode === 'physical'
+    ? (universe === 1 ? (dmx.physU1 ?? EMPTY_UNIVERSE) : (dmx.physU2 ?? EMPTY_UNIVERSE))
+    : (universe === 1 ? dmx.u1 : dmx.u2);
 
   return (
     <aside aria-label="DMX monitor" className="dmx-monitor-panel fixed top-16 bottom-[270px] left-2.5 w-[370px] z-35 glass-panel rounded-xl shadow-2xl flex flex-col overflow-hidden">
@@ -93,7 +113,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
             DMX512 LIVE MONITOR
           </h2>
           <p className="font-mono-tech text-[9px] text-zinc-400">
-            SIMULATED CHANNEL LEVELS · 0–255
+            {bufferMode === 'physical' ? 'PHYSICAL OUTPUT PREVIEW · 0–255' : 'SIMULATED CHANNEL LEVELS · 0–255'}
           </p>
         </div>
         <button
@@ -105,7 +125,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
         </button>
       </div>
 
-      <DmxOutputSection output={liveOutput} hasCatalogFixtures={catalogPatched} />
+      <DmxOutputSection output={liveOutput} rig={rig} hasCatalogFixtures={catalogPatched} />
 
       <div className="flex items-center justify-between px-3 py-1.5 bg-black/40 border-b border-white/10">
         <div className="flex gap-1">
@@ -132,6 +152,28 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
         </div>
         <div className="flex gap-1">
           <button
+            type="button"
+            data-testid="dmx-monitor-mode-sim"
+            aria-pressed={bufferMode === 'simulated'}
+            onClick={() => setBufferMode('simulated')}
+            className={`px-1.5 py-0.5 rounded text-[9px] font-mono-tech cursor-pointer ${
+              bufferMode === 'simulated' ? 'bg-white/15 text-white' : 'text-zinc-400'
+            }`}
+          >
+            SIM
+          </button>
+          <button
+            type="button"
+            data-testid="dmx-monitor-mode-phys"
+            aria-pressed={bufferMode === 'physical'}
+            onClick={() => setBufferMode('physical')}
+            className={`px-1.5 py-0.5 rounded text-[9px] font-mono-tech cursor-pointer ${
+              bufferMode === 'physical' ? 'bg-amber-500/25 text-amber-200' : 'text-zinc-400'
+            }`}
+          >
+            WIRE
+          </button>
+          <button
             onClick={() => setView('grid')}
             className={`px-1.5 py-0.5 rounded text-[9px] font-mono-tech cursor-pointer ${
               view === 'grid' ? 'bg-white/15 text-white' : 'text-zinc-400'
@@ -151,7 +193,11 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
       </div>
 
       {invalid && <p role="status" className="px-3 py-1 text-[10px] text-amber-300">Patch conflict or overflow. Affected fixtures have no DMX output. See Patch for addresses.</p>}
-      {catalogPatched && (
+      {bufferMode === 'physical' ? (
+        <p role="note" className="px-3 py-1 text-[10px] text-amber-200/90 bg-amber-950/40 border-b border-white/10">
+          Preview of outgoing physical DMX bytes (not hardware acknowledgement). Unimplemented catalogue fixtures output neutral 0.
+        </p>
+      ) : catalogPatched && (
         <p role="note" className="px-3 py-1 text-[10px] text-cyan-200/90 bg-cyan-950/40 border-b border-white/10">
           Simulated control layout, not the fixture&apos;s real channel map.
         </p>
@@ -213,11 +259,28 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
                   {width > DMX_CHANNELS[group.type].length &&
                     ` · ${DMX_CHANNELS[group.type].length + 1}${width > DMX_CHANNELS[group.type].length + 1 ? `–${width}` : ''} Reserved`}
                 </p>
-                {group.catalogId && (
-                  <p className="pt-1 text-[9px] text-cyan-300/85">
-                    Simulated control layout, not the fixture&apos;s real channel map.
-                  </p>
-                )}
+                {(() => {
+                  const phys = classifyPhysicalGroup(group);
+                  if (phys.status === 'simulation-only') {
+                    return (
+                      <p className="pt-1 text-[9px] text-amber-300/90">
+                        Physical DMX: not driven (simulation only) — outputs neutral zeros.
+                      </p>
+                    );
+                  }
+                  if (phys.status === 'implemented') {
+                    return (
+                      <p className="pt-1 text-[9px] text-emerald-300/90">
+                        Physical DMX: implemented personality ({phys.reason}).
+                      </p>
+                    );
+                  }
+                  return (
+                    <p className="pt-1 text-[9px] text-cyan-300/85">
+                      Physical DMX: {GENERIC_SIMULATED_LABEL}.
+                    </p>
+                  );
+                })()}
               </details>
             ))}
           </div>

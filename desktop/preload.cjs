@@ -73,6 +73,10 @@ contextBridge.exposeInMainWorld('stageforgeDesktop', {
     ipcRenderer.send('stageforge:dmx-frame', universe, data);
     return true;
   },
+  sendDmxHeartbeat() {
+    ipcRenderer.send('stageforge:dmx-heartbeat');
+    return true;
+  },
   dmxControl(command) {
     if (!command || typeof command !== 'object' || Array.isArray(command) || !DMX_CONTROL_TYPES.has(command.type)) {
       return Promise.reject(new TypeError('Expected a valid DMX control command'));

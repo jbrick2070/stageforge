@@ -8,6 +8,7 @@ import {
   halfTimeBpm,
   LiveBpmStabilizer,
   nudgeBeatGrid,
+  retimeBeatGrid,
   setBeatGridDownbeat,
   TapTempoTracker,
   type BeatGridStatus,
@@ -19,7 +20,8 @@ import { ClockBadge } from './components/ClockBadge';
 import { allows, type ClockMode } from './showControl/clockOwner';
 import { useShowControl } from './showControl/useShowControl';
 import { useShowGamepad } from './input/useShowGamepad';
-import { cueLook, differsFromCue } from './data/cueLook';
+import { BumpLedger, sameBumpState, type BumpSourceClass } from './input/bumpLedger';
+import { applyTimelineLookPatch, cueLook, differsFromCue, isFullLookSnapshot } from './data/cueLook';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
 import {
@@ -33,6 +35,7 @@ import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
 import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange, type ShowTimeline } from './data/showFile';
 import { hasCatalogFixtures } from './data/equipmentCatalog';
+import { summarizePhysicalDrive } from './dmx/physicalDmx';
 import { DEMO_ILDA_PRESETS, generateDemoIlda, ILDA_MAX_BYTES, parseIlda, type DemoIldaKind, type IldaClip } from './data/ilda';
 import type { IldaRenderMode } from './engine/ildaRenderer';
 import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
@@ -47,7 +50,6 @@ import { patchCsv } from './data/patchCsv';
 import { BottomConsole } from './components/BottomConsole';
 import { EMPTY_AUDIO_MOD_TELEMETRY, type AudioModulationTelemetry } from './components/AudioMappingSection';
 import { allowsNegativeAmount } from './engine/audioModulation';
-import { PitchViewer } from './components/PitchViewer';
 import type { DmxSnapshot } from './components/DmxMonitorDrawer';
 import { LiveDmxBadge } from './components/LiveDmxBadge';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -65,20 +67,16 @@ import { parseViewerSource, type ParsedViewerDocument } from './viewer/parseView
 
 const loadCostEstimatorModal = () => import('./components/CostEstimatorModal');
 const createLazyCostEstimatorModal = () => lazy(loadCostEstimatorModal);
-// Panels and drawers load right after first paint (see preloadPanels), keeping them out of the first
-// download. Their ErrorBoundaries also catch a chunk that fails to load.
+// Panels and drawers load on demand when opened (deferredComponent), keeping them out of the
+// initial startup download and parse path. Their ErrorBoundaries catch any chunk load failure.
 const ShowFiles = deferredComponent(() => import('./components/ShowFiles').then((m) => m.ShowFiles));
+const PitchViewer = deferredComponent(() => import('./components/PitchViewer').then((m) => m.PitchViewer));
 const MvrImportReportDialog = deferredComponent(() => import('./components/MvrImportReport').then((m) => m.MvrImportReport));
 const CueListEditor = deferredComponent(() => import('./components/CueListEditor').then((m) => m.CueListEditor));
 const StageDesigner = deferredComponent(() => import('./components/StageDesigner').then((m) => m.StageDesigner));
 const RigBuilderDrawer = deferredComponent(() => import('./components/RigBuilderDrawer').then((m) => m.RigBuilderDrawer));
 const DmxMonitorDrawer = deferredComponent(() => import('./components/DmxMonitorDrawer').then((m) => m.DmxMonitorDrawer));
 const ShowControlDrawer = deferredComponent(() => import('./components/ShowControlDrawer').then((m) => m.ShowControlDrawer));
-const preloadPanels = () => {
-  for (const panel of [RigBuilderDrawer, DmxMonitorDrawer, ShowControlDrawer, ShowFiles, MvrImportReportDialog, CueListEditor, StageDesigner]) {
-    panel.preload().catch(() => { /* the panel's ErrorBoundary reports it when opened */ });
-  }
-};
 import { createLiveStore } from './state/liveTelemetry';
 import { deferredComponent } from './components/deferred';
 import { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } from './data/presets';
@@ -242,14 +240,48 @@ export const App: React.FC = () => {
   const [showState, setShowState] = useState<ShowState>(() => structuredClone(INITIAL_SHOW_STATE));
   const showStateRef = useRef(showState);
   showStateRef.current = showState;
-  const [bump, setBump] = useState<BumpState>(EMPTY_BUMP);
-  const [controllerBump, setControllerBump] = useState<BumpState>(EMPTY_BUMP);
-  const liveBump = useMemo(() => {
-    if (!capabilities.edit) return EMPTY_BUMP;
-    const result = { ...bump };
-    for (const key of Object.keys(controllerBump) as (keyof BumpState)[]) result[key] ||= controllerBump[key];
-    return result;
-  }, [bump, controllerBump, capabilities.edit]);
+  const bumpLedgerRef = useRef(new BumpLedger());
+  const bumpExpiryTimerRef = useRef<number | null>(null);
+  const [liveBump, setLiveBump] = useState<BumpState>(EMPTY_BUMP);
+  const liveBumpRef = useRef<BumpState>(EMPTY_BUMP);
+  liveBumpRef.current = liveBump;
+  const syncLiveBump = useCallback(() => {
+    if (bumpExpiryTimerRef.current !== null) {
+      window.clearTimeout(bumpExpiryTimerRef.current);
+      bumpExpiryTimerRef.current = null;
+    }
+    const now = performance.now();
+    const resolved = capabilitiesRef.current.edit
+      ? bumpLedgerRef.current.resolve({ laserDeskEnabled: showStateRef.current.laser.enabled }, now).effective
+      : EMPTY_BUMP;
+    if (!sameBumpState(liveBumpRef.current, resolved)) {
+      liveBumpRef.current = resolved;
+      setLiveBump(resolved);
+    }
+    const nextExpiry = capabilitiesRef.current.edit ? bumpLedgerRef.current.nextExpiryMs(now) : null;
+    if (nextExpiry !== null) {
+      bumpExpiryTimerRef.current = window.setTimeout(() => {
+        bumpExpiryTimerRef.current = null;
+        syncLiveBump();
+      }, Math.max(10, Math.ceil(nextExpiry - performance.now()) + 1));
+    }
+  }, []);
+  const setSourceBump = useCallback((sourceId: string, sourceClass: BumpSourceClass, key: keyof BumpState, active: boolean) => {
+    bumpLedgerRef.current.setHold(sourceId, sourceClass, key, active, performance.now());
+    syncLiveBump();
+  }, [syncLiveBump]);
+  const clearSourceBumps = useCallback((prefix: string) => {
+    if (bumpLedgerRef.current.clearSourcePrefix(prefix)) syncLiveBump();
+  }, [syncLiveBump]);
+  const clearAllBumps = useCallback(() => {
+    if (bumpLedgerRef.current.clearAll()) syncLiveBump();
+  }, [syncLiveBump]);
+  useEffect(() => {
+    syncLiveBump();
+  }, [showState.laser.enabled, capabilities.edit, syncLiveBump]);
+  useEffect(() => () => {
+    if (bumpExpiryTimerRef.current !== null) window.clearTimeout(bumpExpiryTimerRef.current);
+  }, []);
   const [cues, setCues] = useState<ShowCue[]>(() => structuredClone(SHOW_CUES));
   const [activeCueId, setActiveCueId] = useState<string | null>(null);
   const [cueModified, setCueModified] = useState(false);
@@ -271,10 +303,6 @@ export const App: React.FC = () => {
   const [costModalOpen, setCostModalOpen] = useState(false);
   const [costModalRetry, setCostModalRetry] = useState(0);
   const CostEstimatorModal = useMemo(() => createLazyCostEstimatorModal(), [costModalRetry]);
-  // Fetch the editor panels' code right after first paint (skipped when booted in viewer mode).
-  useEffect(() => {
-    if (!viewerMode) preloadPanels();
-  }, [viewerMode]);
   // Probe once when idle for an optional demo/track.json map (~1 KB); never fetches audio on boot.
   // Skipped in read-only pitch viewer mode.
   useEffect(() => {
@@ -409,7 +437,7 @@ export const App: React.FC = () => {
     setToast(msg);
   }, []);
 
-  const liveDmx = useLiveDmxOutput(engineRef, showToast, capabilities.liveOutput);
+  const liveDmx = useLiveDmxOutput(engineRef, showToast, capabilities.liveOutput, clearAllBumps);
   const liveDmxRef = useRef(liveDmx);
   liveDmxRef.current = liveDmx;
 
@@ -582,10 +610,10 @@ export const App: React.FC = () => {
         replayScreenClock.current = performance.now() - lateMs;
         setScreen(event.screen);
       }
-      const fullLook = !!(event.look?.motors && event.look.masterDimmer !== undefined);
+      const fullLook = !!(event.look && isFullLookSnapshot(event.look));
       if (event.look || event.screen) {
-        const prior = fullLook ? event.look as ShowState : replayLook.current;
-        const next = wallLook(fullLook ? prior : { ...prior, ...event.look }, replayScreen.current);
+        const merged = event.look ? applyTimelineLookPatch(replayLook.current, event.look) : replayLook.current;
+        const next = wallLook(merged, replayScreen.current);
         replayLook.current = next; autoDirRef.current = next.autoDirector;
         setShowState(next); engine?.setShowState(next); ae?.setBpm(next.bpm);
       }
@@ -602,7 +630,14 @@ export const App: React.FC = () => {
         // on a cue whose look was edited after it fired; partial cue events cannot.
         setCueModified(fullLook && differsFromCue(replayLook.current, cue, replayScreen.current));
       } else if (event.look) setCueModified(true);
-      if (event.bump) { setBump(event.bump); setControllerBump(EMPTY_BUMP); engine?.setBumpState(event.bump); }
+      if (event.bump) {
+        bumpLedgerRef.current.clearAll();
+        for (const k of Object.keys(event.bump) as (keyof BumpState)[]) {
+          if (event.bump[k]) bumpLedgerRef.current.setHold('replay', 'local', k, true);
+        }
+        syncLiveBump();
+        engine?.setBumpState(event.bump);
+      }
       if (event.camera) { setActiveCamera(event.camera); engine?.setCameraPreset(event.camera); }
       if (event.volume !== undefined) { setVolume(event.volume); ae?.setVolume(event.volume); }
     },
@@ -619,7 +654,7 @@ export const App: React.FC = () => {
         const offsetSeconds = linked ? engineRef.current?.screenTransport().offsetSeconds : replayScreenOffset();
         setScreen({ ...ref, playing: false, offsetSeconds });
       }
-      setBump(EMPTY_BUMP); setControllerBump(EMPTY_BUMP);
+      clearAllBumps();
     },
     () => nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0,
   );
@@ -703,7 +738,7 @@ export const App: React.FC = () => {
     audioEngineRef.current?.setBpm(clamped);
     const currentGrid = audioEngineRef.current?.getBeatGrid();
     if (currentGrid) {
-      const updated = { ...currentGrid, bpm: clamped };
+      const updated = retimeBeatGrid(currentGrid, clamped);
       audioEngineRef.current?.setBeatGrid(updated);
       setBeatGridStatus({ state: 'ready', grid: updated });
     }
@@ -802,6 +837,8 @@ export const App: React.FC = () => {
     if (oscAmountRafRef.current !== null) cancelAnimationFrame(oscAmountRafRef.current);
   }, []);
 
+  const chaseHeldMediaRef = useRef<{ audio: boolean; screen: boolean }>({ audio: false, screen: false });
+
   const showControl = useShowControl({
     getCues: () => cuesRef.current,
     getActiveCueId: () => activeCueIdRef.current,
@@ -809,7 +846,9 @@ export const App: React.FC = () => {
     isTakePlaying: () => timeline.mode === 'playing',
     onModeReset: (nextMode) => {
       clockModeRef.current = nextMode;
+      chaseHeldMediaRef.current = { audio: false, screen: false };
       setFollow(null);
+      clearAllBumps();
       // Unconditionally clear chase/replay state & freeze wallClock when switching modes (H3).
       if (timeline.mode === 'playing') {
         timeline.stop();
@@ -878,8 +917,11 @@ export const App: React.FC = () => {
       setCueModified(true);
       setShowState((s) => ({ ...s, masterDimmer: clamped }));
     },
-    onSetBump: (key, active) => {
-      setBump((b) => ({ ...b, [key]: active }));
+    onSetBump: (key, active, sourceId) => {
+      setSourceBump(sourceId ?? 'osc:default', 'remote', key, active);
+    },
+    onClearBumpSource: (prefix) => {
+      clearSourceBumps(prefix);
     },
     onTempoTap: handleTapTempo,
     onTempoSetBpm: (raw) => {
@@ -934,6 +976,7 @@ export const App: React.FC = () => {
     },
     onChaseSeek: (takeMs, running, _resyncMusic) => {
       const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+      chaseHeldMediaRef.current = { audio: false, screen: false };
       setFollow(null);
       replaying.current = running;
       replayLook.current = showState;
@@ -942,13 +985,60 @@ export const App: React.FC = () => {
       timeline.chaseSeek(takeMs, running);
       wallClock.set(Math.min(takeMs, endMs), running && takeMs < endMs, endMs);
     },
-    onChaseAdvance: (takeMs) => {
+    onChaseAdvance: (takeMs, opts) => {
+      const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
       replaying.current = true;
       timeline.chaseAdvance(takeMs);
+      if (opts?.resumedFromHold) {
+        const held = chaseHeldMediaRef.current;
+        chaseHeldMediaRef.current = { audio: false, screen: false };
+        // Resume audio, main video, and secondary walls cleanly at the authoritative TC position
+        // ONLY when the resolved timeline says they should be playing, without re-firing look/cue events.
+        // If no recorded timeline is loaded, restore only media that onChaseHold paused.
+        const resolved = timeline.resolveFrameAt(takeMs, true);
+        if (resolved) {
+          if (resolved.music && resolved.music.playing) {
+            expectedMusic.current = resolved.music;
+            replayMusicClock.current = performance.now();
+            restoreReplayMusic(resolved.music, 0);
+          }
+          if (resolved.screen && resolved.screen.kind === 'video' && resolved.screen.playing) {
+            replayScreen.current = resolved.screen;
+            replayScreenClock.current = performance.now();
+            engineRef.current?.restoreScreenTransport(true, resolved.screen.offsetSeconds ?? 0);
+          }
+        } else {
+          if (held.audio && !audioEngineRef.current?.getStatus().playing) {
+            audioEngineRef.current?.togglePlayPause();
+          }
+          if (held.screen) {
+            engineRef.current?.restoreScreenTransport(true);
+          }
+        }
+        wallClock.set(Math.min(takeMs, endMs), takeMs < endMs, endMs);
+      }
+    },
+    onChaseHold: (takeMs) => {
+      const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
+      replaying.current = false;
+      const audioWasPlaying = Boolean(audioEngineRef.current?.getStatus().playing);
+      const currentScreen = readScreen();
+      const screenWasPlaying = currentScreen.kind === 'video' && currentScreen.playing;
+      if (audioWasPlaying) {
+        audioEngineRef.current?.pausePlayback();
+        chaseHeldMediaRef.current.audio = true;
+      }
+      if (screenWasPlaying) {
+        engineRef.current?.restoreScreenTransport(false);
+        chaseHeldMediaRef.current.screen = true;
+      }
+      wallClock.set(Math.min(takeMs, endMs), false, endMs);
     },
     onChaseStop: () => {
+      chaseHeldMediaRef.current = { audio: false, screen: false };
       replaying.current = false;
       wallClock.set(wallClock.position(), false);
+      engineRef.current?.restoreScreenTransport(false);
       audioEngineRef.current?.stopAll();
     },
     onUpdateTakeMeta: (meta) => {
@@ -1041,6 +1131,8 @@ export const App: React.FC = () => {
             live.dmx.set({
               u1: new Uint8Array(engine.dmxUniverse1),
               u2: new Uint8Array(engine.dmxUniverse2),
+              physU1: new Uint8Array(engine.physicalDmxU1),
+              physU2: new Uint8Array(engine.physicalDmxU2),
             });
           }
           const modSnap = engine.getAudioModulationSnapshot();
@@ -1081,6 +1173,7 @@ export const App: React.FC = () => {
       audioModulation: () => engine.getAudioModulationSnapshot(),
       fixtureParams: (group?: AudioTargetGroup) => engine.getFixtureParams(group),
       dmxSnapshot: () => ({ u1: Array.from(engine.dmxUniverse1), u2: Array.from(engine.dmxUniverse2) }),
+      physicalDmxSnapshot: () => ({ u1: Array.from(engine.physicalDmxU1), u2: Array.from(engine.physicalDmxU2) }),
       audioPlaybackTime: () => (audioEngineRef.current?.getPlaybackMs() ?? 0) / 1000,
       demoPosition: () => live.audio.get().demo ?? null,
       demoTrackAvailable: () => availableDemoTrackRef.current?.map ?? null,
@@ -1215,7 +1308,7 @@ export const App: React.FC = () => {
           setShowState((s) => ({ ...s, blackout: !s.blackout }));
           break;
         case 'bump':
-          setBump((b) => ({ ...b, [action.key]: true }));
+          setSourceBump('keyboard', 'local', action.key, true);
           break;
         case 'tapTempo':
           handleTapTempo();
@@ -1244,20 +1337,20 @@ export const App: React.FC = () => {
     const onKeyUp = (e: KeyboardEvent) => {
       const action = resolveGlobalHotkey(e.code, capabilitiesRef.current);
       if (action?.type === 'bump') {
-        setBump((b) => ({ ...b, [action.key]: false }));
+        setSourceBump('keyboard', 'local', action.key, false);
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
-    const releaseBumps = () => setBump(EMPTY_BUMP);
+    const releaseBumps = () => clearAllBumps();
     window.addEventListener('blur', releaseBumps);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', releaseBumps);
     };
-  }, [handleTapTempo, previewRig]);
+  }, [clearAllBumps, handleTapTempo, previewRig, setSourceBump]);
 
   const handleCamera = (cam: CameraPreset) => {
     previewRig();
@@ -1279,8 +1372,7 @@ export const App: React.FC = () => {
     const opening = applyDemoLighting({ ...showState, autoDirector: true }, demo);
     engineRef.current?.beginDemo(opening, demo.openingStep);
     autoDirRef.current = true;
-    setBump(EMPTY_BUMP);
-    setControllerBump(EMPTY_BUMP);
+    clearAllBumps();
     lastDemoTick.current = -1;
     setActiveCueId(null);
     setShowState(opening);
@@ -1341,8 +1433,7 @@ export const App: React.FC = () => {
       const opening = applyDemoLighting({ ...showStateRef.current, bpm: map.bpm, autoDirector: true }, demo);
       engineRef.current?.beginDemo(opening, demo.beforeDownbeat ? 0 : demo.openingStep);
       autoDirRef.current = true;
-      setBump(EMPTY_BUMP);
-      setControllerBump(EMPTY_BUMP);
+      clearAllBumps();
       lastDemoTick.current = demo.beforeDownbeat ? -2 : Math.floor(demo.step / 2);
       setActiveCueId(null);
       setShowState(opening);
@@ -1360,8 +1451,11 @@ export const App: React.FC = () => {
       setToast(loadResult.autoplayBlocked ? 'Demo track ready — tap Play track to start.' : null);
     } catch (error) {
       prepared.cleanup();
-      if (abort.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return;
-      showToast(error instanceof Error ? error.message : 'Could not load demo track.');
+      if (abort.signal.aborted || demoTrackAbortRef.current !== abort || epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit || (error instanceof DOMException && error.name === 'AbortError')) return;
+      const reason = error instanceof Error ? error.message : 'Could not load demo track.';
+      // Codex Sprint 10 amendment: fall back to the built-in synth demo with a toast when fetch or decode fails.
+      startDemo();
+      showToast(`${reason} Falling back to built-in synth demo.`);
     } finally {
       if (demoTrackAbortRef.current === abort) {
         demoTrackAbortRef.current = null;
@@ -1709,8 +1803,7 @@ export const App: React.FC = () => {
     replayMusicClock.current = 0;
     live.audio.set(EMPTY_AUDIO);
     setAudioDiscrete(INITIAL_DISCRETE_AUDIO);
-    setBump(EMPTY_BUMP);
-    setControllerBump(EMPTY_BUMP);
+    clearAllBumps();
     setRig(snap.rig);
     setCues(snap.cues);
     setActiveCueId(snap.activeCueId);
@@ -1759,8 +1852,7 @@ export const App: React.FC = () => {
     replaying.current = false;
     directorArmed.current = false;
     autoDirRef.current = false;
-    setBump(EMPTY_BUMP);
-    setControllerBump(EMPTY_BUMP);
+    clearAllBumps();
     setIldaClip(null);
     engineRef.current?.setIldaClip(null);
     live.audio.set(EMPTY_AUDIO);
@@ -1895,8 +1987,7 @@ export const App: React.FC = () => {
       setPendingMvr(null);
       setViewingMvrReport(false);
       setCinemaMode(false);
-      setBump(EMPTY_BUMP);
-      setControllerBump(EMPTY_BUMP);
+      clearAllBumps();
       sessionEpochRef.current++;
       viewerModeRef.current = true;
       capabilitiesRef.current = VIEWER_CAPABILITIES;
@@ -1961,8 +2052,7 @@ export const App: React.FC = () => {
     autoDirRef.current = freshLook.autoDirector;
     live.audio.set(EMPTY_AUDIO);
     setAudioDiscrete(INITIAL_DISCRETE_AUDIO);
-    setBump(EMPTY_BUMP);
-    setControllerBump(EMPTY_BUMP);
+    clearAllBumps();
     setRig(nextRig);
     setCues(structuredClone(SHOW_CUES));
     setActiveCueId(null);
@@ -2031,7 +2121,7 @@ export const App: React.FC = () => {
     audioEngineRef.current?.stopAll();
     live.audio.set(EMPTY_AUDIO);
     setAudioDiscrete(INITIAL_DISCRETE_AUDIO);
-    setControllerBump(EMPTY_BUMP); setBump(EMPTY_BUMP);
+    clearAllBumps();
     expectedMusic.current = file.media?.music ?? NO_MUSIC;
     applyRig(nextRig, true);
     setCues(file.cues); setActiveCueId(file.activeCueId);
@@ -2325,7 +2415,7 @@ export const App: React.FC = () => {
     },
     hold: (key, active) => {
       if (!capabilitiesRef.current.controllers) return;
-      setControllerBump(s => ({ ...s, [key]: active }));
+      setSourceBump('gamepad', 'gamepad', key, active);
     },
     orbit: (x, y) => {
       if (!capabilitiesRef.current.controllers) return;
@@ -2335,8 +2425,8 @@ export const App: React.FC = () => {
 
   const demoOpeningBlack = showState.autoDirector && audioDiscrete.openingBlack;
   useEffect(() => {
-    if (cinemaMode || designerRig || costModalOpen || viewerMode) setBump(EMPTY_BUMP);
-  }, [cinemaMode, designerRig, costModalOpen, viewerMode]);
+    if (cinemaMode || designerRig || costModalOpen || viewerMode) clearAllBumps();
+  }, [cinemaMode, designerRig, costModalOpen, viewerMode, clearAllBumps]);
   // Every cue the take fires; the console draws them all as scrubber markers.
   const takeCues = useMemo(() => (timeline.timeline?.events ?? [])
     .filter((e): e is TimelineEvent & { cueId: string } => typeof e.cueId === 'string')
@@ -2579,12 +2669,17 @@ export const App: React.FC = () => {
           setCues(next);
         }}
         onClose={() => setCueEditor(false)}/></ErrorBoundary>}
-      {/* Always-visible safety badge whenever live DMX output is enabled (including cinema mode) */}
+      {/* Always-visible safety badge whenever live DMX output is enabled or stopped on heartbeat loss (including cinema mode) */}
       <LiveDmxBadge
         banner={liveDmx.banner}
         busy={liveDmx.busy}
         hasCatalogFixtures={hasCatalogFixtures(rig)}
-        onStop={() => void liveDmx.disable()}
+        hasSimulationOnly={summarizePhysicalDrive(rig).hasSimulationOnly}
+        onStop={() => {
+          clearAllBumps();
+          void liveDmx.disable();
+        }}
+        onDismissNotice={liveDmx.dismissStoppedNotice}
         onOpenOutput={() => {
           setCinemaMode(false);
           setDmxDrawerOpen(true);
@@ -2605,7 +2700,7 @@ export const App: React.FC = () => {
       />
 
       {/* Slide-Over Rig Builder */}
-      {!cinemaMode && (
+      {!cinemaMode && rigDrawerOpen && (
         <ErrorBoundary label="Rig Builder" onReset={() => setRigDrawerOpen(false)} onExportRig={() => downloadRig(rig)}>
           <RigBuilderDrawer
             open={rigDrawerOpen}
@@ -2644,7 +2739,7 @@ export const App: React.FC = () => {
       )}
 
       {/* Slide-Over DMX512 Live Monitor */}
-      {!cinemaMode && (
+      {!cinemaMode && dmxDrawerOpen && (
         <ErrorBoundary label="DMX Monitor" onReset={() => setDmxDrawerOpen(false)} onExportRig={() => downloadRig(rig)}>
           <DmxMonitorDrawer
             open={dmxDrawerOpen}
@@ -2657,7 +2752,7 @@ export const App: React.FC = () => {
       )}
 
       {/* Slide-Over Show Control & Sync Drawer */}
-      {!cinemaMode && (
+      {!cinemaMode && showControlOpen && (
         <ErrorBoundary label="Show Control" onReset={() => setShowControlOpen(false)} onExportRig={() => downloadRig(rig)}>
           <ShowControlDrawer
             open={showControlOpen}
@@ -2886,14 +2981,14 @@ export const App: React.FC = () => {
           }}
           onSetBump={(key, active) => {
             if (!capabilitiesRef.current.edit) return;
-            setBump((b) => ({ ...b, [key]: active }));
+            setSourceBump('ui', 'local', key, active);
           }}
         />
       )}
       </>
       )}
 
-      {toast && !demoOpeningBlack && (
+      {toast && (
         <div role="status" aria-live="polite" className="fixed top-16 left-1/2 -translate-x-1/2 z-50 glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
           {toast}
         </div>

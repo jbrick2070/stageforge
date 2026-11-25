@@ -2,8 +2,9 @@
 
 // Main-process live DMX UDP sender for sACN (ANSI E1.31-2018) and Art-Net 4.
 // Keeps frame pacing in the main process (immune to renderer throttling), binds explicitly to
-// a validated local IPv4 interface, enforces a hard 44 Hz rate ceiling, and guarantees blackout
-// packets on disable, renderer crash, navigation, window close and quit.
+// a validated local IPv4 interface, enforces a hard 44 Hz rate ceiling, monitors a renderer
+// heartbeat lease (5 s timeout), and sends paced blackout packets on disable, heartbeat loss,
+// renderer crash, navigation, window close and quit.
 
 const crypto = require('node:crypto');
 const dgram = require('node:dgram');
@@ -38,6 +39,7 @@ const BLACKOUT_TICKS = 3;
 const SACN_TERMINATE_TICKS = 3;
 const BLACKOUT_PACE_MS = 25; // >= 22.73 ms (<= 44 Hz)
 const DEGRADED_CLEAR_AFTER_SENDS = 10;
+const HEARTBEAT_TIMEOUT_MS = 5000;
 
 const TOP_KEYS = new Set(['protocol', 'iface', 'rateHz', 'sourceName', 'sacn', 'artnet']);
 const SACN_KEYS = new Set(['mode', 'universes', 'priority', 'ttl', 'targets']);
@@ -260,9 +262,11 @@ function createDmxController({
   discoverDurationMs = 2600,
   blackoutPaceMs = BLACKOUT_PACE_MS,
   shutdownTimeoutMs = SHUTDOWN_TIMEOUT_MS,
+  heartbeatTimeoutMs = HEARTBEAT_TIMEOUT_MS,
 } = {}) {
   const cid = loadOrCreateCid(userDataDir);
   const ZERO_SLOTS = new Uint8Array(512);
+  const heartbeatTimeoutNs = BigInt(Math.max(50, Math.round(heartbeatTimeoutMs))) * 1_000_000n;
 
   let state = 'idle'; // 'idle' | 'starting' | 'running' | 'stopping'
   let sessionGen = 0;
@@ -273,6 +277,10 @@ function createDmxController({
   let statsTimer = null;
   let nextDeadlineMs = 0;
   let lastSendNs = null;
+  let lastHeartbeatNs = null;
+  let lastStopReason = null;
+  let lastStopOwnerId = null;
+  let stopEventId = 0;
   let packetsSent = 0;
   let consecutiveSuccessSends = 0;
   let ticksInWindow = 0;
@@ -288,6 +296,11 @@ function createDmxController({
   const artnetSeq = [1, 1];
   const discoveredNodes = new Map();
 
+  function hasHeartbeatExpired(now) {
+    if (lastHeartbeatNs === null) return false;
+    return (now - lastHeartbeatNs) >= heartbeatTimeoutNs;
+  }
+
   function getStatus() {
     return {
       enabled: state === 'running',
@@ -299,6 +312,9 @@ function createDmxController({
       packetsSent,
       degraded,
       lastError,
+      lastStopReason,
+      lastStopOwnerId,
+      stopEventId,
       cid: cid.uuid,
       universes: activeConfig
         ? (activeConfig.protocol === 'sacn'
@@ -403,11 +419,16 @@ function createDmxController({
   }
 
   /**
-   * Send one live tick if and only if the hard 44 Hz inter-frame interval has elapsed.
+   * Send one live tick if and only if the heartbeat lease is valid and the hard 44 Hz
+   * inter-frame interval has elapsed.
    */
   function sendTick(optionsOverride = 0) {
     if (state !== 'running' || !socket || !activeConfig) return Promise.resolve(false);
     const now = nowNs();
+    if (hasHeartbeatExpired(now)) {
+      void shutdown('heartbeat-timeout');
+      return Promise.resolve(false);
+    }
     if (lastSendNs !== null && (now - lastSendNs) < MIN_FRAME_INTERVAL_NS) {
       return Promise.resolve(false);
     }
@@ -439,6 +460,10 @@ function createDmxController({
       loopTimer = null;
       if (state !== 'running' || !activeConfig) return;
       const now = nowNs();
+      if (hasHeartbeatExpired(now)) {
+        void shutdown('heartbeat-timeout');
+        return;
+      }
       if (lastSendNs !== null) {
         const elapsedNs = now - lastSendNs;
         if (elapsedNs < MIN_FRAME_INTERVAL_NS) {
@@ -518,6 +543,9 @@ function createDmxController({
     activeConfig = config;
     state = 'running';
     lastSendNs = null;
+    lastHeartbeatNs = nowNs();
+    lastStopReason = null;
+    lastStopOwnerId = null;
     nextDeadlineMs = 0;
     packetsSent = 0;
     consecutiveSuccessSends = 0;
@@ -531,6 +559,10 @@ function createDmxController({
     scheduleNextTick();
 
     statsTimer = setInterval(() => {
+      if (state === 'running' && hasHeartbeatExpired(nowNs())) {
+        void shutdown('heartbeat-timeout');
+        return;
+      }
       measuredHz = ticksInWindow;
       ticksInWindow = 0;
       emitStatus();
@@ -539,6 +571,18 @@ function createDmxController({
 
     emitStatus();
     return getStatus();
+  }
+
+  function heartbeat() {
+    if (state !== 'running') return false;
+    const now = nowNs();
+    // Never let a late heartbeat revive an already-expired lease.
+    if (hasHeartbeatExpired(now)) {
+      void shutdown('heartbeat-timeout');
+      return false;
+    }
+    lastHeartbeatNs = now;
+    return true;
   }
 
   function update(universe, data) {
@@ -558,6 +602,10 @@ function createDmxController({
       sessionGen++;
       state = 'idle';
       ownerId = null;
+      lastHeartbeatNs = null;
+      lastStopReason = reason;
+      lastStopOwnerId = prevOwner;
+      stopEventId++;
       emitStatus(prevOwner);
       return Promise.resolve(getStatus());
     }
@@ -566,6 +614,10 @@ function createDmxController({
 
     sessionGen++;
     state = 'stopping';
+    lastHeartbeatNs = null;
+    lastStopReason = reason;
+    lastStopOwnerId = ownerId;
+    stopEventId++;
     if (loopTimer) {
       clearTimeout(loopTimer);
       loopTimer = null;
@@ -789,12 +841,14 @@ function createDmxController({
     listInterfaces: () => listNetworkInterfaces(osModule),
     getStatus,
     enable,
+    heartbeat,
     update,
     shutdown,
     discover,
     cancelDiscover,
-    // Exposed for direct unit testing of the hard 44 Hz guard without relying on OS timer jitter.
+    // Exposed for direct unit testing of the hard 44 Hz guard and heartbeat lease without OS timer jitter.
     _sendTickForTest: () => sendTick(0),
+    _getShutdownPromiseForTest: () => shutdownPromise,
   };
 }
 
@@ -803,6 +857,7 @@ module.exports = {
   MAX_DISCOVERED_NODES,
   BLACKOUT_TICKS,
   SACN_TERMINATE_TICKS,
+  HEARTBEAT_TIMEOUT_MS,
   listNetworkInterfaces,
   loadOrCreateCid,
   validateDmxConfig,

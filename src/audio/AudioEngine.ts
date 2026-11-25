@@ -769,6 +769,33 @@ export class AudioEngine {
     return this.playing;
   }
 
+  /**
+   * Pause active playback in place without unloading the loaded audio file or synth score
+   * (used by Chase TC stationary-timecode hold so media can resume cleanly when TC advances).
+   */
+  public pausePlayback(): void {
+    this.cancelPendingSource();
+    if (this.source === 'synth' && this.playing) {
+      this.heldStep = this.currentDemoStep();
+      this.playing = false;
+      this.beatPulse = 0;
+      this.stopPump();
+      const suspended = this.ctx?.suspend().catch(() => {}) ?? null;
+      if (suspended) {
+        this.pendingSuspend = suspended;
+        void suspended.then(() => {
+          if (this.pendingSuspend === suspended) this.pendingSuspend = null;
+        });
+      }
+      return;
+    }
+    if (this.source === 'file' && this.activeFile) {
+      this.activeFile.element.pause();
+      this.playing = false;
+      this.beatPulse = 0;
+    }
+  }
+
   public async startMicInput(): Promise<void> {
     const generation = this.cancelPendingSource();
     const ctx = this.ensureContext(this.source !== 'synth' || this.playing);

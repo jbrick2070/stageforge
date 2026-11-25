@@ -344,15 +344,16 @@ test('Tempo folding, half/double bounds, tap tempo, beat grid nudge/downbeat, an
   assert.equal(tapper.tap(4000).bpm, null);
   assert.equal(tapper.tap(4400).bpm, 150);
 
-  // Beat grid nudge & set downbeat
+  // Beat grid nudge & set downbeat (preserves 4-beat bar phase, M4)
   const grid = { bpm: 120, offsetMs: 100, source: 'offline' };
   const nudged = tsTempo.nudgeBeatGrid(grid, -50);
   assert.equal(nudged.offsetMs, 50);
-  const anchored = tsTempo.setBeatGridDownbeat(grid, 1250); // 1250 % 500 = 250
-  assert.equal(anchored.offsetMs, 250);
+  const anchored = tsTempo.setBeatGridDownbeat(grid, 1250); // 1250 % 2000 = 1250 (bar phase preserved)
+  assert.equal(anchored.offsetMs, 1250);
   const phase = tsTempo.beatGridPhase(anchored, 1250);
   assert.equal(phase.phase, 0);
-  assert.equal(phase.beatIndex, 2);
+  assert.equal(phase.beatIndex, 0);
+  assert.equal(phase.isDownbeat, true);
 
   // Live BPM stabilizer: requires 4 s stability within ±1.5 BPM and >1 BPM diff
   const stab = new tsTempo.LiveBpmStabilizer(5, 4000, 1.5);
@@ -505,16 +506,19 @@ test('Sprint 3 QA regressions: overlapping configure (H1), paused/interleaved ch
     assert.ok(Math.abs(step.rawTcMs - t) < 34, `playhead drift must stay < 1 frame (got ${step.rawTcMs - t} ms)`);
   }
 
-  // Repeated identical frame (paused generator) must never seek back or advance.
+  // Repeated identical frame (paused generator) must never seek back, emits one 'hold' after >= 120 ms, and never creeps once held.
   const pausedTc = 1000 + 20 * (1000 / 30);
+  let holdTransitions = 0;
   for (let k = 1; k <= 10; k++) {
     const t = pausedTc + k * 33;
     const tStep = chase.tick(t - 10);
     const rStep = chase.onTimecode({ ms: pausedTc, fps: 30, source: 'artnetTC' }, t);
     assert.notEqual(rStep.action, 'seek', 'paused repeated TC must never trigger snap-back seek (H2)');
-    assert.equal(rStep.action, 'none');
-    if (k > 2) assert.equal(tStep.action, 'none', 'tick during paused TC must not creep forward');
+    if (rStep.action === 'hold') holdTransitions++;
+    else assert.equal(rStep.action, 'none');
+    if (k > 5) assert.equal(tStep.action, 'none', 'tick during paused TC must not creep forward');
   }
+  assert.equal(holdTransitions, 1, 'stationary timecode must emit exactly one hold transition (M3)');
 
   // M5: While locked to artnetTC, competing MTC samples at a different offset are ignored (no false seeks).
   const competing = chase.onTimecode({ ms: 9000, fps: 30, source: 'mtc' }, pausedTc + 400);

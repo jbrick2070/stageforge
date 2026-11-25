@@ -21,7 +21,8 @@ Open **Sync** in the top bar to open the **Show Control & Sync** drawer. StageFo
 
 - **Desktop app (Electron):** listens on UDP `127.0.0.1:8000` by default (loopback only unless **Listen on all interfaces (`0.0.0.0`)** is explicitly enabled). Desktop CSP stays tight (`connect-src 'self' blob:`) because UDP runs in the Electron main process.
 - **Web browser:** connects to an OSC-over-WebSocket bridge (`ws://` or `wss://`, default `ws://127.0.0.1:8080`).
-- **Safety:** packets capped at 8 KiB, bundle depth capped at 4, max 64 elements per bundle, unknown type tags and wildcard pattern characters rejected, rate-limited to 500 messages/s.
+- **Safety:** packets capped at 8 KiB, bundle depth capped at 4, max 64 elements per bundle, unknown type tags and wildcard pattern characters rejected, datagram ingress budgeted before decoding (1,000 datagrams/s aggregate), and OSC messages rate-limited to 500 messages/s per source / 1,000 messages/s aggregate with a shared overflow bucket beyond 64 sources (no fresh allowance on eviction).
+- **Momentary bump leases:** every remote bump (`/stageforge/bump/*`) is source-owned and expires automatically after **2 seconds** unless refreshed (senders holding a button should repeat at least once per second). Disconnecting, disabling the listener, switching clock modes, or blurring the window clears all holds immediately. A remote `laser` bump never enables a laser whose desk toggle is off.
 
 ### Inbound OSC addresses
 

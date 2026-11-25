@@ -1,16 +1,20 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw, Search, ShieldAlert, Square, Zap } from 'lucide-react';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
 import { formatArtNetAddress, parseTargetList, type DmxOutputMode } from '../dmx/liveDmx';
+import { GENERIC_SIMULATED_LABEL, summarizePhysicalDrive } from '../dmx/physicalDmx';
+import type { RigConfig } from '../types/show';
 
 interface DmxOutputSectionProps {
   output: LiveDmxControllerApi;
+  rig?: RigConfig;
   hasCatalogFixtures?: boolean;
 }
 
-export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output, hasCatalogFixtures }) => {
+export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output, rig, hasCatalogFixtures }) => {
   const [expanded, setExpanded] = useState(false);
   const [armed, setArmed] = useState(false);
+  const physicalSummary = useMemo(() => (rig ? summarizePhysicalDrive(rig) : null), [rig]);
 
   const {
     hasDesktopBridge,
@@ -96,11 +100,47 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({ output, hasC
 
       {expanded && (
         <div className="px-3 pb-2.5 pt-1 space-y-2 font-mono-tech text-[10px] border-t border-white/5 max-h-[300px] overflow-y-auto">
-          {hasCatalogFixtures && (
-            <p role="note" className="rounded border border-cyan-400/40 bg-cyan-950/40 px-2 py-1 text-[9px] text-cyan-100">
-              Simulated control layout, not the fixture&apos;s real channel map.
+          {output.banner.stoppedNotice && !isLive && (
+            <p role="alert" data-testid="dmx-output-stopped-notice" className="rounded border border-amber-400/60 bg-amber-950/60 px-2 py-1 text-[9px] text-amber-100">
+              {output.banner.stoppedNotice}. Re-arm and click Go live to resume output.
             </p>
           )}
+          {physicalSummary ? (
+            <div data-testid="dmx-physical-coverage" className="space-y-1">
+              {physicalSummary.hasSimulationOnly && (
+                <div role="note" className="rounded border border-amber-400/40 bg-amber-950/40 px-2 py-1 text-[9px] text-amber-100 space-y-0.5">
+                  <div className="font-semibold">
+                    {physicalSummary.simulationOnly.length} fixture {physicalSummary.simulationOnly.length === 1 ? 'group' : 'groups'} not driven (simulation only) — neutral zeros sent:
+                  </div>
+                  <ul className="list-disc pl-3.5 text-amber-200/90 space-y-0.5">
+                    {physicalSummary.simulationOnly.slice(0, 6).map((item) => (
+                      <li key={`${item.location}:${item.id}`}>
+                        {item.modelName}{item.dmxMode ? ` (${item.dmxMode})` : ''} ×{item.count} — not driven (simulation only)
+                      </li>
+                    ))}
+                    {physicalSummary.simulationOnly.length > 6 && (
+                      <li>+{physicalSummary.simulationOnly.length - 6} more groups</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+              {physicalSummary.hasGeneric && (
+                <p role="note" className="rounded border border-cyan-400/40 bg-cyan-950/40 px-2 py-1 text-[9px] text-cyan-100">
+                  Generic fixtures use {GENERIC_SIMULATED_LABEL}.
+                </p>
+              )}
+              {physicalSummary.hasImplemented && (
+                <p role="note" className="rounded border border-emerald-400/35 bg-emerald-950/35 px-2 py-1 text-[9px] text-emerald-100">
+                  Implemented personalities ({physicalSummary.implemented.length}):{' '}
+                  {physicalSummary.implemented.map((item) => `${item.modelName} (${item.dmxMode ?? 'default'})`).join(', ')}.
+                </p>
+              )}
+            </div>
+          ) : hasCatalogFixtures ? (
+            <p role="note" className="rounded border border-cyan-400/40 bg-cyan-950/40 px-2 py-1 text-[9px] text-cyan-100">
+              Unimplemented catalogue fixtures are not driven (simulation only) and output neutral zeros.
+            </p>
+          ) : null}
           {/* Protocol / transport selector */}
           <div className="flex gap-1" role="group" aria-label="Output transport">
             {([

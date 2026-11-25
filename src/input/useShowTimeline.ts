@@ -27,6 +27,12 @@ export function frameDelta(before: DeskFrame, after: DeskFrame, atMs: number, el
     for (const key of Object.keys(after.look) as (keyof ShowState)[]) {
       if (changed(before.look[key], after.look[key])) Object.assign(patch, { [key]: after.look[key] });
     }
+    // Preserve explicit removal of the last audio mapping as `{ mappings: [] }` so replay & seek clear it.
+    const hadAudioMap = (before.look.audioMap?.mappings?.length ?? 0) > 0;
+    const hasAudioMap = (after.look.audioMap?.mappings?.length ?? 0) > 0;
+    if (hadAudioMap && !hasAudioMap) {
+      patch.audioMap = { mappings: [] };
+    }
     if (Object.keys(patch).length) event.look = patch;
   }
   // A refire can restore the current cue without changing its ID.
@@ -228,6 +234,14 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
       setTimeMs(ms);
     }
   };
+  /** Resolve the timeline state at `requestedMs` without mutating chase cursor or applying events. */
+  const resolveFrameAt = (requestedMs: number, running: boolean): TimelineEvent | null => {
+    const take = timelineRef.current;
+    if (!playable(take) || !take.events.length) return null;
+    const ms = Math.max(0, Math.min(take.durationMs, Math.round(requestedMs)));
+    baseline.current ??= live.current.sample();
+    return resolveTakeFrame(take, ms, baseline.current, running && ms < take.durationMs);
+  };
   /** Reset chase cursor cleanly (e.g. on leaving Chase mode or replacing a take). */
   const resetChase = () => {
     chaseIndex.current = 0;
@@ -303,5 +317,5 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
       ...(run.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: run.timecodeOffsetMs } : {}),
     };
   };
-  return { timeline, mode, timeMs, canResume, record, play, pause, seek, playhead, stop, replace, syncWallDuration, snapshot, chaseSeek, chaseAdvance, resetChase, setMetadata };
+  return { timeline, mode, timeMs, canResume, record, play, pause, seek, playhead, stop, replace, syncWallDuration, snapshot, chaseSeek, chaseAdvance, resolveFrameAt, resetChase, setMetadata };
 }

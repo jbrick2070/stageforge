@@ -240,7 +240,7 @@ function rigReferences(rig: RigConfig) {
 }
 type RigReferences = ReturnType<typeof rigReferences>;
 
-function portableLook<T extends Partial<ShowState>>(look: T, refs: RigReferences): T {
+function portableLook<T extends Partial<ShowState>>(look: T, refs: RigReferences, preserveEmptyAudioMap = false): T {
   const result = { ...look };
   if (look.laser?.projectors) {
     const projectors = Object.fromEntries(Object.entries(look.laser.projectors).filter(([key]) => refs.lasers.has(key)));
@@ -273,6 +273,9 @@ function portableLook<T extends Partial<ShowState>>(look: T, refs: RigReferences
       }));
     if (kept.length > 0) {
       result.audioMap = { mappings: kept };
+    } else if (preserveEmptyAudioMap) {
+      // Preserve explicit `{ mappings: [] }` clears on cues and timeline patches (including when pruning empties a patch).
+      result.audioMap = { mappings: [] };
     } else {
       delete result.audioMap;
     }
@@ -515,23 +518,23 @@ export function makeShowFile(
     };
   }
   const cleanCues = cues.map(cue => ({
-    ...cue, state: portableLook(cue.state, refs), screen: cue.screen && portableMedia(cue.screen),
+    ...cue, state: portableLook(cue.state, refs, true), screen: cue.screen && portableMedia(cue.screen),
   }));
-  const cleanLook = portableLook(look, refs);
+  const cleanLook = portableLook(look, refs, false);
   const cleanTimeline = timeline && {
     durationMs: timeline.durationMs,
     ...(timeline.frameRate !== undefined ? { frameRate: timeline.frameRate } : {}),
     ...(timeline.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: timeline.timecodeOffsetMs } : {}),
     events: timeline.events.map(event => ({
-      ...event, look: event.look && portableLook(event.look, refs),
+      ...event, look: event.look && portableLook(event.look, refs, true),
       music: event.music && portableMedia(event.music), screen: event.screen && portableMedia(event.screen),
     })),
   };
-  const hasAudioMappings = (s?: Partial<ShowState>) => (s?.audioMap?.mappings?.length ?? 0) > 0;
+  const hasAudioMapField = (s?: Partial<ShowState>) => s?.audioMap !== undefined;
   const hasV8 =
-    hasAudioMappings(cleanLook) ||
-    cleanCues.some((c) => hasAudioMappings(c.state)) ||
-    (cleanTimeline?.events.some((e) => hasAudioMappings(e.look)) ?? false);
+    hasAudioMapField(cleanLook) ||
+    cleanCues.some((c) => hasAudioMapField(c.state)) ||
+    (cleanTimeline?.events.some((e) => hasAudioMapField(e.look)) ?? false);
   const hasV7 =
     rig.power !== undefined ||
     rig.trussPods.some(

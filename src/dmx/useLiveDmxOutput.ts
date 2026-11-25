@@ -36,6 +36,7 @@ export interface LiveDmxControllerApi {
   error: string | null;
   isLive: boolean;
   banner: LiveDmxBannerState;
+  dismissStoppedNotice: () => void;
   enable: () => Promise<boolean>;
   disable: () => Promise<void>;
 }
@@ -44,11 +45,14 @@ export function useLiveDmxOutput(
   engineRef: React.RefObject<StageEngine | null>,
   onToast: (message: string) => void,
   enabled = true,
+  onBeforeDisable?: () => void,
 ): LiveDmxControllerApi {
   const hasDesktopBridge = Boolean(typeof window !== 'undefined' && window.stageforgeDesktop);
   const hasWebSerial = isWebSerialSupported();
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  const onBeforeDisableRef = useRef(onBeforeDisable);
+  onBeforeDisableRef.current = onBeforeDisable;
 
   const [settings, setSettings] = useState<DmxOutputSettings>(() => loadDmxOutputSettings(hasDesktopBridge));
   const [interfaces, setInterfaces] = useState<DmxNetworkInterfaceBridge[]>([]);
@@ -59,6 +63,7 @@ export function useLiveDmxOutput(
   const [discoveryWarning, setDiscoveryWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dismissedStopEventId, setDismissedStopEventId] = useState<number | null>(null);
 
   const serialRef = useRef<EnttecProTransport | null>(null);
   if (!serialRef.current) {
@@ -208,6 +213,7 @@ export function useLiveDmxOutput(
   }, [discovering, onToast, settings.iface]);
 
   const disable = useCallback(async () => {
+    onBeforeDisableRef.current?.();
     setBusy(true);
     setError(null);
     const wasActive = Boolean(serialRef.current?.isRunning() || desktopLiveRef.current);
@@ -303,9 +309,28 @@ export function useLiveDmxOutput(
     }
   }, [desktopStatus?.enabled, onToast, settings]);
 
+  // Send renderer liveness heartbeat (~1 Hz) to Electron main while live network DMX is active.
+  // Independent of unchanged-frame suppression so static looks stay alive while a frozen renderer times out in 5 s.
+  useEffect(() => {
+    if (!enabled || !desktopLive) return;
+    const bridge = window.stageforgeDesktop;
+    if (!bridge?.sendDmxHeartbeat) return;
+    bridge.sendDmxHeartbeat();
+    const timer = window.setInterval(() => {
+      if (enabledRef.current) bridge.sendDmxHeartbeat();
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [enabled, desktopLive]);
+
+  const dismissStoppedNotice = useCallback(() => {
+    if (desktopStatus?.stopEventId !== undefined) {
+      setDismissedStopEventId(desktopStatus.stopEventId);
+    }
+  }, [desktopStatus?.stopEventId]);
+
   const banner = useMemo<LiveDmxBannerState>(() => {
     if (!enabled) {
-      return { active: false, label: 'OFF', detail: '', degraded: false, error: null };
+      return { active: false, label: 'OFF', detail: '', degraded: false, error: null, stoppedNotice: null };
     }
     if (desktopStatus?.enabled) {
       const proto = desktopStatus.protocol === 'sacn' ? 'sACN' : 'Art-Net';
@@ -319,6 +344,7 @@ export function useLiveDmxOutput(
         detail: [uniLabel, hz].filter(Boolean).join(' · '),
         degraded: desktopStatus.degraded,
         error: desktopStatus.lastError,
+        stoppedNotice: null,
       };
     }
     if (serialStatus.enabled) {
@@ -329,16 +355,23 @@ export function useLiveDmxOutput(
         detail: `U${serialStatus.universe} · ${hz}`,
         degraded: Boolean(serialStatus.error),
         error: serialStatus.error,
+        stoppedNotice: null,
       };
     }
+    const stoppedNotice =
+      desktopStatus?.lastStopReason === 'heartbeat-timeout' &&
+      desktopStatus.stopEventId !== dismissedStopEventId
+        ? 'Output stopped: app stopped responding'
+        : null;
     return {
       active: false,
       label: 'OFF',
       detail: '',
       degraded: false,
       error: null,
+      stoppedNotice,
     };
-  }, [desktopStatus, serialStatus]);
+  }, [desktopStatus, dismissedStopEventId, enabled, serialStatus]);
 
   return {
     hasDesktopBridge,
@@ -357,6 +390,7 @@ export function useLiveDmxOutput(
     error,
     isLive,
     banner,
+    dismissStoppedNotice,
     enable,
     disable,
   };

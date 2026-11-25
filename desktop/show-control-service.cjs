@@ -27,7 +27,11 @@ const DEFAULT_OSC_PORT = 8000;
 const MIN_PORT = 1024;
 const MAX_PORT = 65535;
 const OSC_RATE_LIMIT_PER_SEC = 500;
+const OSC_AGGREGATE_RATE_LIMIT_PER_SEC = 1000;
+const OSC_DATAGRAM_RATE_LIMIT_PER_SEC = 1000;
 const ARTNET_TC_RATE_LIMIT_PER_SEC = 120;
+const ARTNET_TC_AGGREGATE_RATE_LIMIT_PER_SEC = 240;
+const OVERFLOW_RATE_LIMIT_PER_SEC = 100;
 const TC_IPC_MIN_INTERVAL_MS = 1000 / 60; // Coalesce TC to <= 60 Hz before IPC.
 
 const CONFIG_KEYS = new Set([
@@ -53,19 +57,44 @@ function assertOnlyKeys(obj, allowed, label) {
   }
 }
 
-function createTokenBucket(ratePerSec, nowMs = () => Date.now()) {
-  let tokens = ratePerSec;
+function defaultMonotonicMs() {
+  return Number(process.hrtime.bigint() / 1_000_000n);
+}
+
+function createTokenBucket(ratePerSec, nowMs = defaultMonotonicMs, initialTokens = ratePerSec) {
+  let tokens = Math.max(0, Math.min(ratePerSec, initialTokens));
   let lastRefill = nowMs();
-  return function take() {
+  function refill() {
     const now = nowMs();
-    const elapsed = Math.max(0, now - lastRefill);
+    if (now < lastRefill) {
+      // Guard against backwards system-clock jumps on injected non-monotonic clocks.
+      lastRefill = now;
+      return;
+    }
+    const elapsed = now - lastRefill;
     if (elapsed > 0) {
       tokens = Math.min(ratePerSec, tokens + (elapsed / 1000) * ratePerSec);
       lastRefill = now;
     }
-    if (tokens < 1) return false;
-    tokens -= 1;
-    return true;
+  }
+  return {
+    take() {
+      refill();
+      if (tokens < 1) return false;
+      tokens -= 1;
+      return true;
+    },
+    refund() {
+      tokens = Math.min(ratePerSec, tokens + 1);
+    },
+    isFull() {
+      refill();
+      return tokens >= ratePerSec - 1e-6;
+    },
+    currentTokens() {
+      refill();
+      return tokens;
+    },
   };
 }
 
@@ -91,20 +120,56 @@ const MAX_RATE_BUCKET_SOURCES = 64;
 const TX_RATE_LIMIT_PER_SEC = 120;
 const DAY_MS = 86_400_000;
 
-function createPerSourceTokenBuckets(ratePerSec, nowMs = () => Date.now()) {
+function createPerSourceTokenBuckets(ratePerSec, aggregateRatePerSec, nowMs = defaultMonotonicMs, overflowRatePerSec = OVERFLOW_RATE_LIMIT_PER_SEC) {
   const buckets = new Map();
+  const aggregate = createTokenBucket(aggregateRatePerSec, nowMs);
+  const overflow = createTokenBucket(overflowRatePerSec, nowMs);
   return function take(sourceKey) {
     const key = typeof sourceKey === 'string' && sourceKey ? sourceKey : 'unknown';
-    let fn = buckets.get(key);
-    if (!fn) {
-      if (buckets.size >= MAX_RATE_BUCKET_SOURCES) {
-        const oldest = buckets.keys().next().value;
-        if (oldest !== undefined) buckets.delete(oldest);
+    let bucket = buckets.get(key);
+    if (bucket) {
+      // Known source: enforce per-source limit BEFORE aggregate so one noisy host cannot drain the shared aggregate bucket.
+      if (!bucket.take()) return false;
+      if (!aggregate.take()) {
+        bucket.refund();
+        return false;
       }
-      fn = createTokenBucket(ratePerSec, nowMs);
-      buckets.set(key, fn);
+      return true;
     }
-    return fn();
+    // New source: enforce aggregate budget BEFORE mutating the map so spoofed IPs cannot churn memory,
+    // and refund aggregate if the new/overflow bucket rejects so legitimate tracked hosts are not starved.
+    if (!aggregate.take()) return false;
+    if (buckets.size < MAX_RATE_BUCKET_SOURCES) {
+      bucket = createTokenBucket(ratePerSec, nowMs);
+      buckets.set(key, bucket);
+    } else {
+      // Only evict an idle source whose bucket has refilled to full; otherwise route to the shared overflow bucket.
+      let idleKey = null;
+      for (const [k, b] of buckets) {
+        if (b.isFull()) {
+          idleKey = k;
+          break;
+        }
+      }
+      if (idleKey !== null) {
+        buckets.delete(idleKey);
+        // Carry overflow pressure into promoted entries so rotating 65+ addresses cannot regain full fresh budgets.
+        const seedTokens = Math.min(ratePerSec, overflow.currentTokens());
+        bucket = createTokenBucket(ratePerSec, nowMs, seedTokens);
+        buckets.set(key, bucket);
+      } else {
+        if (!overflow.take()) {
+          aggregate.refund();
+          return false;
+        }
+        return true;
+      }
+    }
+    if (!bucket.take()) {
+      aggregate.refund();
+      return false;
+    }
+    return true;
   };
 }
 
@@ -187,8 +252,10 @@ function createShowControlService({
   dgramModule = dgram,
   testPorts = null,
   allowZeroPort = false,
-  nowMs = () => Date.now(),
+  nowMs = null,
 } = {}) {
+  const monotonicNowMs = typeof nowMs === 'function' ? nowMs : defaultMonotonicMs;
+  const eventNowMs = typeof nowMs === 'function' ? nowMs : () => Date.now();
   let ownerId = null;
   let configGen = 0;
   let oscRxSocket = null;
@@ -218,10 +285,12 @@ function createShowControlService({
   let tcCoalesceTimer = null;
   let opQueue = Promise.resolve();
 
-  // Per-sender IP token buckets so one noisy host cannot starve the real controller (M3).
-  const takeOscToken = createPerSourceTokenBuckets(OSC_RATE_LIMIT_PER_SEC, nowMs);
-  const takeTcToken = createPerSourceTokenBuckets(ARTNET_TC_RATE_LIMIT_PER_SEC, nowMs);
-  const takeTxToken = createTokenBucket(TX_RATE_LIMIT_PER_SEC, nowMs);
+  // Per-sender IP + aggregate + shared overflow token buckets so neither a noisy host nor 65+ spoofed IPs can bypass limits.
+  const takeOscDatagramToken = createPerSourceTokenBuckets(OSC_RATE_LIMIT_PER_SEC, OSC_DATAGRAM_RATE_LIMIT_PER_SEC, monotonicNowMs);
+  const takeOscToken = createPerSourceTokenBuckets(OSC_RATE_LIMIT_PER_SEC, OSC_AGGREGATE_RATE_LIMIT_PER_SEC, monotonicNowMs);
+  const takeTcToken = createPerSourceTokenBuckets(ARTNET_TC_RATE_LIMIT_PER_SEC, ARTNET_TC_AGGREGATE_RATE_LIMIT_PER_SEC, monotonicNowMs);
+  const txBucket = createTokenBucket(TX_RATE_LIMIT_PER_SEC, monotonicNowMs);
+  const takeTxToken = () => txBucket.take();
 
   function isActive() {
     return Boolean(oscRxSocket || artnetTcRelease || txSocket);
@@ -274,7 +343,8 @@ function createShowControlService({
   }
 
   function queueTimecodeEvent(event) {
-    const now = nowMs();
+    const now = monotonicNowMs();
+    if (now < lastTcEmitAt) lastTcEmitAt = now;
     const elapsed = now - lastTcEmitAt;
     if (elapsed >= TC_IPC_MIN_INTERVAL_MS) {
       lastTcEmitAt = now;
@@ -290,7 +360,7 @@ function createShowControlService({
         if (!pendingTcEvent || !artnetTcRelease) return;
         const next = pendingTcEvent;
         pendingTcEvent = null;
-        lastTcEmitAt = nowMs();
+        lastTcEmitAt = monotonicNowMs();
         emitEvent(next);
       }, wait);
       if (typeof tcCoalesceTimer.unref === 'function') tcCoalesceTimer.unref();
@@ -298,13 +368,18 @@ function createShowControlService({
   }
 
   function handleOscDatagram(msg, rinfo) {
+    const senderKey = rinfo && rinfo.address ? rinfo.address : 'unknown';
+    // Budget datagrams BEFORE decoding so malformed UDP floods are dropped cheaply.
+    if (!takeOscDatagramToken(senderKey)) {
+      oscDroppedCount++;
+      return;
+    }
     const packets = decodeOscPacket(msg);
     if (!packets) {
       oscDroppedCount++;
       return;
     }
-    const senderKey = rinfo && rinfo.address ? rinfo.address : 'unknown';
-    const at = nowMs();
+    const at = eventNowMs();
     for (const oscMsg of packets) {
       if (!takeOscToken(senderKey)) {
         oscDroppedCount++;
@@ -312,6 +387,7 @@ function createShowControlService({
       }
       const normalized = normalizeOscMessage(oscMsg, at);
       if (normalized) {
+        normalized.sender = senderKey;
         oscRxCount++;
         emitEvent(normalized);
       } else {
@@ -335,7 +411,7 @@ function createShowControlService({
       minutes: decoded.minutes,
       seconds: decoded.seconds,
       frames: decoded.frames,
-      at: nowMs(),
+      at: eventNowMs(),
     });
   }
 
@@ -538,7 +614,10 @@ function createShowControlService({
 module.exports = {
   DEFAULT_OSC_PORT,
   OSC_RATE_LIMIT_PER_SEC,
+  OSC_AGGREGATE_RATE_LIMIT_PER_SEC,
+  OSC_DATAGRAM_RATE_LIMIT_PER_SEC,
   ARTNET_TC_RATE_LIMIT_PER_SEC,
+  ARTNET_TC_AGGREGATE_RATE_LIMIT_PER_SEC,
   validateShowControlConfig,
   createShowControlService,
 };

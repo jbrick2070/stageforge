@@ -361,6 +361,11 @@ export function encodeLaserDmxChannels(
 
   const bytes = out ?? [];
   bytes.length = layout.length;
+  // Disabled or blacked-out laser must emit neutral zeros across its entire footprint (never posX=128).
+  if (!v.enabled || v.intensity <= 0.01) {
+    bytes.fill(0);
+    return bytes;
+  }
   for (let i = 0; i < layout.length; i++) {
     bytes[i] = roleByte(layout[i], v);
   }

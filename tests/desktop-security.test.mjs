@@ -146,6 +146,7 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
   assert.deepEqual(Object.keys(exposedApi), [
     'onRigCommand',
     'sendDmxFrame',
+    'sendDmxHeartbeat',
     'dmxControl',
     'onDmxStatus',
     'showControl',

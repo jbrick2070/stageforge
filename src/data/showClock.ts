@@ -1,4 +1,5 @@
 import type { NativeStage, ShowTimeline, TimelineEvent } from './showFile';
+import { applyTimelineLookPatch } from './cueLook';
 import { DEMO_TOTAL_STEPS } from './demoShow';
 import type { BumpState, CameraPreset, MusicRef, ScreenRef, ShowState } from '../types/show';
 
@@ -34,7 +35,7 @@ export function resolveTakeFrame(take: ShowTimeline, requestedMs: number, base: 
       musicAt = event.atMs;
     }
     if (event.screen) { frame.screen = event.screen; screenAt = event.atMs; }
-    if (event.look) Object.assign(frame.look, event.look);
+    if (event.look) frame.look = applyTimelineLookPatch(frame.look, event.look);
     if (event.cueId !== undefined) frame.cueId = event.cueId;
     if (event.camera !== undefined) frame.camera = event.camera;
     if (event.bump !== undefined) frame.bump = event.bump;

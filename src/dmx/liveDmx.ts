@@ -26,6 +26,7 @@ export interface LiveDmxBannerState {
   detail: string;
   degraded: boolean;
   error: string | null;
+  stoppedNotice?: string | null;
 }
 
 const STORAGE_KEY = 'stageforge.dmx.output.v1';

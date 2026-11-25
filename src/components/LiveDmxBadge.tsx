@@ -1,31 +1,68 @@
 import React from 'react';
-import { AlertTriangle, Square } from 'lucide-react';
+import { AlertTriangle, Square, X } from 'lucide-react';
 import type { LiveDmxBannerState } from '../dmx/liveDmx';
 
 interface LiveDmxBadgeProps {
   banner: LiveDmxBannerState;
   busy: boolean;
   hasCatalogFixtures?: boolean;
+  hasSimulationOnly?: boolean;
   onStop: () => void;
+  onDismissNotice?: () => void;
   onOpenOutput: () => void;
 }
 
 /**
  * Always-visible safety indicator rendered at the App root (including in cinema mode)
- * whenever live physical DMX output (sACN, Art-Net 4, or Enttec USB Pro) is active.
+ * whenever live physical DMX output (sACN, Art-Net 4, or Enttec USB Pro) is active,
+ * or when main-process output stopped automatically due to heartbeat loss.
  */
 export const LiveDmxBadge: React.FC<LiveDmxBadgeProps> = ({
   banner,
   busy,
   hasCatalogFixtures,
+  hasSimulationOnly,
   onStop,
+  onDismissNotice,
   onOpenOutput,
 }) => {
-  if (!banner.active) return null;
+  if (!banner.active) {
+    if (!banner.stoppedNotice) return null;
+    return (
+      <div
+        role="alert"
+        data-testid="live-dmx-stopped-badge"
+        className="fixed top-14 right-3 z-50 flex items-center gap-2 rounded-lg border border-amber-400/80 bg-amber-950/95 px-2.5 py-1.5 shadow-2xl backdrop-blur-md font-mono-tech text-[11px] text-amber-100"
+      >
+        <button
+          type="button"
+          onClick={onOpenOutput}
+          className="flex items-center gap-1.5 text-left cursor-pointer"
+        >
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-300 shrink-0" aria-hidden="true" />
+          <span className="font-bold">{banner.stoppedNotice}</span>
+        </button>
+        {onDismissNotice && (
+          <button
+            type="button"
+            aria-label="Dismiss output stopped notice"
+            data-testid="live-dmx-stopped-dismiss"
+            onClick={onDismissNotice}
+            className="p-0.5 rounded hover:bg-amber-800/60 text-amber-200 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" aria-hidden="true" />
+          </button>
+        )}
+      </div>
+    );
+  }
   const baseTitle = banner.error ? `Output degraded: ${banner.error}` : 'Open output settings';
-  const tooltip = hasCatalogFixtures
-    ? `${baseTitle} · Simulated control layout, not the fixture's real channel map`
-    : baseTitle;
+  const simNote = hasSimulationOnly
+    ? 'Some catalogue fixtures are simulation-only (neutral zeros on physical DMX)'
+    : hasCatalogFixtures
+      ? 'Check DMX Output for per-fixture personality status'
+      : 'StageForge simulated channel layout, verify against your fixture';
+  const tooltip = `${baseTitle} · ${simNote}`;
 
   return (
     <div
@@ -53,10 +90,10 @@ export const LiveDmxBadge: React.FC<LiveDmxBadgeProps> = ({
         />
         <span className="font-bold tracking-wider">{banner.label}</span>
         {banner.detail && <span className="text-[10px] opacity-85">{banner.detail}</span>}
-        {hasCatalogFixtures && (
+        {hasSimulationOnly && (
           <span className="rounded border border-cyan-300/50 bg-cyan-950/70 px-1.5 py-0.5 text-[9px] text-cyan-100">
-            <span aria-hidden="true">Sim map</span>
-            <span className="sr-only"> (Simulated control layout, not the fixture&apos;s real channel map)</span>
+            <span aria-hidden="true">Sim-only units</span>
+            <span className="sr-only"> (Unimplemented catalogue fixtures output neutral zeros on physical DMX)</span>
           </span>
         )}
         {banner.degraded && <AlertTriangle className="w-3.5 h-3.5 text-amber-300" aria-hidden="true" />}

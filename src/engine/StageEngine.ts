@@ -49,6 +49,12 @@ import { detectRenderTier, maxPixelRatioForTier, type RenderTier } from './hardw
 import { FocusMark, PAN_LIMIT, TILT_LIMIT, aimAngles, aimTiltOnly, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
 import { headLook } from '../data/movingGroups';
 import { buildDmxPatch, groupFootprint, writeDmxChannels } from '../data/dmxPatch';
+import {
+  classifyPhysicalGroup,
+  writePhysicalUnitBytes,
+  type PhysicalGroupClassification,
+  type PhysicalUnitState,
+} from '../dmx/physicalDmx';
 import { floorUnitX, hungUnits, mountSlotIndex } from '../data/fixturePlacement';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import type { NativeStage } from '../data/showFile';
@@ -104,6 +110,7 @@ interface MovingFixtureInstance {
   dmxUniverse: 1 | 2;
   dmxStart: number;
   dmxWidth: number;
+  physicalClass: PhysicalGroupClassification;
 }
 
 interface LaserUnitInstance {
@@ -129,12 +136,15 @@ interface LaserUnitInstance {
   dmxUniverse: 1 | 2;
   dmxStart: number;
   dmxWidth: number;
+  physicalClass: PhysicalGroupClassification;
 }
 
 interface DmxOutput {
   buffer: Uint8Array;
+  physBuffer: Uint8Array;
   start: number;
   width?: number;
+  physicalClass: PhysicalGroupClassification;
 }
 
 interface StrobeInstance extends DmxOutput {
@@ -293,13 +303,19 @@ export class StageEngine {
   private cameraLerpActive = false;
   private orbitAuto = false;
 
-  // DMX Universe buffers (2 x 512 real channels!)
+  // DMX Universe buffers:
+  // - dmxUniverse1/2 hold StageForge's simulation / monitor buffers (unchanged for legacy ?probe & monitor).
+  // - physicalDmxU1/U2 hold outgoing physical wire buffers (only verified personalities & generic rigs; unimplemented catalogue modes = 0).
   public dmxUniverse1 = new Uint8Array(512);
   public dmxUniverse2 = new Uint8Array(512);
+  public physicalDmxU1 = new Uint8Array(512);
+  public physicalDmxU2 = new Uint8Array(512);
   private dmxFrameListener?: (u1: Uint8Array, u2: Uint8Array, u1Changed: boolean, u2Changed: boolean) => void;
   private dmxAccum = 0;
   private lastDmxU1 = new Uint8Array(512);
   private lastDmxU2 = new Uint8Array(512);
+  private physicalDmxScratch: number[] = [];
+  private physicalUnitScratch: PhysicalUnitState = { blackout: false };
 
   // Audio-reactive modulation state (preallocated for zero per-frame allocations)
   private audioModState: AudioModulationState = createAudioModulationState();
@@ -349,6 +365,7 @@ export class StageEngine {
       projectors: Object.create(null) as Record<string, { intensity: number; speed: number; rotation: number; spreadX: number; spreadY: number; strobeGateOn: boolean }>,
     },
     haze: { level: 0 },
+    atmo: { haze: 0, smoke: 0, co2: false },
   };
 
   // Animation loop state
@@ -769,6 +786,7 @@ export class StageEngine {
         ),
       },
       haze: { ...p.haze },
+      atmo: { ...p.atmo },
     });
     if (!group) return copyAll();
     const all = copyAll();
@@ -1225,6 +1243,8 @@ export class StageEngine {
     try {
     this.dmxUniverse1.fill(0);
     this.dmxUniverse2.fill(0);
+    this.physicalDmxU1.fill(0);
+    this.physicalDmxU2.fill(0);
     this.trussPods = [];
     this.movingFixtures = [];
     this.laserUnits = [];
@@ -1552,6 +1572,8 @@ export class StageEngine {
         const start = patch.unitStart(fg, i);
         const width = groupFootprint(fg);
         const buffer = fg.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
+        const physBuffer = fg.dmxUniverse === 1 ? this.physicalDmxU1 : this.physicalDmxU2;
+        const physicalClass = classifyPhysicalGroup(fg);
         if (fg.type === 'beam' || fg.type === 'wash') {
           const lateral = slot.pos.x * Math.cos(pod.rotationY) + slot.pos.z * Math.sin(pod.rotationY);
           const inst = this.createMovingFixture(
@@ -1563,6 +1585,7 @@ export class StageEngine {
             fg.dmxUniverse,
             start,
             width,
+            physicalClass,
             resolveOptics(fg),
             fg.catalogId
           );
@@ -1578,6 +1601,7 @@ export class StageEngine {
             fg.dmxUniverse,
             start,
             width,
+            physicalClass,
             fg.catalogId,
             fg.dmxMode
           );
@@ -1593,7 +1617,7 @@ export class StageEngine {
           st.mesh.rotation.y = slot.rotY;
           st.mesh.translateY(-drop).translateZ(0.24);
           podGroup.add(nameFixtureUnit(st.mesh, fg, i, start));
-          this.strobes.push({ lensMat: st.lensMat, index: st.index, buffer, start, width });
+          this.strobes.push({ lensMat: st.lensMat, index: st.index, buffer, physBuffer, start, width, physicalClass });
         } else if (fg.type === 'blinder') {
           const bl = this.createBlinderBank(fg.catalogId);
           const drop = (bl.group.userData.mountOffsetY as number | undefined) ?? 0.28;
@@ -1601,7 +1625,7 @@ export class StageEngine {
           bl.group.rotation.y = slot.rotY;
           bl.group.translateY(-drop).translateZ(0.28);
           podGroup.add(nameFixtureUnit(bl.group, fg, i, start));
-          this.blinders.push({ lensMat: bl.lensMat, buffer, start });
+          this.blinders.push({ lensMat: bl.lensMat, buffer, physBuffer, start, width, physicalClass });
         }
       });
 
@@ -1628,8 +1652,16 @@ export class StageEngine {
 
         const start = patch.unitStart(fx, i);
         const width = groupFootprint(fx);
+        const physicalClass = classifyPhysicalGroup(fx);
         if (start && (fx.type === 'co2' || fx.type === 'smoke' || fx.type === 'hazer')) {
-          this.atmosphereDmx.push({ type: fx.type, start, buffer: fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2 });
+          this.atmosphereDmx.push({
+            type: fx.type,
+            start,
+            width,
+            buffer: fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2,
+            physBuffer: fx.dmxUniverse === 1 ? this.physicalDmxU1 : this.physicalDmxU2,
+            physicalClass,
+          });
         }
         if (fx.type === 'co2') {
           const jet = this.createCo2JetUnit(fx.catalogId);
@@ -1652,6 +1684,7 @@ export class StageEngine {
             fx.dmxUniverse,
             start,
             width,
+            physicalClass,
             fx.catalogId,
             fx.dmxMode
           );
@@ -1669,6 +1702,7 @@ export class StageEngine {
             fx.dmxUniverse,
             start,
             width,
+            physicalClass,
             resolveOptics(fx),
             fx.catalogId
           );
@@ -1789,6 +1823,7 @@ export class StageEngine {
     dmxUniverse: 1 | 2,
     dmxStart: number,
     dmxWidth: number,
+    physicalClass: PhysicalGroupClassification,
     profile?: FixtureOptics,
     catalogId?: string
   ): MovingFixtureInstance {
@@ -1906,6 +1941,7 @@ export class StageEngine {
       dmxUniverse,
       dmxStart,
       dmxWidth,
+      physicalClass,
     };
   }
 
@@ -1927,6 +1963,7 @@ export class StageEngine {
     dmxUniverse: 1 | 2,
     dmxStart: number,
     dmxWidth: number,
+    physicalClass: PhysicalGroupClassification,
     catalogId?: string,
     dmxMode?: string
   ): LaserUnitInstance {
@@ -2057,6 +2094,7 @@ export class StageEngine {
       dmxUniverse,
       dmxStart,
       dmxWidth,
+      physicalClass,
     };
   }
 
@@ -2180,9 +2218,9 @@ export class StageEngine {
     this.dmxFrameListener = listener;
     this.dmxAccum = 0;
     if (listener) {
-      this.lastDmxU1.set(this.dmxUniverse1);
-      this.lastDmxU2.set(this.dmxUniverse2);
-      listener(this.dmxUniverse1, this.dmxUniverse2, true, true);
+      this.lastDmxU1.set(this.physicalDmxU1);
+      this.lastDmxU2.set(this.physicalDmxU2);
+      listener(this.physicalDmxU1, this.physicalDmxU2, true, true);
     }
   }
 
@@ -2197,21 +2235,21 @@ export class StageEngine {
     let u1Changed = false;
     let u2Changed = false;
     for (let i = 0; i < 512; i++) {
-      if (this.dmxUniverse1[i] !== this.lastDmxU1[i]) {
+      if (this.physicalDmxU1[i] !== this.lastDmxU1[i]) {
         u1Changed = true;
         break;
       }
     }
     for (let i = 0; i < 512; i++) {
-      if (this.dmxUniverse2[i] !== this.lastDmxU2[i]) {
+      if (this.physicalDmxU2[i] !== this.lastDmxU2[i]) {
         u2Changed = true;
         break;
       }
     }
     if (!u1Changed && !u2Changed) return;
-    if (u1Changed) this.lastDmxU1.set(this.dmxUniverse1);
-    if (u2Changed) this.lastDmxU2.set(this.dmxUniverse2);
-    listener(this.dmxUniverse1, this.dmxUniverse2, u1Changed, u2Changed);
+    if (u1Changed) this.lastDmxU1.set(this.physicalDmxU1);
+    if (u2Changed) this.lastDmxU2.set(this.physicalDmxU2);
+    listener(this.physicalDmxU1, this.physicalDmxU2, u1Changed, u2Changed);
   }
 
   private startLoop() {
@@ -2266,8 +2304,12 @@ export class StageEngine {
     const openingStep = this.directedStep;
 
     // Effective master blackout / dimmer
+    const blackoutActive = Boolean(s.blackout);
     const darkOpening = !!demo && (!!demo.beforeDownbeat || demoOpeningStep! <= DEMO_BLACKOUT_STEPS);
-    const master = s.blackout || darkOpening ? 0 : s.masterDimmer;
+    const master = blackoutActive || darkOpening ? 0 : s.masterDimmer;
+    // Clear physical buffers before encoding so repatched or simulation-only ranges always stay neutral 0.
+    this.physicalDmxU1.fill(0);
+    this.physicalDmxU2.fill(0);
     const roomGain = openingStep === undefined ? 1 : THREE.MathUtils.lerp(demoFade(openingStep, 96, 208), 1, manualMix);
     this.houseAmbient.intensity = 0.36 * roomGain;
     this.scene.environmentIntensity = 0.55 * roomGain;
@@ -2283,7 +2325,7 @@ export class StageEngine {
     // and laser intensity stays strictly <= look.laser.intensity.
     const audioBoost = mod.active ? 0 : (s.audioReactive && audio.playing ? audio.beatPulse * 0.45 + audio.bass * 0.35 : 0);
     const beatPulse = s.audioReactive && audio.playing ? audio.beatPulse : 0.15 * Math.max(0, Math.sin(t * (s.bpm / 60) * Math.PI));
-    const effHaze = mod.active && mod.haze.mapped ? mod.haze.level : s.atmo.hazeLevel;
+    const effHaze = blackoutActive ? 0 : (mod.active && mod.haze.mapped ? mod.haze.level : s.atmo.hazeLevel);
 
     const primaryColor = new THREE.Color(s.primaryColor);
     const accentColor = new THREE.Color(s.accentColor);
@@ -2542,6 +2584,7 @@ export class StageEngine {
       // Invalid or conflicting fixture footprints have start 0 and make no writes.
       // Clamp writes strictly to fx.dmxWidth so narrow catalogue modes (e.g. 1–6 ch PARs) never overwrite neighbours.
       const uBuf = fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
+      const physBuf = fx.dmxUniverse === 1 ? this.physicalDmxU1 : this.physicalDmxU2;
       if (fx.dmxStart > 0) {
         writeDmxChannels(uBuf, fx.dmxStart, fx.dmxWidth, [
           axisDmx(fx.currentPan, PAN_LIMIT),
@@ -2553,6 +2596,13 @@ export class StageEngine {
           Math.round(effZoom * 255),
           groupDmxStrobe,
         ]);
+        const ps = this.physicalUnitScratch;
+        ps.blackout = blackoutActive;
+        ps.dimmer = THREE.MathUtils.clamp(finalInt, 0, 1);
+        ps.r = tempCol.r;
+        ps.g = tempCol.g;
+        ps.b = tempCol.b;
+        writePhysicalUnitBytes(physBuf, uBuf, fx.dmxStart, fx.dmxWidth, fx.physicalClass, ps, this.physicalDmxScratch);
       }
     }
 
@@ -2733,6 +2783,7 @@ export class StageEngine {
       // Write Laser DMX Universe channels using unscaled unitBaseLaserInt (never visual power presence),
       // clamped strictly to l.dmxWidth.
       const uBuf = l.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
+      const physBuf = l.dmxUniverse === 1 ? this.physicalDmxU1 : this.physicalDmxU2;
       if (l.dmxStart > 0) {
         const dv = this.laserDmxScratchValues;
         dv.enabled = laserEnabled;
@@ -2752,6 +2803,9 @@ export class StageEngine {
         dv.scanRateNorm = l.laserSpec ? Math.min(1, l.laserSpec.scanSpeedKpps / 40) : 0;
         const dmxBytes = encodeLaserDmxChannels(l.resolvedMode, dv, l.dmxScratch);
         writeDmxChannels(uBuf, l.dmxStart, l.dmxWidth, dmxBytes);
+        const ps = this.physicalUnitScratch;
+        ps.blackout = blackoutActive;
+        writePhysicalUnitBytes(physBuf, uBuf, l.dmxStart, l.dmxWidth, l.physicalClass, ps, this.physicalDmxScratch);
       }
     }
     const laserInt = this.laserUnits.length ? maxLaserInt : baseLaserInt;
@@ -2761,7 +2815,13 @@ export class StageEngine {
     const warmAmber = new THREE.Color(0xffbe55);
     for (const bl of this.blinders) {
       bl.lensMat.color.copy(warmAmber).multiplyScalar(effBlinder * 4.2);
-      if (bl.start) bl.buffer[bl.start - 1] = Math.round(effBlinder * 255);
+      if (bl.start) {
+        bl.buffer[bl.start - 1] = Math.round(effBlinder * 255);
+        const ps = this.physicalUnitScratch;
+        ps.blackout = blackoutActive;
+        ps.blinder = THREE.MathUtils.clamp(effBlinder, 0, 1);
+        writePhysicalUnitBytes(bl.physBuffer, bl.buffer, bl.start, bl.width ?? 1, bl.physicalClass, ps, this.physicalDmxScratch);
+      }
     }
     this.blinderLight.intensity = effBlinder * 75;
 
@@ -2779,10 +2839,14 @@ export class StageEngine {
     const strobeBarFlash = strobeBarAudioMapped ? strobeBarBright > 0.01 : (effectiveStrobe > 0.03 && strobeFlashOn);
     for (const st of this.strobes) {
       if (st.start) {
-        writeDmxChannels(st.buffer, st.start, st.width ?? 2, [
+        const w = st.width ?? 2;
+        writeDmxChannels(st.buffer, st.start, w, [
           Math.round(255 * strobeBarBright / 3.8),
           strobeBarDmxRate,
         ]);
+        const ps = this.physicalUnitScratch;
+        ps.blackout = blackoutActive;
+        writePhysicalUnitBytes(st.physBuffer, st.buffer, st.start, w, st.physicalClass, ps, this.physicalDmxScratch);
       }
       const strobeLensWhite = strobeBarAudioMapped
         ? (b.strobe && strobeFlashOn) || (mod.strobeBar.strobe.mapped && mod.strobeBar.strobe.gateOn)
@@ -2872,14 +2936,19 @@ export class StageEngine {
     }
 
     // 9. Smoke Machines, Haze, & CO2 Cryo Cannons
-    const effSmoke = b.smoke ? 1.0 : s.atmo.smokeOutput;
-    const effCo2 = b.co2 || s.atmo.co2Active || (s.atmo.co2AutoOnDrop && audio.drop && s.audioReactive);
+    // Emergency blackout suppresses CO2, smoke, and haze after all modulation and bumps (preserving programmed levels underneath).
+    const effSmoke = blackoutActive ? 0 : (b.smoke ? 1.0 : s.atmo.smokeOutput);
+    const effCo2 = blackoutActive ? false : (b.co2 || s.atmo.co2Active || (s.atmo.co2AutoOnDrop && audio.drop && s.audioReactive));
     for (const fx of this.atmosphereDmx) {
       const output = fx.type === 'co2' ? Number(effCo2) : fx.type === 'smoke' ? effSmoke : effHaze;
       fx.buffer[fx.start - 1] = Math.round(output * 255);
+      const ps = this.physicalUnitScratch;
+      ps.blackout = blackoutActive;
+      ps.smoke = effSmoke;
+      writePhysicalUnitBytes(fx.physBuffer, fx.buffer, fx.start, fx.width ?? 1, fx.physicalClass, ps, this.physicalDmxScratch);
     }
     const stageTint = primaryColor.clone().lerp(accentColor, 0.35);
-    this.particles.group.visible = roomGain > 0 || b.smoke || b.co2;
+    this.particles.group.visible = roomGain > 0 || effSmoke > 0 || effCo2;
     this.particles.update(dt, t, effHaze, effSmoke, effCo2, stageTint, activeLightPower);
 
     // Update arena fog slightly with haze density for rich depth
@@ -2946,6 +3015,9 @@ export class StageEngine {
     ap.laser.strobe.limited = mod.active && mod.laser.strobe.limited;
 
     ap.haze.level = effHaze;
+    ap.atmo.haze = effHaze;
+    ap.atmo.smoke = effSmoke;
+    ap.atmo.co2 = effCo2;
 
     // 10. Camera Smooth Transitions & Arena Drone Orbit
     if (this.orbitAuto) {

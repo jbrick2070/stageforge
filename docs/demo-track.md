@@ -53,7 +53,7 @@ Both web builds (`npm run build` → `dist/demo/`) and desktop builds (`npm run 
 | `file` | Plain filename only (no slashes, no `..`), ending in `.mp3`, `.m4a`, `.ogg`, or `.wav`. Max audio size: 16 MB (keep under 4 MB for fast mobile loads). |
 | `bpm` | Finite number in `70..180`. Authoritative — StageForge sets the beat grid directly from `bpm` and `firstDownbeatMs` and skips offline beat analysis. |
 | `firstDownbeatMs` | Finite number in `0..600000` (milliseconds from 0:00 to Bar 1, Beat 1). Before `firstDownbeatMs`, StageForge holds the opening blackout. |
-| `sections` | Array of `3..24` sections. Total bars across all sections must be `<= 512`. |
+| `sections` | Array of `1..24` sections. Total bars across all sections must be `<= 512`. |
 | `sections[i].role` | One of: `intro`, `groove`, `build`, `drop`, `breakdown`, `rebuild`, `finale`, `outro`. Roles may repeat in any order. |
 | `sections[i].label` | Non-empty string, max 48 characters, shown in the stage overlay. |
 | `sections[i].bars` | Integer in `1..64` (12-bar blues choruses, 16-bar grooves, 4-bar outros, etc. all work). |

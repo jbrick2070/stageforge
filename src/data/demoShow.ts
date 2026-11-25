@@ -113,6 +113,10 @@ export interface DemoPosition {
   totalSteps: number;
   openingStep: number;
   openingBlackoutBars: number;
+  /** True only for the one-time opening intro occurrence (`sectionIndex === 0 && role === 'intro'`). */
+  isOpening: boolean;
+  /** True only for the immediate post-intro transition groove (`sectionIndex === 1 && leadingIntroSteps > 0 && role === 'groove'`). */
+  isOpeningTransition: boolean;
   finished: boolean;
   beforeDownbeat?: boolean;
 }
@@ -167,6 +171,8 @@ export function getDemoPosition(
         totalSteps: timeline.totalSteps,
         openingStep,
         openingBlackoutBars: timeline.openingBlackoutBars,
+        isOpening: section.index === 0 && section.role === 'intro',
+        isOpeningTransition: section.index === 1 && timeline.leadingIntroSteps > 0 && section.role === 'groove',
         finished: step === timeline.totalSteps,
       };
     }

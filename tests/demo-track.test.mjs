@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
 import { createServer } from 'vite';
 
@@ -217,8 +219,8 @@ test('parseDemoTrackMap rejects every invalid or hostile input with a readable E
     ['bpm Infinity', validMap({ bpm: Number.POSITIVE_INFINITY }), /bpm/i],
     ['negative firstDownbeatMs', validMap({ firstDownbeatMs: -1 }), /firstDownbeatMs/i],
     ['NaN firstDownbeatMs', validMap({ firstDownbeatMs: Number.NaN }), /firstDownbeatMs/i],
-    ['too few sections', validMap({ sections: [{ role: 'intro', label: 'A', bars: 4 }, { role: 'outro', label: 'B', bars: 4 }] }), /between 3 and 24/i],
-    ['too many sections', validMap({ sections: Array.from({ length: 25 }, (_, i) => ({ role: 'groove', label: `S${i}`, bars: 4 })) }), /between 3 and 24/i],
+    ['too few sections', validMap({ sections: [] }), /between 1 and 24/i],
+    ['too many sections', validMap({ sections: Array.from({ length: 25 }, (_, i) => ({ role: 'groove', label: `S${i}`, bars: 4 })) }), /between 1 and 24/i],
     ['unknown role', validMap({ sections: [{ role: 'intro', label: 'A', bars: 4 }, { role: 'chorus', label: 'B', bars: 4 }, { role: 'outro', label: 'C', bars: 4 }] }), /unknown role/i],
     ['zero bars', validMap({ sections: [{ role: 'intro', label: 'A', bars: 0 }, { role: 'groove', label: 'B', bars: 4 }, { role: 'outro', label: 'C', bars: 4 }] }), /bars/i],
     ['float bars', validMap({ sections: [{ role: 'intro', label: 'A', bars: 4.5 }, { role: 'groove', label: 'B', bars: 4 }, { role: 'outro', label: 'C', bars: 4 }] }), /bars/i],
@@ -440,16 +442,64 @@ test('timeline edge cases: 1-bar intro scale 8, non-leading intro, array vs comp
   assert.equal(getDemoPosition(16, oneBarTimeline).openingStep, 128);
   assert.deepStrictEqual(getDemoPosition(20, oneBarSections), getDemoPosition(20, oneBarTimeline));
 
-  // Non-leading intro gets full openingStep = OPENING_DONE_STEP (no mid-track blackout).
+  // Non-leading intro gets section-relative choreography (not stuck at static 0.38) and repeated roles match at equal progress!
   const midIntro = compileDemoTimeline([
     { role: 'groove', label: 'Open groove', bars: 4 },
-    { role: 'intro', label: 'Interlude', bars: 4 },
-    { role: 'outro', label: 'End', bars: 4 },
+    { role: 'intro', label: 'Interlude 1', bars: 4 },
+    { role: 'drop', label: 'Chorus', bars: 4 },
+    { role: 'intro', label: 'Interlude 2', bars: 4 },
+    { role: 'groove', label: 'Later groove', bars: 4 },
   ]);
-  const interludePos = getDemoPosition(4 * 16 + 8, midIntro);
-  assert.equal(interludePos.sectionId, 'intro');
-  assert.equal(interludePos.openingStep, OPENING_DONE_STEP);
-  assert.equal(applyDemoLighting(INITIAL_SHOW_STATE, interludePos).beamIntensity, 0.38);
+  const interlude1 = getDemoPosition(4 * 16 + 40, midIntro);
+  const interlude2 = getDemoPosition(12 * 16 + 40, midIntro);
+  assert.equal(interlude1.sectionId, 'intro');
+  assert.equal(interlude1.isOpening, false);
+  assert.equal(interlude1.sectionIndex, 1);
+  assert.equal(interlude2.sectionIndex, 3);
+  assert.deepStrictEqual(
+    applyDemoLighting(INITIAL_SHOW_STATE, interlude1),
+    applyDemoLighting(INITIAL_SHOW_STATE, interlude2),
+    'repeated non-opening intro occurrences must produce identical looks at equal progress',
+  );
+  // Two non-opening grooves also produce identical looks at equal progress
+  const groove1 = getDemoPosition(0 * 16 + 24, midIntro);
+  const groove2 = getDemoPosition(16 * 16 + 24, midIntro);
+  assert.equal(groove1.isOpeningTransition, false);
+  assert.equal(groove2.isOpeningTransition, false);
+  assert.deepStrictEqual(
+    applyDemoLighting(INITIAL_SHOW_STATE, groove1),
+    applyDemoLighting(INITIAL_SHOW_STATE, groove2),
+    'repeated groove occurrences without leading intro must produce identical looks',
+  );
+
+  // Single-section map is valid (Codex Sprint 10 amendment)
+  const singleSection = parseDemoTrackMap(validMap({
+    sections: [{ role: 'drop', label: 'One-drop jam', bars: 12 }],
+  }));
+  assert.equal(singleSection.sections.length, 1);
+  assert.equal(singleSection.timeline.totalBars, 12);
+  assert.equal(getDemoPosition(0, singleSection.timeline).sectionIndex, 0);
+
+  // Frozen golden parity against stored fixture generated from pre-Sprint-10 commit 3361daa
+  const goldenPath = path.join(process.cwd(), 'tests', 'fixtures', 'demo-synth-golden.json');
+  const golden = JSON.parse(readFileSync(goldenPath, 'utf8'));
+  assert.equal(golden.oracleCommit, '3361daa5d81e4f8bc7fbbea1bcabf7acca9f23df');
+  for (const sample of golden.samples) {
+    const pos = getDemoPosition(sample.step);
+    for (const key of Object.keys(sample.position)) {
+      assert.deepStrictEqual(pos[key], sample.position[key], `golden pos.${key} mismatch at step ${sample.step}`);
+    }
+    assert.deepStrictEqual(
+      applyDemoLighting(golden.initialState, pos),
+      sample.lookInitial,
+      `golden initial look mismatch at step ${sample.step}`,
+    );
+    assert.deepStrictEqual(
+      applyDemoLighting(golden.richState, pos),
+      sample.lookRich,
+      `golden rich look mismatch at step ${sample.step}`,
+    );
+  }
 
   // Audio running longer than map clamps at totalSteps and sets finished=true; beforeDownbeat+ended also marks finished.
   const map = parseDemoTrackMap(validMap({

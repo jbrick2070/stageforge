@@ -149,7 +149,8 @@ export interface ShowControlCallbacks {
   onResumePlayback: () => void;
   onSetBlackout: (active: boolean) => void;
   onSetMaster: (value: number) => void;
-  onSetBump: (key: keyof BumpState, active: boolean) => void;
+  onSetBump: (key: keyof BumpState, active: boolean, sourceId?: string) => void;
+  onClearBumpSource?: (prefix: string) => void;
   onTempoTap: () => void;
   onTempoSetBpm: (bpm: number) => void;
   onTempoHalf: () => void;
@@ -157,7 +158,8 @@ export interface ShowControlCallbacks {
   onSetAudioReactive?: (active: boolean) => void;
   onSetAudioMappingAmount?: (mappingId: string, amount: number) => void;
   onChaseSeek: (takeMs: number, running: boolean, resyncMusic: boolean) => void;
-  onChaseAdvance: (takeMs: number) => void;
+  onChaseAdvance: (takeMs: number, opts?: { resumedFromHold?: boolean; resyncMusic?: boolean }) => void;
+  onChaseHold?: (takeMs: number) => void;
   onChaseStop: () => void;
   onUpdateTakeMeta: (meta: { frameRate: SmpteFrameRate; timecodeOffsetMs: number }) => void;
   onToast: (msg: string) => void;
@@ -261,6 +263,7 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
   const dedupeRef = useRef(new CallerDedupe());
   const lastAudioAmtLogRef = useRef(0);
   const oscWsRef = useRef<OscWebSocketClient | null>(null);
+  const oscWsConnGenRef = useRef(0);
   const midiRef = useRef<MidiShowControlClient | null>(null);
   const flagsRef = useRef({ oscRxEnabled, oscTxActive, artnetTcRxEnabled, artnetTcTxEnabled });
   flagsRef.current = { oscRxEnabled, oscTxActive, artnetTcRxEnabled, artnetTcTxEnabled };
@@ -306,7 +309,12 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
       if (step.action === 'seek') {
         cbRef.current.onChaseSeek(step.takeMs, !event.locate && !event.reverse, step.resyncMusic);
       } else if (step.action === 'advance') {
-        cbRef.current.onChaseAdvance(step.takeMs);
+        cbRef.current.onChaseAdvance(step.takeMs, {
+          resumedFromHold: step.resumedFromHold,
+          resyncMusic: step.resyncMusic,
+        });
+      } else if (step.action === 'hold') {
+        cbRef.current.onChaseHold?.(step.takeMs);
       } else if (step.action === 'stop') {
         cbRef.current.onChaseStop();
       }
@@ -375,7 +383,12 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
       case 'bump':
         if (event.bumpKey) {
           const active = (event.value ?? 1) >= 0.5;
-          cb.onSetBump(event.bumpKey, active);
+          const sourceId = event.sender
+            ? event.sender
+            : event.source === 'osc'
+              ? 'osc:default'
+              : 'msc:default';
+          cb.onSetBump(event.bumpKey, active, sourceId);
           appendLog(event.source.toUpperCase(), `BUMP ${event.bumpKey} ${active ? 'ON' : 'OFF'}`);
         }
         break;
@@ -437,16 +450,21 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
           at: ev.at,
         });
       } else {
-        handleIncomingEvent(ev);
+        handleIncomingEvent({
+          ...ev,
+          sender: ev.source === 'osc' ? `osc-udp:${ev.sender ?? 'default'}` : 'msc:default',
+        });
       }
     });
     const unsubStatus = bridge.onShowControlStatus((st) => {
       setDesktopStatus(st);
+      if (!st.oscRxListening) cbRef.current.onClearBumpSource?.('osc-udp:');
     });
     void bridge.showControl({ type: 'getStatus' }).then(setDesktopStatus).catch(() => {});
     return () => {
       unsubEvents();
       unsubStatus();
+      cbRef.current.onClearBumpSource?.('osc-udp:');
       void bridge.showControl({ type: 'stop' }).catch(() => {});
     };
   }, [hasDesktopBridge, enabled, handleIncomingEvent]);
@@ -454,10 +472,13 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
   // Instantiate browser WS OSC and Web MIDI clients only when showControl capability is enabled.
   useEffect(() => {
     if (!enabled) {
+      oscWsConnGenRef.current++;
       oscWsRef.current?.disconnect();
       midiRef.current?.dispose();
       oscWsRef.current = null;
       midiRef.current = null;
+      cbRef.current.onClearBumpSource?.('osc-');
+      cbRef.current.onClearBumpSource?.('msc:');
       chaseRef.current.reset();
       dedupeRef.current.reset();
       syncLockState('UNLOCKED');
@@ -481,24 +502,42 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
       return;
     }
     const wsClient = new OscWebSocketClient(
-      (ev) => handleIncomingEvent(ev),
+      (ev) => {
+        if (oscWsRef.current !== wsClient) return;
+        const connId = oscWsConnGenRef.current;
+        handleIncomingEvent({ ...ev, sender: `osc-ws:${connId}` });
+      },
       (st) => {
+        if (oscWsRef.current !== wsClient) return;
         setOscWsState(st.state);
         setOscWsError(st.error);
         setOscWsRxCount(st.rxCount);
+        if (st.state === 'disconnected' || st.state === 'error') {
+          cbRef.current.onClearBumpSource?.('osc-ws:');
+        }
       },
     );
     oscWsRef.current = wsClient;
     const midiClient = new MidiShowControlClient(
-      (ev) => handleIncomingEvent(ev),
-      (st) => setMidiStatus(st),
+      (ev) => {
+        if (midiRef.current !== midiClient) return;
+        handleIncomingEvent(ev.kind === 'trigger' ? { ...ev, sender: 'msc:default' } : ev);
+      },
+      (st) => {
+        if (midiRef.current !== midiClient) return;
+        setMidiStatus(st);
+        if (!st.connected) cbRef.current.onClearBumpSource?.('msc:');
+      },
     );
     midiRef.current = midiClient;
     return () => {
+      oscWsConnGenRef.current++;
       wsClient.disconnect();
       midiClient.dispose();
       oscWsRef.current = null;
       midiRef.current = null;
+      cbRef.current.onClearBumpSource?.('osc-ws:');
+      cbRef.current.onClearBumpSource?.('msc:');
     };
   }, [enabled, hasDesktopBridge, handleIncomingEvent, syncLockState]);
 
@@ -646,6 +685,7 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
 
   const setOscRxEnabled = useCallback(async (nextEnabled: boolean) => {
     if (!enabledRef.current) return;
+    if (!nextEnabled) cbRef.current.onClearBumpSource?.('osc-udp:');
     const nextFlags = { ...flagsRef.current, oscRxEnabled: nextEnabled };
     flagsRef.current = nextFlags;
     setOscRxState(nextEnabled);
@@ -678,6 +718,8 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
 
   const connectOscWs = useCallback(() => {
     if (!enabledRef.current || hasDesktopBridge) return;
+    cbRef.current.onClearBumpSource?.('osc-ws:');
+    oscWsConnGenRef.current++;
     try {
       oscWsRef.current?.connect(settingsRef.current.oscWsUrl);
     } catch (err) {
@@ -686,6 +728,8 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
   }, [hasDesktopBridge]);
 
   const disconnectOscWs = useCallback(() => {
+    oscWsConnGenRef.current++;
+    cbRef.current.onClearBumpSource?.('osc-ws:');
     oscWsRef.current?.disconnect();
   }, []);
 
@@ -701,6 +745,7 @@ export function useShowControl(callbacks: ShowControlCallbacks, enabled = true):
 
   const setMidiMscRxEnabled = useCallback((nextEnabled: boolean) => {
     if (!enabledRef.current) return;
+    if (!nextEnabled) cbRef.current.onClearBumpSource?.('msc:');
     setMidiMscRxState(nextEnabled);
   }, []);
 

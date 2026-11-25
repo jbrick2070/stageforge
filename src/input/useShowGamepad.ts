@@ -91,10 +91,13 @@ export function useShowGamepad(handlers: Handlers) {
             audioHoldFired = false;
           }
           for (const [i, effect] of holds) {
-            if (buttons[i] && !previous[i]) {
+            if (buttons[i]) {
+              // Refresh hold every poll frame while pressed so finite gamepad leases never expire during a real hold.
               held.add(effect);
               latest.current.hold(effect, true);
-            } else if (!buttons[i] && held.delete(effect)) latest.current.hold(effect, false);
+            } else if (held.delete(effect)) {
+              latest.current.hold(effect, false);
+            }
           }
           const x = pad.axes[2] ?? 0, y = pad.axes[3] ?? 0;
           const length = Math.hypot(x, y);

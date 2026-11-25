@@ -101,11 +101,12 @@ export interface ChaseConfig {
 
 export interface ChaseStepResult {
   lockState: ChaseLockState;
-  action: 'none' | 'seek' | 'advance' | 'stop';
+  action: 'none' | 'seek' | 'advance' | 'hold' | 'stop';
   rawTcMs: number;
   takeMs: number;
   fps: SmpteFrameRate;
   resyncMusic: boolean;
+  resumedFromHold?: boolean;
 }
 
 export class ChaseEngine {
@@ -117,6 +118,7 @@ export class ChaseEngine {
   public playheadMs = 0;
   private consistentCount = 0;
   private stationaryCount = 0;
+  private stationarySince = 0;
   private paused = false;
   private lastMusicSyncMs = 0;
   private freewheelStartedAt = 0;
@@ -147,6 +149,7 @@ export class ChaseEngine {
     this.activeSource = null;
     this.consistentCount = 0;
     this.stationaryCount = 0;
+    this.stationarySince = 0;
     this.paused = false;
     this.lastRxAt = 0;
     this.freewheelStartedAt = 0;
@@ -196,6 +199,7 @@ export class ChaseEngine {
       this.playheadMs = sample.ms;
       this.consistentCount = sample.locate ? 2 : 0;
       this.stationaryCount = 0;
+      this.stationarySince = 0;
       this.paused = Boolean(sample.locate);
       this.lockState = sample.locate ? 'LOCKED' : 'LOCKING';
       this.freewheelStartedAt = 0;
@@ -219,6 +223,7 @@ export class ChaseEngine {
       this.playheadMs = sample.ms;
       this.consistentCount = 1;
       this.stationaryCount = 0;
+      this.stationarySince = 0;
       this.paused = false;
       this.lockState = 'LOCKING';
       return {
@@ -246,6 +251,7 @@ export class ChaseEngine {
           this.lockState = 'LOCKED';
           this.paused = false;
           this.stationaryCount = 0;
+          this.stationarySince = 0;
           const takeMs = this.toTakeMs(sample.ms);
           this.lastMusicSyncMs = takeMs;
           return {
@@ -278,6 +284,7 @@ export class ChaseEngine {
       this.lockState = 'LOCKED';
       this.freewheelStartedAt = 0;
       this.stationaryCount = 0;
+      this.stationarySince = 0;
       this.paused = false;
       this.lastTcMs = sample.ms;
       this.lastRxAt = now;
@@ -296,13 +303,29 @@ export class ChaseEngine {
     }
 
     // LOCKED state: detect stationary / repeating identical timecode (paused generator) so playhead
-    // never creeps forward and snaps back to re-fire cues (H2). Require >= 2 repeats so a single
-    // high-rate duplicate Art-Net packet never prematurely skips FREEWHEEL.
+    // never creeps forward and media clocks actually pause (M3). Require both >= 2 repeats AND at
+    // least max(3 frames, 120 ms) of stationary wall time so high-rate duplicate Art-Net packets never stutter audio.
     if (Math.abs(rawStep) < 1) {
+      if (this.stationaryCount === 0) {
+        this.stationarySince = now;
+      }
       this.stationaryCount++;
       this.lastRxAt = now;
-      if (this.stationaryCount >= 2) {
+      const stationaryElapsed = Math.max(0, now - this.stationarySince);
+      const holdThresholdMs = Math.max(frameMs * 3, 120);
+      if (!this.paused && this.stationaryCount >= 2 && stationaryElapsed >= holdThresholdMs) {
         this.paused = true;
+        this.playheadMs = this.lastTcMs;
+        return {
+          lockState: 'LOCKED',
+          action: 'hold',
+          rawTcMs: this.playheadMs,
+          takeMs: this.toTakeMs(this.playheadMs),
+          fps: sample.fps,
+          resyncMusic: false,
+        };
+      }
+      if (this.paused) {
         this.playheadMs = this.lastTcMs;
       }
       return {
@@ -316,6 +339,7 @@ export class ChaseEngine {
     }
 
     this.stationaryCount = 0;
+    this.stationarySince = 0;
     const wasPaused = this.paused;
     this.paused = false;
     const prevTcMs = this.lastTcMs;
@@ -337,6 +361,7 @@ export class ChaseEngine {
         takeMs,
         fps: sample.fps,
         resyncMusic: true,
+        ...(wasPaused ? { resumedFromHold: true } : {}),
       };
     }
 
@@ -345,7 +370,7 @@ export class ChaseEngine {
     this.playheadMs = Math.max(this.playheadMs, sample.ms);
     const takeMs = this.toTakeMs(this.playheadMs);
     const driftFromSync = Math.abs(takeMs - this.lastMusicSyncMs);
-    const resyncMusic = driftFromSync > 40;
+    const resyncMusic = wasPaused || driftFromSync > 40;
     if (resyncMusic) this.lastMusicSyncMs = takeMs;
 
     return {
@@ -355,6 +380,7 @@ export class ChaseEngine {
       takeMs,
       fps: sample.fps,
       resyncMusic,
+      ...(wasPaused ? { resumedFromHold: true } : {}),
     };
   }
 

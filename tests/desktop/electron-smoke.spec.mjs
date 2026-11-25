@@ -231,7 +231,7 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
     };
   }, CSP_PROBE);
   expect(world).toEqual({
-    bridge: ['onRigCommand', 'sendDmxFrame', 'dmxControl', 'onDmxStatus', 'showControl', 'onShowControlEvent', 'onShowControlStatus', 'setViewerMode'],
+    bridge: ['onRigCommand', 'sendDmxFrame', 'sendDmxHeartbeat', 'dmxControl', 'onDmxStatus', 'showControl', 'onShowControlEvent', 'onShowControlStatus', 'setViewerMode'],
     node: 'undefined/undefined',
     secure: true,
     inlineScript: 'script-src-elem',

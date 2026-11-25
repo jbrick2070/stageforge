@@ -52,6 +52,7 @@ export interface NormalizedTriggerEvent {
   bumpKey?: OscBumpKey;
   mappingId?: string;
   value?: number;
+  sender?: string;
   at: number;
 }
 

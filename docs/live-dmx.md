@@ -12,24 +12,35 @@ StageForge outputs its live 2-universe DMX512 desk state (Universes 1 and 2, 512
 - **Explicit interface binding:** Output always binds to a specific IPv4 address returned by a fresh `os.networkInterfaces()` scan (including `127.0.0.1` for local visualizers). sACN multicast sets both multicast TTL and `setMulticastInterface(iface)`. Note that on Windows, weak-host routing may still route out-of-subnet unicast targets via the OS default route; keep unicast lighting nodes on the selected NIC's subnet.
 - **Validated IPC:**
   - Universe buffers cross a single fire-and-forget IPC channel (`stageforge:dmx-frame`). Main verifies `event.senderFrame === event.sender.mainFrame`, `isAppPage(url)`, owning window ID, active running state, `universe ∈ {1, 2}`, and exact `Uint8Array(512)` byte length, then copies into main-owned buffers.
+  - Renderer liveness heartbeats cross `stageforge:dmx-heartbeat` (~1 Hz while live, validated identically to `stageforge:dmx-frame`). Because unchanged-frame suppression stops `stageforge:dmx-frame` on static cues, frame updates never renew the heartbeat lease.
   - Control commands cross `stageforge:dmx-control` (`listInterfaces`, `getStatus`, `enable`, `disable`, `discover`) with strict schema/key validation, window-ownership enforcement, and no unknown keys allowed.
   - Web Serial in Electron requires an explicit native `select-serial-port` chooser (never auto-selected) and stores device grants only in memory for the current session.
+
+## Physical Personalities vs Simulation Layout
+
+StageForge separates its **simulation / DMX monitor buffers** (`dmxUniverse1/2`) from its **physical wire buffers** (`physicalDmxU1/U2`) sent over sACN, Art-Net 4, and Web Serial:
+
+- **Implemented datasheet personalities** (each backed by golden-byte tests):
+  - ETC ColorSource PAR (`1-Ch`, `RGB (3-Ch)`, `5-Ch (Default)` — hardware strobe held at `0`)
+  - CHAUVET Professional STRIKE 4 (`1-Ch`, `4-Ch`)
+  - Martin JEM ZR45 (`1-Ch`: `0` idle, `13–240` variable, `241–255` max)
+- **Unimplemented catalogue fixtures** (including moving heads, battens, strobes, external-switchpack fixtures, hazers, and unverified catalogue laser modes): listed as **`not driven (simulation only)`** in DMX Output and transmit **neutral `0` across their entire footprint** so StageForge's generic channel layout is never mistaken for a real fixture personality.
+- **Generic (non-catalogue) fixtures:** transmit StageForge's simulated channel layout and are labelled **`StageForge simulated channel layout, verify against your fixture`**.
 
 ## Safety Model
 
 1. **Off by default:** StageForge never auto-enables DMX output on launch. Transport configuration (interface, universes, targets) is remembered in `localStorage`, but the enabled/live state is never persisted.
 2. **Two-step arming:** Starting live output requires clicking **Arm output**, then confirming **Go live**.
-3. **Always-visible LIVE indicator:** Whenever any live output is active, a fixed top-right **LIVE** badge with a one-click **Blackout & stop** button stays visible—including in Cinema mode (`H`).
+3. **Always-visible LIVE indicator:** Whenever any live output is active, a fixed top-right **LIVE** badge with a one-click **Blackout & stop** button stays visible—including in Cinema mode (`H`). If output stops automatically due to heartbeat loss, a persistent **"Output stopped: app stopped responding"** notice appears until dismissed or re-enabled.
 4. **Hard 44 Hz rate ceiling:** Both the UI/config validator and the main-process `hrtime` inter-frame guard refuse to emit faster than 44 Hz (`22.727 ms` minimum spacing). On Windows, default 15.6 ms timer granularity may yield ~32 Hz measured output when targeting 40 Hz; the badge displays measured Hz.
-5. **Guaranteed blackout on stop/crash/quit:**
-   - Triggered by **Blackout & stop**, renderer crash (`render-process-gone`), main-frame navigation/reload (`did-start-navigation`), window close/destroy, OS logoff/shutdown (`session-end`, `powerMonitor.shutdown`), system suspend (`powerMonitor.suspend`), and app quit (`before-quit`).
-   - Order for **sACN**: sends **3 paced all-zero data ticks first**, then **3 `Stream_Terminated` (`0x40`) packets**, then closes sockets (capped by a 750 ms shutdown timeout). Sending zeros before termination ensures nodes that ignore data in terminate packets or hold-last-look on stream loss actually black out.
-   - Order for **Art-Net 4**: sends **3 paced all-zero `ArtDmx` ticks**, then closes sockets.
-   - **Deliberate limitations:**
-     - If the renderer becomes temporarily `unresponsive` (without crashing), main keeps sending the last frame like a hardware console holding its look.
-     - If the Electron **main process itself** crashes (e.g. `SIGKILL`), no blackout packet can be sent; receivers fall back to their configured data-loss behaviour (sACN sources time out after 2.5 s).
-     - For **Web Serial (Enttec USB Pro)**, the transport lives in the renderer so the widget holds the last frame if the window reloads (F5), closes abruptly, or crashes (`pagehide` performs a best-effort zero frame). Always click **Blackout & stop** before reloading or closing when driving USB DMX.
-     - StageForge does not reply to incoming `ArtPoll` requests in v1 (output-only controller).
+5. **Emergency blackout (`Space`, desk toggle, OSC `/stageforge/blackout`, MSC `ALL_OFF`):**
+   - Zeroes lighting master, lasers, blinders, strobes, **CO2 jets, smoke machines, and haze** in both the simulation and DMX buffers, overriding active momentary bumps and audio mappings while preserving programmed atmosphere levels underneath blackout.
+6. **Best-effort blackout on stop, heartbeat loss, crash, and quit (what each failure does):**
+   - **Normal stop / Blackout & stop, navigation/reload (`did-start-navigation`), window close/destroy, OS logoff/shutdown (`session-end`, `powerMonitor.shutdown`), system suspend (`powerMonitor.suspend`), app quit (`before-quit`), and renderer crash (`render-process-gone`):** main stops live ticks, clears momentary holds (on UI stop), sends **3 paced all-zero data ticks** (followed by **3 sACN `Stream_Terminated` (`0x40`) packets** for E1.31), and closes sockets (bounded by a 750 ms shutdown timeout).
+   - **Frozen or hung renderer (network sACN / Art-Net 4):** while live, the renderer sends a small `stageforge:dmx-heartbeat` IPC message every 1 s. If 5 s pass without a heartbeat (or Electron fires `unresponsive`), main expires the lease (late heartbeats cannot revive it), sends the paced all-zero blackout (+ sACN `Stream_Terminated`), stops output, and reports `"Output stopped: app stopped responding"` once the UI recovers. Re-arming and clicking **Go live** is required to resume. Note: if `requestAnimationFrame` stalls while JavaScript timers keep running, heartbeats continue and the last frame holds.
+   - **Electron main-process crash (`SIGKILL` / power loss):** no blackout packet can be sent; receivers fall back to their own signal-loss behaviour (sACN sources time out after 2.5 s; note that some fixtures like the Martin JEM ZR45 can revert to a saved RUN MODE and Look Solutions hazers can enter a purge cycle on DMX loss—sending zeros and stopping DMX does not guarantee continued physical inactivity on all hardware).
+   - **Web Serial (Enttec DMX USB Pro):** the serial transport runs inside the renderer process and **cannot** enforce a main-process heartbeat lease. If the window freezes, reloads, closes abruptly, or crashes, the USB widget holds the last frame (`pagehide` attempts a best-effort zero frame only). **Use desktop network output (sACN or Art-Net 4) rather than Web Serial whenever driving lasers or hazardous atmospheric effects**, and always click **Blackout & stop** before reloading or closing.
+   - StageForge does not reply to incoming `ArtPoll` requests in v1 (output-only controller).
 
 ## Universe Numbering
 

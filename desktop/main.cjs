@@ -119,6 +119,9 @@ function createWindow() {
     if (dmx && dmx.ownerId === wcId) void dmx.shutdown('renderer-crash');
     if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
   });
+  win.on('unresponsive', () => {
+    if (dmx && dmx.ownerId === wcId && dmx.active) void dmx.shutdown('heartbeat-timeout');
+  });
   wc.on('destroyed', () => {
     viewerTracker.clearWindow(wcId);
     syncMenuForWindow();
@@ -225,8 +228,9 @@ async function runRigCommand(command) {
 
 function registerDmxIpc() {
   const isRestricted = (wcId) => viewerTracker.isViewerWindow(wcId);
-  const { onFrame, onControl } = createDmxIpcHandlers(() => dmx, { isRestricted });
+  const { onFrame, onHeartbeat, onControl } = createDmxIpcHandlers(() => dmx, { isRestricted });
   ipcMain.on('stageforge:dmx-frame', onFrame);
+  ipcMain.on('stageforge:dmx-heartbeat', onHeartbeat);
   ipcMain.handle('stageforge:dmx-control', onControl);
   const { onControl: onShowControl } = createShowControlIpcHandlers(() => showControl, { isRestricted });
   ipcMain.handle('stageforge:show-control', onShowControl);

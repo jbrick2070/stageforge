@@ -31,6 +31,9 @@ interface DmxStatusBridge {
   packetsSent: number;
   degraded: boolean;
   lastError: string | null;
+  lastStopReason?: string | null;
+  lastStopOwnerId?: number | null;
+  stopEventId?: number;
   cid: string;
   universes: [number, number] | null;
   nodes: ArtNetDiscoveredNodeBridge[];
@@ -103,6 +106,7 @@ type ShowControlEventBridge =
       bumpKey?: 'blinder' | 'strobe' | 'co2' | 'smoke' | 'laser' | 'motorDrop';
       mappingId?: string;
       value?: number;
+      sender?: string;
       at: number;
     }
   | {
@@ -133,6 +137,7 @@ interface Window {
   stageforgeDesktop?: {
     onRigCommand(listener: (command: 'open' | 'openBundle' | 'openMvr' | 'openViewer' | 'export' | 'show' | 'bundle' | 'dxf' | 'glb' | 'csv' | 'mvr', source?: string | Uint8Array) => void): () => void;
     sendDmxFrame(universe: 1 | 2, data: Uint8Array): boolean;
+    sendDmxHeartbeat(): boolean;
     dmxControl(command: { type: 'listInterfaces' }): Promise<DmxNetworkInterfaceBridge[]>;
     dmxControl(command: { type: 'getStatus' }): Promise<DmxStatusBridge>;
     dmxControl(command: { type: 'disable' }): Promise<DmxStatusBridge>;

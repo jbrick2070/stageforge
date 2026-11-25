@@ -33,6 +33,15 @@ function createDmxIpcHandlers(getDmx, options = {}) {
     return dmx.update(universe, data);
   }
 
+  function onHeartbeat(event) {
+    const dmx = getDmx();
+    if (!dmx || !isAuthorizedDmxSender(event)) return false;
+    if (isRestricted(event.sender.id)) return false;
+    if (event.sender.id !== dmx.ownerId) return false;
+    if (!dmx.isRunning()) return false;
+    return dmx.heartbeat();
+  }
+
   async function onControl(event, command) {
     const dmx = getDmx();
     if (!dmx || !isAuthorizedDmxSender(event)) {
@@ -50,9 +59,12 @@ function createDmxIpcHandlers(getDmx, options = {}) {
       case 'getStatus': {
         if (keys.length !== 1) throw new Error('Unexpected fields in getStatus command.');
         const status = dmx.getStatus();
-        // Scope live status to the owning window so a second window never falsely displays LIVE.
+        // Scope live status and stop reason to the owning window so a second window never falsely displays LIVE or another window's stop notice.
         if (restricted || (dmx.ownerId !== null && dmx.ownerId !== event.sender.id)) {
-          return { ...status, enabled: false, state: 'idle' };
+          return { ...status, enabled: false, state: 'idle', lastStopReason: null };
+        }
+        if (dmx.ownerId === null && status.lastStopOwnerId !== null && status.lastStopOwnerId !== event.sender.id) {
+          return { ...status, lastStopReason: null };
         }
         return status;
       }
@@ -94,7 +106,7 @@ function createDmxIpcHandlers(getDmx, options = {}) {
     }
   }
 
-  return { onFrame, onControl };
+  return { onFrame, onHeartbeat, onControl };
 }
 
 module.exports = {

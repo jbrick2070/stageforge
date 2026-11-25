@@ -102,6 +102,8 @@ export interface SerialTransportStatus {
 export class EnttecProTransport {
   private port: WebSerialPortLike | null = null;
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  private portDisconnectListener: (() => void) | null = null;
+  private sessionGen = 0;
   private timerId: ReturnType<typeof setTimeout> | null = null;
   private statsTimerId: ReturnType<typeof setInterval> | null = null;
   private writing = false;
@@ -116,7 +118,6 @@ export class EnttecProTransport {
   private lastSendMs = 0;
   private readonly slots = new Uint8Array(512);
   private readonly zeroFrame = encodeEnttecProFrame(new Uint8Array(512));
-  private readonly onDisconnectBound: () => void;
   private readonly onStatus: (status: SerialTransportStatus) => void;
   private readonly serialProvider: () => WebSerialLike | null;
 
@@ -126,11 +127,6 @@ export class EnttecProTransport {
   ) {
     this.onStatus = onStatus;
     this.serialProvider = serialProvider;
-    this.onDisconnectBound = () => {
-      if (!this.enabled && !this.port) return;
-      this.error = 'USB DMX interface disconnected.';
-      void this.forceCloseAfterError();
-    };
   }
 
   public getStatus(): SerialTransportStatus {
@@ -159,7 +155,8 @@ export class EnttecProTransport {
   }
 
   public async enable(options: { universe: 1 | 2; rateHz: number; allowAllDevices?: boolean }): Promise<SerialTransportStatus> {
-    if (this.enabled) await this.disable();
+    if (this.enabled || this.port) await this.disable();
+    const gen = ++this.sessionGen;
     const serial = this.serialProvider();
     if (!serial) {
       throw new Error('Web Serial is not available in this browser. Use Chromium/Edge or the StageForge desktop app.');
@@ -179,6 +176,10 @@ export class EnttecProTransport {
       throw new Error(err instanceof Error ? err.message : 'Could not select serial port.');
     }
 
+    if (this.sessionGen !== gen) {
+      throw new Error('USB DMX startup was cancelled.');
+    }
+
     try {
       await port.open({
         baudRate: 57600,
@@ -191,6 +192,11 @@ export class EnttecProTransport {
       throw new Error(`Could not open serial port: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    if (this.sessionGen !== gen) {
+      try { await port.close(); } catch { /* ignore */ }
+      throw new Error('USB DMX startup was cancelled.');
+    }
+
     if (!port.writable) {
       try { await port.close(); } catch { /* ignore */ }
       throw new Error('Selected serial port is not writable.');
@@ -201,11 +207,20 @@ export class EnttecProTransport {
       ? `USB ${info.usbVendorId.toString(16).padStart(4, '0')}:${(info.usbProductId ?? 0).toString(16).padStart(4, '0')}`
       : 'Enttec DMX USB Pro';
 
+    const writer = port.writable.getWriter();
+    const onDisconnect = () => {
+      if (this.sessionGen !== gen || this.port !== port) return;
+      this.error = 'USB DMX interface disconnected.';
+      void this.forceCloseAfterError(gen, port, writer);
+    };
+
     this.port = port;
-    this.writer = port.writable.getWriter();
+    this.writer = writer;
+    this.portDisconnectListener = onDisconnect;
     this.universe = options.universe;
     this.rateHz = clampedHz;
     this.enabled = true;
+    this.writing = false;
     this.error = null;
     this.deviceLabel = label;
     this.packetsSent = 0;
@@ -214,33 +229,41 @@ export class EnttecProTransport {
     this.lastSendMs = 0;
     this.slots.fill(0);
 
-    port.addEventListener?.('disconnect', this.onDisconnectBound);
+    port.addEventListener?.('disconnect', onDisconnect);
 
     this.statsTimerId = setInterval(() => {
+      if (this.sessionGen !== gen || !this.enabled) return;
       this.measuredHz = this.framesInWindow;
       this.framesInWindow = 0;
       this.emit();
     }, 1000);
 
-    this.scheduleLoop();
+    this.scheduleLoop(gen);
     this.emit();
     return this.getStatus();
   }
 
   public async disable(): Promise<SerialTransportStatus> {
-    if (!this.enabled && !this.port) return this.getStatus();
+    if (!this.enabled && !this.port) {
+      this.sessionGen++;
+      return this.getStatus();
+    }
+    this.sessionGen++;
     this.enabled = false;
+    this.writing = false;
     this.clearTimers();
 
     const port = this.port;
     const writer = this.writer;
+    const listener = this.portDisconnectListener;
     this.port = null;
     this.writer = null;
+    this.portDisconnectListener = null;
     this.measuredHz = 0;
     this.framesInWindow = 0;
 
-    if (port) {
-      port.removeEventListener?.('disconnect', this.onDisconnectBound);
+    if (port && listener) {
+      port.removeEventListener?.('disconnect', listener);
     }
 
     try {
@@ -289,25 +312,39 @@ export class EnttecProTransport {
    */
   public emergencyBlackoutBestEffort(): void {
     if (!this.enabled || !this.writer) return;
+    this.sessionGen++;
     this.enabled = false;
+    this.writing = false;
     this.clearTimers();
+    const writer = this.writer;
     try {
-      void this.writer.write(this.zeroFrame).catch(() => {});
+      void writer.write(this.zeroFrame).catch(() => {});
     } catch {
       // ignore
     }
   }
 
-  private async forceCloseAfterError(): Promise<void> {
+  private async forceCloseAfterError(
+    expectedGen: number,
+    expectedPort: WebSerialPortLike | null,
+    expectedWriter: WritableStreamDefaultWriter<Uint8Array> | null,
+  ): Promise<void> {
+    if (this.sessionGen !== expectedGen || this.port !== expectedPort || this.writer !== expectedWriter) {
+      return;
+    }
+    this.sessionGen++;
     this.enabled = false;
+    this.writing = false;
     this.clearTimers();
     const port = this.port;
     const writer = this.writer;
+    const listener = this.portDisconnectListener;
     this.port = null;
     this.writer = null;
+    this.portDisconnectListener = null;
     this.measuredHz = 0;
     this.framesInWindow = 0;
-    if (port) port.removeEventListener?.('disconnect', this.onDisconnectBound);
+    if (port && listener) port.removeEventListener?.('disconnect', listener);
     if (writer) {
       try { writer.releaseLock(); } catch { /* ignore */ }
     }
@@ -328,47 +365,53 @@ export class EnttecProTransport {
     }
   }
 
-  private scheduleLoop(): void {
-    if (!this.enabled) return;
+  private scheduleLoop(gen: number): void {
+    if (!this.enabled || this.sessionGen !== gen) return;
     const minIntervalMs = Math.max(1000 / MAX_SERIAL_HZ, 1000 / this.rateHz);
     const now = performance.now();
     const waitMs = this.lastSendMs === 0 ? 0 : Math.max(1, Math.ceil(this.lastSendMs + minIntervalMs - now));
     this.timerId = setTimeout(() => {
       this.timerId = null;
-      void this.tick();
+      void this.tick(gen);
     }, waitMs);
   }
 
-  private async tick(): Promise<void> {
-    if (!this.enabled || !this.writer) return;
+  private async tick(gen: number): Promise<void> {
+    if (this.sessionGen !== gen || !this.enabled || !this.writer || !this.port) return;
     if (this.writing) {
-      this.scheduleLoop();
+      this.scheduleLoop(gen);
       return;
     }
     const minIntervalMs = 1000 / MAX_SERIAL_HZ;
     const now = performance.now();
     if (this.lastSendMs > 0 && now - this.lastSendMs < minIntervalMs) {
-      this.scheduleLoop();
+      this.scheduleLoop(gen);
       return;
     }
+    const port = this.port;
+    const writer = this.writer;
     this.writing = true;
     this.lastSendMs = now;
     try {
       const frame = encodeEnttecProFrame(this.slots);
-      await this.writer.write(frame);
+      await writer.write(frame);
+      if (this.sessionGen !== gen || this.writer !== writer || this.port !== port) return;
       this.packetsSent++;
       this.framesInWindow++;
     } catch (err) {
-      if (this.enabled) {
+      if (this.sessionGen === gen && this.writer === writer && this.port === port && this.enabled) {
         this.error = `USB DMX write failed: ${err instanceof Error ? err.message : String(err)}`;
         this.writing = false;
-        await this.forceCloseAfterError();
+        await this.forceCloseAfterError(gen, port, writer);
         return;
       }
+      return;
     } finally {
-      this.writing = false;
+      if (this.sessionGen === gen && this.writer === writer) {
+        this.writing = false;
+      }
     }
-    if (this.enabled) this.scheduleLoop();
+    if (this.sessionGen === gen && this.enabled) this.scheduleLoop(gen);
   }
 
   private emit(): void {
