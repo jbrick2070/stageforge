@@ -451,7 +451,7 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
     await dmxPage.getByRole('button', { name: /Choose equipment model for JEM ZR45 Smoke Machine/ }).first().click();
     await expect(eqPicker).toBeVisible();
     await eqPicker.getByRole('searchbox', { name: 'Search equipment catalogue' }).fill('ZR45');
-    await eqPicker.getByRole('button', { name: /Martin JEM ZR45/ }).click();
+    await eqPicker.getByRole('button', { name: /^Martin JEM ZR45/ }).click();
     await eqPicker.getByRole('combobox', { name: 'DMX mode' }).selectOption('1-Ch');
     await eqPicker.getByRole('button', { name: 'Apply model' }).click();
     await expect(eqPicker).toBeHidden();
