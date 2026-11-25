@@ -1,11 +1,11 @@
 import { DxfWriter, LWPolylineFlags, Units, point2d, point3d } from '@tarikjabiri/dxf';
 import type { DxfBlock, ExtendedData } from '@tarikjabiri/dxf';
 import type { FixtureType, FloorFxType, PlanPoint, RigConfig, StagePropKind, TrussPodConfig } from '../types/show';
-import { buildDmxPatch } from './dmxPatch';
+import { buildDmxPatch, formatDmxLabel } from './dmxPatch';
 import { getPlatforms, podWorldPoint, stageSurfaceHeight } from './stageDesign';
 import { PROP_CATALOG } from './stageProps';
 import { placeFixtures } from './fixturePlacement';
-import { bodyFamilyFor, symbolForHardware } from './equipmentSymbols';
+import { dxfBlockName, symbolForHardware } from './equipmentSymbols';
 import type { NativeStage } from './showFile';
 import { authoredWallFrames, resolveStudioGeometry } from './studioGeometry';
 
@@ -113,18 +113,14 @@ export function exportStageDxf(sourceRig: RigConfig, stage?: NativeStage): strin
   }
   function fixture(group: RigConfig['floorFx'][number] | TrussPodConfig['fixtures'][number],
     i: number, p: PlanPoint, elevation: number, rotation: number) {
-    const defaultFamily = bodyFamilyFor(group.type);
-    const family = bodyFamilyFor(group.type, group.catalogId);
-    const name = family === defaultFamily
-      ? 'SF_' + group.type.toUpperCase()
-      : 'SF_' + group.type.toUpperCase() + '_' + family.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    const name = dxfBlockName(group.type, group.catalogId);
     if (!defined.has(name)) { fixtureSymbol(drawing.addBlock(name), group.type, group.catalogId); defined.add(name); }
     const insert = drawing.addInsert(name,cad(p,elevation),{layerName:'FIXTURES',rotationAngle: rotation * degrees});
     const metadata = insert.addXData('STAGEFORGE');
     addProperty(metadata,group.modelName);
     addProperty(metadata,group.id);
     const address = group.dmxStartChannel + i * footprint.get(group)!;
-    const patchLabel = `U${group.dmxUniverse}.${String(address).padStart(3,'0')}${patch.unitStart(group,i) ? '' : ' (invalid patch)'}`;
+    const patchLabel = `${formatDmxLabel(group.dmxUniverse, address)}${patch.unitStart(group,i) ? '' : ' (invalid patch)'}`;
     addProperty(metadata,patchLabel);
     if (group.catalogId !== undefined) addProperty(metadata, group.catalogId);
     label(patchLabel,{x:p.x+0.18,z:p.z+0.1},elevation,0.13,'PATCH_TAGS');

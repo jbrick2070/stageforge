@@ -1128,3 +1128,23 @@ The overnight runner was stopped after Round 5. Claude Code took over for one sp
   - Edited `VOLUMETRIC_BEAM_VERT`/`FRAG` in place behind `#ifdef INSTANCED_BEAM` with `flat varying` (verified valid under Three.js 0.187.0 `#version 300 es` prefixing) rather than regex-rewriting GLSL strings, guaranteeing non-instanced shaders stay unchanged and look cannot drift.
 - **Leftovers / next up:**
   - Next up: **Realism backlog item 5** (Show paperwork: patch sheet, instrument schedule, channel hookup, power & load reports, and cue sheet), followed by items 6–8 and optional `matrixAutoUpdate = false` on static rig subtrees.
+
+### 2026-11-24 16:12 PST — Self-directed Round 1 (Realism backlog 5): show paperwork, finished by Claude Code
+
+- **What happened:** agy's runner was closed during this round (about 13:40) and left the paperwork work uncommitted, with no log entry. Claude Code verified it, ran the QA loop (three read-only Sonnet 5.5 passes), fixed the real findings, and committed it locally. Nothing was pushed.
+- **What shipped:** five paperwork sheets (patch, instrument schedule, channel hookup, power and load, cue sheet) as printable pages and CSV, from the same resolved geometry as MVR and DXF. See `docs/paperwork.md`.
+- **QA findings fixed:**
+  - Weight and power are marked `Estimate` or `Datasheet` per field in the CSVs, and `*` on screen and in print.
+  - Unplaced fixtures appear as `UNPLACED` rows in the patch, instrument and hookup CSVs.
+  - The simulated-channel-map notice is on the instrument and hookup sheets.
+  - CSV exports use the live take while recording.
+  - The paperwork is built only on the Paperwork tab, and a build error shows inline instead of crashing the modal.
+  - A truss pod named "floor" no longer merges with the stage floor.
+  - Long names wrap in print, scoped to name cells.
+  - `msToSmpte` (renderer and `desktop/osc-packets.cjs`) now tolerates half a millisecond, so a stored offset of `01:00:00;00` at 29.97 DF no longer reads one frame early.
+- **Rejected or deferred:**
+  - While recording, the Gear modal's own CSV buttons still use the previous take's timecodes. Fixing it would mean mutating state during render.
+  - `positions[]` can hold two entries with `positionId: 'floor'`. Nothing keys off it.
+  - The `afterprint` reset can't be tested end to end because the e2e stubs `window.print`.
+- **Gate results (final code):** `tsc` PASS; `npm test` PASS (**220/220**); `npm run build` PASS; `npm run desktop:win` PASS; `npm run test:desktop` PASS (**9/9**); `npx playwright test --workers=1` PASS (**53/53**, 10.4 min).
+- **Next up:** designed Sprints 6, 7, 8 and 9, in that order (see "Designed Sprints 6–8" and Sprint 9), then Realism items 6 to 8.

@@ -1,27 +1,31 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Anchor, ClipboardList, DollarSign, Package, X } from 'lucide-react';
-import type { RigConfig } from '../types/show';
-import type { NativeStage } from '../data/showFile';
+import { flushSync } from 'react-dom';
+import { Anchor, ClipboardList, DollarSign, FileSpreadsheet, Package, X } from 'lucide-react';
+import type { RigConfig, ShowCue } from '../types/show';
+import type { NativeStage, ShowTimeline } from '../data/showFile';
 import { calculateProductionEstimate } from '../data/productionEstimator';
 import { computeInventory } from '../data/equipmentInventory';
 import { computePowerReport } from '../data/powerReport';
 import { evaluateRigLoads } from '../data/rigLoads';
 import { DEFAULT_SHOP_STATE, type ShopStockState } from '../data/shopStock';
+import { buildShowPaperwork, type PaperworkSheetId } from '../data/showPaperwork';
 import { CostCrewPanel } from './CostCrewPanel';
 import { InventoryPanel } from './InventoryPanel';
 import { InventoryPrintSheet } from './InventoryPrintSheet';
+import { PaperworkPanel } from './PaperworkPanel';
+import { PaperworkPrintSheet, type PaperworkPrintMode } from './PaperworkPrintSheet';
 import { RiggingPowerPanel } from './RiggingPowerPanel';
 import { RiggingPowerPrintSheet } from './RiggingPowerPrintSheet';
 
-type GearTab = 'inventory' | 'rigging' | 'cost';
-const TAB_ORDER: readonly GearTab[] = ['inventory', 'rigging', 'cost'];
+type GearTab = 'inventory' | 'rigging' | 'paperwork' | 'cost';
+const TAB_ORDER: readonly GearTab[] = ['inventory', 'rigging', 'paperwork', 'cost'];
 
 const GEAR_TAB_STORAGE_KEY = 'stageforge.gearTab.v1';
 
 function readInitialTab(): GearTab {
   try {
     const saved = window.localStorage.getItem(GEAR_TAB_STORAGE_KEY);
-    return saved === 'cost' || saved === 'rigging' ? saved : 'inventory';
+    return saved === 'cost' || saved === 'rigging' || saved === 'paperwork' ? saved : 'inventory';
   } catch {
     return 'inventory';
   }
@@ -47,6 +51,8 @@ function getVisibleFocusables(root: HTMLElement): HTMLElement[] {
 export interface CostEstimatorModalProps {
   rig: RigConfig;
   stage?: NativeStage;
+  cues?: ShowCue[];
+  timeline?: ShowTimeline;
   shopStock?: ShopStockState;
   onChangeShopStock?: (next: ShopStockState) => void;
   onChangeRig?: (next: RigConfig) => void;
@@ -55,9 +61,14 @@ export interface CostEstimatorModalProps {
   onNotify?: (message: string) => void;
 }
 
+// Stable default so an omitted `cues` prop does not defeat the memo below on every render.
+const NO_CUES: ShowCue[] = [];
+
 export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
   rig,
   stage,
+  cues = NO_CUES,
+  timeline,
   shopStock = DEFAULT_SHOP_STATE,
   onChangeShopStock,
   onChangeRig,
@@ -67,9 +78,14 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<GearTab>(readInitialTab);
   const [applyD8Derate, setApplyD8Derate] = useState(true);
+  const [paperworkSheet, setPaperworkSheet] = useState<PaperworkSheetId>('patch');
+  const paperworkSheetRef = useRef<PaperworkSheetId>('patch');
+  paperworkSheetRef.current = paperworkSheet;
+  const [paperworkPrintMode, setPaperworkPrintMode] = useState<PaperworkPrintMode>('patch');
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inventoryTabRef = useRef<HTMLButtonElement>(null);
   const riggingTabRef = useRef<HTMLButtonElement>(null);
+  const paperworkTabRef = useRef<HTMLButtonElement>(null);
   const costTabRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -86,9 +102,40 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
   const inventory = useMemo(() => computeInventory(rig, stage, shopStock), [rig, stage, shopStock]);
   const loads = useMemo(() => evaluateRigLoads(rig, stage, { applyD8Derate }), [rig, stage, applyD8Derate]);
   const power = useMemo(() => computePowerReport(rig, stage), [rig, stage]);
+  // Only the Paperwork tab needs it; a throw or a slow build must not touch Inventory or Cost.
+  const paperworkBuild = useMemo(() => {
+    if (activeTab !== 'paperwork') return {};
+    try {
+      return { value: buildShowPaperwork(rig, stage, cues, timeline, { loads, power }) };
+    } catch (error) {
+      // The tab can be restored from storage; an error here must leave Inventory and Cost reachable.
+      return { error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }, [activeTab, rig, stage, cues, timeline, loads, power]);
+  const paperwork = paperworkBuild.value;
 
   const tabRefFor = (tab: GearTab) =>
-    tab === 'inventory' ? inventoryTabRef : tab === 'rigging' ? riggingTabRef : costTabRef;
+    tab === 'inventory'
+      ? inventoryTabRef
+      : tab === 'rigging'
+        ? riggingTabRef
+        : tab === 'paperwork'
+          ? paperworkTabRef
+          : costTabRef;
+
+  const handlePaperworkSheetChange = (next: PaperworkSheetId) => {
+    setPaperworkSheet(next);
+    setPaperworkPrintMode(next);
+  };
+
+  const handlePrintPaperwork = (mode: PaperworkPrintMode) => {
+    flushSync(() => {
+      setPaperworkPrintMode(mode);
+    });
+    // After the dialog closes, a later Ctrl+P prints the visible sheet again, not a leftover full book.
+    window.addEventListener('afterprint', () => setPaperworkPrintMode(paperworkSheetRef.current), { once: true });
+    window.print();
+  };
 
   const selectTab = (next: GearTab, moveFocus = false) => {
     setActiveTab(next);
@@ -233,6 +280,25 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
                 )}
               </button>
               <button
+                ref={paperworkTabRef}
+                id="gear-tab-paperwork"
+                role="tab"
+                type="button"
+                aria-selected={activeTab === 'paperwork'}
+                aria-controls="gear-panel-paperwork"
+                tabIndex={activeTab === 'paperwork' ? 0 : -1}
+                onClick={() => selectTab('paperwork')}
+                onKeyDown={handleTabKeyDown}
+                className={`gear-touch-control shrink-0 inline-flex items-center justify-center gap-1 px-2.5 sm:px-3.5 py-2 text-[11px] sm:text-xs font-semibold border-b-2 transition cursor-pointer ${
+                  activeTab === 'paperwork'
+                    ? 'border-sky-400 text-sky-200 bg-sky-500/10'
+                    : 'border-transparent text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Paperwork</span>
+              </button>
+              <button
                 ref={costTabRef}
                 id="gear-tab-cost"
                 role="tab"
@@ -289,6 +355,29 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
                 onNotify={onNotify}
               />
             </div>
+          ) : activeTab === 'paperwork' ? (
+            <div
+              id="gear-panel-paperwork"
+              role="tabpanel"
+              aria-labelledby="gear-tab-paperwork"
+              className="flex-1 min-h-0 flex flex-col overflow-hidden"
+            >
+              {paperworkBuild.error && (
+                <p role="alert" className="m-4 rounded-xl border border-rose-400/40 bg-rose-500/10 p-3 text-xs text-rose-100">
+                  Paperwork could not be built for this rig: {paperworkBuild.error}. Inventory and Cost still work.
+                </p>
+              )}
+              {paperwork && <PaperworkPanel
+                rig={rig}
+                stage={stage}
+                paperwork={paperwork}
+                activeSheet={paperworkSheet}
+                onChangeSheet={handlePaperworkSheetChange}
+                onPrint={handlePrintPaperwork}
+                onJumpToRigging={() => selectTab('rigging', true)}
+                onNotify={onNotify}
+              />}
+            </div>
           ) : (
             <div
               id="gear-panel-cost"
@@ -312,6 +401,9 @@ export const CostEstimatorModal: React.FC<CostEstimatorModalProps> = ({
       )}
       {activeTab === 'rigging' && (
         <RiggingPowerPrintSheet rig={rig} loads={loads} power={power} />
+      )}
+      {activeTab === 'paperwork' && paperwork && (
+        <PaperworkPrintSheet rig={rig} paperwork={paperwork} mode={paperworkPrintMode} />
       )}
     </>
   );

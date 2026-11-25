@@ -1,0 +1,743 @@
+import React, { useState } from 'react';
+import { AlertTriangle, BookOpen, Download, Printer, SlidersHorizontal } from 'lucide-react';
+import type { RigConfig } from '../types/show';
+import type { NativeStage } from '../data/showFile';
+import { downloadStageFile } from '../data/rigImport';
+import { riggingPowerCsv } from '../data/powerReport';
+import {
+  channelHookupCsv,
+  cueSheetCsv,
+  instrumentScheduleCsv,
+  PAPERWORK_SIMULATED_MAP_NOTICE,
+  patchSheetCsv,
+  type PaperworkSheetId,
+  type PaperworkUnitStatus,
+  type ShowPaperwork,
+} from '../data/showPaperwork';
+import { RIGGING_DISCLAIMER, statusLabelText } from '../data/rigLoads';
+
+interface PaperworkPanelProps {
+  rig: RigConfig;
+  stage?: NativeStage;
+  paperwork: ShowPaperwork;
+  activeSheet: PaperworkSheetId;
+  onChangeSheet: (next: PaperworkSheetId) => void;
+  onPrint: (mode: PaperworkSheetId | 'book') => void;
+  onJumpToRigging?: () => void;
+  onNotify?: (message: string) => void;
+}
+
+const SHEET_OPTIONS: ReadonlyArray<{
+  id: PaperworkSheetId;
+  label: string;
+  shortLabel: string;
+  csvSuffix: string;
+  csvNotice: string;
+}> = [
+  {
+    id: 'patch',
+    label: 'Patch sheet',
+    shortLabel: 'Patch',
+    csvSuffix: 'patch-sheet.csv',
+    csvNotice: 'Exported patch sheet CSV.',
+  },
+  {
+    id: 'instrument',
+    label: 'Instrument schedule',
+    shortLabel: 'Instrument',
+    csvSuffix: 'instrument-schedule.csv',
+    csvNotice: 'Exported instrument schedule CSV.',
+  },
+  {
+    id: 'hookup',
+    label: 'Channel hookup',
+    shortLabel: 'Hookup',
+    csvSuffix: 'channel-hookup.csv',
+    csvNotice: 'Exported channel hookup CSV.',
+  },
+  {
+    id: 'power',
+    label: 'Power & load',
+    shortLabel: 'Power & load',
+    csvSuffix: 'rigging-power.csv',
+    csvNotice: 'Exported rigging and power CSV.',
+  },
+  {
+    id: 'cues',
+    label: 'Cue sheet',
+    shortLabel: 'Cues',
+    csvSuffix: 'cue-sheet.csv',
+    csvNotice: 'Exported cue sheet CSV.',
+  },
+];
+
+function StatusBadge({ status }: { status: PaperworkUnitStatus }) {
+  const cls =
+    status === 'ok'
+      ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40'
+      : status === 'conflict'
+        ? 'bg-rose-500/25 text-rose-200 border-rose-400/50'
+        : 'bg-amber-500/25 text-amber-200 border-amber-400/50';
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded border font-mono-tech text-[10px] font-semibold ${cls}`}>
+      {status.toUpperCase()}
+    </span>
+  );
+}
+
+export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
+  rig,
+  stage,
+  paperwork,
+  activeSheet,
+  onChangeSheet,
+  onPrint,
+  onJumpToRigging,
+  onNotify,
+}) => {
+  const [exportNotice, setExportNotice] = useState('');
+
+  const currentMeta = SHEET_OPTIONS.find((s) => s.id === activeSheet) ?? SHEET_OPTIONS[0];
+
+  const handleExportCsv = () => {
+    let csv: string;
+    if (activeSheet === 'patch') csv = patchSheetCsv(paperwork);
+    else if (activeSheet === 'instrument') csv = instrumentScheduleCsv(paperwork);
+    else if (activeSheet === 'hookup') csv = channelHookupCsv(paperwork);
+    else if (activeSheet === 'cues') csv = cueSheetCsv(paperwork);
+    else csv = riggingPowerCsv(rig, stage, paperwork.loads, paperwork.power);
+
+    downloadStageFile(rig.name, currentMeta.csvSuffix, new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    setExportNotice(currentMeta.csvNotice);
+    onNotify?.(currentMeta.csvNotice);
+  };
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+      {/* Sticky sheet selector & action bar */}
+      <div className="shrink-0 px-4 sm:px-5 py-3 bg-black/50 border-b border-white/10 space-y-2.5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <fieldset className="paperwork-radio-group flex flex-wrap gap-1.5 border-0 m-0 p-0">
+            <legend className="sr-only">Show paperwork sheet</legend>
+            {SHEET_OPTIONS.map((opt) => {
+              const selected = activeSheet === opt.id;
+              return (
+                <label
+                  key={opt.id}
+                  className={`gear-touch-control inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition select-none ${
+                    selected
+                      ? 'bg-cyan-500/20 border-cyan-400/70 text-cyan-100'
+                      : 'bg-white/5 border-white/10 text-zinc-300 hover:bg-white/10'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="paperwork-sheet"
+                    value={opt.id}
+                    checked={selected}
+                    onChange={() => {
+                      setExportNotice('');
+                      onChangeSheet(opt.id);
+                    }}
+                    className="sr-only"
+                  />
+                  <span className="sm:hidden">{opt.shortLabel}</span>
+                  <span className="hidden sm:inline">{opt.label}</span>
+                </label>
+              );
+            })}
+          </fieldset>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => onPrint(activeSheet)}
+              className="gear-touch-control inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-semibold text-zinc-100 cursor-pointer"
+            >
+              <Printer className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Print sheet</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onPrint('book')}
+              className="gear-touch-control inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/50 text-xs font-semibold text-cyan-100 cursor-pointer"
+            >
+              <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Print full book</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              className="gear-touch-control inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/50 text-xs font-semibold text-emerald-100 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Export CSV</span>
+            </button>
+          </div>
+        </div>
+
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="paperwork-status"
+          className="font-mono-tech text-[11px] text-zinc-300 flex flex-wrap items-center justify-between gap-2"
+        >
+          <span>
+            {exportNotice ||
+              `${paperwork.totals.unitCount} fixtures · ${paperwork.positions.length} positions · ${paperwork.totals.cueCount} cues · Fixture # matches the MVR FixtureID; addresses match the DXF patch tags`}
+          </span>
+          {(paperwork.totals.conflictUnits > 0 || paperwork.totals.overflowUnits > 0) && (
+            <span className="text-rose-300 font-semibold">
+              {paperwork.totals.conflictUnits} conflict · {paperwork.totals.overflowUnits} overflow
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Scrollable sheet body */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-5 py-4 space-y-4">
+        {paperwork.unplaced.length > 0 && (
+          <div
+            role="alert"
+            className="rounded-xl border border-rose-400/50 bg-rose-500/15 px-3.5 py-2.5 text-xs text-rose-100 flex items-start gap-2"
+          >
+            <AlertTriangle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" aria-hidden="true" />
+            <div>
+              <strong>
+                {paperwork.unplaced.length} unplaced fixture unit{paperwork.unplaced.length === 1 ? '' : 's'}
+              </strong>{' '}
+              could not be assigned a mount slot and are omitted from MVR/DXF placements (rig total:{' '}
+              {paperwork.totalExpectedUnits}).
+            </div>
+          </div>
+        )}
+
+        {activeSheet === 'patch' && (
+          <div className="space-y-3">
+            <div className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-100">
+              {PAPERWORK_SIMULATED_MAP_NOTICE}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {paperwork.universes.map((u) => (
+                <div key={u.universe} className="rounded-xl bg-white/5 border border-white/10 p-2.5">
+                  <div className="font-mono-tech text-[10px] text-zinc-400 uppercase">Universe {u.universe}</div>
+                  <div className="font-mono-tech text-sm font-bold text-white mt-0.5">
+                    {u.usedChannels} / 512 ch
+                  </div>
+                  <div className="font-mono-tech text-[10px] text-zinc-400">
+                    {u.unitCount} units · {u.freeChannels} free
+                    {u.conflictChannels > 0 ? ` · ${u.conflictChannels} conflict` : ''}
+                  </div>
+                </div>
+              ))}
+              <div className="rounded-xl bg-white/5 border border-white/10 p-2.5">
+                <div className="font-mono-tech text-[10px] text-zinc-400 uppercase">Patched OK</div>
+                <div className="font-mono-tech text-sm font-bold text-emerald-300 mt-0.5">
+                  {paperwork.totals.patchedUnits} / {paperwork.totals.unitCount}
+                </div>
+                <div className="font-mono-tech text-[10px] text-zinc-400">MVR &amp; DXF aligned</div>
+              </div>
+              <div className="rounded-xl bg-white/5 border border-white/10 p-2.5">
+                <div className="font-mono-tech text-[10px] text-zinc-400 uppercase">Issues</div>
+                <div
+                  className={`font-mono-tech text-sm font-bold mt-0.5 ${
+                    paperwork.totals.conflictUnits + paperwork.totals.overflowUnits > 0
+                      ? 'text-rose-300'
+                      : 'text-zinc-200'
+                  }`}
+                >
+                  {paperwork.totals.conflictUnits + paperwork.totals.overflowUnits}
+                </div>
+                <div className="font-mono-tech text-[10px] text-zinc-400">
+                  {paperwork.totals.conflictUnits} conflict · {paperwork.totals.overflowUnits} overflow
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="inventory-table w-full text-left border-collapse text-xs">
+                <caption className="text-left font-mono-tech text-[11px] text-zinc-400 pb-2">
+                  DMX Patch Sheet — sorted by Universe &amp; Start Address
+                </caption>
+                <thead>
+                  <tr className="border-b border-white/15 font-mono-tech text-[10px] uppercase text-zinc-400">
+                    <th scope="col" className="py-2 pr-3">DMX Range</th>
+                    <th scope="col" className="py-2 pr-3">Abs</th>
+                    <th scope="col" className="py-2 pr-3">Fix #</th>
+                    <th scope="col" className="py-2 pr-3">Position</th>
+                    <th scope="col" className="py-2 pr-3">Unit #</th>
+                    <th scope="col" className="py-2 pr-3">Model</th>
+                    <th scope="col" className="py-2 pr-3">Mode</th>
+                    <th scope="col" className="py-2 pr-3">Ch</th>
+                    <th scope="col" className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10">
+                  {paperwork.patchRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-4 text-center text-zinc-400">
+                        No fixtures in this rig.
+                      </td>
+                    </tr>
+                  ) : (
+                    paperwork.patchRows.map((u) => (
+                      <tr key={u.fixtureNumber} className="hover:bg-white/5">
+                        <td data-label="Fixture · DMX" className="py-2 pr-3 font-mono-tech text-cyan-200 whitespace-nowrap">
+                          <span>
+                            <span className="sm:hidden">#{u.fixtureNumber} · </span>
+                            {u.dmxRangeLabel}
+                          </span>
+                        </td>
+                        <td data-label="Abs Addr" className="py-2 pr-3 font-mono-tech text-zinc-300">
+                          <span>{u.absoluteAddress ?? '—'}</span>
+                        </td>
+                        <td data-label="Fixture #" className="py-2 pr-3 font-mono-tech text-white font-semibold">
+                          <span>#{u.fixtureNumber}</span>
+                        </td>
+                        <td data-label="Position" className="py-2 pr-3 text-zinc-200">
+                          <span>{u.positionName}</span>
+                        </td>
+                        <td data-label="Unit #" className="py-2 pr-3 font-mono-tech text-zinc-300">
+                          <span>{u.unitNumber}</span>
+                        </td>
+                        <td data-label="Model" className="py-2 pr-3 text-white">
+                          <span>
+                            {u.manufacturer !== 'Generic' ? `${u.manufacturer} ` : ''}
+                            {u.modelName}
+                          </span>
+                        </td>
+                        <td data-label="DMX Mode" className="py-2 pr-3 text-zinc-300">
+                          <span>{u.dmxMode ?? 'Default'}</span>
+                        </td>
+                        <td data-label="Footprint" className="py-2 pr-3 font-mono-tech text-zinc-300">
+                          <span>{u.footprint} ch</span>
+                        </td>
+                        <td data-label="Status" className="py-2">
+                          <span>
+                            <StatusBadge status={u.status} />
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSheet === 'instrument' && (
+          <div className="space-y-3">
+            <div className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-100">
+              {PAPERWORK_SIMULATED_MAP_NOTICE} * Estimated generic hardware allowance, not a datasheet value.
+            </div>
+            <div className="overflow-x-auto">
+              <table className="inventory-table w-full text-left border-collapse text-xs">
+                <caption className="text-left font-mono-tech text-[11px] text-zinc-400 pb-2">
+                  Instrument Schedule — sorted by Hanging Position &amp; Mount Order (world coords in metres)
+                </caption>
+                <thead>
+                  <tr className="border-b border-white/15 font-mono-tech text-[10px] uppercase text-zinc-400">
+                    <th scope="col" className="py-2 pr-3">Position</th>
+                    <th scope="col" className="py-2 pr-3">Mt #</th>
+                    <th scope="col" className="py-2 pr-3">Fix #</th>
+                    <th scope="col" className="py-2 pr-3">Unit #</th>
+                    <th scope="col" className="py-2 pr-3">Model</th>
+                    <th scope="col" className="py-2 pr-3">DMX</th>
+                    <th scope="col" className="py-2 pr-3">Circuit / φ</th>
+                    <th scope="col" className="py-2 pr-3">Wt / W</th>
+                    <th scope="col" className="py-2 pr-3">X / Y / Z (m)</th>
+                    <th scope="col" className="py-2">DXF Block</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10">
+                  {paperwork.instrumentRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="py-4 text-center text-zinc-400">
+                        No fixtures in this rig.
+                      </td>
+                    </tr>
+                  ) : (
+                    paperwork.instrumentRows.map((u) => (
+                      <tr key={u.fixtureNumber} className="hover:bg-white/5">
+                        <td data-label="Fixture · Position" className="py-2 pr-3 text-white font-medium">
+                          <span>
+                            <span className="sm:hidden font-mono-tech text-cyan-200">
+                              #{u.fixtureNumber} · {u.dmxLabel} ·{' '}
+                            </span>
+                            {u.positionName}
+                          </span>
+                        </td>
+                        <td data-label="Mount #" className="py-2 pr-3 font-mono-tech text-zinc-300">
+                          <span>{u.mountOrder}</span>
+                        </td>
+                        <td data-label="Fixture #" className="py-2 pr-3 font-mono-tech text-white font-semibold">
+                          <span>#{u.fixtureNumber}</span>
+                        </td>
+                        <td data-label="Unit #" className="py-2 pr-3 font-mono-tech text-zinc-300">
+                          <span>{u.unitNumber}</span>
+                        </td>
+                        <td data-label="Model" className="py-2 pr-3 text-zinc-100">
+                          <span>
+                            {u.manufacturer !== 'Generic' ? `${u.manufacturer} ` : ''}
+                            {u.modelName}
+                          </span>
+                        </td>
+                        <td data-label="DMX" className="py-2 pr-3 font-mono-tech text-cyan-200 whitespace-nowrap">
+                          <span>
+                            {u.dmxLabel}
+                            {u.status !== 'ok' ? ` (${u.status.toUpperCase()})` : ''}
+                          </span>
+                        </td>
+                        <td data-label="Circuit / Phase" className="py-2 pr-3 font-mono-tech text-zinc-200 whitespace-nowrap">
+                          <span>{u.circuitId ? `${u.circuitId} (${u.phase})` : '—'}</span>
+                        </td>
+                        <td data-label="Weight / Power" className="py-2 pr-3 font-mono-tech text-zinc-300 whitespace-nowrap">
+                          <span>
+                            {u.weightKg.toFixed(1)}{u.weightEstimated ? '*' : ''} kg · {u.powerW}{u.powerEstimated ? '*' : ''} W
+                          </span>
+                        </td>
+                        <td data-label="Coords (m)" className="py-2 pr-3 font-mono-tech text-zinc-400 whitespace-nowrap">
+                          <span>
+                            {u.x.toFixed(2)}, {u.y.toFixed(2)}, {u.z.toFixed(2)}
+                          </span>
+                        </td>
+                        <td data-label="DXF Block" className="py-2 font-mono-tech text-zinc-300">
+                          <span>{u.dxfBlock}</span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSheet === 'hookup' && (
+          <div className="space-y-3">
+            <div className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-100">
+              {PAPERWORK_SIMULATED_MAP_NOTICE}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="inventory-table w-full text-left border-collapse text-xs">
+                <caption className="text-left font-mono-tech text-[11px] text-zinc-400 pb-2">
+                  Channel Hookup — sorted by Fixture # / Console Channel (matches MVR FixtureID)
+                </caption>
+                <thead>
+                  <tr className="border-b border-white/15 font-mono-tech text-[10px] uppercase text-zinc-400">
+                    <th scope="col" className="py-2 pr-3">Fix #</th>
+                    <th scope="col" className="py-2 pr-3">Position</th>
+                    <th scope="col" className="py-2 pr-3">Unit #</th>
+                    <th scope="col" className="py-2 pr-3">Model</th>
+                    <th scope="col" className="py-2 pr-3">DMX Range</th>
+                    <th scope="col" className="py-2 pr-3">Circuit</th>
+                    <th scope="col" className="py-2 pr-3">Phase</th>
+                    <th scope="col" className="py-2 pr-3">Optics</th>
+                    <th scope="col" className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10">
+                  {paperwork.units.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-4 text-center text-zinc-400">
+                        No fixtures in this rig.
+                      </td>
+                    </tr>
+                  ) : (
+                    paperwork.units.map((u) => (
+                      <tr key={u.fixtureNumber} className="hover:bg-white/5">
+                        <td data-label="Fixture · DMX" className="py-2 pr-3 font-mono-tech text-white font-semibold whitespace-nowrap">
+                          <span>
+                            #{u.fixtureNumber}
+                            <span className="sm:hidden text-cyan-200"> · {u.dmxLabel}</span>
+                          </span>
+                        </td>
+                        <td data-label="Position" className="py-2 pr-3 text-zinc-200">
+                          <span>{u.positionName}</span>
+                        </td>
+                        <td data-label="Unit #" className="py-2 pr-3 font-mono-tech text-zinc-300">
+                          <span>{u.unitNumber}</span>
+                        </td>
+                        <td data-label="Model" className="py-2 pr-3 text-zinc-100">
+                          <span>
+                            {u.manufacturer !== 'Generic' ? `${u.manufacturer} ` : ''}
+                            {u.modelName}
+                          </span>
+                        </td>
+                        <td data-label="DMX Range" className="py-2 pr-3 font-mono-tech text-cyan-200 whitespace-nowrap">
+                          <span>{u.dmxRangeLabel}</span>
+                        </td>
+                        <td data-label="Circuit" className="py-2 pr-3 font-mono-tech text-zinc-200">
+                          <span>{u.circuitId ?? '—'}</span>
+                        </td>
+                        <td data-label="Phase" className="py-2 pr-3 font-mono-tech text-zinc-300">
+                          <span>{u.phase ?? '—'}</span>
+                        </td>
+                        <td data-label="Optics" className="py-2 pr-3 text-zinc-300">
+                          <span>{u.opticsNote}</span>
+                        </td>
+                        <td data-label="Status" className="py-2">
+                          <span>
+                            <StatusBadge status={u.status} />
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSheet === 'power' && (
+          <div className="space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-xl border border-amber-400/35 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-100">
+              <span>{RIGGING_DISCLAIMER}</span>
+              {onJumpToRigging && (
+                <button
+                  type="button"
+                  onClick={onJumpToRigging}
+                  className="gear-touch-control shrink-0 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/20 text-xs font-semibold text-white cursor-pointer"
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Edit rigging &amp; power</span>
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="rounded-xl bg-white/5 border border-white/10 p-2.5">
+                <div className="font-mono-tech text-[10px] text-zinc-400 uppercase">Roof Load</div>
+                <div className="font-mono-tech text-sm font-bold text-white mt-0.5">
+                  {Math.round(paperwork.loads.totals.totalRoofLoadKg).toLocaleString()} kg
+                </div>
+                <div className="font-mono-tech text-[10px] text-zinc-400">
+                  {paperwork.loads.totals.hoistPointCount} hoist pts · {statusLabelText(paperwork.loads.worstStatus)}
+                </div>
+              </div>
+              <div className="rounded-xl bg-white/5 border border-white/10 p-2.5">
+                <div className="font-mono-tech text-[10px] text-zinc-400 uppercase">Total Power</div>
+                <div className="font-mono-tech text-sm font-bold text-white mt-0.5">
+                  {paperwork.power.totals.totalW.toLocaleString()} W
+                </div>
+                <div className="font-mono-tech text-[10px] text-zinc-400">
+                  {paperwork.power.totals.continuousKva.toFixed(2)} kVA cont.
+                </div>
+              </div>
+              <div className="rounded-xl bg-white/5 border border-white/10 p-2.5">
+                <div className="font-mono-tech text-[10px] text-zinc-400 uppercase">Feeder ({paperwork.power.system.shortLabel})</div>
+                <div className="font-mono-tech text-sm font-bold text-white mt-0.5">
+                  {paperwork.power.totals.configuredFeederA ?? paperwork.power.totals.recommendedFeederA} A ·{' '}
+                  {paperwork.power.totals.feederStatus.toUpperCase()}
+                </div>
+                <div className="font-mono-tech text-[10px] text-zinc-400">
+                  Max φ {paperwork.power.totals.maxPhaseAmps.toFixed(1)} A · N {paperwork.power.totals.neutralAmps.toFixed(1)} A
+                </div>
+              </div>
+              <div className="rounded-xl bg-white/5 border border-white/10 p-2.5">
+                <div className="font-mono-tech text-[10px] text-zinc-400 uppercase">Circuits</div>
+                <div className="font-mono-tech text-sm font-bold text-white mt-0.5">
+                  {paperwork.power.circuits.length} total
+                </div>
+                <div className="font-mono-tech text-[10px] text-zinc-400">
+                  {paperwork.power.totals.overloadedCircuits} overload · {paperwork.power.totals.cautionCircuits} caution
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="inventory-table w-full text-left border-collapse text-xs">
+                <caption className="text-left font-mono-tech text-[11px] text-zinc-400 pb-2">
+                  Overhead Hoist Points — exact totals shared with Rigging &amp; power tab
+                </caption>
+                <thead>
+                  <tr className="border-b border-white/15 font-mono-tech text-[10px] uppercase text-zinc-400">
+                    <th scope="col" className="py-2 pr-3">Pod / Profile</th>
+                    <th scope="col" className="py-2 pr-3">Point</th>
+                    <th scope="col" className="py-2 pr-3">Hoist</th>
+                    <th scope="col" className="py-2 pr-3">Hook (kg)</th>
+                    <th scope="col" className="py-2 pr-3">Roof (kg)</th>
+                    <th scope="col" className="py-2 pr-3">Eff. WLL</th>
+                    <th scope="col" className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10">
+                  {paperwork.loads.pods.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-4 text-center text-zinc-400">
+                        No overhead truss pods in this rig.
+                      </td>
+                    </tr>
+                  ) : (
+                    paperwork.loads.pods.flatMap((pod) =>
+                      pod.points.map((pt) => (
+                        <tr key={`${pod.podId}-${pt.pointIndex}`} className="hover:bg-white/5">
+                          <td data-label="Pod" className="py-2 pr-3 text-white">
+                            <span>
+                              {pod.podName} ({pod.trussProfileName})
+                            </span>
+                          </td>
+                          <td data-label="Point" className="py-2 pr-3 font-mono-tech text-cyan-200">
+                            <span>{pt.label}</span>
+                          </td>
+                          <td data-label="Hoist" className="py-2 pr-3 text-zinc-300">
+                            <span>{pod.hoistName}</span>
+                          </td>
+                          <td data-label="Hook Load" className="py-2 pr-3 font-mono-tech text-zinc-200">
+                            <span>{pt.hoistLoadKg.toFixed(1)} kg</span>
+                          </td>
+                          <td data-label="Roof Load" className="py-2 pr-3 font-mono-tech text-zinc-200">
+                            <span>{pt.roofLoadKg.toFixed(1)} kg</span>
+                          </td>
+                          <td data-label="Eff. WLL" className="py-2 pr-3 font-mono-tech text-zinc-300">
+                            <span>{pt.effectiveWllKg !== null ? `${Math.round(pt.effectiveWllKg)} kg` : '—'}</span>
+                          </td>
+                          <td data-label="Status" className="py-2 font-mono-tech text-zinc-100">
+                            <span>{statusLabelText(pt.status)}</span>
+                          </td>
+                        </tr>
+                      )),
+                    )
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="inventory-table w-full text-left border-collapse text-xs">
+                <caption className="text-left font-mono-tech text-[11px] text-zinc-400 pb-2">
+                  Power Circuits ({paperwork.power.system.label})
+                </caption>
+                <thead>
+                  <tr className="border-b border-white/15 font-mono-tech text-[10px] uppercase text-zinc-400">
+                    <th scope="col" className="py-2 pr-3">Circuit</th>
+                    <th scope="col" className="py-2 pr-3">Dept</th>
+                    <th scope="col" className="py-2 pr-3">Load</th>
+                    <th scope="col" className="py-2 pr-3">Watts</th>
+                    <th scope="col" className="py-2 pr-3">Amps / Breaker</th>
+                    <th scope="col" className="py-2 pr-3">Phase</th>
+                    <th scope="col" className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10">
+                  {paperwork.power.circuits.map((c) => (
+                    <tr key={c.id} className="hover:bg-white/5">
+                      <td data-label="Circuit" className="py-2 pr-3 font-mono-tech text-cyan-200">
+                        <span>{c.id}</span>
+                      </td>
+                      <td data-label="Department" className="py-2 pr-3 text-zinc-300">
+                        <span>{c.department}</span>
+                      </td>
+                      <td data-label="Load" className="py-2 pr-3 text-zinc-100">
+                        <span>
+                          {c.description} ({c.units})
+                        </span>
+                      </td>
+                      <td data-label="Watts" className="py-2 pr-3 font-mono-tech text-zinc-200">
+                        <span>{c.watts.toLocaleString()} W</span>
+                      </td>
+                      <td data-label="Amps" className="py-2 pr-3 font-mono-tech text-zinc-300 whitespace-nowrap">
+                        <span>
+                          {c.amps.toFixed(1)} A / {c.breakerA} A
+                        </span>
+                      </td>
+                      <td data-label="Phase" className="py-2 pr-3 font-mono-tech text-zinc-200">
+                        <span>
+                          {c.phase}
+                          {c.pinned ? ' (pin)' : ''}
+                        </span>
+                      </td>
+                      <td data-label="Status" className="py-2 font-mono-tech text-zinc-100">
+                        <span>{c.status.toUpperCase()}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSheet === 'cues' && (
+          <div className="space-y-3">
+            <div className="overflow-x-auto">
+              <table className="inventory-table w-full text-left border-collapse text-xs">
+                <caption className="text-left font-mono-tech text-[11px] text-zinc-400 pb-2">
+                  Show Cue Sheet — stack order matches Console, OSC &amp; MIDI Show Control
+                  {paperwork.timelineFrameRate ? ` · Take TC @ ${paperwork.timelineFrameRate} fps` : ''}
+                </caption>
+                <thead>
+                  <tr className="border-b border-white/15 font-mono-tech text-[10px] uppercase text-zinc-400">
+                    <th scope="col" className="py-2 pr-3">Cue #</th>
+                    <th scope="col" className="py-2 pr-3">Name</th>
+                    <th scope="col" className="py-2 pr-3">Tag</th>
+                    <th scope="col" className="py-2 pr-3">Follow</th>
+                    <th scope="col" className="py-2 pr-3">Take TC</th>
+                    <th scope="col" className="py-2 pr-3">Dimmer</th>
+                    <th scope="col" className="py-2 pr-3">Lighting</th>
+                    <th scope="col" className="py-2 pr-3">Lasers</th>
+                    <th scope="col" className="py-2">LED / Media</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10">
+                  {paperwork.cues.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-4 text-center text-zinc-400">
+                        No cues in this show.
+                      </td>
+                    </tr>
+                  ) : (
+                    paperwork.cues.map((c) => (
+                      <tr key={c.id} className="hover:bg-white/5">
+                        <td data-label="Cue" className="py-2 pr-3 font-mono-tech text-white font-semibold whitespace-nowrap">
+                          <span>
+                            Cue {c.cueNumber}
+                            <span className="sm:hidden text-cyan-200"> · {c.name}</span>
+                          </span>
+                        </td>
+                        <td data-label="Name" className="py-2 pr-3 text-white font-medium">
+                          <span>{c.name}</span>
+                        </td>
+                        <td data-label="Tag" className="py-2 pr-3 font-mono-tech text-zinc-300">
+                          <span>{c.tag}</span>
+                        </td>
+                        <td data-label="Follow" className="py-2 pr-3 font-mono-tech text-zinc-300 whitespace-nowrap">
+                          <span>{c.followLabel}</span>
+                        </td>
+                        <td data-label="Take TC" className="py-2 pr-3 font-mono-tech text-cyan-200 whitespace-nowrap">
+                          <span>{c.takeTimecode ?? '—'}</span>
+                        </td>
+                        <td data-label="Dimmer" className="py-2 pr-3 font-mono-tech text-zinc-200 whitespace-nowrap">
+                          <span>{c.dimmerLabel}</span>
+                        </td>
+                        <td data-label="Lighting" className="py-2 pr-3 text-zinc-300">
+                          <span>{c.lightingSummary}</span>
+                        </td>
+                        <td data-label="Lasers" className="py-2 pr-3 text-zinc-300">
+                          <span>
+                            {c.laserSummary}
+                            {c.audienceScanWarning && (
+                              <span className="block text-[10px] text-rose-300 mt-0.5">
+                                {c.audienceScanWarning}
+                              </span>
+                            )}
+                          </span>
+                        </td>
+                        <td data-label="LED / Media" className="py-2 text-zinc-300">
+                          <span>{c.mediaSummary}</span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};

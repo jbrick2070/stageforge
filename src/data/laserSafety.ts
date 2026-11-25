@@ -22,6 +22,8 @@ export const STATIONARY_SPREAD_THRESHOLD = 0.02;
 export const STATIONARY_ILDA_SPAN_DEG = 0.5;
 export const LASER_SAFETY_DISCLAIMER =
   'Design guidance only, not regulatory certification or Laser Safety Officer sign-off.';
+export const CROWD_SCAN_WARNING =
+  'Crowd scan is enabled (audience-scanning requires LSO oversight, MPE measurements & variance).';
 
 export type LaserClass = '3B' | '4';
 export type LaserSafetyLevel = 'ok' | 'caution' | 'danger';
@@ -329,7 +331,7 @@ export function evaluateLaserSafety(
       findings.push({
         code: 'crowd_scan_enabled',
         severity: 'danger',
-        message: 'Crowd scan is enabled (audience-scanning requires LSO oversight, MPE measurements & variance).',
+        message: CROWD_SCAN_WARNING,
       });
       unitLevel = worstLevel(unitLevel, 'danger');
     }

@@ -59,12 +59,17 @@ export function smpteToMs(tc: SmpteTimecode): number | null {
   return (frameNumber * 1000) / fps;
 }
 
+// Offsets are stored as whole milliseconds, so a position can sit up to 0.5 ms before its frame boundary
+// (01:00:00;00 at 29.97 DF is 3,599,996.4 ms, stored as 3,599,996). Tolerate half a millisecond so it
+// still reads as that frame instead of the one before.
+const HALF_MS_IN_FRAMES_DF = (0.5 * 30) / 1001;
+
 export function msToSmpte(rawMs: number, fps: SmpteFrameRate): SmpteTimecode {
   const safeMs = Number.isFinite(rawMs) ? rawMs : 0;
   const wrappedMs = ((safeMs % DAY_MS) + DAY_MS) % DAY_MS;
   if (fps === 29.97) {
     const framesPerDay = 2_589_408; // 144 * 17982 frames in 24h
-    const fn = Math.floor((wrappedMs * 30) / 1001 + 1e-6) % framesPerDay;
+    const fn = Math.floor((wrappedMs * 30) / 1001 + HALF_MS_IN_FRAMES_DF) % framesPerDay;
     const d = Math.floor(fn / 17982);
     const m = fn % 17982;
     const adjusted = fn + 18 * d + (m < 2 ? 0 : 2 * Math.floor((m - 2) / 1798));
@@ -77,7 +82,7 @@ export function msToSmpte(rawMs: number, fps: SmpteFrameRate): SmpteTimecode {
     return { hours, minutes, seconds, frames, fps };
   }
   const framesPerDay = 86_400 * fps;
-  const fn = Math.floor((wrappedMs * fps) / 1000 + 1e-6) % framesPerDay;
+  const fn = Math.floor((wrappedMs * fps) / 1000 + (0.5 * fps) / 1000) % framesPerDay;
   const frames = fn % fps;
   const totalSeconds = Math.floor(fn / fps);
   const seconds = totalSeconds % 60;

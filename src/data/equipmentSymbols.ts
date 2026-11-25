@@ -340,6 +340,18 @@ export function symbolForHardware(type: HardwareType, catalogId?: string): Equip
   return symbolFor(bodyFamilyFor(type, catalogId), catalogId);
 }
 
+/**
+ * Canonical DXF block name for a fixture hardware type and optional catalogue model.
+ * Legacy / default-family fixtures keep `SF_<TYPE>`; distinct catalogue body families append `_<FAMILY>`.
+ */
+export function dxfBlockName(type: HardwareType, catalogId?: string): string {
+  const defaultFamily = bodyFamilyFor(type);
+  const family = bodyFamilyFor(type, catalogId);
+  return family === defaultFamily
+    ? 'SF_' + type.toUpperCase()
+    : 'SF_' + type.toUpperCase() + '_' + family.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+}
+
 export function symbolForLedPanel(cabinetId?: string): EquipmentSymbol {
   return symbolFor('led-panel', cabinetId ?? DEFAULT_LED_PANEL_ID);
 }

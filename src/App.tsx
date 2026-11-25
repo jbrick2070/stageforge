@@ -1272,6 +1272,22 @@ export const App: React.FC = () => {
     } else if (action === 'riggingPowerCsv') {
       const { riggingPowerCsv } = await import('./data/powerReport');
       downloadStageFile(rig.name, 'rigging-power.csv', new Blob([riggingPowerCsv(rig, studioStage)], { type: 'text/csv;charset=utf-8' }));
+    } else if (action === 'patchSheetCsv') {
+      const { buildShowPaperwork, patchSheetCsv } = await import('./data/showPaperwork');
+      const pw = buildShowPaperwork(rig, studioStage, cues, timeline.snapshot());
+      downloadStageFile(rig.name, 'patch-sheet.csv', new Blob([patchSheetCsv(pw)], { type: 'text/csv;charset=utf-8' }));
+    } else if (action === 'instrumentScheduleCsv') {
+      const { buildShowPaperwork, instrumentScheduleCsv } = await import('./data/showPaperwork');
+      const pw = buildShowPaperwork(rig, studioStage, cues, timeline.snapshot());
+      downloadStageFile(rig.name, 'instrument-schedule.csv', new Blob([instrumentScheduleCsv(pw)], { type: 'text/csv;charset=utf-8' }));
+    } else if (action === 'channelHookupCsv') {
+      const { buildShowPaperwork, channelHookupCsv } = await import('./data/showPaperwork');
+      const pw = buildShowPaperwork(rig, studioStage, cues, timeline.snapshot());
+      downloadStageFile(rig.name, 'channel-hookup.csv', new Blob([channelHookupCsv(pw)], { type: 'text/csv;charset=utf-8' }));
+    } else if (action === 'cueSheetCsv') {
+      const { buildShowPaperwork, cueSheetCsv } = await import('./data/showPaperwork');
+      const pw = buildShowPaperwork(rig, studioStage, cues, timeline.snapshot());
+      downloadStageFile(rig.name, 'cue-sheet.csv', new Blob([cueSheetCsv(pw)], { type: 'text/csv;charset=utf-8' }));
     } else {
       downloadStageFile(rig.name, 'patch.csv', new Blob([patchCsv(rig)], { type: 'text/csv;charset=utf-8' }));
     }
@@ -1612,6 +1628,8 @@ export const App: React.FC = () => {
             <CostEstimatorModal
               rig={rig}
               stage={studioStage}
+              cues={cues}
+              timeline={timeline.timeline}
               shopStock={shopStock}
               onChangeShopStock={updateShopStock}
               onChangeRig={(next) => {

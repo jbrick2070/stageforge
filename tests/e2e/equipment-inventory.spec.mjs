@@ -16,12 +16,14 @@ test('Gear & production modal defaults to Inventory, supports ARIA tabs, focus t
   const dialog = page.getByRole('dialog', { name: 'Gear & production' });
   await expect(dialog).toBeVisible();
 
-  // Default tab is Inventory; Rigging & power sits between Inventory and Cost & crew.
+  // Default tab is Inventory; Rigging & power and Paperwork sit between Inventory and Cost & crew.
   const invTab = dialog.getByRole('tab', { name: /Inventory/ });
   const riggingTab = dialog.getByRole('tab', { name: /Rigging & power/ });
+  const paperworkTab = dialog.getByRole('tab', { name: /Paperwork/ });
   const costTab = dialog.getByRole('tab', { name: 'Cost & crew' });
   await expect(invTab).toHaveAttribute('aria-selected', 'true');
   await expect(riggingTab).toHaveAttribute('aria-selected', 'false');
+  await expect(paperworkTab).toHaveAttribute('aria-selected', 'false');
   await expect(costTab).toHaveAttribute('aria-selected', 'false');
 
   // Arrow keys move between tabs; Home/End work too.
@@ -29,6 +31,9 @@ test('Gear & production modal defaults to Inventory, supports ARIA tabs, focus t
   await page.keyboard.press('ArrowRight');
   await expect(riggingTab).toBeFocused();
   await expect(riggingTab).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('ArrowRight');
+  await expect(paperworkTab).toBeFocused();
+  await expect(paperworkTab).toHaveAttribute('aria-selected', 'true');
   await page.keyboard.press('ArrowRight');
   await expect(costTab).toBeFocused();
   await expect(costTab).toHaveAttribute('aria-selected', 'true');

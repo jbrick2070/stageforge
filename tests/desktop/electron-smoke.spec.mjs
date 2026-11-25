@@ -613,6 +613,69 @@ test('Gear & production Inventory loads under stageforge:// CSP, prints via wind
   expect(rpBody).toContain('section,pod_or_group,item');
   expect(rpBody).toContain('summary,');
 
+  // Switch to Paperwork tab: verify all 4 paperwork CSV suffixes pass will-download with exact titles,
+  // window.print() is reachable, window.open() remains denied, and an unknown .csv suffix is cancelled.
+  await dialog.getByRole('tab', { name: /Paperwork/ }).click();
+  const pwPanel = dialog.getByRole('tabpanel', { name: /Paperwork/ });
+  await expect(pwPanel).toContainText('StageForge simulated channel map');
+
+  await pwPanel.getByRole('button', { name: 'Print full book' }).click();
+  expect(await page.evaluate(() => window.__desktopPrintCalls)).toBe(2);
+  expect(await page.evaluate(() => window.open('https://example.com'))).toBeNull();
+
+  const pwChecks = [
+    { radio: 'Patch sheet', suffix: '.patch-sheet.csv', title: 'Export patch sheet', header: 'Universe,DMX Address' },
+    { radio: 'Instrument schedule', suffix: '.instrument-schedule.csv', title: 'Export instrument schedule', header: 'Position,Mount #,Fixture #' },
+    { radio: 'Channel hookup', suffix: '.channel-hookup.csv', title: 'Export channel hookup', header: 'Fixture #,Position,Unit #' },
+    { radio: 'Cue sheet', suffix: '.cue-sheet.csv', title: 'Export cue sheet', header: 'Cue #,Name,Tag,Follow' },
+  ];
+  for (const check of pwChecks) {
+    await pwPanel.getByRole('radio', { name: new RegExp(check.radio) }).click({ force: true });
+    const target = path.join(tmp, `paperwork${check.suffix}`);
+    await app.evaluate(({ session }, dest) => {
+      const record = globalThis.__stageforgeTest.download = { state: 'waiting' };
+      const listener = (_event, item) => {
+        session.defaultSession.off('will-download', listener);
+        record.filename = item.getFilename();
+        record.options = item.getSaveDialogOptions();
+        item.setSavePath(dest);
+        item.once('done', (_e, state) => { record.state = state; });
+      };
+      session.defaultSession.on('will-download', listener);
+    }, target);
+    await pwPanel.getByRole('button', { name: 'Export CSV' }).click();
+    await expect.poll(() => app.evaluate(() => globalThis.__stageforgeTest.download.state), { timeout: 15_000 }).toBe('completed');
+    const pwDl = await app.evaluate(() => globalThis.__stageforgeTest.download);
+    expect(pwDl.filename.endsWith(check.suffix)).toBe(true);
+    expect(pwDl.options.title).toBe(check.title);
+    const pwBody = await readFile(target, 'utf8');
+    expect(pwBody.startsWith('\uFEFF')).toBe(true);
+    expect(pwBody).toContain(check.header);
+  }
+
+  // An unlisted .csv suffix triggered from renderer must still be cancelled by will-download.
+  await app.evaluate(({ session }) => {
+    const record = globalThis.__stageforgeTest.unknownDownload = { state: 'waiting' };
+    const listener = (_event, item) => {
+      session.defaultSession.off('will-download', listener);
+      if (item.getState() === 'cancelled') {
+        record.state = 'cancelled';
+      } else {
+        item.once('done', (_e, state) => { record.state = state; });
+      }
+    };
+    session.defaultSession.on('will-download', listener);
+  });
+  await page.evaluate(() => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['a,b\n1,2\n'], { type: 'text/csv' }));
+    a.download = 'unlisted.unknown.csv';
+    document.body.append(a);
+    a.click();
+    a.remove();
+  });
+  await expect.poll(() => app.evaluate(() => globalThis.__stageforgeTest.unknownDownload.state), { timeout: 15_000 }).toBe('cancelled');
+
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   expectNoProblems();

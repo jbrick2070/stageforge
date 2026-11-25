@@ -3,7 +3,20 @@ import type { ReactNode } from 'react';
 import type { NativeStage, ShowMedia, ShowTimeline, TimelineEvent } from '../data/showFile';
 import { timecode } from '../data/transportGlance';
 
-export type FileAction = 'show' | 'bundle' | 'rig' | 'dxf' | 'glb' | 'csv' | 'inventoryCsv' | 'riggingPowerCsv' | 'mvr';
+export type FileAction =
+  | 'show'
+  | 'bundle'
+  | 'rig'
+  | 'dxf'
+  | 'glb'
+  | 'csv'
+  | 'inventoryCsv'
+  | 'riggingPowerCsv'
+  | 'patchSheetCsv'
+  | 'instrumentScheduleCsv'
+  | 'channelHookupCsv'
+  | 'cueSheetCsv'
+  | 'mvr';
 export { timecode };
 
 function describe(event: TimelineEvent, cueNames: Map<string, string>) {
@@ -111,7 +124,7 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, onO
         <button disabled={(page + 1) * 30 >= actions.length} onClick={() => setPage(page + 1)}>Next actions</button></div>}
     </details>}
     <h3>Exchange formats</h3>
-    <div className="file-formats">{([['mvr','Rig for consoles and visualizers','MVR'],['dxf','CAD plan','DXF'],['glb','3D scene','GLB'],['csv','DMX channel patch','CSV'],['inventoryCsv','Equipment list','CSV'],['riggingPowerCsv','Rigging & power report','CSV'],['rig','Rig only','JSON']] as const).map(([kind, label, extension]) =>
+    <div className="file-formats">{([['mvr','Rig for consoles and visualizers','MVR'],['dxf','CAD plan','DXF'],['glb','3D scene','GLB'],['csv','DMX channel patch','CSV'],['patchSheetCsv','Patch sheet (per unit)','CSV'],['instrumentScheduleCsv','Instrument schedule','CSV'],['channelHookupCsv','Channel hookup','CSV'],['cueSheetCsv','Cue sheet','CSV'],['inventoryCsv','Equipment list','CSV'],['riggingPowerCsv','Rigging & power report','CSV'],['rig','Rig only','JSON']] as const).map(([kind, label, extension]) =>
       <button key={kind} disabled={busy} onClick={() => void job(() => onSave(kind))}>{label} <small>{extension}</small></button>)}</div>
     <p role="status">{busy ? 'Preparing file…' : note}</p>
   </DeskDialog>;

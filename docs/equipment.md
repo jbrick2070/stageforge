@@ -1,6 +1,6 @@
 # Equipment catalogue and sources
 
-StageForge ships a curated catalogue of touring lighting, LED video panel, atmospheric and show laser equipment in [`src/data/equipmentCatalog.ts`](../src/data/equipmentCatalog.ts). Procedural 3D models, deterministic PBR hardware textures, plan/DXF symbols, and mobile/desktop rendering budgets are documented in [`docs/assets.md`](assets.md). Truss profiles, chain hoists, static rigging load calculations, and three-phase power distribution are documented in [`docs/rigging-power.md`](rigging-power.md).
+StageForge ships a curated catalogue of touring lighting, LED video panel, atmospheric and show laser equipment in [`src/data/equipmentCatalog.ts`](../src/data/equipmentCatalog.ts). Procedural 3D models, deterministic PBR hardware textures, plan/DXF symbols, and mobile/desktop rendering budgets are documented in [`docs/assets.md`](assets.md). Truss profiles, chain hoists, static rigging load calculations, and three-phase power distribution are documented in [`docs/rigging-power.md`](rigging-power.md). Production paperwork (Patch Sheet, Instrument Schedule, Channel Hookup, Power & Load Report, Cue Sheet, and Full Production Book printing) is documented in [`docs/paperwork.md`](paperwork.md).
 
 ## Sourcing policy
 

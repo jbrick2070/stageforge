@@ -102,6 +102,17 @@ export const PHASE_IDS: readonly PhaseId[] = ['L1', 'L2', 'L3'];
 
 export type CircuitStatus = 'ok' | 'caution' | 'overload';
 
+export interface PowerCircuitSource {
+  /** Index into resolved `rig.trussPods`, or `null` for `rig.floorFx`. */
+  podIndex: number | null;
+  /** Index into `pod.fixtures` or `rig.floorFx`. */
+  groupIndex: number;
+  /** 0-based first unit index in the fixture group served by this circuit. */
+  firstUnit: number;
+  /** Number of units from the fixture group served by this circuit. */
+  unitCount: number;
+}
+
 export interface PowerCircuit {
   id: string;
   groupLabel: string;
@@ -118,6 +129,8 @@ export interface PowerCircuit {
   pinned: boolean;
   status: CircuitStatus;
   note?: string;
+  /** Optional unit-range provenance for per-unit paperwork lookup (not emitted in riggingPowerCsv). */
+  source?: PowerCircuitSource;
 }
 
 export interface PhaseLoadSummary {
@@ -215,6 +228,7 @@ interface PendingCircuit {
   pinnedPhase?: PhaseId;
   status: CircuitStatus;
   note?: string;
+  source?: PowerCircuitSource;
 }
 
 function cmpAscii(a: string, b: string): number {
@@ -247,6 +261,7 @@ function packUnitsIntoCircuits(
   spec: PowerSystemSpec,
   pinnedPhase?: PhaseId,
   note?: string,
+  sourceGroup?: { podIndex: number | null; groupIndex: number },
 ): PendingCircuit[] {
   if (count <= 0 || unitWatts <= 0) return [];
   const unitVa = unitWatts / pf;
@@ -255,6 +270,7 @@ function packUnitsIntoCircuits(
   const circuitCount = Math.ceil(count / maxUnitsPerCircuit);
   const out: PendingCircuit[] = [];
   let remaining = count;
+  let firstUnit = 0;
   for (let i = 0; i < circuitCount; i++) {
     const units = Math.min(remaining, maxUnitsPerCircuit);
     remaining -= units;
@@ -281,7 +297,16 @@ function packUnitsIntoCircuits(
         status === 'overload'
           ? `Single unit exceeds ${spec.branchBreakerA} A breaker — requires dedicated high-current circuit`
           : note,
+      source: sourceGroup
+        ? {
+            podIndex: sourceGroup.podIndex,
+            groupIndex: sourceGroup.groupIndex,
+            firstUnit,
+            unitCount: units,
+          }
+        : undefined,
     });
+    firstUnit += units;
   }
   return out;
 }
@@ -385,7 +410,7 @@ export function computePowerReport(sourceRig: RigConfig, stage?: NativeStage): P
   // 1. Overhead truss fixtures (exact match to productionEstimator fixture wattage).
   rig.trussPods.forEach((pod, podIdx) => {
     const defaultLabel = `LX${podIdx + 1}`;
-    pod.fixtures.forEach((fg) => {
+    pod.fixtures.forEach((fg, groupIdx) => {
       const { watts, pf } = groupUnitWattsAndPf(fg);
       const label = fg.circuitGroup?.trim() || defaultLabel;
       const items = packUnitsIntoCircuits(
@@ -397,6 +422,8 @@ export function computePowerReport(sourceRig: RigConfig, stage?: NativeStage): P
         pf,
         spec,
         fg.phase,
+        undefined,
+        { podIndex: podIdx, groupIndex: groupIdx },
       );
       pending.push(...items);
     });
@@ -415,6 +442,8 @@ export function computePowerReport(sourceRig: RigConfig, stage?: NativeStage): P
       pf,
       spec,
       fx.phase,
+      undefined,
+      { podIndex: null, groupIndex: fxIdx },
     );
     pending.push(...items);
   });
@@ -545,6 +574,7 @@ export function computePowerReport(sourceRig: RigConfig, stage?: NativeStage): P
       pinned: true,
       status: item.status,
       note: item.note,
+      ...(item.source ? { source: item.source } : {}),
     });
   }
 
@@ -575,6 +605,7 @@ export function computePowerReport(sourceRig: RigConfig, stage?: NativeStage): P
       pinned: false,
       status: item.status,
       note: item.note,
+      ...(item.source ? { source: item.source } : {}),
     });
   }
 
@@ -819,4 +850,51 @@ export function riggingPowerCsv(
   ]);
 
   return formatCsv(rows, { bom: true });
+}
+
+/**
+ * Stable position key for a resolved rig fixture group (pod index or `'floor'`, plus group index).
+ * Used with `unitCircuitIndex()` so paperwork lookups stay exact even when group IDs repeat or
+ * colliding circuit labels are deduplicated (`LX1#1`, `LX1#2`).
+ */
+export function unitCircuitPosKey(podIndex: number | null, groupIndex: number): string {
+  return podIndex === null ? `floor:${groupIndex}` : `pod:${podIndex}:${groupIndex}`;
+}
+
+/**
+ * Build a unit-level circuit and phase lookup directly from a `PowerReport`'s emitted circuits.
+ * Never recomputes circuit packing outside `computePowerReport()`, preserving deduped IDs and phases.
+ */
+export function unitCircuitIndex(
+  report: PowerReport,
+): (posKey: string, unitIndex: number) => { circuitId: string; phase: PhaseId } | undefined {
+  const byPos = new Map<
+    string,
+    Array<{ firstUnit: number; endUnit: number; circuitId: string; phase: PhaseId }>
+  >();
+  for (const c of report.circuits) {
+    if (!c.source) continue;
+    const key = unitCircuitPosKey(c.source.podIndex, c.source.groupIndex);
+    let spans = byPos.get(key);
+    if (!spans) {
+      spans = [];
+      byPos.set(key, spans);
+    }
+    spans.push({
+      firstUnit: c.source.firstUnit,
+      endUnit: c.source.firstUnit + c.source.unitCount,
+      circuitId: c.id,
+      phase: c.phase,
+    });
+  }
+  return (posKey: string, unitIndex: number) => {
+    const spans = byPos.get(posKey);
+    if (!spans) return undefined;
+    for (const s of spans) {
+      if (unitIndex >= s.firstUnit && unitIndex < s.endUnit) {
+        return { circuitId: s.circuitId, phase: s.phase };
+      }
+    }
+    return undefined;
+  };
 }

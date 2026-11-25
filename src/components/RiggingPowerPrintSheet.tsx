@@ -11,23 +11,21 @@ interface RiggingPowerPrintSheetProps {
   power: PowerReport;
 }
 
-/**
- * High-contrast black-on-white printable rigging & power report portalled outside `#root`.
- * Hidden on screen (`.print-sheet { display: none }`) and revealed exclusively under `@media print`.
- */
-export const RiggingPowerPrintSheet: React.FC<RiggingPowerPrintSheetProps> = ({
+export interface RiggingPowerPrintContentProps extends RiggingPowerPrintSheetProps {
+  generatedDate: string;
+}
+
+/** Reusable printable body for the Rigging & Power report (shared with PaperworkPrintSheet). */
+export const RiggingPowerPrintContent: React.FC<RiggingPowerPrintContentProps> = ({
   rig,
   loads,
   power,
+  generatedDate,
 }) => {
-  if (typeof document === 'undefined') return null;
-
-  const now = new Date();
-  const generatedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const activeFeederA = power.totals.configuredFeederA ?? power.totals.recommendedFeederA;
 
-  return createPortal(
-    <section className="print-sheet" aria-label="Printable rigging and power report">
+  return (
+    <>
       <header className="print-header">
         <div>
           <h1>{rig.name} — Rigging &amp; Power Report</h1>
@@ -257,6 +255,27 @@ export const RiggingPowerPrintSheet: React.FC<RiggingPowerPrintSheetProps> = ({
       <footer className="print-footnote">
         {RIGGING_DISCLAIMER} Allowances: +1 kg/fixture clamps (est.), +10% cable loom. {power.harmonicNote}
       </footer>
+    </>
+  );
+};
+
+/**
+ * High-contrast black-on-white printable rigging & power report portalled outside `#root`.
+ * Hidden on screen (`.print-sheet { display: none }`) and revealed exclusively under `@media print`.
+ */
+export const RiggingPowerPrintSheet: React.FC<RiggingPowerPrintSheetProps> = ({
+  rig,
+  loads,
+  power,
+}) => {
+  if (typeof document === 'undefined') return null;
+
+  const now = new Date();
+  const generatedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  return createPortal(
+    <section className="print-sheet" aria-label="Printable rigging and power report">
+      <RiggingPowerPrintContent rig={rig} loads={loads} power={power} generatedDate={generatedDate} />
     </section>,
     document.body,
   );

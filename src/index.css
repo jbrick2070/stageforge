@@ -419,7 +419,12 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
   }
 }
 
-/* Printable rental equipment list (portalled outside #root) */
+/* Printable rental equipment list & show paperwork (portalled outside #root) */
+.paperwork-radio-group label:has(input:focus-visible) {
+  outline: 2px solid #22d3ee;
+  outline-offset: 2px;
+}
+
 .print-sheet {
   display: none;
 }
@@ -427,6 +432,10 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
 @media print {
   @page {
     margin: 12mm;
+  }
+  @page wide {
+    size: landscape;
+    margin: 10mm;
   }
   html,
   body {
@@ -522,6 +531,11 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
     text-align: left;
     vertical-align: top;
   }
+  /* User-entered names may be 512 characters with no spaces. Wrap only those cells, so short tokens
+     such as addresses and timecodes in dense tables are never split. */
+  .print-sheet .print-wrap {
+    overflow-wrap: anywhere;
+  }
   .print-sheet th {
     font-weight: 700;
   }
@@ -530,5 +544,12 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
     font-size: 8pt;
     border-top: 0.5pt solid #000000;
     padding-top: 4pt;
+  }
+  .print-section + .print-section {
+    break-before: page;
+    page-break-before: always;
+  }
+  .print-wide {
+    page: wide;
   }
 }

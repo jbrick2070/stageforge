@@ -73,7 +73,8 @@ function msToSmpte(rawMs, fps) {
   const wrappedMs = ((rawMs % DAY_MS) + DAY_MS) % DAY_MS;
   if (fps === 29.97) {
     const framesPerDay = 2_589_408; // 24h at 29.97 DF (17982 * 144)
-    const fn = Math.floor((wrappedMs * 30) / 1001 + 1e-6) % framesPerDay;
+    // Half a millisecond of tolerance: positions are whole milliseconds (same rule as src/showControl/timecode.ts).
+    const fn = Math.floor((wrappedMs * 30) / 1001 + (0.5 * 30) / 1001) % framesPerDay;
     const d = Math.floor(fn / 17982);
     const m = fn % 17982;
     const adjusted = fn + 18 * d + (m < 2 ? 0 : 2 * Math.floor((m - 2) / 1798));
@@ -86,7 +87,7 @@ function msToSmpte(rawMs, fps) {
     return { hours, minutes, seconds, frames, fps };
   }
   const framesPerDay = 86400 * fps;
-  const fn = Math.floor((wrappedMs * fps) / 1000 + 1e-6) % framesPerDay;
+  const fn = Math.floor((wrappedMs * fps) / 1000 + (0.5 * fps) / 1000) % framesPerDay;
   const frames = fn % fps;
   const totalSeconds = Math.floor(fn / fps);
   const seconds = totalSeconds % 60;

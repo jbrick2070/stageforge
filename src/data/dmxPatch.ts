@@ -31,6 +31,11 @@ export const DMX_CHANNELS: Record<Hardware, string[]> = {
   hazer: ['Haze output'],
 };
 
+/** Format a DMX universe and 1-based channel as the canonical StageForge patch label (e.g. `U1.001`). */
+export function formatDmxLabel(universe: 1 | 2, address: number): string {
+  return `U${universe}.${String(address).padStart(3, '0')}`;
+}
+
 /** Write simulated control channel values clamped strictly to the unit's patched DMX footprint (1..512). */
 export function writeDmxChannels(
   buffer: Uint8Array,
