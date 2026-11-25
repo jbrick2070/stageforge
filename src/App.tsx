@@ -1661,7 +1661,7 @@ export const App: React.FC = () => {
         );
       },
       setBatching: (enabled: boolean, options?: { proxies?: boolean }) => engine.setBatching(enabled, options),
-      redrawAndCapture: (options?: { hideBeams?: boolean }) => engine.redrawAndCapture(options),
+      redrawAndCapture: (options?: { hideBeams?: boolean; hidePools?: boolean }) => engine.redrawAndCapture(options),
       rebuildRig: () => engine.forceRebuildCurrentRig(),
       controlLoopHealth: () => engine.getControlLoopHealth(),
       simulateContextLoss: (lost: boolean) => engine.simulateContextLossForTest(Boolean(lost)),

@@ -65,6 +65,7 @@ export interface PreviewFlashState {
   washIntGov: ScalarGovernorState;
   beamColorMixGov: ScalarGovernorState;
   washColorMixGov: ScalarGovernorState;
+  prismGov: ScalarGovernorState;
   // Ramp-safe RGB governors (global + movingGroups overrides)
   primaryGov: RgbGovernorState;
   accentGov: RgbGovernorState;
@@ -101,6 +102,7 @@ export function createPreviewFlashState(): PreviewFlashState {
     washIntGov: createScalarGovernorState(),
     beamColorMixGov: createScalarGovernorState(),
     washColorMixGov: createScalarGovernorState(),
+    prismGov: createScalarGovernorState(),
     primaryGov: createRgbGovernorState(),
     accentGov: createRgbGovernorState(),
     beamPrimaryGov: createRgbGovernorState(),
@@ -129,6 +131,7 @@ export interface PreviewFlashInput {
   washIntensity: number;
   beamColorMix?: number;
   washColorMix?: number;
+  goboPrism?: boolean | number;
   laserStrobe: number;
   primaryColor: THREE.Color;
   accentColor: THREE.Color;
@@ -150,6 +153,8 @@ export interface PreviewFlashOutput {
   washIntensity: number;
   beamColorMix: number;
   washColorMix: number;
+  /** Preview-governed prism mix in [0, 1] so rapid goboPrism toggling stays <= 3 reversals/s. */
+  prismMix: number;
   /** Preview multiplier for unmapped laser strobe (1 = lit, 0 = blanked). Shader uStrobe is set to 0 when limited. */
   laserStrobeMultiplier: number;
   /** True when shader `uStrobe` should be bypassed in favor of `laserStrobeMultiplier`. */
@@ -179,6 +184,7 @@ export function createPreviewFlashOutput(): PreviewFlashOutput {
     washIntensity: 0,
     beamColorMix: 0,
     washColorMix: 0,
+    prismMix: 0,
     laserStrobeMultiplier: 1,
     bypassLaserShaderStrobe: false,
     ledFlashLimited: false,
@@ -522,6 +528,9 @@ export function evaluatePreviewFlash(
   const highIn = input.high ?? 0;
   const beamMixIn = input.beamColorMix ?? 0;
   const washMixIn = input.washColorMix ?? 0;
+  const prismIn = typeof input.goboPrism === 'boolean'
+    ? (input.goboPrism ? 1 : 0)
+    : (Number.isFinite(input.goboPrism) ? Math.max(0, Math.min(1, Number(input.goboPrism))) : 0);
 
   if (!input.limited) {
     syncScalarPassthrough(state.masterGov, input.master);
@@ -535,6 +544,7 @@ export function evaluatePreviewFlash(
     syncScalarPassthrough(state.washIntGov, input.washIntensity);
     syncScalarPassthrough(state.beamColorMixGov, beamMixIn);
     syncScalarPassthrough(state.washColorMixGov, washMixIn);
+    syncScalarPassthrough(state.prismGov, prismIn);
     syncRgbPassthrough(state.primaryGov, input.primaryColor);
     syncRgbPassthrough(state.accentGov, input.accentColor);
     syncRgbPassthrough(state.beamPrimaryGov, beamPrimaryIn);
@@ -556,6 +566,7 @@ export function evaluatePreviewFlash(
     out.washIntensity = input.washIntensity;
     out.beamColorMix = beamMixIn;
     out.washColorMix = washMixIn;
+    out.prismMix = prismIn;
     out.laserStrobeMultiplier = 1;
     out.bypassLaserShaderStrobe = false;
     out.ledFlashLimited = false;
@@ -620,6 +631,30 @@ export function evaluatePreviewFlash(
   const nextWashInt = runScalar(state.washIntGov, input.washIntensity, true);
   const nextBeamMix = runScalar(state.beamColorMixGov, beamMixIn, false);
   const nextWashMix = runScalar(state.washColorMixGov, washMixIn, false);
+
+  // Govern goboPrism spatial redistribution symmetrically (`blackout = false`, `instantFall = false`)
+  // so the first toggle applies immediately while rapid 8–10 Hz toggling shares the room budgetClock.
+  const prevPrism = state.prismGov.initialized ? state.prismGov.delivered : prismIn;
+  const prismStep = stepGovernedScalar(
+    state.prismGov,
+    state.budgetClock,
+    tMs,
+    prismIn,
+    false,
+    false,
+    PREVIEW_EDGE_THRESHOLD,
+    PREVIEW_REFRACTORY_MS,
+  );
+  if (prevPrism - prismStep.value >= PREVIEW_EDGE_THRESHOLD) {
+    // Unsplitting a prism brightens the central axis, so advance the global rise refractory too.
+    state.budgetClock.lastAdmittedRiseMs = tMs;
+    state.lastGlobalEdgeMs = tMs;
+  }
+  syncPreviewClockEdges(state);
+  if (prismStep.limited) {
+    state.limitedUntilMs = Math.max(state.limitedUntilMs, tMs + PREVIEW_FLASH_LIMITED_HOLD_MS);
+  }
+  const nextPrismMix = prismStep.value;
 
   runColor(state.primaryGov, input.primaryColor, out.primaryColor);
   runColor(state.accentGov, input.accentColor, out.accentColor);
@@ -700,6 +735,7 @@ export function evaluatePreviewFlash(
   out.washIntensity = nextWashInt;
   out.beamColorMix = nextBeamMix;
   out.washColorMix = nextWashMix;
+  out.prismMix = nextPrismMix;
   out.laserStrobeMultiplier = laserStrobeMultiplier;
   out.bypassLaserShaderStrobe = true;
   out.ledFlashLimited = true;

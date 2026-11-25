@@ -15,6 +15,8 @@ export interface RenderSettings {
   fallingCo2: boolean;
   /** Flag-gated conditional sRGB EOTF decode for HTMLVideoElement textures in LED_WALL_FRAG (default off). */
   videoSrgbDecode: boolean;
+  /** Flag-gated 8-facet prism floor projections in BeamPools (Sprint 16, default off). */
+  prismPools: boolean;
 }
 
 export const RENDER_SETTINGS_STORAGE_KEY = 'stageforge.render.v1';
@@ -24,6 +26,7 @@ export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   aa: 'auto',
   fallingCo2: false,
   videoSrgbDecode: false,
+  prismPools: false,
 });
 
 const VALID_BLOOM_MODES: ReadonlySet<string> = new Set<BloomMode>(['auto', 'full', 'half', 'off']);
@@ -46,7 +49,10 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   const videoSrgbDecode = Object.hasOwn(obj, 'videoSrgbDecode') && typeof obj.videoSrgbDecode === 'boolean'
     ? obj.videoSrgbDecode
     : DEFAULT_RENDER_SETTINGS.videoSrgbDecode;
-  return { bloom, aa, fallingCo2, videoSrgbDecode };
+  const prismPools = Object.hasOwn(obj, 'prismPools') && typeof obj.prismPools === 'boolean'
+    ? obj.prismPools
+    : DEFAULT_RENDER_SETTINGS.prismPools;
+  return { bloom, aa, fallingCo2, videoSrgbDecode, prismPools };
 }
 
 export function loadRenderSettings(): RenderSettings {

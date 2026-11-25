@@ -102,7 +102,7 @@ export const VOLUMETRIC_BEAM_FRAG = /* glsl */ `
     float wash = smoothstep(1.6, 2.4, uSoftness);
     float profile = pow(chord, mix(1.4, 4.2, wash));
 
-    if (uPrism > 0.5) {
+    if (uPrism > 0.001) {
       // Project eight angularly separated shafts onto the camera's transverse axis.
       float phase = uTime * 0.48 + uSeed - vCrossAndAzimuth.w;
       float radius = 0.71 * smoothstep(0.0, 0.16, reach);
@@ -111,7 +111,8 @@ export const VOLUMETRIC_BEAM_FRAG = /* glsl */ `
         float offset = across - radius * sin(phase + float(k) * 0.78539816);
         bundle += exp2(-125.0 * offset * offset);
       }
-      profile = chord * mix(profile, 0.055 + 0.48 * bundle, smoothstep(0.01, 0.14, reach));
+      float prismProfile = chord * mix(profile, 0.055 + 0.48 * bundle, smoothstep(0.01, 0.14, reach));
+      profile = uPrism >= 0.999 ? prismProfile : mix(profile, prismProfile, clamp(uPrism, 0.0, 1.0));
     }
 
     float endFade = 1.0 - smoothstep(0.69, 1.0, reach);

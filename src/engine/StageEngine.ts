@@ -71,7 +71,8 @@ import { getCatalogEntry, getCatalogMode, type CatalogDmxMode, type CatalogLaser
 import { encodeLaserDmxChannels, ildaScanTangents, LASER_ILDA_ROLL_SCALE, LASER_SHEET_ROLL_SCALE, laserPitch, laserPowerPresence } from '../data/laserAim';
 import { flickerIntensityMultiplier, laserRefreshHz } from '../data/laserScan';
 import { DEFAULT_LASER_COLORS, DEFAULT_LASER_RESOLUTION, laserProjectorKey } from '../data/laserProjectors';
-import { BeamPools } from './beamPools';
+import { BeamPools, type BeamPoolsStats } from './beamPools';
+import { prismPhase } from './prismPattern';
 import { aerialGain, beamZoomScale, fixtureOptics, resolvedPhotometricLumens, resolveOptics } from '../data/fixtureOptics';
 import {
   buildMeasureSnapshot,
@@ -184,6 +185,7 @@ interface MovingFixtureInstance {
   lensOffsetY: number;
   appliedDimmer: number;
   lastZoomScale: number;
+  lastPoolIntensity: number;
   isFloor: boolean;
   index: number;
   fanPosition: number;
@@ -327,6 +329,7 @@ export class StageEngine {
   private lastRebuildSource?: RigConfig;
   private lastRebuildStage?: NativeStage;
   private beamPools?: BeamPools;
+  private lastPoolTime = 0;
   private spillFluxGain = 1;
   private scenicPieces = new Map<string, ScenicPiece & { kind: string; phase: number; tier: RenderTier }>();
   private deckTrim: THREE.MeshBasicMaterial | null = null;
@@ -623,6 +626,7 @@ export class StageEngine {
         this.gpuTimer = new GpuTimerRing(this.renderer.getContext());
       }
       this.updateTourTextTexture(this.lastTourText);
+      if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
     };
@@ -846,6 +850,49 @@ export class StageEngine {
         player.setVideoSrgbDecode(next.videoSrgbDecode);
       }
     }
+    if (prev.prismPools !== next.prismPools && this.currentRig) {
+      this.rebuildBeamPools(true);
+    }
+  }
+
+  /**
+   * Dispose and rebuild `BeamPools` with current `renderSettings.prismPools` and `renderTier`.
+   * When `refill` is true (e.g. toggling `prismPools` at a frozen frame), synchronously
+   * repopulates pool instances from the committed fixture state without advancing simulation time.
+   */
+  private rebuildBeamPools(refill: boolean) {
+    this.beamPools?.dispose();
+    const rig = this.currentRig;
+    if (!rig) return;
+    this.beamPools = new BeamPools(
+      this.movingFixtures.length,
+      rig.stageWidth,
+      rig.stageDepth,
+      rig.stageHeight,
+      rig.platforms,
+      { prism: this.renderSettings.prismPools, tier: this.renderTier },
+    );
+    this.scene.add(this.beamPools.group);
+    if (refill) {
+      this.beamPools.begin();
+      const t = this.lastPoolTime;
+      for (const fx of this.movingFixtures) {
+        if (fx.lastPoolIntensity <= 0.001) continue;
+        const prismMix = fx.type === 'beam' ? Number(fx.beamMat.uniforms.uPrism.value) : 0;
+        const phase = prismMix > 0.001 ? prismPhase(t, Number(fx.beamMat.uniforms.uSeed.value)) : 0;
+        this.beamPools.add(
+          fx.beamMesh,
+          fx.type,
+          fx.isFloor,
+          fx.beamMat.uniforms.uColor.value as THREE.Color,
+          fx.lastPoolIntensity,
+          fx.optics,
+          prismMix,
+          phase,
+        );
+      }
+      this.beamPools.finish();
+    }
   }
 
   public getRenderSettings(): RenderSettings {
@@ -983,6 +1030,19 @@ export class StageEngine {
     } catch { /* ignore */ }
 
     const particles = this.particles.getStats();
+    const prismPools: BeamPoolsStats = this.beamPools?.getStats() ?? {
+      requested: this.renderSettings.prismPools,
+      allocated: false,
+      active: false,
+      suppressedReason: this.renderSettings.prismPools ? 'memory-budget' : 'disabled',
+      receiverCount: 0,
+      totalInstances: 0,
+      activePrismInstances: 0,
+      maxReceiverPrismInstances: 0,
+      receiverPrismCounts: [],
+      extraBufferBytes: 0,
+      uploadBytes: 0,
+    };
     const renderTargetBytesEstimate = estimateRenderTargetBytes({
       drawingWidth: drawW,
       drawingHeight: drawH,
@@ -1015,6 +1075,7 @@ export class StageEngine {
       previewFlashLimiting: this.previewFlashOut.activeLimiting,
       settings: this.getRenderSettings(),
       particles,
+      prismPools,
       ilda: {
         activeProjectors: ildaActiveProjectors,
         visibleSegments: ildaVisibleSegments,
@@ -1022,6 +1083,7 @@ export class StageEngine {
       },
       resources: {
         renderTargetBytesEstimate,
+        prismPoolExtraBufferBytes: prismPools.extraBufferBytes,
       },
       gpuTimerStatus: this.gpuTimer?.getStatus() ?? (isWebGL2 ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') ? 'ok' : 'unsupported') : 'unsupported'),
       gpuTimerPending: this.gpuTimer?.pendingCount() ?? 0,
@@ -1114,7 +1176,7 @@ export class StageEngine {
   }
 
   /** Render the current scene state without advancing simulation time and capture the canvas PNG (probe only). */
-  public redrawAndCapture(options?: { hideBeams?: boolean }): string {
+  public redrawAndCapture(options?: { hideBeams?: boolean; hidePools?: boolean }): string {
     if (this.standby) throw new Error('redrawAndCapture called while StageEngine is in standby');
     const savedVisibility = options?.hideBeams
       ? this.movingFixtures.map((fx) => {
@@ -1123,6 +1185,10 @@ export class StageEngine {
         return prev;
       })
       : null;
+    const savedPoolsVisible = options?.hidePools && this.beamPools ? this.beamPools.group.visible : null;
+    if (options?.hidePools && this.beamPools) {
+      this.beamPools.group.visible = false;
+    }
     try {
       this.renderer.info.reset();
       this.composer.render(0);
@@ -1132,6 +1198,9 @@ export class StageEngine {
         this.movingFixtures.forEach((fx, i) => {
           fx.beamMesh.visible = savedVisibility[i];
         });
+      }
+      if (savedPoolsVisible !== null && this.beamPools) {
+        this.beamPools.group.visible = savedPoolsVisible;
       }
     }
   }
@@ -2521,10 +2590,9 @@ export class StageEngine {
     this.laserRotPhaseOffsets = new Array(this.laserUnits.length).fill(0);
     if (this.activeIldaClip) this.attachIldaToLaserUnits();
     this.particles.setEmitters(smokeEmitters, co2Emitters, rig.stageHeight);
-    this.beamPools = new BeamPools(this.movingFixtures.length, rig.stageWidth, rig.stageDepth, rig.stageHeight, rig.platforms);
+    this.rebuildBeamPools(false);
     this.spillFluxGain = this.movingFixtures.reduce((total, fx) => total + fx.optics.fluxRatio, 0)
       / Math.max(1, this.movingFixtures.length);
-    this.scene.add(this.beamPools.group);
     if ((old && old.venue !== rig.venue) || (this.activeView === 'foh' && this.fitFohOnResize) || this.activeView === 'pa_closeup') {
       this.setCameraPreset(this.activeView);
     }
@@ -2749,6 +2817,7 @@ export class StageEngine {
       lensOffsetY: parts.lensOffsetY,
       appliedDimmer: 0,
       lastZoomScale: 1,
+      lastPoolIntensity: 0,
       isFloor,
       index,
       fanPosition,
@@ -3095,6 +3164,7 @@ export class StageEngine {
         this.gpuTimer = new GpuTimerRing(this.renderer.getContext());
       }
       this.updateTourTextTexture(this.lastTourText);
+      if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
     }
@@ -3394,6 +3464,7 @@ export class StageEngine {
         washIntensity: rawWashIntBase,
         beamColorMix: rawBeamColorMix,
         washColorMix: rawWashColorMix,
+        goboPrism: s.goboPrism,
         laserStrobe: rawUnmappedLaserStrobe,
         primaryColor,
         accentColor,
@@ -3548,6 +3619,7 @@ export class StageEngine {
       };
     };
     const groups = { beam: opticsLook('beam'), wash: opticsLook('wash') };
+    this.lastPoolTime = t;
     this.beamPools?.begin();
     for (const fx of this.movingFixtures) {
       const {
@@ -3706,16 +3778,29 @@ export class StageEngine {
       const clampedFinalInt = THREE.MathUtils.clamp(finalInt, 0, 1);
       fx.appliedDimmer = clampedFinalInt;
       const emitted = previewFinalInt * aerialGain(fx.optics, zoomScale);
+      const previewPrismMix = fx.type === 'beam' ? previewFlash.prismMix : 0;
+      const fxSeed = Number(fx.beamMat.uniforms.uSeed.value);
       fx.beamMat.uniforms.uIntensity.value = emitted;
       fx.beamMat.uniforms.uHaze.value = effHaze;
       fx.beamMat.uniforms.uTime.value = t;
-      fx.beamMat.uniforms.uPrism.value = s.goboPrism && fx.type === 'beam' ? 1.0 : 0.0;
+      fx.beamMat.uniforms.uPrism.value = previewPrismMix;
 
       // Live Beam Zoom (narrow razor beam vs wide flood)
       fx.beamMesh.scale.set(zoomScale, 1, zoomScale);
       fx.beamMesh.visible = emitted > 0.001;
       // The pool shader already spreads incident power across the footprint.
-      this.beamPools?.add(fx.beamMesh, fx.type, fx.isFloor, previewTempCol, previewFinalInt * fx.optics.fluxRatio, fx.optics);
+      const poolIntensity = previewFinalInt * fx.optics.fluxRatio;
+      fx.lastPoolIntensity = poolIntensity;
+      this.beamPools?.add(
+        fx.beamMesh,
+        fx.type,
+        fx.isFloor,
+        previewTempCol,
+        poolIntensity,
+        fx.optics,
+        previewPrismMix,
+        previewPrismMix > 0.001 ? prismPhase(t, fxSeed) : 0,
+      );
 
       // Glowing optical fixture lens
       fx.lensMat.color.copy(previewTempCol).multiplyScalar(previewFinalInt * fx.optics.fluxRatio * 2.6);
@@ -3769,7 +3854,10 @@ export class StageEngine {
       }
     }
 
-    this.beamPools?.finish();
+    const poolUploadBytes = this.beamPools?.finish() ?? 0;
+    if (this.profiler) {
+      this.profiler.curUploadBytes += poolUploadBytes;
+    }
 
     // 3. Update Volumetric RGB / Single-Color Laser Projectors & ILDA Playback
     const laserEnabled = (s.laser.enabled || b.laser) && master > 0.01;
