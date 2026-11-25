@@ -80,35 +80,21 @@ test('Measure overlay is off and zero-cost by default, matches live ?probe aim v
   const statsAllZones = await frameStats(page);
   expect(statsAllZones.objects).toBeGreaterThan(statsMeasureOnly.objects);
 
-  // 4. Warmed frame-time comparison (overlay ON vs OFF) on Arena Rock.
-  const measureFrameTimes = async () =>
-    page.evaluate(
-      () =>
-        new Promise((resolve) => {
-          const times = [];
-          let prev = performance.now();
-          let count = 0;
-          const step = () => {
-            const now = performance.now();
-            if (count >= 10) times.push(now - prev);
-            prev = now;
-            count++;
-            if (count < 45) requestAnimationFrame(step);
-            else {
-              times.sort((a, b) => a - b);
-              const median = times[Math.floor(times.length / 2)];
-              resolve({ median, samples: times.length });
-            }
-          };
-          requestAnimationFrame(step);
-        }),
+  // 4. Warmed apples-to-apples CPU frame-time comparison (overlay ON vs OFF) via StageEngine's deterministic frame profiler
+  //    (freezing moving-head sweep phase so ON and OFF measure identical scene geometry without SwiftShader rasterization drift).
+  await page.evaluate(() => {
+    window.stageforgeProbe.patchShowState({ autoDirector: false, movementMode: 'manual', manualPan: 0, manualTilt: 0.35 });
+  });
+  const measureCpuFrameBudget = async () =>
+    page.evaluate(() =>
+      window.stageforgeProbe.measureFrames({ warmupFrames: 10, sampleFrames: 35, gpu: false }),
     );
 
   // Measure with rays only ON (typical overlay use) vs completely OFF
   await page.getByTestId('measure-toggle-audience').uncheck();
   await page.getByTestId('measure-toggle-nohd').uncheck();
   await page.getByTestId('measure-toggle-reach').uncheck();
-  const onPerf = await measureFrameTimes();
+  const onPerf = await measureCpuFrameBudget();
 
   // Turn Measure OFF via console toggle -> zero overlay objects remain, renderStats matches off-by-default!
   await page.getByTestId('console-measure-toggle').click();
@@ -118,10 +104,12 @@ test('Measure overlay is off and zero-cost by default, matches live ?probe aim v
   expect(offAfter.geometries).toBe(offBefore.geometries);
   expect(Math.abs(offAfter.calls - offBefore.calls)).toBeLessThanOrEqual(2);
 
-  const offPerf = await measureFrameTimes();
-  console.log(`Measure overlay Arena Rock frame median: off=${offPerf.median.toFixed(2)}ms on=${onPerf.median.toFixed(2)}ms delta=${(onPerf.median - offPerf.median).toFixed(2)}ms`);
-  // Under SwiftShader/CI jitter allow small scheduler variance while logging exact median delta.
-  expect(onPerf.median - offPerf.median).toBeLessThan(8);
+  const offPerf = await measureCpuFrameBudget();
+  const cpuDeltaMs = onPerf.cpuTotalMs.p50 - offPerf.cpuTotalMs.p50;
+  console.log(
+    `Measure overlay Arena Rock CPU p50: off=${offPerf.cpuTotalMs.p50.toFixed(2)}ms on=${onPerf.cpuTotalMs.p50.toFixed(2)}ms delta=${cpuDeltaMs.toFixed(2)}ms`,
+  );
+  expect(cpuDeltaMs).toBeLessThan(2);
 
   // 5. Stage Designer 2D plan safety zone toggles (all off by default, show/hide cleanly).
   await page.getByRole('button', { name: 'Design stage', exact: true }).click();
