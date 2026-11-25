@@ -1661,6 +1661,8 @@ export const App: React.FC = () => {
         );
       },
       setBatching: (enabled: boolean, options?: { proxies?: boolean }) => engine.setBatching(enabled, options),
+      setCameraPose: (pos: [number, number, number], target: [number, number, number]) =>
+        engine.setProbeCameraPose(pos, target),
       redrawAndCapture: (options?: { hideBeams?: boolean; hidePools?: boolean }) => engine.redrawAndCapture(options),
       rebuildRig: () => engine.forceRebuildCurrentRig(),
       controlLoopHealth: () => engine.getControlLoopHealth(),

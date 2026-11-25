@@ -63,7 +63,14 @@ function countObjectTriangles(root) {
 describe('Sprint 15: renderSettings & policy', () => {
   it('parses valid settings, rejects hostile input, and resolves bloom/AA/full-rate policies', () => {
     const def = renderSettings.parseRenderSettings(null);
-    assert.deepEqual(def, { bloom: 'auto', aa: 'auto', fallingCo2: false, videoSrgbDecode: false, prismPools: false });
+    assert.deepEqual(def, {
+      bloom: 'auto',
+      aa: 'auto',
+      fallingCo2: false,
+      videoSrgbDecode: false,
+      prismPools: false,
+      ledAngularResponse: false,
+    });
 
     const hostile = renderSettings.parseRenderSettings({
       bloom: 'quarter',
@@ -71,6 +78,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       fallingCo2: 'yes',
       videoSrgbDecode: 1,
       prismPools: 'true',
+      ledAngularResponse: 1,
     });
     assert.deepEqual(hostile, def);
 
@@ -80,8 +88,16 @@ describe('Sprint 15: renderSettings & policy', () => {
       fallingCo2: true,
       videoSrgbDecode: true,
       prismPools: true,
+      ledAngularResponse: true,
     });
-    assert.deepEqual(valid, { bloom: 'half', aa: 'fxaa', fallingCo2: true, videoSrgbDecode: true, prismPools: true });
+    assert.deepEqual(valid, {
+      bloom: 'half',
+      aa: 'fxaa',
+      fallingCo2: true,
+      videoSrgbDecode: true,
+      prismPools: true,
+      ledAngularResponse: true,
+    });
 
     assert.equal(renderSettings.shouldRunBloom('auto', 0, 'high'), false);
     assert.equal(renderSettings.shouldRunBloom('auto', 0.0005, 'high'), false);

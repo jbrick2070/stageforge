@@ -31,6 +31,7 @@ import {
   VOLUMETRIC_BEAM_FRAG,
   VOLUMETRIC_BEAM_VERT,
 } from './shaders';
+import { LED_ANGULAR_DEFINE } from './ledWallResponse';
 import {
   SharedMaterials,
   buildPlatformDeck,
@@ -392,6 +393,7 @@ export class StageEngine {
 
   // LED Wall
   private ledWallMats: THREE.ShaderMaterial[] = [];
+  private allLedMaterials: THREE.ShaderMaterial[] = [];
   private screenLayout?: StageScreen[];
   private secondaryPlayers = new Map<string, WallPlayer>();
   private textCanvas: HTMLCanvasElement;
@@ -853,6 +855,18 @@ export class StageEngine {
     if (prev.prismPools !== next.prismPools && this.currentRig) {
       this.rebuildBeamPools(true);
     }
+    if (prev.ledAngularResponse !== next.ledAngularResponse) {
+      this.applyLedAngularResponse(next.ledAngularResponse);
+    }
+  }
+
+  private applyLedAngularResponse(enabled: boolean) {
+    for (const mat of this.allLedMaterials) {
+      const currentlyOn = mat.defines?.[LED_ANGULAR_DEFINE] === 1;
+      if (currentlyOn === enabled) continue;
+      mat.defines = enabled ? { [LED_ANGULAR_DEFINE]: 1 } : {};
+      mat.needsUpdate = true;
+    }
   }
 
   /**
@@ -1058,6 +1072,27 @@ export class StageEngine {
       bloomScale: bloomAllocated ? bloomScale : 0,
       bloomAllocated,
     });
+    const authoredMainScreen = this.screenLayout?.find((s) => s.id === 'main-led');
+    let primaryCenter: [number, number, number] | null = null;
+    if (this.currentRig) {
+      if (isCustomMainWall(authoredMainScreen) && authoredMainScreen) {
+        const p = resolveWallFrame(this.currentRig, authoredMainScreen);
+        primaryCenter = [p.x, p.y, p.z];
+      } else if (this.currentRig.ledWall.enabled) {
+        const w = ledPlacement(this.currentRig);
+        if (w.height > 0) primaryCenter = [w.x, w.y, w.z];
+      }
+    }
+    const ledWalls = {
+      angularResponseRequested: this.renderSettings.ledAngularResponse,
+      angularResponseActive:
+        this.allLedMaterials.length > 0 &&
+        this.allLedMaterials.every((m) => m.defines?.[LED_ANGULAR_DEFINE] === 1),
+      materialCount: this.allLedMaterials.length,
+      primaryAndWingMaterialCount: this.ledWallMats.length,
+      secondaryMaterialCount: Math.max(0, this.allLedMaterials.length - this.ledWallMats.length),
+      primaryCenter,
+    };
 
     return {
       schemaVersion: 1 as const,
@@ -1084,6 +1119,7 @@ export class StageEngine {
       settings: this.getRenderSettings(),
       particles,
       prismPools,
+      ledWalls,
       ilda: {
         activeProjectors: ildaActiveProjectors,
         visibleSegments: ildaVisibleSegments,
@@ -1661,6 +1697,22 @@ export class StageEngine {
     this.controls.update();
   }
 
+  /**
+   * Test-only hook (`?probe`): set exact deterministic camera position and target without lerp lag.
+   */
+  public setProbeCameraPose(pos: [number, number, number], target: [number, number, number]) {
+    this.previewRig();
+    this.fitFohOnResize = false;
+    this.cameraLerpActive = false;
+    this.orbitAuto = false;
+    this.camera.position.set(pos[0], pos[1], pos[2]);
+    this.controls.target.set(target[0], target[1], target[2]);
+    this.cameraTargetPos.copy(this.camera.position);
+    this.cameraTargetLook.copy(this.controls.target);
+    this.controls.update();
+    this.camera.updateMatrixWorld(true);
+  }
+
   public setCameraPreset(preset: CameraPreset) {
     this.activeView = preset;
     this.fitFohOnResize = preset === 'foh';
@@ -2113,6 +2165,7 @@ export class StageEngine {
     this.atmosphereDmx = [];
     const patch = buildDmxPatch(rig);
     this.ledWallMats = [];
+    this.allLedMaterials = [];
     this.djStripMat = null;
 
     // 1. Venue architecture + animated arena crowd
@@ -2639,8 +2692,9 @@ export class StageEngine {
   }
 
   private createLedMaterial(surface: LedSurface, useCabinets: boolean): THREE.ShaderMaterial {
-    return new THREE.ShaderMaterial({
+    const material = new THREE.ShaderMaterial({
       name: LED_DISPLAY_MATERIAL_NAME,
+      defines: this.renderSettings.ledAngularResponse ? { [LED_ANGULAR_DEFINE]: 1 } : {},
       vertexShader: LED_WALL_VERT,
       fragmentShader: LED_WALL_FRAG,
       uniforms: {
@@ -2666,6 +2720,8 @@ export class StageEngine {
         uPixelSnap: { value: useCabinets },
       },
     });
+    this.allLedMaterials.push(material);
+    return material;
   }
 
   private createLedCabinetBacks(surface: LedSurface, zOffset: number): THREE.InstancedMesh | null {
@@ -4409,6 +4465,7 @@ export class StageEngine {
     this.dmxFrameListener = undefined;
     for (const player of this.secondaryPlayers.values()) player.dispose();
     this.secondaryPlayers.clear();
+    this.allLedMaterials = [];
     this.mediaGeneration++;
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);

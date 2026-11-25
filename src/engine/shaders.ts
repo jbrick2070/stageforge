@@ -9,6 +9,7 @@ import {
   LASER_STARBURST_Y_BASE,
   LASER_STARBURST_Y_SCALE,
 } from '../data/laserAim';
+import { LED_ANGULAR_RESPONSE_GLSL } from './ledWallResponse';
 
 const glslFloat = (n: number) => (Number.isInteger(n) ? `${n}.0` : String(n));
 
@@ -287,9 +288,24 @@ export const LASER_CONE_FRAG = /* glsl */ `
 
 export const LED_WALL_VERT = /* glsl */ `
   varying vec2 vUv;
+#ifdef LED_ANGULAR_RESPONSE
+  varying vec3 vViewNormal;
+  varying vec3 vViewDir;
+#endif
   void main() {
     vUv = uv;
+#ifdef LED_ANGULAR_RESPONSE
+    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+    vec3 transformedNormal = normalMatrix * normal;
+  #ifdef FLIP_SIDED
+    transformedNormal = -transformedNormal;
+  #endif
+    vViewNormal = transformedNormal;
+    vViewDir = -mvPos.xyz;
+    gl_Position = projectionMatrix * mvPos;
+#else
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+#endif
   }
 `;
 
@@ -316,6 +332,11 @@ export const LED_WALL_FRAG = /* glsl */ `
   uniform bool uPixelSnap;
 
   varying vec2 vUv;
+#ifdef LED_ANGULAR_RESPONSE
+  varying vec3 vViewNormal;
+  varying vec3 vViewDir;
+  ${LED_ANGULAR_RESPONSE_GLSL}
+#endif
 
   vec3 srgbToLinear(vec3 c) {
     vec3 clamped = clamp(c, 0.0, 1.0);
@@ -483,6 +504,9 @@ export const LED_WALL_FRAG = /* glsl */ `
     vec2 seamWidth = max(fwidth(cabinet), vec2(0.001));
     vec2 gap = (1.0 - smoothstep(vec2(0.003), vec2(0.003) + seamWidth, seam)) * min(vec2(1.0), 0.014 / seamWidth);
     vec3 outRgb = max(col, vec3(0.0)) * diodeMask * (1.0 - 0.20 * max(gap.x, gap.y)) * uBrightness * 0.78;
+#ifdef LED_ANGULAR_RESPONSE
+    outRgb *= evaluateLedAngularGainFromView(vViewNormal, vViewDir, gl_FrontFacing);
+#endif
     gl_FragColor = vec4(outRgb, 1.0);
   }
 `;

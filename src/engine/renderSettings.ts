@@ -17,6 +17,8 @@ export interface RenderSettings {
   videoSrgbDecode: boolean;
   /** Flag-gated 8-facet prism floor projections in BeamPools (Sprint 16, default off). */
   prismPools: boolean;
+  /** Flag-gated bounded viewing-angle emissivity response on LED walls (Sprint 17, default off). */
+  ledAngularResponse: boolean;
 }
 
 export const RENDER_SETTINGS_STORAGE_KEY = 'stageforge.render.v1';
@@ -27,6 +29,7 @@ export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   fallingCo2: false,
   videoSrgbDecode: false,
   prismPools: false,
+  ledAngularResponse: false,
 });
 
 const VALID_BLOOM_MODES: ReadonlySet<string> = new Set<BloomMode>(['auto', 'full', 'half', 'off']);
@@ -52,7 +55,10 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   const prismPools = Object.hasOwn(obj, 'prismPools') && typeof obj.prismPools === 'boolean'
     ? obj.prismPools
     : DEFAULT_RENDER_SETTINGS.prismPools;
-  return { bloom, aa, fallingCo2, videoSrgbDecode, prismPools };
+  const ledAngularResponse = Object.hasOwn(obj, 'ledAngularResponse') && typeof obj.ledAngularResponse === 'boolean'
+    ? obj.ledAngularResponse
+    : DEFAULT_RENDER_SETTINGS.ledAngularResponse;
+  return { bloom, aa, fallingCo2, videoSrgbDecode, prismPools, ledAngularResponse };
 }
 
 export function loadRenderSettings(): RenderSettings {
