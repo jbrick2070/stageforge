@@ -707,6 +707,8 @@ export function stepDeliveredStrobeGate(
         : state.deliveredBarGate;
   let delivered = desiredGate;
   if (prev < 0.5 && desiredGate >= 0.5) {
+    // Relies on state.clockMs advancing once per frame in evaluateAudioModulation before all
+    // strobe-limiter calls in that frame, so equal timestamps represent one synchronized room edge.
     const globalReady =
       tMs === state.lastGlobalStrobeEdgeMs ||
       tMs - state.lastGlobalStrobeEdgeMs >= FLASH_REFRACTORY_MS;

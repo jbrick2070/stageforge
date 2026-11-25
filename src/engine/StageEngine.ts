@@ -3190,7 +3190,7 @@ export class StageEngine {
     this.blinderLight.intensity = effBlinder * 75;
 
     const strobeBarAudioMapped = mod.active && (mod.strobeBar.strobe.mapped || mod.strobeBar.dimmerMapped);
-    const strobeBarBright = strobeBarAudioMapped
+    const rawStrobeBarBright = strobeBarAudioMapped
       ? (b.strobe && strobeFlashOn
           ? 3.8 * master
           : Math.max(mod.strobeBar.strobe.mapped && mod.strobeBar.strobe.gateOn ? 1 : 0, mod.strobeBar.dimmerMapped ? mod.strobeBar.dimmer : 0) * 3.8 * master)
@@ -3199,8 +3199,15 @@ export class StageEngine {
           : s.audioReactive && audio.beat && master > 0.2
             ? 2.2 * master * (openingStep === undefined ? 1 : THREE.MathUtils.lerp(demoFade(openingStep, 256, 384), 1, manualMix))
             : 0);
+    const rawBarGate = rawStrobeBarBright > 0.01 ? 1.0 : 0.06;
+    const deliveredBarGate = stepDeliveredStrobeGate(this.audioModState, 'bar', rawBarGate, blackoutActive);
+    const barGateLimited = deliveredBarGate < 0.5 && rawBarGate >= 0.5;
+    if (barGateLimited) {
+      mod.flashLimited = true;
+    }
+    const strobeBarBright = barGateLimited ? 0 : rawStrobeBarBright;
     const strobeBarDmxRate = strobeBarAudioMapped || b.strobe ? 0 : Math.round(255 * effectiveStrobe);
-    const strobeBarFlash = strobeBarAudioMapped ? strobeBarBright > 0.01 : (effectiveStrobe > 0.03 && strobeFlashOn);
+    const strobeBarFlash = !barGateLimited && (strobeBarAudioMapped ? strobeBarBright > 0.01 : (effectiveStrobe > 0.03 && strobeFlashOn));
     for (const st of this.strobes) {
       if (st.start) {
         const w = st.width ?? 2;
@@ -3251,11 +3258,11 @@ export class StageEngine {
     const spillStrobeGate =
       !b.strobe && mod.active && (mod.strobeBar.strobe.mapped || mod.strobeBar.dimmerMapped || (mod.beam.strobe.mapped && mod.wash.strobe.mapped))
         ? (mod.strobeBar.strobe.mapped
-            ? (mod.strobeBar.strobe.gateOn ? 1.35 : 0.06)
+            ? (strobeBarFlash ? 1.35 : 0.06)
             : (mod.beam.strobe.mapped && mod.wash.strobe.mapped
-                ? (mod.beam.strobe.gateOn || mod.wash.strobe.gateOn ? 1.35 : 0.06)
+                ? (groups.beam.groupStrobeGate >= 0.5 || groups.wash.groupStrobeGate >= 0.5 ? 1.35 : 0.06)
                 : 1.0))
-        : strobeGate;
+        : Math.max(groups.beam.groupStrobeGate, groups.wash.groupStrobeGate);
     const activeLightPower = ((rigHasLight ? (effBeamIntSpill * 0.55 + effWashIntSpill * 0.72) * this.spillFluxGain : 0) +
       (this.laserUnits.length ? laserInt * 0.09 : 0)) * master * spillStrobeGate * roomGain;
     this.stagePrimaryLight.color.copy(primaryColor);

@@ -692,7 +692,7 @@ test('QA H-2: backwards clock step (NTP jump) never stalls OSC token buckets', a
   await svc.shutdown();
 });
 
-test('QA M-3 & M-4: legacy full snapshots preserve omitted ShowState fields, and legacy master+motors cues keep captured podTargets while preserving audioMap', () => {
+test('QA M-3 & M-4: legacy full snapshots preserve omitted ShowState fields, and legacy master+motors cues keep captured podTargets while preserving audioMap', async () => {
   const baseLook = structuredClone(presets.INITIAL_SHOW_STATE);
   const mapping = {
     id: 'm1',
@@ -758,6 +758,17 @@ test('QA M-3 & M-4: legacy full snapshots preserve omitted ShowState fields, and
   assert.deepEqual(afterEightKey.movingGroups, liveWithMap.movingGroups, 'R3: 8-key delta must preserve movingGroups');
   assert.equal(afterEightKey.focusMarkId, 'mark-center', 'R3: 8-key delta must preserve focusMarkId');
   assert.equal(afterEightKey.audioMap?.mappings?.length, 1, 'R3: 8-key delta must preserve audioMap');
+
+  // QA Pass 2 #3 verification: real frozen legacy-v1.stageforge.show.json look is recognized as a full snapshot
+  // and clears stale optional fields cleanly on seek.
+  const { readFile } = await import('node:fs/promises');
+  const v1Fixture = JSON.parse(await readFile(new URL('./fixtures/legacy-v1.stageforge.show.json', import.meta.url), 'utf8'));
+  const v1Look = { ...v1Fixture.look };
+  delete v1Look.focusMarkId;
+  const afterV1Full = cueLookMod.applyTimelineLookPatch(liveWithMap, v1Look);
+  assert.equal(Object.hasOwn(afterV1Full, 'audioMap'), false, 'real v1 full snapshot clears stale audioMap');
+  assert.equal(Object.hasOwn(afterV1Full, 'movingGroups'), false, 'real v1 full snapshot clears stale movingGroups');
+  assert.equal(Object.hasOwn(afterV1Full, 'focusMarkId'), false, 'real v1 full snapshot clears stale focusMarkId');
 
   // M-4: legacy cue with masterDimmer + motors (no led/atmo) still replaces podTargets (captured=true) AND preserves live audioMap!
   const withPodTarget = {
@@ -1368,5 +1379,42 @@ test('Codex review-03 R1 regression: rapid 50 ms strobe press/release cycles can
   assert.ok(
     washRestoredAtMs >= 100 && washRestoredAtMs <= 800,
     `R2: manual strobe release must restore unmapped wash gate within 800 ms, got ${washRestoredAtMs}`,
+  );
+
+  // QA Pass 2 #1 & #6 regressions: strobe-bar 'bar' channel limits <= 3 edges/s across rapid toggles,
+  // and toggling blackout on/off inside a trough cannot bypass the 334 ms refractory window.
+  const sBar = audioMod.createAudioModulationState();
+  const fBar = audioMod.createAudioModulationFrame();
+  const barEdges = [];
+  let prevBarBright = true;
+  for (let step = 0; step < 200; step++) {
+    const tMs = step * 10;
+    const wantOn = Math.floor(tMs / 50) % 2 === 0;
+    audioMod.evaluateAudioModulation(look, metrics, sBar, 0.01, fBar);
+    const g = audioMod.stepDeliveredStrobeGate(sBar, 'bar', wantOn ? 1.0 : 0.06, false);
+    const bright = g >= 0.5;
+    if (bright && !prevBarBright) barEdges.push(sBar.clockMs);
+    prevBarBright = bright;
+  }
+  for (let i = 0; i < barEdges.length; i++) {
+    const inWin = barEdges.filter((t) => t >= barEdges[i] && t < barEdges[i] + 1000);
+    assert.ok(inWin.length <= 3, `QA Pass 2 #1: bar channel exceeded 3 edges/s: ${JSON.stringify(barEdges)}`);
+  }
+
+  const sBo = audioMod.createAudioModulationState();
+  const fBo = audioMod.createAudioModulationFrame();
+  audioMod.evaluateAudioModulation(look, metrics, sBo, 0.01, fBo);
+  assert.equal(audioMod.stepDeliveredStrobeGate(sBo, 'wash', 0.06, false), 0.06);
+  audioMod.evaluateAudioModulation(look, metrics, sBo, 0.01, fBo);
+  assert.equal(audioMod.stepDeliveredStrobeGate(sBo, 'wash', 1.0, false), 1.0); // edge at 20 ms
+  audioMod.evaluateAudioModulation(look, metrics, sBo, 0.01, fBo);
+  assert.equal(audioMod.stepDeliveredStrobeGate(sBo, 'wash', 0.06, false), 0.06); // trough at 30 ms
+  audioMod.evaluateAudioModulation(look, metrics, sBo, 0.01, fBo);
+  audioMod.stepDeliveredStrobeGate(sBo, 'wash', 1.0, true); // blackout ON at 40 ms
+  audioMod.evaluateAudioModulation(look, metrics, sBo, 0.01, fBo);
+  assert.equal(
+    audioMod.stepDeliveredStrobeGate(sBo, 'wash', 1.0, false),
+    0.06,
+    'QA Pass 2 #6: exiting blackout inside refractory trough must remain dark',
   );
 });
