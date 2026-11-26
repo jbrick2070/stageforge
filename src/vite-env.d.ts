@@ -178,6 +178,11 @@ interface OutputClaimResultBridge {
 }
 
 interface Window {
+  stageforgeReactProbe?: {
+    unmountApp(): void;
+    mountApp(): void;
+    webXrPageLatch(): unknown;
+  };
   stageforgeDesktop?: {
     onRigCommand(listener: (command: 'open' | 'openBundle' | 'openMvr' | 'openViewer' | 'export' | 'show' | 'bundle' | 'dxf' | 'glb' | 'csv' | 'mvr', source?: string | Uint8Array) => void): () => void;
     sendDmxFrame(universe: 1 | 2, data: Uint8Array): boolean;

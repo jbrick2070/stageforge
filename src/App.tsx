@@ -149,6 +149,79 @@ const EMPTY_AUDIO: AudioMetrics = {
 type WebXrPhase = 'disabled' | 'checking' | 'ready' | 'warning' | 'requesting' | 'active' | 'exiting';
 type WebXrModule = typeof import('./xr/webXrAudience');
 
+interface WebXrPageLatch {
+  token: number;
+  owner: StageEngine;
+  session: XRSession | null;
+  sessionEndListener: (() => void) | null;
+  subscribers: Set<(active: boolean) => void>;
+}
+
+let nextWebXrPageLatchToken = 0;
+let webXrPageLatch: WebXrPageLatch | null = null;
+
+function isWebXrPageInterlocked(): boolean {
+  return webXrPageLatch !== null;
+}
+
+function acquireWebXrPageLatch(owner: StageEngine): number {
+  if (webXrPageLatch) throw new Error('A VR session request is already unresolved on this page.');
+  const token = ++nextWebXrPageLatchToken;
+  webXrPageLatch = {
+    token,
+    owner,
+    session: null,
+    sessionEndListener: null,
+    subscribers: new Set(),
+  };
+  return token;
+}
+
+function releaseWebXrPageLatch(token: number, session?: XRSession): boolean {
+  const latch = webXrPageLatch;
+  if (!latch || latch.token !== token || (session && latch.session !== session)) return false;
+  if (latch.session && latch.sessionEndListener) {
+    latch.session.removeEventListener('end', latch.sessionEndListener);
+  }
+  webXrPageLatch = null;
+  latch.owner.setWebXrPhysicalOutputInterlock(false);
+  for (const subscriber of latch.subscribers) subscriber(false);
+  latch.subscribers.clear();
+  return true;
+}
+
+function bindWebXrPageLatchSession(token: number, session: XRSession) {
+  const latch = webXrPageLatch;
+  if (!latch || latch.token !== token) return;
+  const onEnd = () => releaseWebXrPageLatch(token, session);
+  latch.session = session;
+  latch.sessionEndListener = onEnd;
+  session.addEventListener('end', onEnd);
+}
+
+function subscribeWebXrPageLatch(subscriber: (active: boolean) => void): () => void {
+  const latch = webXrPageLatch;
+  if (!latch) {
+    subscriber(false);
+    return () => {};
+  }
+  latch.subscribers.add(subscriber);
+  return () => latch.subscribers.delete(subscriber);
+}
+
+/** Probe-only evidence for the real page-lifetime owner; production UI never calls this. */
+export function webXrPageLatchDiagnostics() {
+  const latch = webXrPageLatch;
+  return {
+    interlocked: Boolean(latch),
+    sessionBound: Boolean(latch?.session),
+    owner: latch ? {
+      disposed: latch.owner.isDisposed(),
+      ...latch.owner.webXrDiagnostics(),
+    } : null,
+  };
+}
+
 function webXrBlocksPhysicalOutput(phase: WebXrPhase): boolean {
   return phase === 'requesting' || phase === 'active' || phase === 'exiting';
 }
@@ -250,6 +323,7 @@ export const App: React.FC = () => {
   const [webXrPhase, setWebXrPhase] = useState<WebXrPhase>('disabled');
   const webXrPhaseRef = useRef<WebXrPhase>('disabled');
   webXrPhaseRef.current = webXrPhase;
+  const [webXrPageInterlocked, setWebXrPageInterlocked] = useState(isWebXrPageInterlocked);
   const webXrModuleRef = useRef<WebXrModule | null>(null);
   const webXrRequestGenerationRef = useRef(0);
   const webXrWarningAcknowledgedRef = useRef(false);
@@ -296,15 +370,24 @@ export const App: React.FC = () => {
     return () => mql.removeEventListener('change', onChange);
   }, []);
 
+  const webXrOutputBlocked = webXrPageInterlocked || webXrBlocksPhysicalOutput(webXrPhase);
   const effectiveFullRateStrobe = resolveEffectiveFullRateStrobe({
     userOptIn: fullRateStrobeOptIn,
     prefersReducedMotion,
-    xrPresenting: webXrBlocksPhysicalOutput(webXrPhase),
+    xrPresenting: webXrOutputBlocked,
     viewerMode,
   });
   const effectiveFullRateStrobeRef = useRef(effectiveFullRateStrobe);
   effectiveFullRateStrobeRef.current = effectiveFullRateStrobe;
   const effectiveLookOutput = resolveEffectiveLookOutput(renderSettings, renderTier, prefersReducedMotion);
+
+  useEffect(() => {
+    if (!webXrPageInterlocked) return;
+    return subscribeWebXrPageLatch((active) => {
+      setWebXrPageInterlocked(active);
+      engineRef.current?.setWebXrPhysicalOutputInterlock(active);
+    });
+  }, [webXrPageInterlocked]);
 
   useEffect(() => {
     let cancelled = false;
@@ -352,14 +435,14 @@ export const App: React.FC = () => {
   // Clear the session-only full-rate opt-in whenever reduced-motion turns on or Pitch Viewer is entered
   // so leaving Pitch Viewer or disabling reduced-motion never silently re-arms full-rate flashing.
   useEffect(() => {
-    if (prefersReducedMotion || viewerMode || webXrBlocksPhysicalOutput(webXrPhase)) {
+    if (prefersReducedMotion || viewerMode || webXrOutputBlocked) {
       setFullRateStrobeOptIn(false);
     }
     if (prefersReducedMotion) {
       webXrLimiterOverrideRef.current = false;
       engineRef.current?.setFullRateStrobePreview(false);
     }
-  }, [prefersReducedMotion, viewerMode, webXrPhase]);
+  }, [prefersReducedMotion, viewerMode, webXrOutputBlocked]);
 
   useEffect(() => {
     engineRef.current?.setFullRateStrobePreview(effectiveFullRateStrobe);
@@ -634,7 +717,7 @@ export const App: React.FC = () => {
     clearAllBumps,
     () => {
       if (
-        webXrBlocksPhysicalOutput(webXrPhaseRef.current) ||
+        webXrPageInterlocked || webXrBlocksPhysicalOutput(webXrPhaseRef.current) ||
         engineRef.current?.isWebXrPhysicalOutputInterlocked()
       ) {
         return {
@@ -670,11 +753,19 @@ export const App: React.FC = () => {
       showToast('VR is blocked while physical output is armed or live.');
       return;
     }
-    if (webXrBlocksPhysicalOutput(webXrPhaseRef.current)) return;
+    if (webXrBlocksPhysicalOutput(webXrPhaseRef.current) || isWebXrPageInterlocked()) return;
+
+    const requestOwner = engineRef.current;
+    if (!requestOwner) {
+      showToast('The 3D stage is still loading.');
+      return;
+    }
 
     // Keep this request first after synchronous interlock checks: the warning-confirm click owns activation.
     const sessionPromise = mod.requestAudienceSession();
-    engineRef.current?.setWebXrPhysicalOutputInterlock(true);
+    const pageLatchToken = acquireWebXrPageLatch(requestOwner);
+    requestOwner.setWebXrPhysicalOutputInterlock(true);
+    setWebXrPageInterlocked(true);
     const generation = ++webXrRequestGenerationRef.current;
     let sessionObtained = false;
     webXrWarningAcknowledgedRef.current = true;
@@ -685,19 +776,23 @@ export const App: React.FC = () => {
 
     void sessionPromise.then(async (session) => {
       sessionObtained = true;
+      bindWebXrPageLatchSession(pageLatchToken, session);
       if (
         generation !== webXrRequestGenerationRef.current ||
+        requestOwner.isDisposed() ||
         liveDmxRef.current.armed || liveDmxRef.current.isLive ||
         !renderSettingsRef.current.webxrAudience
       ) {
         try {
           await session.end();
         } catch {
-          showToast('VR could not confirm that the session ended. Physical output remains blocked; reload after leaving VR.');
+          if (!requestOwner.isDisposed()) {
+            showToast('VR could not confirm that the session ended. Physical output remains blocked; reload after leaving VR.');
+          }
           return;
         }
-        engineRef.current?.setWebXrPhysicalOutputInterlock(false);
-        if (generation !== webXrRequestGenerationRef.current && webXrPhaseRef.current === 'exiting') {
+        releaseWebXrPageLatch(pageLatchToken, session);
+        if (!requestOwner.isDisposed() && generation !== webXrRequestGenerationRef.current && webXrPhaseRef.current === 'exiting') {
           const next: WebXrPhase =
             renderSettingsRef.current.webxrAudience && !viewerModeRef.current && !window.stageforgeDesktop
               ? 'ready'
@@ -707,22 +802,10 @@ export const App: React.FC = () => {
         }
         return;
       }
-      const engine = engineRef.current;
-      if (!engine) {
-        try {
-          await session.end();
-        } catch {
-          webXrPhaseRef.current = 'exiting';
-          setWebXrPhase('exiting');
-          showToast('VR could not confirm that the session ended. Reload after leaving VR.');
-          return;
-        }
-        throw new Error('The 3D stage is still loading.');
-      }
       const quality = webXrQualityProfileRef.current ?? mod.loadXrQualityProfile();
       webXrQualityProfileRef.current = quality;
       const qualitySettings = mod.xrSessionQuality(quality);
-      await engine.enterWebXrSession(session, {
+      await requestOwner.enterWebXrSession(session, {
         referenceSpaceType: mod.WEBXR_REFERENCE_SPACE,
         framebufferScale: qualitySettings.framebufferScale,
         foveation: qualitySettings.foveation,
@@ -732,10 +815,11 @@ export const App: React.FC = () => {
           actions: webXrAudienceActionsRef.current,
         },
         onEnded: (reason) => {
+          if (reason !== 'dispose') releaseWebXrPageLatch(pageLatchToken, session);
           webXrLimiterOverrideRef.current = false;
-          setFullRateStrobeOptIn(false);
-          engineRef.current?.setFullRateStrobePreview(false);
+          requestOwner.setFullRateStrobePreview(false);
           if (generation !== webXrRequestGenerationRef.current) return;
+          setFullRateStrobeOptIn(false);
           const next: WebXrPhase =
             renderSettingsRef.current.webxrAudience && !viewerModeRef.current && !window.stageforgeDesktop
               ? 'ready'
@@ -746,22 +830,23 @@ export const App: React.FC = () => {
         },
       });
       if (generation !== webXrRequestGenerationRef.current) {
-        await engine.exitWebXrSession();
+        await requestOwner.exitWebXrSession();
         return;
       }
       webXrPhaseRef.current = 'active';
       setWebXrPhase('active');
     }).catch((error) => {
-      const engine = engineRef.current;
-      if (sessionObtained && engine?.isWebXrPhysicalOutputInterlocked()) {
-        webXrPhaseRef.current = 'exiting';
-        setWebXrPhase('exiting');
-        showToast('VR could not confirm that the session ended. Physical output remains blocked; reload after leaving VR.');
+      if (sessionObtained && requestOwner.isWebXrPhysicalOutputInterlocked()) {
+        if (!requestOwner.isDisposed()) {
+          webXrPhaseRef.current = 'exiting';
+          setWebXrPhase('exiting');
+          showToast('VR could not confirm that the session ended. Physical output remains blocked; reload after leaving VR.');
+        }
         return;
       }
-      if (!sessionObtained) engine?.setWebXrPhysicalOutputInterlock(false);
+      if (!sessionObtained) releaseWebXrPageLatch(pageLatchToken);
       if (generation !== webXrRequestGenerationRef.current) {
-        if (webXrPhaseRef.current === 'exiting') {
+        if (!requestOwner.isDisposed() && webXrPhaseRef.current === 'exiting') {
           const next: WebXrPhase =
             renderSettingsRef.current.webxrAudience && !viewerModeRef.current && !window.stageforgeDesktop
               ? 'ready'
@@ -771,6 +856,7 @@ export const App: React.FC = () => {
         }
         return;
       }
+      if (requestOwner.isDisposed()) return;
       const next: WebXrPhase = renderSettingsRef.current.webxrAudience ? 'ready' : 'disabled';
       webXrPhaseRef.current = next;
       setWebXrPhase(next);
@@ -1806,6 +1892,7 @@ export const App: React.FC = () => {
       throw error;
     }
     engineRef.current = engine;
+    if (isWebXrPageInterlocked()) engine.setWebXrPhysicalOutputInterlock(true);
     // Apply initial safety & overlay bindings immediately after engine construction (effects above run before mount).
     engine.setInhibitedLasers(effectiveInhibitedLasersRef.current);
     engine.setMeasureOverlay(measureOptionsRef.current);
@@ -1846,7 +1933,7 @@ export const App: React.FC = () => {
           prefersReducedMotion: typeof window !== 'undefined' && typeof window.matchMedia === 'function'
             ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
             : false,
-          xrPresenting: webXrBlocksPhysicalOutput(webXrPhaseRef.current),
+          xrPresenting: isWebXrPageInterlocked() || webXrBlocksPhysicalOutput(webXrPhaseRef.current),
           viewerMode: viewerModeRef.current,
         });
         effectiveFullRateStrobeRef.current = eff;
@@ -1931,6 +2018,7 @@ export const App: React.FC = () => {
     };
 
     return () => {
+      webXrRequestGenerationRef.current++;
       demoTrackAbortRef.current?.abort();
       replayDemoAbortRef.current?.abort();
       if (probe) delete (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe;
@@ -3895,8 +3983,12 @@ export const App: React.FC = () => {
               type="button"
               data-testid="webxr-enter"
               onClick={handleWebXrEntry}
-              disabled={liveDmx.armed || liveDmx.isLive}
-              title={liveDmx.armed || liveDmx.isLive ? 'Exit or disarm physical output before VR' : 'Enter immersive VR audience preview'}
+              disabled={liveDmx.armed || liveDmx.isLive || webXrPageInterlocked}
+              title={liveDmx.armed || liveDmx.isLive
+                ? 'Exit or disarm physical output before VR'
+                : webXrPageInterlocked
+                  ? 'A previous VR session is still ending; physical output remains blocked'
+                  : 'Enter immersive VR audience preview'}
               className="rounded-lg border border-cyan-400/70 bg-cyan-950/90 px-3 py-2 font-mono-tech text-xs font-bold text-cyan-100 shadow-2xl disabled:cursor-not-allowed disabled:opacity-45"
             >
               Enter VR
@@ -4097,7 +4189,7 @@ export const App: React.FC = () => {
             preflight={preflightReport}
             liveViolationMessage={liveSafetyViolation}
             aiBridgeBlocking={aiBridgeBlocking}
-            webXrBlocking={webXrBlocksPhysicalOutput(webXrPhase)}
+            webXrBlocking={webXrOutputBlocked}
             onOpenPreflight={() => setPreflightOpen(true)}
             onClose={() => setDmxDrawerOpen(false)}
           />

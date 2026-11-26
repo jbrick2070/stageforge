@@ -222,6 +222,87 @@ test('a canceled chooser whose late session cannot end keeps physical output lat
   await expect(page.locator('[data-testid="dmx-output-arm"]:visible')).toBeDisabled();
 });
 
+test('reference-space failure after Three attaches the session stays closed until authoritative end', async ({ page }) => {
+  await boot(page);
+  const baseline = await xrState(page);
+  await page.evaluate(() => {
+    window.__fakeWebXr.failReferenceSpaceNext();
+    window.__fakeWebXr.rejectEndNext();
+  });
+  await page.getByTestId('webxr-enter').click();
+  await expect(page.getByTestId('webxr-warning')).toBeVisible();
+  await page.getByTestId('webxr-warning-confirm').click();
+
+  await expect.poll(async () => (await xrState(page)).phase).toBe('exiting');
+  await expect.poll(() => page.evaluate(() => window.__fakeWebXr.snapshot().active)).toBe(true);
+  const failed = await xrState(page);
+  const attached = await page.evaluate(() => window.__fakeWebXr.snapshot());
+  expect(attached.referenceSpaces).toEqual(['local-floor']);
+  expect(failed.active).toBe(true);
+  expect(failed.rendererXrEnabled).toBe(true);
+  expect(failed.physicalOutputInterlocked).toBe(true);
+  expect((await page.evaluate(() => window.stageforgeReactProbe.webXrPageLatch())).interlocked).toBe(true);
+  expect((await page.evaluate(() => window.stageforgeProbe.attemptWebXrDmxListener())).physicalOutputListenerAttached).toBe(false);
+
+  await page.evaluate(() => window.__fakeWebXr.systemExit());
+  await expect.poll(async () => (await xrState(page)).phase).toBe('ready');
+  await expect.poll(() => page.evaluate(() => window.__fakeWebXr.snapshot().active)).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.stageforgeReactProbe.webXrPageLatch().interlocked)).toBe(false);
+  const restored = await xrState(page);
+  const ended = await page.evaluate(() => window.__fakeWebXr.snapshot());
+  expect(restored.active).toBe(false);
+  expect(restored.physicalOutputInterlocked).toBe(false);
+  expect(restored.loopOwner).toBe('window-requestAnimationFrame');
+  expect(restored.controlsEnabled).toBe(baseline.controlsEnabled);
+  expect(restored.rendererPixelRatio).toBe(baseline.rendererPixelRatio);
+  expect(restored.rendererSize).toEqual(baseline.rendererSize);
+  expect(restored.rendererXrEnabled).toBe(baseline.rendererXrEnabled);
+  expect(restored.camera).toEqual(baseline.camera);
+  expect(restored.controlsTarget).toEqual(baseline.controlsTarget);
+  expect(restored.composerPasses).toEqual(baseline.composerPasses);
+  expect(ended.listenerBalances.every((count) => count === 0)).toBe(true);
+  expect(ended.rafCounts.every((count) => count === 0)).toBe(true);
+});
+
+test('React unmount during a pending chooser retains page authority through rejected termination', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => window.__fakeWebXr.deferNext());
+  await page.getByTestId('webxr-enter').click();
+  await expect(page.getByTestId('webxr-warning')).toBeVisible();
+  await page.getByTestId('webxr-warning-confirm').click();
+  await expect.poll(async () => (await xrState(page)).phase).toBe('requesting');
+
+  await page.evaluate(() => window.stageforgeReactProbe.unmountApp());
+  await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe)).toBe('undefined');
+  await page.evaluate(() => {
+    window.__fakeWebXr.rejectEndNext();
+    window.__fakeWebXr.resolvePending();
+  });
+  await expect.poll(() => page.evaluate(() => window.__fakeWebXr.snapshot().active)).toBe(true);
+  const unmounted = await page.evaluate(() => window.stageforgeReactProbe.webXrPageLatch());
+  expect(unmounted.interlocked).toBe(true);
+  expect(unmounted.sessionBound).toBe(true);
+  expect(unmounted.owner.disposed).toBe(true);
+  expect(unmounted.owner.physicalOutputInterlocked).toBe(true);
+  expect(unmounted.owner.physicalOutputListenerAttached).toBe(false);
+
+  await page.evaluate(() => window.stageforgeReactProbe.mountApp());
+  await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.webXr)).toBe('function');
+  await expect.poll(async () => (await xrState(page)).physicalOutputInterlocked).toBe(true);
+  expect((await page.evaluate(() => window.stageforgeProbe.attemptWebXrDmxListener())).physicalOutputListenerAttached).toBe(false);
+
+  await page.evaluate(() => window.__fakeWebXr.systemExit());
+  await expect.poll(() => page.evaluate(() => window.stageforgeReactProbe.webXrPageLatch().interlocked)).toBe(false);
+  await expect.poll(async () => (await xrState(page)).physicalOutputInterlocked).toBe(false);
+  const restored = await xrState(page);
+  expect(restored.active).toBe(false);
+  expect(restored.loopOwner).toBe('window-requestAnimationFrame');
+  expect(restored.controlsEnabled).toBe(true);
+  const ended = await page.evaluate(() => window.__fakeWebXr.snapshot());
+  expect(ended.listenerBalances.every((count) => count === 0)).toBe(true);
+  expect(ended.rafCounts.every((count) => count === 0)).toBe(true);
+});
+
 test('dispose stays fail-closed when the headset session rejects termination', async ({ page }) => {
   await boot(page);
   await enter(page, true);

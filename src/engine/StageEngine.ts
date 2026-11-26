@@ -1258,9 +1258,12 @@ export class StageEngine {
     });
 
     try {
-      lease.baseReferenceSpace = await session.requestReferenceSpace(config.referenceSpaceType);
       await this.renderer.xr.setSession(session);
       if (this.webXrLease !== lease || lease.restored) throw new Error('VR session ended during startup.');
+      // Three has now attached its listeners/render target and acquired its own reference space.
+      // Keep the audience origin explicit, and make failures exercise the real attached-session teardown.
+      lease.baseReferenceSpace = await session.requestReferenceSpace(config.referenceSpaceType);
+      if (this.webXrLease !== lease || lease.restored) throw new Error('VR session ended during reference-space setup.');
       const [{ WebXrAudienceScene }, { deriveAudienceViewpoints }] = await Promise.all([
         import('../xr/audienceScene'),
         import('../xr/audienceExperience'),

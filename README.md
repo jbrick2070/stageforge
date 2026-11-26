@@ -4,6 +4,8 @@ StageForge is an open-source concert stage designer and simulator for Windows, A
 
 [Launch StageForge in your browser](https://jbrick2070.github.io/stageforge/)
 
+Experimental, default-off WebXR audience preview setup and the required real-headset acceptance checklist are in [Immersive VR audience preview](docs/vr.md).
+
 ![Arena show with steel-blue and amber lighting, inflatable tentacles and flown line arrays](docs/stageforge-arena.webp)
 
 ## Run locally

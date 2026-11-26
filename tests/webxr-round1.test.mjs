@@ -27,3 +27,25 @@ test('WebXR physical-output interlocks use both UI phase and renderer lease auth
   assert.match(app, /webXrBlocksPhysicalOutput\(webXrPhaseRef\.current\)[\s\S]{0,120}engineRef\.current\?\.isWebXrPhysicalOutputInterlocked\(\)/);
   assert.match(engine, /if \(listener && \(this\.disposed \|\| this\.webXrLease \|\| this\.webXrPhysicalOutputInterlock\)\)/);
 });
+
+test('VR documentation links the exact opt-in, controls, evidence boundary, and owner checks', async () => {
+  const docs = await readFile(new URL('../docs/vr.md', import.meta.url), 'utf8');
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  assert.match(readme, /\[Immersive VR audience preview\]\(docs\/vr\.md\)/);
+  assert.match(docs, /stageforge\.render\.v1/);
+  assert.match(docs, /off by default/i);
+  assert.match(docs, /Quest Browser/);
+  assert.match(docs, /PC-linked headset/);
+  assert.match(docs, /Primary select \/ trigger/);
+  assert.match(docs, /Squeeze \/ grip/);
+  assert.match(docs, /\*\*next VR entry\*\*/);
+  assert.match(docs, /No real headset has been tested/);
+  assert.match(docs, /Promotion requires both the completed real-headset checklist/);
+  for (const heading of [
+    'Initial scale', 'First warning', 'Every seat and posture', 'Reach', 'Menu legibility',
+    'Controller mappings', 'Teleport and comfort', 'Ten-minute use',
+    'Stereo rendering and performance', 'Laser note and pre-flight', 'Exit and re-entry', 'Demo sync',
+  ]) {
+    assert.match(docs, new RegExp(`\\*\\*${heading}:`));
+  }
+});
