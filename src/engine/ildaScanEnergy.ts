@@ -299,12 +299,10 @@ export class IldaScanEnergyProjector {
     r0: number, g0: number, b0: number,
     r1: number, g1: number, b1: number,
   ): void {
-    const packedEdges = [-1, 1, -2, 1, 2, -2];
-    const starts = [true, true, false, true, false, false];
     for (let v = 0; v < 6; v++) {
       const vertex = segmentIndex * 6 + v;
       const p3 = vertex * 3;
-      const atStart = starts[v];
+      const atStart = v === 0 || v === 1 || v === 3;
       this.positions[p3] = atStart ? x0 : x1;
       this.positions[p3 + 1] = atStart ? y0 : y1;
       this.positions[p3 + 2] = atStart ? z0 : z1;
@@ -314,7 +312,7 @@ export class IldaScanEnergyProjector {
       this.colors[p3] = atStart ? r0 : r1;
       this.colors[p3 + 1] = atStart ? g0 : g1;
       this.colors[p3 + 2] = atStart ? b0 : b1;
-      this.edges[vertex] = packedEdges[v];
+      this.edges[vertex] = v === 0 ? -1 : (v === 1 || v === 3 ? 1 : (v === 4 ? 2 : -2));
     }
   }
 

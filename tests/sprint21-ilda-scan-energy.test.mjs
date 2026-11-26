@@ -138,6 +138,25 @@ describe('Sprint 21: dwell, corner, blanking and draw-range processing', () => {
     assert.equal(ribbon.geometry.drawRange.count, 0);
     ribbon.dispose();
   });
+
+  it('updates animated near-capacity frames without per-segment array literals', () => {
+    const pointsA = Array.from({ length: 4000 }, (_, i) => point(-32000 + (i % 200) * 320, -25000 + Math.floor(i / 200) * 2400));
+    const pointsB = Array.from({ length: 4000 }, (_, i) => point(32000 - (i % 200) * 320, 25000 - Math.floor(i / 200) * 2400));
+    const clip = ildaMod.parseIlda(ildaMod.encodeIlda([
+      { name: 'CAPA', format: 5, points: pointsA },
+      { name: 'CAPB', format: 5, points: pointsB },
+    ]), { tier: 'high' });
+    const animated = new scanMod.IldaScanEnergyProjector(clip, 8000, false);
+    const positionArray = animated.geometry.getAttribute('position').array;
+    assert.equal(animated.updateFrame(0, 'beam').segments, 4000);
+    assert.equal(animated.updateFrame(1, 'beam').segments, 4000);
+    assert.equal(animated.geometry.getAttribute('position').array, positionArray, 'fixed typed-array storage is reused');
+
+    const source = readFileSync(join(process.cwd(), 'src/engine/ildaScanEnergy.ts'), 'utf8');
+    const writeSegmentBody = source.slice(source.indexOf('private writeSegment('), source.indexOf('\n  updateFrame(', source.indexOf('private writeSegment(')));
+    assert.doesNotMatch(writeSegmentBody, /const\s+(packedEdges|starts)\s*=\s*\[/, 'no per-segment array literals');
+    animated.dispose();
+  });
 });
 
 describe('Sprint 21: per-eye shader, monochrome and lifecycle contracts', () => {
