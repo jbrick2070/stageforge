@@ -71,7 +71,8 @@ or clock value enters the shader or palette update.
 The batch is capped by deterministic family quotas at `128` instances on the low tier and `512` on the high
 tier. It costs at most one draw and adds no fullscreen pass or dependency. Normal premultiplied-alpha blending,
 depth testing, a sub-pixel fade, and a `0.40–1.35 m` near-eye fade keep the lines architectural instead of
-camera-filling decoration. Blackout hides the batch. **True colour** releases its GPU resources; **Reduced
+camera-filling decoration. Blackout and master-dimmer zero hide the batch; intermediate master levels scale
+opacity without reallocating it. **True colour** releases its GPU resources; **Reduced
 effects**, automatic low-tier policy, and reduced motion retain the framing because it is completely static.
 Authored stage geometry, fixture and material colours, show/DMX data, and production materials are not changed.
 
@@ -102,19 +103,19 @@ The B panels total 67,976 bytes; all six Sprint 23 panels total 144,620 bytes, b
 ### Slice B budget and evidence boundaries
 
 The focused promotion run used three alternating warmed pairs at fixed `1280×720` and at `390×844` with 4×
-CPU throttling. Laptop p50 was off `[1.0, 1.0, 0.9] ms` / on `[0.9, 0.9, 0.9] ms` (median delta
-`-0.10 ms`), p95 off `[1.1, 1.2, 1.1]` / on `[1.2, 1.1, 1.1]`, and p99 off
-`[1.1, 1.7, 1.3]` / on `[1.4, 1.2, 1.4]`. Phone-like p50 was off `[6.9, 5.9, 6.9] ms` / on
-`[6.6, 6.3, 6.5] ms` (median delta `-0.40 ms`), p95 off `[9.3, 9.0, 10.6]` / on
-`[9.1, 9.8, 9.4]`, and p99 off `[10.2, 11.1, 11.4]` / on `[11.0, 11.8, 9.9]`.
-At the profiler's demonstrated `0.1 ms` CPU resolution, both median p50 costs are below zero and the p95 medians
-are equal on the laptop and one resolution bin apart on the throttled profile; both remain inside B's
+CPU throttling. The post-QA-fix replay measured laptop p50 off `[0.9, 0.9, 1.0] ms` / on
+`[0.9, 0.9, 0.9] ms` (median delta `0.00 ms`), p95 off `[1.2, 1.3, 1.4]` / on `[1.1, 1.0, 1.1]`,
+and p99 off `[1.2, 1.4, 1.4]` / on `[1.1, 1.0, 1.3]`. Phone-like p50 was off
+`[6.6, 6.4, 6.9] ms` / on `[6.6, 6.4, 6.7] ms` (median delta `0.00 ms`), p95 off
+`[8.8, 9.6, 9.2]` / on `[8.9, 8.1, 9.9]`, and p99 off `[12.5, 9.9, 11.9]` / on
+`[9.5, 9.9, 10.5]`. At the profiler's demonstrated `0.1 ms` CPU resolution, both median p50 costs are zero and
+both p95 medians improve; both profiles remain inside B's
 `+0.15 / +0.30 ms` ceilings. Slice A measured zero incremental cost, so these are also the measured combined
 Sprint 23 A+B CPU deltas, within the combined `+0.50 / +0.95 ms` ceilings.
 
-Asynchronous GPU p50 was laptop off `[141.9056, 142.1850, 142.1092] ms` / on
-`[141.4555, 142.3043, 141.0474] ms`, and phone-like off `[68.6884, 68.9063, 69.2964] ms` / on
-`[68.8982, 69.9525, 69.2509] ms`. These are ANGLE SwiftShader software-renderer timings, not hardware-GPU
+Asynchronous GPU p50 was laptop off `[139.1031, 139.1762, 139.6883] ms` / on
+`[140.6591, 138.9228, 138.1595] ms`, and phone-like off `[68.7131, 70.9737, 68.9992] ms` / on
+`[69.8684, 70.6314, 69.7210] ms`. These are ANGLE SwiftShader software-renderer timings, not hardware-GPU
 measurements; CPU throttling does not emulate a phone GPU. The one batch owns `11,584 B` on low tier and
 `40,768 B` on high tier (`1,856 B` geometry plus fixed matrix/colour attributes), within `0.10 MiB`; A+B remains
 within `0.11 MiB`, adds at most one draw, and adds no pass.

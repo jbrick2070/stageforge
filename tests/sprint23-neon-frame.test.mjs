@@ -96,6 +96,16 @@ describe('Sprint 23B: static neon architecture', () => {
     assert.equal(stats.active, false);
     assert.equal(stats.suppressedReason, 'blackout');
     controller.setBlackout(false);
+    const allocatedBatch = scene.children.find((node) => node.userData.cosmeticLook === 'neonFrame');
+    controller.setMasterDimmer(0.4);
+    assert.equal(scene.children.find((node) => node.userData.cosmeticLook === 'neonFrame'), allocatedBatch);
+    assert.equal(controller.getStats().active, true);
+    controller.setMasterDimmer(0);
+    assert.equal(controller.getStats().active, false);
+    assert.equal(controller.getStats().suppressedReason, 'master-dimmer');
+    assert.equal(scene.children.find((node) => node.userData.cosmeticLook === 'neonFrame'), allocatedBatch);
+    controller.setMasterDimmer(1);
+    assert.equal(controller.getStats().active, true);
     controller.setViewportHeight(844);
     controller.onContextRestored();
     assert.equal(controller.getStats().active, true);

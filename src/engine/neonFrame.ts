@@ -22,7 +22,7 @@ export interface NeonFrameStats {
   requested: boolean;
   allocated: boolean;
   active: boolean;
-  suppressedReason: 'disabled' | 'true-colour' | 'blackout' | 'empty' | null;
+  suppressedReason: 'disabled' | 'true-colour' | 'blackout' | 'master-dimmer' | 'empty' | null;
   instanceCount: number;
   capacity: number;
   deckInstances: number;
@@ -241,6 +241,7 @@ export class NeonFrameController {
   private requested = false;
   private trueColour = false;
   private blackout = false;
+  private masterDimmer = 1;
   private rig?: RigConfig;
   private screens: readonly StageScreen[] = [];
   private segments: NeonFrameSegment[] = [];
@@ -283,6 +284,14 @@ export class NeonFrameController {
     this.syncVisibility();
   }
 
+  setMasterDimmer(level: number) {
+    const next = THREE.MathUtils.clamp(Number.isFinite(level) ? level : 0, 0, 1);
+    if (this.masterDimmer === next) return;
+    this.masterDimmer = next;
+    if (this.material) this.material.uniforms.uOpacity.value = 0.82 * next;
+    this.syncVisibility();
+  }
+
   setViewportHeight(height: number) {
     this.viewportHeight = Math.max(1, height);
     if (this.material) this.material.uniforms.uViewportHeight.value = this.viewportHeight;
@@ -310,7 +319,7 @@ export class NeonFrameController {
       requested: this.requested,
       allocated,
       active,
-      suppressedReason: !this.requested ? 'disabled' : this.trueColour ? 'true-colour' : this.blackout ? 'blackout' : !this.segments.length ? 'empty' : null,
+      suppressedReason: !this.requested ? 'disabled' : this.trueColour ? 'true-colour' : this.blackout ? 'blackout' : this.masterDimmer <= 0.001 ? 'master-dimmer' : !this.segments.length ? 'empty' : null,
       instanceCount: this.mesh?.count ?? 0,
       capacity: NEON_FRAME_CAPACITY[this.tier],
       deckInstances: counts.deck,
@@ -338,7 +347,7 @@ export class NeonFrameController {
       fragmentShader: NEON_FRAME_FRAGMENT,
       uniforms: {
         uViewportHeight: { value: this.viewportHeight },
-        uOpacity: { value: 0.82 },
+        uOpacity: { value: 0.82 * this.masterDimmer },
         uRadiance: { value: 1.08 },
       },
       transparent: true,
@@ -391,7 +400,7 @@ export class NeonFrameController {
   }
 
   private syncVisibility() {
-    if (this.mesh) this.mesh.visible = this.requested && !this.trueColour && !this.blackout && this.mesh.count > 0;
+    if (this.mesh) this.mesh.visible = this.requested && !this.trueColour && !this.blackout && this.masterDimmer > 0.001 && this.mesh.count > 0;
   }
 
   private releaseResources() {

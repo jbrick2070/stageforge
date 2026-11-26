@@ -3765,6 +3765,7 @@ export class StageEngine {
     const darkOpening = !!demo && (!!demo.beforeDownbeat || demoOpeningStep! <= DEMO_BLACKOUT_STEPS);
     const master = blackoutActive || darkOpening ? 0 : s.masterDimmer;
     this.neonFrame.setBlackout(blackoutActive || darkOpening);
+    this.neonFrame.setMasterDimmer(master);
     // Clear physical buffers before encoding so repatched, generic, or simulation-only ranges always stay neutral 0.
     this.physicalDmxU1.fill(0);
     this.physicalDmxU2.fill(0);

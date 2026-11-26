@@ -178,6 +178,12 @@ test('Sprint 23B: neon architecture visuals, accessibility, exports, lifecycle a
   await waitFrames(page, 3);
   expect((await page.evaluate(() => window.stageforgeProbe.graphicsProbe())).neonFrame.suppressedReason).toBe('blackout');
   await page.evaluate(() => window.stageforgeProbe.patchShowState({ blackout: false }));
+  await page.evaluate(() => window.stageforgeProbe.patchShowState({ masterDimmer: 0 }));
+  await waitFrames(page, 3);
+  expect((await page.evaluate(() => window.stageforgeProbe.graphicsProbe())).neonFrame.suppressedReason).toBe('master-dimmer');
+  await page.evaluate(() => window.stageforgeProbe.patchShowState({ masterDimmer: 1 }));
+  await waitFrames(page, 3);
+  expect((await page.evaluate(() => window.stageforgeProbe.graphicsProbe())).neonFrame.active).toBe(true);
   await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ lookNeonFrame: true, trueColour: true }));
   await waitFrames(page, 3);
   probe = await page.evaluate(() => window.stageforgeProbe.graphicsProbe());
