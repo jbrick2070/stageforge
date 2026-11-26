@@ -1,6 +1,29 @@
 import * as THREE from 'three';
 import type { RenderTier } from './hardwareMaterials';
 import { mulberry32 } from './prng';
+import {
+  beamsPerPuffForTier,
+  canAdmitLitPuffsBuffers,
+  candidateCapForTier,
+  computePoolCloudSphere,
+  evaluateSinglePuffLighting,
+  LIT_PUFFS_BYTES_PER_INSTANCE,
+  LIT_PUFFS_CRYO_AMBIENT_SCALE,
+  LIT_PUFFS_SMOKE_AMBIENT_SCALE,
+  LitCandidateSet,
+  LitPuffPoolState,
+  litPuffsExtraBufferBytes,
+  resolveSmokeCryoRenderOrder,
+  sortPuffsBackToFront,
+  VAPOR_FRAG_BASE,
+  VAPOR_FRAG_LIT,
+  VAPOR_VERT_BASE,
+  VAPOR_VERT_LIT,
+  type CloudSphereRegion,
+  type LitBeamSource,
+  type LitPuffsFrameContext,
+  type LitPuffsStats,
+} from './litPuffs';
 
 export const DEFAULT_PARTICLE_SEED = 0x51a9e015;
 export const PARTICLE_FIXED_STEP_S = 1 / 60;
@@ -24,6 +47,19 @@ export interface ParticleStats {
   droppedSpawns: number;
   droppedSimulationMs: number;
   uploadBytes: number;
+}
+
+export interface ParticleLightingUpdate {
+  beams: readonly LitBeamSource[];
+  blackout: boolean;
+  master: number;
+  roomGain: number;
+  camPosX: number;
+  camPosY: number;
+  camPosZ: number;
+  camFwdX: number;
+  camFwdY: number;
+  camFwdZ: number;
 }
 
 /**
@@ -187,14 +223,34 @@ function makeVaporTexture(): THREE.DataTexture {
 class VaporBatch {
   readonly mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial>;
   readonly color = new THREE.Color();
-  readonly centers: THREE.InstancedBufferAttribute;
-  readonly shapes: THREE.InstancedBufferAttribute;
   readonly capacity: number;
+  readonly aspect: number;
+  private readonly texture: THREE.Texture;
+  private litMode = false;
+  centers!: THREE.InstancedBufferAttribute;
+  shapes!: THREE.InstancedBufferAttribute;
+  broadLights: THREE.InstancedBufferAttribute | null = null;
+  lobeLights: THREE.InstancedBufferAttribute | null = null;
+  lobeOffsets: THREE.InstancedBufferAttribute | null = null;
   lastCount = 0;
   lastUploadBytes = 0;
 
-  constructor(capacity: number, texture: THREE.Texture, aspect: number) {
+  constructor(capacity: number, texture: THREE.Texture, aspect: number, lit = false) {
     this.capacity = Math.max(1, capacity);
+    this.texture = texture;
+    this.aspect = aspect;
+    const { geometry, material } = this.createResources(lit);
+    this.litMode = lit;
+    this.mesh = new THREE.Mesh(geometry, material);
+    this.mesh.frustumCulled = false;
+    // Never admit transparent per-frame billboard batches into RenderBatcher.
+    this.mesh.userData.noBatch = true;
+  }
+
+  private createResources(lit: boolean): {
+    geometry: THREE.InstancedBufferGeometry;
+    material: THREE.ShaderMaterial;
+  } {
     const geometry = new THREE.InstancedBufferGeometry();
     geometry.setIndex([0, 1, 2, 0, 2, 3]);
     geometry.setAttribute('position', new THREE.Float32BufferAttribute([
@@ -204,46 +260,76 @@ class VaporBatch {
     this.shapes = new THREE.InstancedBufferAttribute(new Float32Array(this.capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute('center', this.centers);
     geometry.setAttribute('shape', this.shapes);
+    if (lit) {
+      this.broadLights = new THREE.InstancedBufferAttribute(new Float32Array(this.capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
+      this.lobeLights = new THREE.InstancedBufferAttribute(new Float32Array(this.capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
+      this.lobeOffsets = new THREE.InstancedBufferAttribute(new Float32Array(this.capacity * 4), 4).setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute('broadLight', this.broadLights);
+      geometry.setAttribute('lobeLight', this.lobeLights);
+      geometry.setAttribute('lobeOffset', this.lobeOffsets);
+    } else {
+      this.broadLights = null;
+      this.lobeLights = null;
+      this.lobeOffsets = null;
+    }
     geometry.instanceCount = 0;
+
     const material = new THREE.ShaderMaterial({
-      uniforms: { vapor: { value: texture }, tint: { value: this.color }, aspect: { value: aspect } },
-      vertexShader: `
-        attribute vec3 center, shape;
-        uniform float aspect;
-        varying vec2 texUv;
-        varying float density;
-        void main() {
-          texUv = position.xy + 0.5;
-          density = shape.z;
-          vec2 offset = position.xy * vec2(aspect, 1.0) * shape.x;
-          float c = cos(shape.y), s = sin(shape.y);
-          vec4 eye = modelViewMatrix * vec4(center, 1.0);
-          eye.xy += mat2(c, s, -s, c) * offset;
-          gl_Position = projectionMatrix * eye;
-        }
-      `,
-      fragmentShader: `
-        uniform sampler2D vapor;
-        uniform vec3 tint;
-        varying vec2 texUv;
-        varying float density;
-        void main() {
-          vec4 cloud = texture2D(vapor, texUv);
-          float alpha = density * cloud.a;
-          if (alpha < 0.001) discard;
-          gl_FragColor = vec4(tint * cloud.r, alpha);
-        }
-      `,
+      uniforms: { vapor: { value: this.texture }, tint: { value: this.color }, aspect: { value: this.aspect } },
+      vertexShader: lit ? VAPOR_VERT_LIT : VAPOR_VERT_BASE,
+      fragmentShader: lit ? VAPOR_FRAG_LIT : VAPOR_FRAG_BASE,
       transparent: true,
       depthWrite: false,
     });
-    this.mesh = new THREE.Mesh(geometry, material);
-    this.mesh.frustumCulled = false;
+    return { geometry, material };
+  }
+
+  setLitMode(lit: boolean): void {
+    const next = Boolean(lit);
+    if (this.litMode === next) return;
+    const oldGeo = this.mesh.geometry;
+    const oldMat = this.mesh.material;
+    const { geometry, material } = this.createResources(next);
+    this.litMode = next;
+    this.mesh.geometry = geometry;
+    this.mesh.material = material;
+    this.mesh.visible = false;
+    this.lastCount = 0;
+    this.lastUploadBytes = 0;
+    oldGeo.dispose();
+    oldMat.dispose();
+  }
+
+  isLitMode(): boolean {
+    return this.litMode;
+  }
+
+  extraBufferBytes(): number {
+    return this.litMode ? this.capacity * LIT_PUFFS_BYTES_PER_INSTANCE : 0;
   }
 
   write(i: number, x: number, y: number, z: number, size: number, rotation: number, opacity: number) {
     this.centers.setXYZ(i, x, y, z);
     this.shapes.setXYZ(i, size, rotation, opacity);
+  }
+
+  writeLit(
+    i: number,
+    broadR: number,
+    broadG: number,
+    broadB: number,
+    lobeR: number,
+    lobeG: number,
+    lobeB: number,
+    offX: number,
+    offY: number,
+    offZ: number,
+    conc: number,
+  ) {
+    if (!this.broadLights || !this.lobeLights || !this.lobeOffsets) return;
+    this.broadLights.setXYZ(i, broadR, broadG, broadB);
+    this.lobeLights.setXYZ(i, lobeR, lobeG, lobeB);
+    this.lobeOffsets.setXYZW(i, offX, offY, offZ, conc);
   }
 
   finish(count: number) {
@@ -258,7 +344,30 @@ class VaporBatch {
     this.shapes.addUpdateRange(0, count * 3);
     this.centers.needsUpdate = true;
     this.shapes.needsUpdate = true;
-    this.lastUploadBytes = count * 6 * 4;
+    if (this.litMode && this.broadLights && this.lobeLights && this.lobeOffsets) {
+      this.broadLights.addUpdateRange(0, count * 3);
+      this.lobeLights.addUpdateRange(0, count * 3);
+      this.lobeOffsets.addUpdateRange(0, count * 4);
+      this.broadLights.needsUpdate = true;
+      this.lobeLights.needsUpdate = true;
+      this.lobeOffsets.needsUpdate = true;
+      this.lastUploadBytes = count * 16 * 4;
+    } else {
+      this.lastUploadBytes = count * 6 * 4;
+    }
+  }
+
+  onContextRestored() {
+    this.mesh.material.needsUpdate = true;
+    if (this.lastCount > 0) {
+      this.centers.needsUpdate = true;
+      this.shapes.needsUpdate = true;
+      if (this.litMode && this.broadLights && this.lobeLights && this.lobeOffsets) {
+        this.broadLights.needsUpdate = true;
+        this.lobeLights.needsUpdate = true;
+        this.lobeOffsets.needsUpdate = true;
+      }
+    }
   }
 
   dispose() {
@@ -272,6 +381,24 @@ interface HazeOrigin {
   y: number;
   z: number;
   seed: number;
+}
+
+/**
+ * Lazy runtime allocated exclusively while `litPuffs` is enabled (`null` / `0 B` when disabled).
+ */
+interface LitPuffsRuntime {
+  readonly candidateCap: number;
+  readonly beamsPerPuffCap: number;
+  readonly candidates: LitCandidateSet;
+  readonly smokeState: LitPuffPoolState;
+  readonly cryoState: LitPuffPoolState;
+  readonly smokeRegion: CloudSphereRegion;
+  readonly cryoRegion: CloudSphereRegion;
+  readonly frameCtx: LitPuffsFrameContext;
+  nextSpawnSeq: number;
+  smokeFirstOrder: boolean;
+  lastLitSmokePuffs: number;
+  lastLitCryoPuffs: number;
 }
 
 export class AtmosphericParticles {
@@ -288,6 +415,8 @@ export class AtmosphericParticles {
   private co2Emitters: THREE.Vector3[] = [];
   private deckY = 0;
   private fallingCo2 = false;
+  private litPuffsRequested = false;
+  private litRuntime: LitPuffsRuntime | null = null;
   private baseSeed: number;
   private smokeRng: () => number = mulberry32(DEFAULT_PARTICLE_SEED);
   private cryoRng: () => number = mulberry32(DEFAULT_PARTICLE_SEED ^ 0x9e3779b9);
@@ -304,14 +433,28 @@ export class AtmosphericParticles {
   private lastSmokeCount = 0;
   private lastCryoCount = 0;
   private lastHazeCount = 0;
+  // Cached upload context so live `litPuffs` or camera changes at a frozen frame re-upload without stepping physics.
+  private lastAlpha = 0;
+  private lastHasFrame = false;
+  private lastStageTint = new THREE.Color(0x00f0ff);
+  private lastStagePower = 0;
+  private lastBlackout = false;
+  private lastMaster = 1;
+  private lastRoomGain = 1;
+  private lastCamPosX = 0;
+  private lastCamPosY = 4.5;
+  private lastCamPosZ = 26;
+  private lastCamFwdX = 0;
+  private lastCamFwdY = -0.1;
+  private lastCamFwdZ = -0.995;
 
   constructor(tier: RenderTier = 'high', seed = DEFAULT_PARTICLE_SEED) {
     this.tier = tier;
     this.caps = PARTICLE_CAPACITIES[tier];
     this.baseSeed = seed >>> 0;
-    this.smoke = new VaporBatch(this.caps.smoke, this.texture, 1.18);
-    this.cryo = new VaporBatch(this.caps.cryo, this.texture, 0.88);
-    this.haze = new VaporBatch(this.caps.haze, this.texture, 1.7);
+    this.smoke = new VaporBatch(this.caps.smoke, this.texture, 1.18, false);
+    this.cryo = new VaporBatch(this.caps.cryo, this.texture, 0.88, false);
+    this.haze = new VaporBatch(this.caps.haze, this.texture, 1.7, false);
     this.smokePool = new PuffPool(this.caps.smoke);
     this.cryoPool = new PuffPool(this.caps.cryo);
     this.haze.mesh.renderOrder = -1;
@@ -325,13 +468,155 @@ export class AtmosphericParticles {
     this.fallingCo2 = next;
     // Clear active cryo puffs so old ascending velocities don't mix with dense-vapour physics.
     this.cryoPool.clear();
+    this.litRuntime?.cryoState.zeroLighting(this.caps.cryo);
     this.cryoRemainder = 0;
     this.cryo.finish(0);
     this.lastCryoCount = 0;
+    if (this.litRuntime) this.litRuntime.lastLitCryoPuffs = 0;
   }
 
   public isFallingCo2(): boolean {
     return this.fallingCo2;
+  }
+
+  /**
+   * Enable or disable locally beam-lit smoke & CO2 puffs (Sprint 20).
+   * When disabled (default), zero optional CPU state arrays or GPU buffers exist, and
+   * `smoke`/`cryo` restore their exact base shaders, slot order, and `renderOrder = 0`.
+   * When `lighting` is provided, immediately re-uploads active puffs at `dt = 0` without
+   * advancing simulation time, RNG streams, or flash governors.
+   */
+  public setLitPuffs(enabled: boolean, lighting?: ParticleLightingUpdate) {
+    const requested = Boolean(enabled);
+    this.litPuffsRequested = requested;
+    const shouldAllocate = requested && canAdmitLitPuffsBuffers(this.caps.smoke, this.caps.cryo);
+
+    if (shouldAllocate) {
+      if (!this.litRuntime) {
+        const candidateCap = candidateCapForTier(this.tier);
+        const beamsPerPuffCap = beamsPerPuffForTier(this.tier);
+        const smokeState = new LitPuffPoolState(this.caps.smoke);
+        const cryoState = new LitPuffPoolState(this.caps.cryo);
+        let seq = smokeState.seedAliveSequential(this.smokePool.alive, 0);
+        seq = cryoState.seedAliveSequential(this.cryoPool.alive, seq);
+        this.litRuntime = {
+          candidateCap,
+          beamsPerPuffCap,
+          candidates: new LitCandidateSet(candidateCap),
+          smokeState,
+          cryoState,
+          smokeRegion: { active: false, cx: 0, cy: 2, cz: 0, radius: 2.5 },
+          cryoRegion: { active: false, cx: 0, cy: 2, cz: 0, radius: 2.5 },
+          frameCtx: {
+            blackout: this.lastBlackout,
+            master: this.lastMaster,
+            roomGain: this.lastRoomGain,
+            camPosX: this.lastCamPosX,
+            camPosY: this.lastCamPosY,
+            camPosZ: this.lastCamPosZ,
+            camFwdX: this.lastCamFwdX,
+            camFwdY: this.lastCamFwdY,
+            camFwdZ: this.lastCamFwdZ,
+          },
+          nextSpawnSeq: seq,
+          smokeFirstOrder: true,
+          lastLitSmokePuffs: 0,
+          lastLitCryoPuffs: 0,
+        };
+      }
+      this.smoke.setLitMode(true);
+      this.cryo.setLitMode(true);
+    } else {
+      this.litRuntime = null;
+      this.smoke.setLitMode(false);
+      this.cryo.setLitMode(false);
+      this.smoke.mesh.renderOrder = 0;
+      this.cryo.mesh.renderOrder = 0;
+    }
+
+    if (lighting) {
+      this.cacheLightingContext(lighting);
+    }
+    if (this.lastHasFrame) {
+      this.applyBatchTintColors();
+    }
+    if (this.lastHasFrame || this.smokePool.alive > 0 || this.cryoPool.alive > 0) {
+      this.uploadSmokeAndCryo(0, lighting?.beams);
+    }
+  }
+
+  private applyBatchTintColors() {
+    const power = this.lastStagePower;
+    const tint = this.lastStageTint;
+    const smokeAmb = this.litRuntime ? LIT_PUFFS_SMOKE_AMBIENT_SCALE : 1.0;
+    const cryoAmb = this.litRuntime ? LIT_PUFFS_CRYO_AMBIENT_SCALE : 1.0;
+    this.smoke.color.setHex(0x617183).lerp(tint, 0.22).multiplyScalar(0.025 + power * 0.88 * smokeAmb);
+    this.cryo.color.setHex(0xcadbec).lerp(tint, 0.15).multiplyScalar(0.018 + power * 0.68 * cryoAmb);
+    this.haze.color.setHex(0x425162).lerp(tint, 0.16).multiplyScalar(power);
+  }
+
+  public isLitPuffsEnabled(): boolean {
+    return this.litRuntime !== null;
+  }
+
+  /**
+   * Re-evaluate and re-upload active lit puffs at `dt = 0` from committed fixture & camera state
+   * (used for frozen-frame camera pose changes and toggles).
+   */
+  public syncLitFromCommittedState(lighting: ParticleLightingUpdate) {
+    this.cacheLightingContext(lighting);
+    if (!this.litRuntime) return;
+    this.uploadSmokeAndCryo(0, lighting.beams);
+  }
+
+  private cacheLightingContext(lighting: ParticleLightingUpdate) {
+    this.lastBlackout = Boolean(lighting.blackout);
+    this.lastMaster = Number.isFinite(lighting.master) ? lighting.master : 1;
+    this.lastRoomGain = Number.isFinite(lighting.roomGain) ? lighting.roomGain : 1;
+    if (Number.isFinite(lighting.camPosX) && Number.isFinite(lighting.camPosY) && Number.isFinite(lighting.camPosZ)) {
+      this.lastCamPosX = lighting.camPosX;
+      this.lastCamPosY = lighting.camPosY;
+      this.lastCamPosZ = lighting.camPosZ;
+    }
+    const fLen = Math.hypot(lighting.camFwdX, lighting.camFwdY, lighting.camFwdZ);
+    if (Number.isFinite(fLen) && fLen > 1e-6) {
+      this.lastCamFwdX = lighting.camFwdX / fLen;
+      this.lastCamFwdY = lighting.camFwdY / fLen;
+      this.lastCamFwdZ = lighting.camFwdZ / fLen;
+    }
+  }
+
+  public getLitPuffsStats(): LitPuffsStats {
+    const rt = this.litRuntime;
+    const allocated = rt !== null && this.smoke.isLitMode() && this.cryo.isLitMode();
+    return {
+      requested: this.litPuffsRequested,
+      allocated,
+      active: allocated,
+      suppressedReason: !this.litPuffsRequested
+        ? 'disabled'
+        : allocated
+          ? null
+          : 'memory-budget',
+      tier: this.tier,
+      candidateCap: candidateCapForTier(this.tier),
+      selectedCandidateCount: rt ? rt.candidates.count : 0,
+      beamsPerPuffCap: beamsPerPuffForTier(this.tier),
+      litSmokePuffs: rt ? rt.lastLitSmokePuffs : 0,
+      litCryoPuffs: rt ? rt.lastLitCryoPuffs : 0,
+      smokeRenderOrder: this.smoke.mesh.renderOrder,
+      cryoRenderOrder: this.cryo.mesh.renderOrder,
+      extraBufferBytes: allocated
+        ? litPuffsExtraBufferBytes(this.caps.smoke, this.caps.cryo)
+        : 0,
+    };
+  }
+
+  public onContextRestored() {
+    this.texture.needsUpdate = true;
+    this.haze.onContextRestored();
+    this.smoke.onContextRestored();
+    this.cryo.onContextRestored();
   }
 
   /** Reset RNG streams, fixed-step accumulator, remainders, puff pools, and visible instances. */
@@ -348,6 +633,17 @@ export class AtmosphericParticles {
     }));
     this.smokePool.clear();
     this.cryoPool.clear();
+    if (this.litRuntime) {
+      this.litRuntime.candidates.clear();
+      this.litRuntime.smokeState.zeroLighting(this.caps.smoke);
+      this.litRuntime.cryoState.zeroLighting(this.caps.cryo);
+      this.litRuntime.nextSpawnSeq = 0;
+      this.litRuntime.smokeFirstOrder = true;
+      this.litRuntime.lastLitSmokePuffs = 0;
+      this.litRuntime.lastLitCryoPuffs = 0;
+      this.smoke.mesh.renderOrder = 1;
+      this.cryo.mesh.renderOrder = 2;
+    }
     this.smokeRemainder = 0;
     this.cryoRemainder = 0;
     this.smokeEmitterCursor = 0;
@@ -359,6 +655,7 @@ export class AtmosphericParticles {
     this.lastSmokeCount = 0;
     this.lastCryoCount = 0;
     this.lastHazeCount = 0;
+    this.lastAlpha = 0;
     this.smoke.finish(0);
     this.cryo.finish(0);
     this.haze.finish(0);
@@ -370,6 +667,17 @@ export class AtmosphericParticles {
     this.deckY = Number.isFinite(deckY) ? deckY : 0;
     this.smokePool.clear();
     this.cryoPool.clear();
+    if (this.litRuntime) {
+      this.litRuntime.candidates.clear();
+      this.litRuntime.smokeState.zeroLighting(this.caps.smoke);
+      this.litRuntime.cryoState.zeroLighting(this.caps.cryo);
+      this.litRuntime.nextSpawnSeq = 0;
+      this.litRuntime.smokeFirstOrder = true;
+      this.litRuntime.lastLitSmokePuffs = 0;
+      this.litRuntime.lastLitCryoPuffs = 0;
+      this.smoke.mesh.renderOrder = 1;
+      this.cryo.mesh.renderOrder = 2;
+    }
     this.smokeRemainder = 0;
     this.cryoRemainder = 0;
     this.smokeEmitterCursor = 0;
@@ -418,6 +726,51 @@ export class AtmosphericParticles {
     };
   }
 
+  /** Inspect uploaded batch attributes & draw order for unit tests (read-only). */
+  public debugUploadedBatches() {
+    const readBatch = (batch: VaporBatch) => {
+      const count = batch.lastCount;
+      const centers: Array<[number, number, number]> = [];
+      const shapes: Array<[number, number, number]> = [];
+      const broadLights: Array<[number, number, number]> = [];
+      const lobeLights: Array<[number, number, number]> = [];
+      const lobeOffsets: Array<[number, number, number, number]> = [];
+      for (let i = 0; i < count; i++) {
+        centers.push([batch.centers.getX(i), batch.centers.getY(i), batch.centers.getZ(i)]);
+        shapes.push([batch.shapes.getX(i), batch.shapes.getY(i), batch.shapes.getZ(i)]);
+        if (batch.isLitMode() && batch.broadLights && batch.lobeLights && batch.lobeOffsets) {
+          broadLights.push([batch.broadLights.getX(i), batch.broadLights.getY(i), batch.broadLights.getZ(i)]);
+          lobeLights.push([batch.lobeLights.getX(i), batch.lobeLights.getY(i), batch.lobeLights.getZ(i)]);
+          lobeOffsets.push([
+            batch.lobeOffsets.getX(i),
+            batch.lobeOffsets.getY(i),
+            batch.lobeOffsets.getZ(i),
+            batch.lobeOffsets.getW(i),
+          ]);
+        }
+      }
+      return {
+        litMode: batch.isLitMode(),
+        renderOrder: batch.mesh.renderOrder,
+        count,
+        centers,
+        shapes,
+        broadLights,
+        lobeLights,
+        lobeOffsets,
+      };
+    };
+    return {
+      smoke: readBatch(this.smoke),
+      cryo: readBatch(this.cryo),
+      haze: {
+        litMode: this.haze.isLitMode(),
+        renderOrder: this.haze.mesh.renderOrder,
+        count: this.haze.lastCount,
+      },
+    };
+  }
+
   public update(
     dt: number,
     _time: number,
@@ -426,11 +779,12 @@ export class AtmosphericParticles {
     co2Active: boolean,
     tint: THREE.Color,
     stageLightIntensity: number,
+    lighting?: ParticleLightingUpdate,
   ) {
     const power = THREE.MathUtils.clamp(stageLightIntensity, 0, 1.5);
-    this.smoke.color.setHex(0x617183).lerp(tint, 0.22).multiplyScalar(0.025 + power * 0.88);
-    this.cryo.color.setHex(0xcadbec).lerp(tint, 0.15).multiplyScalar(0.018 + power * 0.68);
-    this.haze.color.setHex(0x425162).lerp(tint, 0.16).multiplyScalar(power);
+    this.lastStageTint.copy(tint);
+    this.lastStagePower = power;
+    this.applyBatchTintColors();
 
     // Fixed-step simulation with bounded catch-up so tab resumes never burst.
     const safeDt = Number.isFinite(dt) && dt > 0 ? dt : 0;
@@ -452,6 +806,11 @@ export class AtmosphericParticles {
     }
 
     const alpha = THREE.MathUtils.clamp(this.accumulator / PARTICLE_FIXED_STEP_S, 0, 1);
+    this.lastAlpha = alpha;
+    this.lastHasFrame = true;
+    if (lighting) {
+      this.cacheLightingContext(lighting);
+    }
     const renderTime = this.simTime + this.accumulator;
 
     // 1. Haze ambient drift (deterministic from simTime + seeded origins).
@@ -477,14 +836,77 @@ export class AtmosphericParticles {
     }
 
     // 2. Upload interpolated smoke & cryo batches once per displayed frame.
-    this.uploadPool(this.smokePool, this.smoke, alpha, false);
-    this.uploadPool(this.cryoPool, this.cryo, alpha, true);
+    this.uploadSmokeAndCryo(safeDt, lighting?.beams);
     this.lastSmokeCount = this.smokePool.alive;
     this.lastCryoCount = this.cryoPool.alive;
   }
 
+  private uploadSmokeAndCryo(dt: number, beams?: readonly LitBeamSource[]) {
+    const alpha = this.lastAlpha;
+    const rt = this.litRuntime;
+    if (!rt) {
+      this.uploadPoolUnlit(this.smokePool, this.smoke, alpha, false);
+      this.uploadPoolUnlit(this.cryoPool, this.cryo, alpha, true);
+      return;
+    }
+
+    const fCtx = rt.frameCtx;
+    fCtx.blackout = this.lastBlackout;
+    fCtx.master = this.lastMaster;
+    fCtx.roomGain = this.lastRoomGain;
+    fCtx.camPosX = this.lastCamPosX;
+    fCtx.camPosY = this.lastCamPosY;
+    fCtx.camPosZ = this.lastCamPosZ;
+    fCtx.camFwdX = this.lastCamFwdX;
+    fCtx.camFwdY = this.lastCamFwdY;
+    fCtx.camFwdZ = this.lastCamFwdZ;
+
+    computePoolCloudSphere(
+      this.smokePool.alive,
+      this.smokePool.px, this.smokePool.py, this.smokePool.pz,
+      this.smokePool.x, this.smokePool.y, this.smokePool.z,
+      this.smokePool.size, alpha, rt.smokeRegion,
+    );
+    computePoolCloudSphere(
+      this.cryoPool.alive,
+      this.cryoPool.px, this.cryoPool.py, this.cryoPool.pz,
+      this.cryoPool.x, this.cryoPool.y, this.cryoPool.z,
+      this.cryoPool.size, alpha, rt.cryoRegion,
+    );
+
+    if (beams !== undefined) {
+      rt.candidates.select(
+        beams,
+        fCtx,
+        rt.smokeRegion,
+        rt.cryoRegion,
+        this.smokeEmitters,
+        this.co2Emitters,
+      );
+    } else if (fCtx.blackout || fCtx.master <= 0.001 || fCtx.roomGain <= 0.001) {
+      rt.candidates.clear();
+    }
+
+    const smokeSummary = this.uploadPoolLit(this.smokePool, rt.smokeState, this.smoke, alpha, false, dt, rt);
+    const cryoSummary = this.uploadPoolLit(this.cryoPool, rt.cryoState, this.cryo, alpha, true, dt, rt);
+    rt.lastLitSmokePuffs = smokeSummary.litCount;
+    rt.lastLitCryoPuffs = cryoSummary.litCount;
+
+    const order = resolveSmokeCryoRenderOrder(
+      this.smokePool.alive,
+      smokeSummary.meanDepth,
+      this.cryoPool.alive,
+      cryoSummary.meanDepth,
+      rt.smokeFirstOrder,
+    );
+    rt.smokeFirstOrder = order.smokeFirst;
+    this.smoke.mesh.renderOrder = order.smokeOrder;
+    this.cryo.mesh.renderOrder = order.cryoOrder;
+  }
+
   private stepSimulation(h: number, smokeOutput: number, co2Active: boolean) {
     this.simTime += h;
+    const rt = this.litRuntime;
 
     // Spawn smoke puffs fairly across emitters.
     const smokeEmitterCount = this.smokeEmitters.length;
@@ -525,6 +947,10 @@ export class AtmosphericParticles {
         p.rotation[slot] = angle;
         p.spin[slot] = (rng() - 0.5) * 0.48;
         p.floorY[slot] = this.deckY;
+        if (rt) {
+          rt.nextSpawnSeq = (rt.nextSpawnSeq + 1) >>> 0;
+          rt.smokeState.initSlot(slot, rt.nextSpawnSeq);
+        }
       }
     }
 
@@ -582,14 +1008,18 @@ export class AtmosphericParticles {
         p.rotation[slot] = angle;
         p.spin[slot] = (rng() - 0.5) * 1.0;
         p.floorY[slot] = Math.min(this.deckY, em.y);
+        if (rt) {
+          rt.nextSpawnSeq = (rt.nextSpawnSeq + 1) >>> 0;
+          rt.cryoState.initSlot(slot, rt.nextSpawnSeq);
+        }
       }
     }
 
-    this.advancePool(this.smokePool, h, false);
-    this.advancePool(this.cryoPool, h, true);
+    this.advancePool(this.smokePool, rt?.smokeState ?? null, h, false);
+    this.advancePool(this.cryoPool, rt?.cryoState ?? null, h, true);
   }
 
-  private advancePool(pool: PuffPool, h: number, cryo: boolean) {
+  private advancePool(pool: PuffPool, litState: LitPuffPoolState | null, h: number, cryo: boolean) {
     const drag = Math.exp(-h * (cryo ? 1.65 : 0.46));
     let live = 0;
     for (let i = 0; i < pool.alive; i++) {
@@ -597,7 +1027,10 @@ export class AtmosphericParticles {
       const lifetime = pool.lifetime[i];
       if (nextAge >= lifetime) continue;
 
-      if (live !== i) pool.copySlot(live, i);
+      if (live !== i) {
+        pool.copySlot(live, i);
+        litState?.copySlot(live, i);
+      }
       pool.age[live] = nextAge;
       const ageNorm = nextAge / lifetime;
 
@@ -654,36 +1087,126 @@ export class AtmosphericParticles {
     pool.alive = live;
   }
 
-  private uploadPool(pool: PuffPool, batch: VaporBatch, alpha: number, cryo: boolean) {
+  private computePuffShape(pool: PuffPool, i: number, cryo: boolean): { diameter: number; opacity: number } {
+    const age = pool.age[i];
+    const ageNorm = age / Math.max(1e-4, pool.lifetime[i]);
+    if (cryo && this.fallingCo2) {
+      const diameter = pool.size[i] + 1.9 * (1 - Math.exp(-1.4 * age));
+      const envelope =
+        THREE.MathUtils.smoothstep(ageNorm, 0, 0.04) *
+        (1 - THREE.MathUtils.smoothstep(ageNorm, 0.42, 1)) *
+        (1 - 0.35 * THREE.MathUtils.smoothstep(ageNorm, 0.2, 0.5));
+      return { diameter, opacity: 0.72 * envelope };
+    }
+    const diameter = pool.size[i] + age * pool.growth[i];
+    const envelope =
+      THREE.MathUtils.smoothstep(ageNorm, 0, 0.05) *
+      (1 - THREE.MathUtils.smoothstep(ageNorm, 0.19, 1));
+    return { diameter, opacity: (cryo ? 0.72 : 0.29) * envelope };
+  }
+
+  private uploadPoolUnlit(pool: PuffPool, batch: VaporBatch, alpha: number, cryo: boolean) {
     for (let i = 0; i < pool.alive; i++) {
       const age = pool.age[i];
-      const ageNorm = age / Math.max(1e-4, pool.lifetime[i]);
       const x = THREE.MathUtils.lerp(pool.px[i], pool.x[i], alpha);
       const y = THREE.MathUtils.lerp(pool.py[i], pool.y[i], alpha);
       const z = THREE.MathUtils.lerp(pool.pz[i], pool.z[i], alpha);
-
-      let diameter: number;
-      let opacity: number;
-      if (cryo && this.fallingCo2) {
-        diameter = pool.size[i] + 1.9 * (1 - Math.exp(-1.4 * age));
-        const envelope =
-          THREE.MathUtils.smoothstep(ageNorm, 0, 0.04) *
-          (1 - THREE.MathUtils.smoothstep(ageNorm, 0.42, 1)) *
-          (1 - 0.35 * THREE.MathUtils.smoothstep(ageNorm, 0.2, 0.5));
-        opacity = 0.72 * envelope;
-      } else {
-        diameter = pool.size[i] + age * pool.growth[i];
-        const envelope =
-          THREE.MathUtils.smoothstep(ageNorm, 0, 0.05) *
-          (1 - THREE.MathUtils.smoothstep(ageNorm, 0.19, 1));
-        opacity = (cryo ? 0.72 : 0.29) * envelope;
-      }
+      const { diameter, opacity } = this.computePuffShape(pool, i, cryo);
       batch.write(i, x, y, z, diameter, pool.rotation[i] + pool.spin[i] * age, opacity);
     }
     batch.finish(pool.alive);
   }
 
+  private uploadPoolLit(
+    pool: PuffPool,
+    litState: LitPuffPoolState,
+    batch: VaporBatch,
+    alpha: number,
+    cryo: boolean,
+    dt: number,
+    rt: LitPuffsRuntime,
+  ): { litCount: number; meanDepth: number } {
+    const alive = pool.alive;
+    if (alive <= 0) {
+      batch.finish(0);
+      return { litCount: 0, meanDepth: 0 };
+    }
+
+    const fCtx = rt.frameCtx;
+    let litCount = 0;
+    let depthWeightSum = 0;
+    let weightedDepthSum = 0;
+
+    const sX = litState.scratchX;
+    const sY = litState.scratchY;
+    const sZ = litState.scratchZ;
+    const sDiam = litState.scratchDiam;
+    const sOpac = litState.scratchOpac;
+
+    for (let i = 0; i < alive; i++) {
+      const x = pool.px[i] + (pool.x[i] - pool.px[i]) * alpha;
+      const y = pool.py[i] + (pool.y[i] - pool.py[i]) * alpha;
+      const z = pool.pz[i] + (pool.z[i] - pool.pz[i]) * alpha;
+      const { diameter, opacity } = this.computePuffShape(pool, i, cryo);
+      sX[i] = x;
+      sY[i] = y;
+      sZ[i] = z;
+      sDiam[i] = diameter;
+      sOpac[i] = opacity;
+      const depth =
+        (x - fCtx.camPosX) * fCtx.camFwdX +
+        (y - fCtx.camPosY) * fCtx.camFwdY +
+        (z - fCtx.camPosZ) * fCtx.camFwdZ;
+      litState.sortDepth[i] = depth;
+      const w = opacity > 0.01 ? opacity : 0.01;
+      weightedDepthSum += depth * w;
+      depthWeightSum += w;
+
+      const isLit = evaluateSinglePuffLighting(
+        i,
+        x,
+        y,
+        z,
+        diameter,
+        cryo,
+        dt,
+        rt.beamsPerPuffCap,
+        rt.candidates,
+        fCtx,
+        litState,
+      );
+      if (isLit) litCount++;
+    }
+
+    sortPuffsBackToFront(alive, litState.sortDepth, litState.spawnSeq, litState.sortOrder);
+
+    for (let outIdx = 0; outIdx < alive; outIdx++) {
+      const src = litState.sortOrder[outIdx];
+      batch.write(outIdx, sX[src], sY[src], sZ[src], sDiam[src], pool.rotation[src] + pool.spin[src] * pool.age[src], sOpac[src]);
+      batch.writeLit(
+        outIdx,
+        litState.broadR[src],
+        litState.broadG[src],
+        litState.broadB[src],
+        litState.lobeR[src],
+        litState.lobeG[src],
+        litState.lobeB[src],
+        litState.offX[src],
+        litState.offY[src],
+        litState.offZ[src],
+        litState.conc[src],
+      );
+    }
+
+    batch.finish(alive);
+    return {
+      litCount,
+      meanDepth: depthWeightSum > 1e-6 ? weightedDepthSum / depthWeightSum : 0,
+    };
+  }
+
   public dispose() {
+    this.litRuntime = null;
     this.texture.dispose();
     this.haze.dispose();
     this.smoke.dispose();

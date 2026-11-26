@@ -71,7 +71,8 @@ import type { NativeStage } from '../data/showFile';
 import { authoredWallSurface, isCustomMainWall, resolveStudioGeometry, resolveWallFrame } from '../data/studioGeometry';
 import { createAuthoredProp } from './authoredScenery';
 import { ledPlacement, monitorPositions, type LedSurface } from '../data/stageEquipment';
-import { AtmosphericParticles } from './ParticleSystem';
+import { AtmosphericParticles, type ParticleLightingUpdate } from './ParticleSystem';
+import type { LitPuffsStats } from './litPuffs';
 import { laserGeometry } from './laserGeometry';
 import { BakedIldaClip, type IldaRenderMode } from './ildaRenderer';
 import type { IldaClip } from '../data/ilda';
@@ -201,6 +202,8 @@ interface MovingFixtureInstance {
   lastWorldX: number;
   lastWorldY: number;
   lastWorldZ: number;
+  lastAimX: number;
+  lastAimY: number;
   lastAimZ: number;
   isFloor: boolean;
   index: number;
@@ -486,6 +489,19 @@ export class StageEngine {
   private whiteColor = new THREE.Color(0xffffff);
   private stageTintScratch = new THREE.Color();
   private hoistWorldPosScratch = new THREE.Vector3();
+  private cameraFwdScratch = new THREE.Vector3(0, -0.1, -0.995);
+  private particleLightingScratch: ParticleLightingUpdate = {
+    beams: [],
+    blackout: false,
+    master: 1,
+    roomGain: 1,
+    camPosX: 0,
+    camPosY: 4.5,
+    camPosZ: 26,
+    camFwdX: 0,
+    camFwdY: -0.1,
+    camFwdZ: -0.995,
+  };
   private beamPhaseOffset = 0;
   private washPhaseOffset = 0;
   private ledPhaseOffset = 0;
@@ -648,6 +664,7 @@ export class StageEngine {
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
       this.crowdLighting?.onContextRestored();
+      this.particles?.onContextRestored();
       if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
@@ -779,6 +796,9 @@ export class StageEngine {
     this.scene.add(this.rigGroup);
     this.particles = new AtmosphericParticles(this.renderTier);
     this.particles.setFallingCo2(this.renderSettings.fallingCo2);
+    if (this.renderSettings.litPuffs) {
+      this.particles.setLitPuffs(true);
+    }
     this.scene.add(this.particles.group);
 
     this.rebuildRig(initialRig);
@@ -898,14 +918,17 @@ export class StageEngine {
         this.syncCrowdLightingFromCommittedState();
       }
     }
+    if (prev.litPuffs !== next.litPuffs) {
+      if (next.litPuffs) {
+        this.refreshCommittedFixtureWorldTransforms();
+        this.particles.setLitPuffs(true, this.buildParticleLightingUpdate());
+      } else {
+        this.particles.setLitPuffs(false);
+      }
+    }
   }
 
-  /**
-   * Refresh crowd show-light uniforms from the most recent committed preview-light snapshot
-   * without advancing simulation time or re-entering stateful flash governors.
-   */
-  private syncCrowdLightingFromCommittedState() {
-    if (!this.crowdLighting?.isActive()) return;
+  private refreshCommittedFixtureWorldTransforms() {
     for (let i = 0; i < this.movingFixtures.length; i++) {
       const fx = this.movingFixtures[i];
       if (fx.lastPreviewIntensity <= 0.001) continue;
@@ -916,11 +939,40 @@ export class StageEngine {
       const ay = he[5] * sign;
       const az = he[6] * sign;
       const lenSq = ax * ax + ay * ay + az * az;
+      const invLen = lenSq > 1e-12 ? 1 / Math.sqrt(lenSq) : 0;
       fx.lastWorldX = he[12];
       fx.lastWorldY = he[13];
       fx.lastWorldZ = he[14];
-      fx.lastAimZ = lenSq > 1e-12 ? az / Math.sqrt(lenSq) : 0;
+      fx.lastAimX = invLen > 0 ? ax * invLen : 0;
+      fx.lastAimY = invLen > 0 ? ay * invLen : -1;
+      fx.lastAimZ = invLen > 0 ? az * invLen : 0;
     }
+  }
+
+  private buildParticleLightingUpdate(): ParticleLightingUpdate {
+    this.camera.updateMatrixWorld();
+    this.camera.getWorldDirection(this.cameraFwdScratch);
+    const pl = this.particleLightingScratch;
+    pl.beams = this.movingFixtures;
+    pl.blackout = this.lastCrowdFrameInputs.blackout;
+    pl.master = this.lastCrowdFrameInputs.master;
+    pl.roomGain = this.lastCrowdFrameInputs.roomGain;
+    pl.camPosX = this.camera.position.x;
+    pl.camPosY = this.camera.position.y;
+    pl.camPosZ = this.camera.position.z;
+    pl.camFwdX = this.cameraFwdScratch.x;
+    pl.camFwdY = this.cameraFwdScratch.y;
+    pl.camFwdZ = this.cameraFwdScratch.z;
+    return pl;
+  }
+
+  /**
+   * Refresh crowd show-light uniforms from the most recent committed preview-light snapshot
+   * without advancing simulation time or re-entering stateful flash governors.
+   */
+  private syncCrowdLightingFromCommittedState() {
+    if (!this.crowdLighting?.isActive()) return;
+    this.refreshCommittedFixtureWorldTransforms();
     this.crowdLighting.updateFromScene(this.movingFixtures, this.lastCrowdFrameInputs);
   }
 
@@ -1159,6 +1211,7 @@ export class StageEngine {
     };
     const deckSheen: DeckSheenStats = this.deckSheen.getStats();
     const crowd: CrowdLightingStats = this.crowdLighting.getStats();
+    const litPuffs: LitPuffsStats = this.particles.getLitPuffsStats();
 
     return {
       schemaVersion: 1 as const,
@@ -1184,6 +1237,7 @@ export class StageEngine {
       previewFlashLimiting: this.previewFlashOut.activeLimiting,
       settings: this.getRenderSettings(),
       particles,
+      litPuffs,
       prismPools,
       ledWalls,
       deckSheen,
@@ -1197,6 +1251,7 @@ export class StageEngine {
         renderTargetBytesEstimate,
         prismPoolExtraBufferBytes: prismPools.extraBufferBytes,
         deckSheenExtraTextureBytes: deckSheen.extraTextureBytes,
+        litPuffsExtraBufferBytes: litPuffs.extraBufferBytes,
       },
       gpuTimerStatus: this.gpuTimer?.getStatus() ?? (isWebGL2 ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') ? 'ok' : 'unsupported') : 'unsupported'),
       gpuTimerPending: this.gpuTimer?.pendingCount() ?? 0,
@@ -1289,7 +1344,7 @@ export class StageEngine {
   }
 
   /** Render the current scene state without advancing simulation time and capture the canvas PNG (probe only). */
-  public redrawAndCapture(options?: { hideBeams?: boolean; hidePools?: boolean }): string {
+  public redrawAndCapture(options?: { hideBeams?: boolean; hidePools?: boolean; hideParticles?: boolean }): string {
     if (this.standby) throw new Error('redrawAndCapture called while StageEngine is in standby');
     const savedVisibility = options?.hideBeams
       ? this.movingFixtures.map((fx) => {
@@ -1301,6 +1356,10 @@ export class StageEngine {
     const savedPoolsVisible = options?.hidePools && this.beamPools ? this.beamPools.group.visible : null;
     if (options?.hidePools && this.beamPools) {
       this.beamPools.group.visible = false;
+    }
+    const savedParticlesVisible = options?.hideParticles ? this.particles.group.visible : null;
+    if (options?.hideParticles) {
+      this.particles.group.visible = false;
     }
     try {
       this.renderer.info.reset();
@@ -1314,6 +1373,9 @@ export class StageEngine {
       }
       if (savedPoolsVisible !== null && this.beamPools) {
         this.beamPools.group.visible = savedPoolsVisible;
+      }
+      if (savedParticlesVisible !== null) {
+        this.particles.group.visible = savedParticlesVisible;
       }
     }
   }
@@ -1780,6 +1842,10 @@ export class StageEngine {
     this.cameraTargetLook.copy(this.controls.target);
     this.controls.update();
     this.camera.updateMatrixWorld(true);
+    if (this.particles.isLitPuffsEnabled()) {
+      this.refreshCommittedFixtureWorldTransforms();
+      this.particles.syncLitFromCommittedState(this.buildParticleLightingUpdate());
+    }
   }
 
   public setCameraPreset(preset: CameraPreset) {
@@ -2971,6 +3037,8 @@ export class StageEngine {
       lastWorldX: 0,
       lastWorldY: 8.5,
       lastWorldZ: 0,
+      lastAimX: 0,
+      lastAimY: isFloor ? 1 : -1,
       lastAimZ: 0,
       isFloor,
       index,
@@ -3320,6 +3388,7 @@ export class StageEngine {
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
       this.crowdLighting?.onContextRestored();
+      this.particles?.onContextRestored();
       if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
@@ -3971,10 +4040,13 @@ export class StageEngine {
         const ay = he[5] * sign;
         const az = he[6] * sign;
         const lenSq = ax * ax + ay * ay + az * az;
+        const invLen = lenSq > 1e-12 ? 1 / Math.sqrt(lenSq) : 0;
         fx.lastWorldX = he[12];
         fx.lastWorldY = he[13];
         fx.lastWorldZ = he[14];
-        fx.lastAimZ = lenSq > 1e-12 ? az / Math.sqrt(lenSq) : 0;
+        fx.lastAimX = invLen > 0 ? ax * invLen : 0;
+        fx.lastAimY = invLen > 0 ? ay * invLen : -1;
+        fx.lastAimZ = invLen > 0 ? az * invLen : 0;
       }
 
       // Glowing optical fixture lens
@@ -4482,7 +4554,28 @@ export class StageEngine {
     }
     if (prof) prof.curCrowdMs = performance.now() - crowdStart;
 
-    // 9. Smoke Machines, Haze, & CO2 Cryo Cannons
+    // 9. Camera Smooth Transitions & Arena Drone Orbit (updated before particle upload so depth sort matches this frame's view)
+    if (this.orbitAuto) {
+      // Small rooms orbit inside their walls and under the ceiling.
+      const room = this.room;
+      const radius = room ? Math.max(3, room.halfWidth - 1.2) : 29;
+      const angle = t * 0.16;
+      this.camera.position.x = Math.sin(angle) * radius;
+      this.camera.position.z = Math.cos(angle) * radius * 0.72 + 12;
+      this.camera.position.y = room
+        ? room.ceilingY * 0.6 + Math.sin(t * 0.28) * room.ceilingY * 0.15
+        : 7.5 + Math.sin(t * 0.28) * 3.4;
+      this.controls.target.lerp(this.cameraTargetLook, dt * 3);
+    } else if (this.cameraLerpActive) {
+      this.camera.position.lerp(this.cameraTargetPos, Math.min(1, dt * 4.5));
+      this.controls.target.lerp(this.cameraTargetLook, Math.min(1, dt * 4.5));
+      if (this.camera.position.distanceTo(this.cameraTargetPos) < 0.08) {
+        this.cameraLerpActive = false;
+      }
+    }
+    this.controls.update();
+
+    // 10. Smoke Machines, Haze, & CO2 Cryo Cannons
     // Emergency blackout suppresses CO2, smoke, and haze after all modulation and bumps (preserving programmed levels underneath).
     const effSmoke = blackoutActive ? 0 : (b.smoke ? 1.0 : s.atmo.smokeOutput);
     const effCo2 = blackoutActive ? false : (b.co2 || s.atmo.co2Active || (s.atmo.co2AutoOnDrop && audio.drop && s.audioReactive));
@@ -4497,7 +4590,8 @@ export class StageEngine {
     const particlesStart = prof ? performance.now() : 0;
     const stageTint = this.stageTintScratch.copy(previewPrimaryColor).lerp(previewAccentColor, 0.35);
     this.particles.group.visible = roomGain > 0 || effSmoke > 0 || effCo2;
-    this.particles.update(dt, t, effHaze, effSmoke, effCo2, stageTint, activeLightPower);
+    const pl = this.particles.isLitPuffsEnabled() ? this.buildParticleLightingUpdate() : undefined;
+    this.particles.update(dt, t, effHaze, effSmoke, effCo2, stageTint, activeLightPower, pl);
     if (prof) prof.curParticlesMs = performance.now() - particlesStart;
 
     // Update arena fog slightly with haze density for rich depth
@@ -4568,26 +4662,6 @@ export class StageEngine {
     ap.atmo.smoke = effSmoke;
     ap.atmo.co2 = effCo2;
 
-    // 10. Camera Smooth Transitions & Arena Drone Orbit
-    if (this.orbitAuto) {
-      // Small rooms orbit inside their walls and under the ceiling.
-      const room = this.room;
-      const radius = room ? Math.max(3, room.halfWidth - 1.2) : 29;
-      const angle = t * 0.16;
-      this.camera.position.x = Math.sin(angle) * radius;
-      this.camera.position.z = Math.cos(angle) * radius * 0.72 + 12;
-      this.camera.position.y = room
-        ? room.ceilingY * 0.6 + Math.sin(t * 0.28) * room.ceilingY * 0.15
-        : 7.5 + Math.sin(t * 0.28) * 3.4;
-      this.controls.target.lerp(this.cameraTargetLook, dt * 3);
-    } else if (this.cameraLerpActive) {
-      this.camera.position.lerp(this.cameraTargetPos, Math.min(1, dt * 4.5));
-      this.controls.target.lerp(this.cameraTargetLook, Math.min(1, dt * 4.5));
-      if (this.camera.position.distanceTo(this.cameraTargetPos) < 0.08) {
-        this.cameraLerpActive = false;
-      }
-    }
-    this.controls.update();
     this.refreshMeasureOverlayAndSnapshot(performance.now());
     return previewMaster > 0;
   }

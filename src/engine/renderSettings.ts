@@ -23,6 +23,8 @@ export interface RenderSettings {
   deckSheen: boolean;
   /** Flag-gated restrained directional & rim show-light response on instanced crowd (Sprint 19, default off). */
   crowdLighting: boolean;
+  /** Flag-gated locally beam-lit smoke & CO2 puffs with intra-batch depth sorting (Sprint 20, default off). */
+  litPuffs: boolean;
 }
 
 export const RENDER_SETTINGS_STORAGE_KEY = 'stageforge.render.v1';
@@ -36,6 +38,7 @@ export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   ledAngularResponse: false,
   deckSheen: false,
   crowdLighting: false,
+  litPuffs: false,
 });
 
 const VALID_BLOOM_MODES: ReadonlySet<string> = new Set<BloomMode>(['auto', 'full', 'half', 'off']);
@@ -70,7 +73,20 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   const crowdLighting = Object.hasOwn(obj, 'crowdLighting') && typeof obj.crowdLighting === 'boolean'
     ? obj.crowdLighting
     : DEFAULT_RENDER_SETTINGS.crowdLighting;
-  return { bloom, aa, fallingCo2, videoSrgbDecode, prismPools, ledAngularResponse, deckSheen, crowdLighting };
+  const litPuffs = Object.hasOwn(obj, 'litPuffs') && typeof obj.litPuffs === 'boolean'
+    ? obj.litPuffs
+    : DEFAULT_RENDER_SETTINGS.litPuffs;
+  return {
+    bloom,
+    aa,
+    fallingCo2,
+    videoSrgbDecode,
+    prismPools,
+    ledAngularResponse,
+    deckSheen,
+    crowdLighting,
+    litPuffs,
+  };
 }
 
 export function loadRenderSettings(): RenderSettings {

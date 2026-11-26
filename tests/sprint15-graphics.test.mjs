@@ -72,6 +72,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       ledAngularResponse: false,
       deckSheen: false,
       crowdLighting: false,
+      litPuffs: false,
     });
 
     const hostile = renderSettings.parseRenderSettings({
@@ -83,6 +84,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       ledAngularResponse: 1,
       deckSheen: 'on',
       crowdLighting: 1,
+      litPuffs: 'yes',
     });
     assert.deepEqual(hostile, def);
 
@@ -95,6 +97,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       ledAngularResponse: true,
       deckSheen: true,
       crowdLighting: true,
+      litPuffs: true,
     });
     assert.deepEqual(valid, {
       bloom: 'half',
@@ -105,6 +108,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       ledAngularResponse: true,
       deckSheen: true,
       crowdLighting: true,
+      litPuffs: true,
     });
 
     assert.equal(renderSettings.shouldRunBloom('auto', 0, 'high'), false);

@@ -113,7 +113,14 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
           aria-label="Display and safety settings"
           data-testid="display-settings-panel"
           className="audio-popover"
-          style={{ right: 0, left: 'auto', minWidth: 'min(320px, calc(100vw - 24px))', maxWidth: 'min(360px, calc(100vw - 24px))' }}
+          style={{
+            right: 0,
+            left: 'auto',
+            minWidth: 'min(320px, calc(100vw - 24px))',
+            maxWidth: 'min(360px, calc(100vw - 24px))',
+            maxHeight: 'calc(100dvh - 84px)',
+            overflowY: 'auto',
+          }}
         >
           <div className="flex items-center justify-between border-b border-white/10 pb-1.5 mb-2">
             <strong className="text-xs font-mono-tech text-zinc-100">Display &amp; safety</strong>
@@ -228,6 +235,19 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
               />
               <span>
                 Crowd show-light response <span className="text-zinc-400">(experimental)</span>
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2 min-h-[44px] cursor-pointer text-zinc-200">
+              <input
+                type="checkbox"
+                data-testid="render-lit-puffs-checkbox"
+                checked={settings.litPuffs}
+                onChange={(e) => onChangeSettings({ litPuffs: e.target.checked })}
+                className="h-4 w-4 accent-cyan-400"
+              />
+              <span>
+                Locally beam-lit smoke &amp; CO2 puffs <span className="text-zinc-400">(experimental)</span>
               </span>
             </label>
           </div>
