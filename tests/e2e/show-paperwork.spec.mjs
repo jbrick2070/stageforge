@@ -51,7 +51,7 @@ test('Paperwork tab supports 4-tab keyboard nav, 5 sub-sheets, CSV exports, and 
     { radio: 'Patch sheet', suffix: /\.patch-sheet\.csv$/, header: 'Universe,DMX Address,DMX Range,Absolute Address', notice: 'Exported patch sheet CSV.' },
     { radio: 'Instrument schedule', suffix: /\.instrument-schedule\.csv$/, header: 'Position,Mount #,Fixture #,Unit #', notice: 'Exported instrument schedule CSV.' },
     { radio: 'Channel hookup', suffix: /\.channel-hookup\.csv$/, header: 'Fixture #,Position,Unit #,Manufacturer', notice: 'Exported channel hookup CSV.' },
-    { radio: 'Cue sheet', suffix: /\.cue-sheet\.csv$/, header: 'Cue #,Name,Tag,Follow,Take Timecode', notice: 'Exported cue sheet CSV.' },
+    { radio: 'Cue sheet', suffix: /\.cue-sheet\.csv$/, header: 'Cue #,Name,Tag,Fade,Follow,Take Timecode', notice: 'Exported cue sheet CSV.' },
   ];
 
   for (const check of sheetChecks) {

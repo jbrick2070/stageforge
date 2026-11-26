@@ -1071,7 +1071,7 @@ test('Gear & production Inventory loads under stageforge:// CSP, prints via wind
     { radio: 'Patch sheet', suffix: '.patch-sheet.csv', title: 'Export patch sheet', header: 'Universe,DMX Address' },
     { radio: 'Instrument schedule', suffix: '.instrument-schedule.csv', title: 'Export instrument schedule', header: 'Position,Mount #,Fixture #' },
     { radio: 'Channel hookup', suffix: '.channel-hookup.csv', title: 'Export channel hookup', header: 'Fixture #,Position,Unit #' },
-    { radio: 'Cue sheet', suffix: '.cue-sheet.csv', title: 'Export cue sheet', header: 'Cue #,Name,Tag,Follow' },
+    { radio: 'Cue sheet', suffix: '.cue-sheet.csv', title: 'Export cue sheet', header: 'Cue #,Name,Tag,Fade,Follow' },
     { radio: 'Commissioning record', suffix: '.commissioning-record.csv', title: 'Export commissioning record', header: 'Row ID,Category,Item,Location' },
   ];
   for (const check of pwChecks) {

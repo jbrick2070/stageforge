@@ -11,7 +11,7 @@ const compiler = await createServer({
   appType: 'custom', optimizeDeps: { noDiscovery: true },
 });
 after(() => compiler.close());
-const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL, V6_SCHEMA_URL, V7_SCHEMA_URL, V8_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL, V6_SCHEMA_URL, V7_SCHEMA_URL, V8_SCHEMA_URL, V9_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
 const { RIG_TEMPLATES, INITIAL_SHOW_STATE, SHOW_CUES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { cueLook, differsFromCue } = await compiler.ssrLoadModule('/src/data/cueLook.ts');
 const { frameDelta } = await compiler.ssrLoadModule('/src/input/useShowTimeline.ts');
@@ -208,7 +208,7 @@ test('malformed nested rig, cue, media and timeline data produce a readable Erro
   assert.equal(parseShowFile('\uFEFF' + JSON.stringify(example)).version, 1);
 });
 
-test('frozen v1, v2 and v3 show fixtures load cleanly and published schema hashes stay pinned', async () => {
+test('legacy fixtures load cleanly and published v1-v9 schema hashes stay pinned', async () => {
   const v1 = parseShowFile(await readFile(new URL('./fixtures/legacy-v1.stageforge.show.json', import.meta.url), 'utf8'));
   const v2 = parseShowFile(await readFile(new URL('./fixtures/legacy-v2.stageforge.show.json', import.meta.url), 'utf8'));
   const v3 = parseShowFile(await readFile(new URL('./fixtures/native-authoring-v3.stageforge.show.json', import.meta.url), 'utf8'));
@@ -230,6 +230,7 @@ test('frozen v1, v2 and v3 show fixtures load cleanly and published schema hashe
     6: '6db46f168be983490fb5f226ad375df55881800304a872471583c3719e9ba2e2',
     7: '3477be940a11c56d4a7c121903cd63e966be2110f2db0d3b120693e24fe9d98e',
     8: 'c6181276d26ff987127873e86c5f1d800b855ede1ab9770ebaa9ddaf351fe59e',
+    9: 'be22bb11ec9bc656b5235b0fa0a0241126a7830e45ae41ffcff9c1f4f3a7e3a5',
   };
   for (const [ver, hash] of Object.entries(expectedHashes)) {
     const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));
@@ -696,4 +697,55 @@ test('show v8 audioMap is additive, round-trips in look/cues/timeline, clears cl
     mutate(draft);
     assert.throws(() => parse(draft), isReadableError, label);
   }
+});
+
+test('show v9 cue fades are additive, bounded, lossless, and leave prior writer selection unchanged when unused', () => {
+  const legacy = structuredClone(example);
+  assert.equal(write(legacy).version, 1, 'omitted fade retains the legacy writer');
+  legacy.cues[0].fadeSeconds = undefined;
+  assert.equal(write(legacy).version, 1, 'a cleared editor field retains the legacy writer');
+
+  legacy.cues[0].fadeSeconds = 0;
+  const explicitCut = write(legacy);
+  assert.equal(explicitCut.version, 9, 'an authored zero remains distinguishable from omission');
+  assert.equal(explicitCut.$schema, V9_SCHEMA_URL);
+  assert.equal(parse(explicitCut).cues[0].fadeSeconds, 0);
+
+  const timed = structuredClone(example);
+  timed.cues[1].fadeSeconds = 2.5;
+  timed.timeline.events[1].cueFade = {
+    durationMs: 2500,
+    from: { beamIntensity: 0.2, washIntensity: 0.4 },
+    to: { beamIntensity: 0.8, washIntensity: 1 },
+  };
+  const saved = write(timed);
+  assert.equal(saved.version, 9);
+  assert.deepEqual(parse(saved), saved, 'cue duration and recorded transition survive save/reopen');
+
+  const priorV8 = structuredClone(timed);
+  delete priorV8.cues[1].fadeSeconds;
+  delete priorV8.timeline.events[1].cueFade;
+  priorV8.look.audioMap = { mappings: [{
+    id: 'level', name: 'Level', enabled: true, source: 'energy',
+    target: { group: 'beam', param: 'dimmer' }, amount: 0.5,
+    attackMs: 10, releaseMs: 100, threshold: 0, curve: 'linear',
+  }] };
+  assert.equal(write(priorV8).version, 8, 'v8 remains the default when no v9 field is used');
+
+  for (const [label, mutate] of [
+    ['negative cue duration', s => { s.cues[1].fadeSeconds = -0.01; }],
+    ['long cue duration', s => { s.cues[1].fadeSeconds = 3600.01; }],
+    ['long recorded duration', s => { s.timeline.events[1].cueFade.durationMs = 3600001; }],
+    ['invalid recorded origin', s => { s.timeline.events[1].cueFade.from.beamIntensity = -0.01; }],
+    ['unknown recorded fade key', s => { s.timeline.events[1].cueFade.private = true; }],
+  ]) {
+    const invalid = structuredClone(saved);
+    mutate(invalid);
+    assert.throws(() => parse(invalid), isReadableError, label);
+  }
+  assert.throws(
+    () => parse({ ...saved, version: 8, $schema: V8_SCHEMA_URL }),
+    isReadableError,
+    'frozen v8 rejects v9 fields',
+  );
 });

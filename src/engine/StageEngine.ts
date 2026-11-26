@@ -636,6 +636,9 @@ export class StageEngine {
   private lastFrameTime = 0;
   private elapsed = 0;
   private currentState: ShowState;
+  // Cue fades are a render-only override. Authored/simulation/physical DMX stays on currentState.
+  private cuePreviewBeamIntensity: number | null = null;
+  private cuePreviewWashIntensity: number | null = null;
   private currentBump: BumpState = {
     blinder: false,
     strobe: false,
@@ -3943,6 +3946,23 @@ export class StageEngine {
     }
   }
 
+  public setCuePreviewLevels(beamIntensity: number, washIntensity: number) {
+    this.cuePreviewBeamIntensity = THREE.MathUtils.clamp(beamIntensity, 0, 1);
+    this.cuePreviewWashIntensity = THREE.MathUtils.clamp(washIntensity, 0, 1);
+  }
+
+  public clearCuePreviewLevels() {
+    this.cuePreviewBeamIntensity = null;
+    this.cuePreviewWashIntensity = null;
+  }
+
+  /** Read-only probe value; authored state and DMX buffers never consult this accessor. */
+  public getCuePreviewLevels() {
+    return this.cuePreviewBeamIntensity === null || this.cuePreviewWashIntensity === null
+      ? null
+      : { beamIntensity: this.cuePreviewBeamIntensity, washIntensity: this.cuePreviewWashIntensity };
+  }
+
   /**
    * A real WebGL context loss destroys PMREM contents even though Three.js retains the texture
    * wrapper. Dispose that invalid target before rebuilding the same construction plan into the
@@ -4237,8 +4257,8 @@ export class StageEngine {
     const rawEffBlinder = (b.blinder ? 1.0 : (mod.active && mod.blinder.mapped ? mod.blinder.dimmer : s.blinderLevel)) * master;
     const effLedBrightRaw = mod.active && mod.ledWall.brightnessMapped ? mod.ledWall.brightness : s.led.brightness;
     const rawLedBright = s.led.enabled ? effLedBrightRaw * master : 0;
-    const rawBeamIntBase = mod.active && mod.beam.dimmerMapped ? mod.beam.dimmer : s.beamIntensity;
-    const rawWashIntBase = mod.active && mod.wash.dimmerMapped ? mod.wash.dimmer : s.washIntensity;
+    const rawBeamIntBase = this.cuePreviewBeamIntensity ?? (mod.active && mod.beam.dimmerMapped ? mod.beam.dimmer : s.beamIntensity);
+    const rawWashIntBase = this.cuePreviewWashIntensity ?? (mod.active && mod.wash.dimmerMapped ? mod.wash.dimmer : s.washIntensity);
     const rawUnmappedLaserStrobe = mod.active && mod.laser.strobe.mapped ? 0 : s.laser.strobe;
     const beamHeadLook = headLook(s, 'beam');
     const washHeadLook = headLook(s, 'wash');

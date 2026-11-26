@@ -49,9 +49,11 @@ export function CueListEditor({ cues, capture, onApply, onClose }: {
     onClose();
   };
   const invalid = list.some(item => {
+    const fade = item.fadeSeconds;
     const follow = item.followSeconds;
     const offset = item.screen?.offsetSeconds ?? 0;
-    return !item.name.trim() || (follow !== undefined && !(follow > 0 && follow <= 3600))
+    return !item.name.trim() || (fade !== undefined && !(fade >= 0 && fade <= 3600))
+      || (follow !== undefined && !(follow > 0 && follow <= 3600))
       || !(offset >= 0 && offset <= Number.MAX_SAFE_INTEGER);
   });
   return <DeskDialog title="Edit cue list" onClose={onClose}>
@@ -63,6 +65,8 @@ export function CueListEditor({ cues, capture, onApply, onClose }: {
       </select></label>
       {cue && <>
         <label>Cue name<input required pattern=".*\S.*" maxLength={100} value={cue.name} onChange={e => edit({ name: e.target.value })}/></label>
+        <label>Fade time (seconds)<input type="number" min="0" max="3600" step="any" placeholder="0 (cut)" value={cue.fadeSeconds ?? ''}
+          onChange={e => edit({ fadeSeconds: e.target.value === '' ? undefined : Number(e.target.value) })}/></label>
         <label>Follow after (seconds)<input type="number" min="0" max="3600" step="any" placeholder="Manual GO" value={cue.followSeconds ?? ''}
           onChange={e => edit({ followSeconds: e.target.value === '' ? undefined : Number(e.target.value) })}/></label>
         {cue.screen?.kind === 'video' && <label>Video start (seconds)<input type="number" min="0" max={Number.MAX_SAFE_INTEGER}

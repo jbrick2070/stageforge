@@ -329,6 +329,7 @@ test('Cue Sheet timecode handles SMPTE offsets, 29.97 drop-frame, missing events
       name: 'Walk-In',
       tag: 'HOUSE',
       accent: '#f59e0b',
+      fadeSeconds: 2.5,
       followSeconds: 12,
       state: { ...structuredClone(INITIAL_SHOW_STATE), masterDimmer: 0.5 },
     },
@@ -369,6 +370,7 @@ test('Cue Sheet timecode handles SMPTE offsets, 29.97 drop-frame, missing events
   assert.equal(pw.cues.length, 3);
 
   assert.equal(pw.cues[0].cueNumber, 1);
+  assert.equal(pw.cues[0].fadeLabel, '2.5s');
   assert.equal(pw.cues[0].followLabel, '12s');
   assert.equal(pw.cues[0].takeAtMs, 1_000);
   assert.equal(pw.cues[0].takeTimecode, '01:00:01;00', 'offset 01:00:00;00 plus 1 s is frame 107,922');
@@ -377,6 +379,7 @@ test('Cue Sheet timecode handles SMPTE offsets, 29.97 drop-frame, missing events
   assert.equal(pw.cues[1].takeTimecode, '01:00:59;28', '29.97 DF semicolon timecode, 60 s after the offset');
 
   assert.equal(pw.cues[2].followLabel, 'Manual GO');
+  assert.equal(pw.cues[2].fadeLabel, 'Cut');
   assert.equal(pw.cues[2].takeTimecode, null);
   assert.equal(pw.cues[2].dimmerLabel, 'BLACKOUT');
 });
@@ -421,6 +424,7 @@ test('CSV exports for all four sheets are BOM RFC 4180, neutralize formula injec
   assert.ok(pCsv.includes(`"'=HYPERLINK(`), 'patchSheetCsv quotes and prefixes formula cell');
   assert.ok(iCsv.includes('DXF Block'), 'instrumentScheduleCsv includes DXF Block column');
   assert.ok(hCsv.includes('Fixture #,Position,Unit #,Manufacturer'), 'channelHookupCsv headers match');
+  assert.ok(cCsv.includes('Cue #,Name,Tag,Fade,Follow'), 'cueSheetCsv exposes fade separately from follow');
   assert.ok(cCsv.includes(`"'+SUM(A1:A9)"`) && cCsv.includes(`"'@CMD"`), 'cueSheetCsv neutralizes cue name and tag');
 });
 

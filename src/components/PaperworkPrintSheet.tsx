@@ -397,6 +397,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
                 <th scope="col">Cue #</th>
                 <th scope="col">Name</th>
                 <th scope="col">Tag</th>
+                <th scope="col">Fade</th>
                 <th scope="col">Follow</th>
                 <th scope="col">Take TC</th>
                 <th scope="col">Dimmer</th>
@@ -410,7 +411,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
             <tbody>
               {paperwork.cues.length === 0 ? (
                 <tr>
-                  <td colSpan={11}>No cues in this show.</td>
+                  <td colSpan={12}>No cues in this show.</td>
                 </tr>
               ) : (
                 paperwork.cues.map((c) => (
@@ -418,6 +419,7 @@ export const PaperworkPrintSheet: React.FC<PaperworkPrintSheetProps> = ({
                     <td>{c.cueNumber}</td>
                     <td className="print-wrap">{c.name}</td>
                     <td className="print-wrap">{c.tag}</td>
+                    <td>{c.fadeLabel}</td>
                     <td>{c.followLabel}</td>
                     <td>{c.takeTimecode ?? '—'}</td>
                     <td>{c.dimmerLabel}</td>

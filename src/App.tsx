@@ -34,6 +34,15 @@ import { useShowControl } from './showControl/useShowControl';
 import { useShowGamepad } from './input/useShowGamepad';
 import { BumpLedger, sameBumpState, type BumpSourceClass } from './input/bumpLedger';
 import { applyTimelineLookPatch, cueLook, differsFromCue, isFullLookSnapshot } from './data/cueLook';
+import type { ResolvedTakeFrame } from './data/showClock';
+import {
+  cueFadeLevels,
+  evaluateCueFade,
+  makeCueFadeDescriptor,
+  type CueFadeDescriptor,
+  type CueFadeLevels,
+  type ResolvedCuePreview,
+} from './data/cueFade';
 import { applyDemoLighting, DEMO_BLACKOUT_STEPS } from './data/demoLighting';
 import { getDemoPosition } from './data/demoShow';
 import {
@@ -497,9 +506,91 @@ export const App: React.FC = () => {
   );
   const rigRef = useRef(rig);
   rigRef.current = rig;
-  const [showState, setShowState] = useState<ShowState>(() => structuredClone(INITIAL_SHOW_STATE));
+  const cancelCuePreviewRef = useRef<(record?: boolean) => void>(() => {});
+  const [showState, setShowStateRaw] = useState<ShowState>(() => structuredClone(INITIAL_SHOW_STATE));
   const showStateRef = useRef(showState);
   showStateRef.current = showState;
+  // Every ordinary authored mutation terminates an active cue preview transition first.
+  // Cue fire and deterministic take replay use setShowStateRaw directly, then install their one evaluator.
+  const setShowState = useCallback<React.Dispatch<React.SetStateAction<ShowState>>>((action) => {
+    cancelCuePreviewRef.current(true);
+    setShowStateRaw(action);
+  }, []);
+  type CuePreviewRuntime =
+    | { kind: 'running'; descriptor: CueFadeDescriptor; startedAt: number }
+    | { kind: 'held'; levels: CueFadeLevels };
+  const cuePreviewRef = useRef<CuePreviewRuntime | null>(null);
+  const cuePreviewRafRef = useRef(0);
+  const publishCueFadeInterruptionRef = useRef<(descriptor: CueFadeDescriptor) => void>(() => {});
+  const publishCueTransitionRef = useRef<(
+    next: { look: ShowState; cueId: string; screen?: ScreenRef },
+    descriptor?: CueFadeDescriptor,
+  ) => void>(() => {});
+  const currentCuePreviewLevels = useCallback((now = performance.now()): CueFadeLevels => {
+    const active = cuePreviewRef.current;
+    if (active?.kind === 'running') return evaluateCueFade(active.descriptor, now - active.startedAt);
+    if (active?.kind === 'held') return active.levels;
+    return cueFadeLevels(showStateRef.current);
+  }, []);
+  const clearCuePreview = useCallback(() => {
+    cancelAnimationFrame(cuePreviewRafRef.current);
+    cuePreviewRafRef.current = 0;
+    cuePreviewRef.current = null;
+    engineRef.current?.clearCuePreviewLevels();
+  }, []);
+  const installCuePreview = useCallback((descriptor: CueFadeDescriptor, elapsedMs: number, running: boolean) => {
+    clearCuePreview();
+    const elapsed = Math.max(0, Math.min(descriptor.durationMs, elapsedMs));
+    const levels = evaluateCueFade(descriptor, elapsed);
+    if (elapsed >= descriptor.durationMs) return;
+    engineRef.current?.setCuePreviewLevels(levels.beamIntensity, levels.washIntensity);
+    if (!running) {
+      cuePreviewRef.current = { kind: 'held', levels };
+      return;
+    }
+    cuePreviewRef.current = { kind: 'running', descriptor, startedAt: performance.now() - elapsed };
+    const step = (now: number) => {
+      const active = cuePreviewRef.current;
+      if (!active || active.kind !== 'running' || active.descriptor !== descriptor) return;
+      const next = evaluateCueFade(descriptor, now - active.startedAt);
+      engineRef.current?.setCuePreviewLevels(next.beamIntensity, next.washIntensity);
+      if (now - active.startedAt >= descriptor.durationMs) {
+        clearCuePreview();
+      } else {
+        cuePreviewRafRef.current = requestAnimationFrame(step);
+      }
+    };
+    cuePreviewRafRef.current = requestAnimationFrame(step);
+  }, [clearCuePreview]);
+  const installResolvedCuePreview = useCallback((resolved?: ResolvedCuePreview) => {
+    if (!resolved) {
+      clearCuePreview();
+      return;
+    }
+    if (!resolved.running) {
+      clearCuePreview();
+      cuePreviewRef.current = { kind: 'held', levels: resolved.levels };
+      engineRef.current?.setCuePreviewLevels(resolved.levels.beamIntensity, resolved.levels.washIntensity);
+      return;
+    }
+    installCuePreview(
+      makeCueFadeDescriptor(resolved.levels, resolved.target, resolved.remainingMs),
+      0,
+      true,
+    );
+  }, [clearCuePreview, installCuePreview]);
+  const cancelCuePreview = useCallback((record = true) => {
+    const active = cuePreviewRef.current;
+    if (!active) return;
+    const from = currentCuePreviewLevels();
+    const to = cueFadeLevels(showStateRef.current);
+    clearCuePreview();
+    if (record && (Math.abs(from.beamIntensity - to.beamIntensity) > 1e-6 || Math.abs(from.washIntensity - to.washIntensity) > 1e-6)) {
+      publishCueFadeInterruptionRef.current(makeCueFadeDescriptor(from, to, 0));
+    }
+  }, [clearCuePreview, currentCuePreviewLevels]);
+  cancelCuePreviewRef.current = cancelCuePreview;
+  useEffect(() => () => clearCuePreview(), [clearCuePreview]);
   const bumpLedgerRef = useRef(new BumpLedger());
   const bumpExpiryTimerRef = useRef<number | null>(null);
   const [liveBump, setLiveBump] = useState<BumpState>(EMPTY_BUMP);
@@ -1298,8 +1389,9 @@ export const App: React.FC = () => {
   const timeline = useShowTimeline(
     () => ({ look: showState, cueId: activeCueId, cueModified: !!activeCueId && cueModified,
       camera: activeCamera, volume, bump: liveBump, music: readMusic(), screen: readScreen() }),
-    (event: TimelineEvent, lateMs) => {
+    (event: TimelineEvent | ResolvedTakeFrame, lateMs) => {
       const ae = audioEngineRef.current, engine = engineRef.current;
+      const resolvedPreview = 'resolvedCuePreview' in event ? event.resolvedCuePreview : undefined;
       if (event.screen) {
         replayScreen.current = event.screen;
         replayScreenClock.current = performance.now() - lateMs;
@@ -1310,8 +1402,12 @@ export const App: React.FC = () => {
         const merged = event.look ? applyTimelineLookPatch(replayLook.current, event.look) : replayLook.current;
         const next = wallLook(merged, replayScreen.current);
         replayLook.current = next; autoDirRef.current = next.autoDirector;
-        setShowState(next); engine?.setShowState(next); ae?.setBpm(next.bpm);
+        showStateRef.current = next;
+        setShowStateRaw(next); engine?.setShowState(next); ae?.setBpm(next.bpm);
       }
+      if (resolvedPreview !== undefined) installResolvedCuePreview(resolvedPreview);
+      else if (event.cueFade) installCuePreview(event.cueFade, lateMs, true);
+      else if (event.look) clearCuePreview();
       if (event.screen) engine?.restoreScreenTransport(event.screen.playing, replayScreenOffset());
       if (event.music) {
         expectedMusic.current = event.music;
@@ -1337,6 +1433,7 @@ export const App: React.FC = () => {
       if (event.volume !== undefined) { setVolume(event.volume); ae?.setVolume(event.volume); }
     },
     () => {
+      cancelCuePreview(false);
       wallClock.set(wallClock.position(), false);
       replaying.current = false; directorArmed.current = false;
       const music = readMusic();
@@ -1353,6 +1450,8 @@ export const App: React.FC = () => {
     },
     () => nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0,
   );
+  publishCueFadeInterruptionRef.current = timeline.publishCueFadeInterruption;
+  publishCueTransitionRef.current = timeline.publishCueTransition;
 
   const flushDesign = useCallback(() => {
     window.clearTimeout(saveTimer.current);
@@ -1417,16 +1516,28 @@ export const App: React.FC = () => {
     }
     setFollow(armingFollow
       ? performance.now() + cue.followSeconds! * 1000 : null);
-    if (cue.screen) setScreen({ ...cue.screen });
-    if (cue.state.bpm !== undefined) audioEngineRef.current?.setBpm(cue.state.bpm);
+    const origin = currentCuePreviewLevels();
+    const hadPreview = cuePreviewRef.current !== null;
+    const nextScreen = cue.screen ? { ...cue.screen } : undefined;
+    const target = cue.screen
+      ? wallLook(cueLook(showStateRef.current, cue, automatic), cue.screen)
+      : cueLook(showStateRef.current, cue, automatic);
+    const durationMs = Math.round(Math.max(0, Math.min(3600, cue.fadeSeconds ?? 0)) * 1000);
+    const descriptor = durationMs > 0 || hadPreview
+      ? makeCueFadeDescriptor(origin, target, durationMs)
+      : undefined;
+    publishCueTransitionRef.current({ look: target, cueId: cue.id, ...(nextScreen ? { screen: nextScreen } : {}) }, descriptor);
+    if (nextScreen) setScreen(nextScreen);
+    if (target.bpm !== showStateRef.current.bpm) audioEngineRef.current?.setBpm(target.bpm);
     activeCueIdRef.current = cue.id;
     setActiveCueId(cue.id);
     setCueModified(false);
-    setShowState((prev) => {
-      const next = cueLook(prev, cue, automatic);
-      return cue.screen ? wallLook(next, cue.screen) : next;
-    });
-  }, [previewRig]);
+    showStateRef.current = target;
+    setShowStateRaw(target);
+    engineRef.current?.setShowState(target);
+    if (descriptor && descriptor.durationMs > 0) installCuePreview(descriptor, 0, true);
+    else clearCuePreview();
+  }, [clearCuePreview, currentCuePreviewLevels, installCuePreview, previewRig]);
   const currentIndex = cues.findIndex(c => c.id === activeCueId);
   const followingCue = cues[currentIndex + 1];
   const nextCue = followingCue ?? cues[0];
@@ -1626,6 +1737,7 @@ export const App: React.FC = () => {
     getTakePlayheadMs: () => timeline.playhead(),
     isTakePlaying: () => timeline.mode === 'playing',
     onModeReset: (nextMode) => {
+      cancelCuePreview();
       clockModeRef.current = nextMode;
       chaseHeldMediaRef.current = { audio: false, screen: false };
       setFollow(null);
@@ -1907,6 +2019,7 @@ export const App: React.FC = () => {
       fixtureParams: (group?: AudioTargetGroup) => engine.getFixtureParams(group),
       dmxSnapshot: () => ({ u1: Array.from(engine.dmxUniverse1), u2: Array.from(engine.dmxUniverse2) }),
       physicalDmxSnapshot: () => ({ u1: Array.from(engine.physicalDmxU1), u2: Array.from(engine.physicalDmxU2) }),
+      cuePreview: () => engine.getCuePreviewLevels(),
       audioPlaybackTime: () => (audioEngineRef.current?.getPlaybackMs() ?? 0) / 1000,
       demoPosition: () => live.audio.get().demo ?? null,
       demoTrackAvailable: () => availableDemoTrackRef.current?.map ?? null,
@@ -3316,6 +3429,7 @@ export const App: React.FC = () => {
     if (missing.length) showToast(viewerModeRef.current
       ? `Playing with missing media (${missing.join(', ')}) · use Relink.`
       : `Playing with missing media. Relink ${missing.join(', ')} in Files.`);
+    cancelCuePreview(false);
     cancelDemoTrackLoad();
     const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
     setFollow(null); replaying.current = true; replayLook.current = showState; replayScreen.current = NO_SCREEN; replayMusicClock.current = 0;
@@ -3327,6 +3441,7 @@ export const App: React.FC = () => {
       showToast(`Replay is disabled in ${clockModeRef.current} mode.`);
       return;
     }
+    cancelCuePreview(false);
     cancelDemoTrackLoad();
     if (missing.length) showToast(viewerModeRef.current
       ? `Playing with missing media (${missing.join(', ')}) · use Relink.`
@@ -3337,6 +3452,7 @@ export const App: React.FC = () => {
     wallClock.set(timeline.playhead(), true, endMs);
   };
   const pauseTake = () => {
+    cancelCuePreview(false);
     timeline.pause();
     replaying.current = false;
     const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
@@ -3346,12 +3462,14 @@ export const App: React.FC = () => {
     const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
     const clamped = Math.max(0, Math.min(endMs, Math.round(ms)));
     const keepPlaying = timeline.mode === 'playing' && clamped < endMs;
+    cancelCuePreview(false);
     setFollow(null); replaying.current = keepPlaying;
     engineRef.current?.releaseDirector(false); previewRig();
     timeline.seek(clamped);
     wallClock.set(clamped, keepPlaying, endMs);
   };
   const stopTake = () => {
+    cancelCuePreview(false);
     timeline.stop();
     replaying.current = false;
     wallClock.set(timeline.playhead(), false);
@@ -4338,6 +4456,7 @@ export const App: React.FC = () => {
             if (next.playing) setShowState(s => ({ ...s, led: { ...s.led, enabled: true, visualMode: 'custom' } }));
           }}
           onEditCues={() => setCueEditor(true)}
+          onBack={() => { if (previousCue) triggerCue(previousCue); }}
           onGo={() => { if (nextCue) triggerCue(nextCue); }}
           onResetCue={() => { if (cues[0]) triggerCue(cues[0]); }}
           onHold={() => setFollow('held')}
@@ -4381,6 +4500,7 @@ export const App: React.FC = () => {
             record: () => {
               if (!capabilitiesRef.current.edit) return;
               if (!timeline.timeline?.events.length || window.confirm('Replace the recorded take in this session?')) {
+                cancelCuePreview(false);
                 const stampMeta = takeMetaExplicitRef.current || showControl.clockMode === 'chase';
                 timeline.record(stampMeta ? {
                   frameRate: showControl.settings.frameRate,

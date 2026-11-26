@@ -26,7 +26,7 @@ StageForge separates its **simulation / DMX monitor buffers** (`dmxUniverse1/2`)
   - ETC ColorSource PAR (`1-Ch`, `RGB (3-Ch)`, `5-Ch (Default)` — hardware strobe held at `0`)
   - CHAUVET Professional STRIKE 4 (`1-Ch`, `4-Ch`)
   - Martin JEM ZR45 (`1-Ch`: `0` idle, `13–240` variable, `241–255` max)
-- **Unimplemented catalogue & generic non-catalogue fixtures** (including moving heads, battens, strobes, external-switchpack fixtures, hazers, unverified catalogue laser modes, and generic non-catalogue fixtures): listed as **`not driven (simulation only)`** in DMX Output and transmit **neutral `0` across their entire footprint** on `physicalDmxU1/U2` so StageForge's generic simulator channel layout never reaches physical hardware (while `dmxUniverse1/2` preserves the simulated layout for 3D preview, the `SIM` monitor, and v1–v8 show compatibility).
+- **Unimplemented catalogue & generic non-catalogue fixtures** (including moving heads, battens, strobes, external-switchpack fixtures, hazers, unverified catalogue laser modes, and generic non-catalogue fixtures): listed as **`not driven (simulation only)`** in DMX Output and transmit **neutral `0` across their entire footprint** on `physicalDmxU1/U2` so StageForge's generic simulator channel layout never reaches physical hardware (while `dmxUniverse1/2` preserves the simulated layout for 3D preview, the `SIM` monitor, and v1–v9 show compatibility).
 
 ## Safety Model
 

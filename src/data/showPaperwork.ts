@@ -117,6 +117,8 @@ export interface CueSheetRow {
   name: string;
   tag: string;
   accent: string;
+  fadeSeconds: number;
+  fadeLabel: string;
   followSeconds: number | null;
   followLabel: string;
   takeAtMs: number | null;
@@ -341,6 +343,7 @@ function buildCueSheet(cues: readonly ShowCue[], timeline?: ShowTimeline): {
       atMs !== null && frameRate !== null ? formatSmpte(msToSmpte(atMs + offsetMs, frameRate)) : null;
     const followSeconds = cue.followSeconds !== undefined && Number.isFinite(cue.followSeconds) ? cue.followSeconds : null;
     const followLabel = followSeconds !== null ? `${followSeconds}s` : 'Manual GO';
+    const fadeSeconds = cue.fadeSeconds !== undefined && Number.isFinite(cue.fadeSeconds) ? cue.fadeSeconds : 0;
     const dimmerLabel = cue.state.blackout
       ? 'BLACKOUT'
       : cue.state.masterDimmer !== undefined
@@ -354,6 +357,8 @@ function buildCueSheet(cues: readonly ShowCue[], timeline?: ShowTimeline): {
       name: cue.name,
       tag: cue.tag,
       accent: cue.accent,
+      fadeSeconds,
+      fadeLabel: fadeSeconds > 0 ? `${fadeSeconds}s` : 'Cut',
       followSeconds,
       followLabel,
       takeAtMs: atMs,
@@ -801,6 +806,7 @@ export function cueSheetCsv(paperwork: ShowPaperwork): string {
       'Cue #',
       'Name',
       'Tag',
+      'Fade',
       'Follow',
       'Take Timecode',
       'Dimmer',
@@ -817,6 +823,7 @@ export function cueSheetCsv(paperwork: ShowPaperwork): string {
       c.cueNumber,
       c.name,
       c.tag,
+      c.fadeLabel,
       c.followLabel,
       c.takeTimecode ?? '',
       c.dimmerLabel === '—' ? '' : c.dimmerLabel,

@@ -2,6 +2,7 @@ import type { NativeStage, ShowTimeline, TimelineEvent } from './showFile';
 import { applyTimelineLookPatch } from './cueLook';
 import { DEMO_TOTAL_STEPS } from './demoShow';
 import type { BumpState, CameraPreset, MusicRef, ScreenRef, ShowState } from '../types/show';
+import { resolveCuePreview, type CueFadeDescriptor, type ResolvedCuePreview } from './cueFade';
 
 export interface TransportFrame {
   look: ShowState;
@@ -13,6 +14,11 @@ export interface TransportFrame {
   screen: ScreenRef;
 }
 
+export interface ResolvedTakeFrame extends TimelineEvent {
+  /** Runtime-only preview state. Never serialized into a show file. */
+  resolvedCuePreview?: ResolvedCuePreview;
+}
+
 function advanceMusic(music: MusicRef, seconds: number, bpm: number): MusicRef {
   if (!music.playing || seconds <= 0) return music;
   if (music.kind === 'demo') return { ...music, demoStep: Math.min(DEMO_TOTAL_STEPS, (music.demoStep ?? 0) + seconds * bpm / 15) };
@@ -22,12 +28,13 @@ function advanceMusic(music: MusicRef, seconds: number, bpm: number): MusicRef {
 
 // Reconstruct from the saved starting frame. Repeated cue IDs and simultaneous
 // events retain their recorded order, regardless of the previous playhead position.
-export function resolveTakeFrame(take: ShowTimeline, requestedMs: number, base: TransportFrame, running: boolean): TimelineEvent {
+export function resolveTakeFrame(take: ShowTimeline, requestedMs: number, base: TransportFrame, running: boolean): ResolvedTakeFrame {
   const safeRequested = Number.isFinite(requestedMs) ? requestedMs : requestedMs === Infinity ? take.durationMs : 0;
   const atMs = Math.round(Math.max(0, Math.min(safeRequested, take.durationMs)));
   const frame = { ...base, look: { ...base.look } };
   let musicAt = 0;
   let screenAt = 0;
+  let activeCueFade: { descriptor: CueFadeDescriptor; atMs: number } | undefined;
   for (const event of take.events) {
     if (event.atMs > atMs) break;
     if (event.music || event.look?.bpm !== undefined) {
@@ -35,7 +42,15 @@ export function resolveTakeFrame(take: ShowTimeline, requestedMs: number, base: 
       musicAt = event.atMs;
     }
     if (event.screen) { frame.screen = event.screen; screenAt = event.atMs; }
-    if (event.look) frame.look = applyTimelineLookPatch(frame.look, event.look);
+    if (event.look) {
+      frame.look = applyTimelineLookPatch(frame.look, event.look);
+      if (!event.cueFade) activeCueFade = undefined;
+    }
+    if (event.cueFade) {
+      activeCueFade = event.cueFade.durationMs > 0
+        ? { descriptor: event.cueFade, atMs: event.atMs }
+        : undefined;
+    }
     if (event.cueId !== undefined) frame.cueId = event.cueId;
     if (event.camera !== undefined) frame.camera = event.camera;
     if (event.bump !== undefined) frame.bump = event.bump;
@@ -45,7 +60,16 @@ export function resolveTakeFrame(take: ShowTimeline, requestedMs: number, base: 
   const screen = { ...frame.screen };
   if (screen.kind === 'video' && screen.playing) screen.offsetSeconds = (screen.offsetSeconds ?? 0) + (atMs - screenAt) / 1000;
   screen.playing = running && screen.playing;
-  return { ...frame, atMs, music: { ...music, playing: running && music.playing }, screen };
+  const resolvedCuePreview = activeCueFade
+    ? resolveCuePreview(activeCueFade.descriptor, atMs - activeCueFade.atMs, running)
+    : undefined;
+  return {
+    ...frame,
+    atMs,
+    music: { ...music, playing: running && music.playing },
+    screen,
+    ...(resolvedCuePreview ? { resolvedCuePreview } : {}),
+  };
 }
 
 export function secondaryScreensAt(stage: NativeStage, timeMs: number, running: boolean,

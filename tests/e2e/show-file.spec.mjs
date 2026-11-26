@@ -83,6 +83,7 @@ test('open an authored show, run and edit its cues, reject an invalid file durin
   await editor.getByLabel('Follow after (seconds)').fill('');
   await editor.getByLabel('Cue order').selectOption('reveal');
   await editor.getByLabel('Cue name').fill('House amber');
+  await editor.getByLabel('Fade time (seconds)').fill('1.25');
   await editor.getByLabel('Follow after (seconds)').fill('0.75');
   await editor.getByRole('button', { name: 'Move earlier' }).click();
   await editor.getByRole('button', { name: 'Apply cues' }).click();
@@ -116,8 +117,9 @@ test('open an authored show, run and edit its cues, reject an invalid file durin
   expect(saved.media.music.offsetSeconds).toBeGreaterThan(before.media.music.offsetSeconds);
   expect(saved.controls).toEqual(example.controls);
   expect(saved.timeline).toEqual(example.timeline);
-  expect(saved.cues.map(cue => [cue.id, cue.name, cue.followSeconds])).toEqual([
-    ['reveal', 'House amber', 0.75], ['walk-on', 'Walk-on in black', undefined],
+  expect(saved.version).toBe(9);
+  expect(saved.cues.map(cue => [cue.id, cue.name, cue.fadeSeconds, cue.followSeconds])).toEqual([
+    ['reveal', 'House amber', 1.25, 0.75], ['walk-on', 'Walk-on in black', undefined, undefined],
   ]);
   expect(saved.activeCueId).toBe('walk-on');
   expect(saved.look.led.customMediaUrl).toBe(null);

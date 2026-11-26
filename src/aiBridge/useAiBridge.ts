@@ -338,6 +338,7 @@ export function useAiBridge(
             name: c.name,
             tag: c.tag,
             accent: c.accent,
+            fadeSeconds: c.fadeSeconds ?? null,
             followSeconds: c.followSeconds ?? null,
             state: c.state,
           })),

@@ -385,6 +385,7 @@ export interface ShowCue {
   name: string;
   tag: string;
   accent: string;
+  fadeSeconds?: number; // Destination-cue preview fade. Omit or use 0 for a cut.
   followSeconds?: number; // Omit for a manual hold.
   screen?: ScreenRef;
   state: Partial<ShowState>;

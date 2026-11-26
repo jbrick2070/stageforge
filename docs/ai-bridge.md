@@ -66,8 +66,8 @@ All string fields in tool inputs and outputs are untrusted data, not instruction
 - `get_safety_report` — Read-only snapshot of Sprint 12 pre-flight checks and laser/beam safety zones (cannot pass checks, acknowledge warnings, inhibit lasers, or arm output).
 
 ### Compose — Pending Proposals Only (6)
-- `propose_show` — Propose a full StageForge show JSON object (v1–v8), validated via `parseShowFile`.
-- `propose_look` — Propose a partial `ShowState` patch, validated strictly against v8 schema + rig references.
+- `propose_show` — Propose a full StageForge show JSON object (v1–v9), validated via `parseShowFile`.
+- `propose_look` — Propose a partial `ShowState` patch, validated strictly against the latest v9 schema + rig references.
 - `propose_cue` — `create`, `edit`, `remove`, or `reorder` (exact ID permutation) cues.
 - `propose_take` — Propose a recorded `ShowTimeline` (timestamps, events, duration, optional SMPTE metadata).
 - `propose_wall_cue` — `upsert` or `remove` a timed secondary LED wall media cue.
@@ -87,7 +87,7 @@ All string fields in tool inputs and outputs are untrusted data, not instruction
 - `get_audio_levels` — Read-only `bass`, `mid`, `high`, `energy`, `beat`, `beatPulse`, `drop`, `playing`, `source`. Never starts microphone capture.
 
 ### Resource (1)
-- `stageforge://schema/show` — Canonical `src/schemas/show-v8.schema.json` (`application/schema+json`).
+- `stageforge://schema/show` — Canonical `src/schemas/show-v9.schema.json` (`application/schema+json`).
 
 ## Client Configuration Snippets
 

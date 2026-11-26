@@ -475,35 +475,32 @@ export const PitchViewer: React.FC<PitchViewerProps> = ({
             )}
 
             {cues.length > 0 ? (
-              <div className="cue-bank" role="group" aria-label="Show cues">
+              <ol className="cue-list" aria-label="Numbered show cues">
                 {cues.map((cue, idx) => {
                   const isActive = activeCueId === cue.id;
                   return (
+                    <li key={cue.id}>
                     <button
-                      key={cue.id}
                       type="button"
                       disabled={take.mode === 'playing'}
                       onClick={() => onTriggerCue(cue)}
-                      className="cue-pad"
+                      className="cue-list-row"
                       aria-pressed={isActive}
-                      aria-label={`Cue ${idx + 1}, ${cue.name}`}
+                      aria-label={`Cue ${idx + 1}, ${cue.name}, fade ${cue.fadeSeconds ?? 0} seconds, ${cue.followSeconds ? `follow ${cue.followSeconds} seconds` : 'manual follow'}`}
                       style={{
                         '--cue-a': cue.state.primaryColor || cue.accent,
                         '--cue-b': cue.state.accentColor || cue.accent,
                       } as React.CSSProperties}
                     >
-                      <span className="cue-meta">
-                        <span>{String(idx + 1).padStart(2, '0')}</span>
-                        {cue.followSeconds && (
-                          <span aria-label={`Follow after ${cue.followSeconds} seconds`}>↻ {cue.followSeconds}s</span>
-                        )}
-                        {isActive ? <Check aria-hidden="true" /> : <span>{cue.tag}</span>}
-                      </span>
+                      <span className="cue-number">{idx + 1}</span>
                       <strong>{cue.name}</strong>
+                      <span className="cue-timing"><span>Fade {cue.fadeSeconds ?? 0}s</span><span aria-label={cue.followSeconds ? `Follow after ${cue.followSeconds} seconds` : 'Manual GO'}>{cue.followSeconds ? `Follow ${cue.followSeconds}s` : 'Manual'}</span></span>
+                      <span className="cue-tag">{isActive ? <Check aria-hidden="true" /> : cue.tag}</span>
                     </button>
+                    </li>
                   );
                 })}
-              </div>
+              </ol>
             ) : (
               <p className="text-xs text-zinc-400 font-mono-tech">
                 No cues in this file. Open a StageForge show or bundle to run cues and playback.

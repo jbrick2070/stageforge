@@ -164,6 +164,7 @@ async function main() {
     copyFile(path.join(source, 'ai-bridge-service.cjs'), path.join(app, 'ai-bridge-service.cjs')),
     copyFile(path.join(source, 'ai-bridge-ipc.cjs'), path.join(app, 'ai-bridge-ipc.cjs')),
     copyFile(path.join(root, 'src', 'schemas', 'show-v8.schema.json'), path.join(app, 'show-v8.schema.json')),
+    copyFile(path.join(root, 'src', 'schemas', 'show-v9.schema.json'), path.join(app, 'show-v9.schema.json')),
     copyFile(path.join(source, 'preload.cjs'), path.join(app, 'preload.cjs')),
     copyFile(path.join(source, 'resources', 'icon.png'), path.join(app, 'icon.png')),
     copyFile(path.join(root, 'LICENSE'), path.join(app, 'LICENSE')),

@@ -848,6 +848,7 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
                     <th scope="col" className="py-2 pr-3">Cue #</th>
                     <th scope="col" className="py-2 pr-3">Name</th>
                     <th scope="col" className="py-2 pr-3">Tag</th>
+                    <th scope="col" className="py-2 pr-3">Fade</th>
                     <th scope="col" className="py-2 pr-3">Follow</th>
                     <th scope="col" className="py-2 pr-3">Take TC</th>
                     <th scope="col" className="py-2 pr-3">Dimmer</th>
@@ -859,7 +860,7 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
                 <tbody className="divide-y divide-white/10">
                   {paperwork.cues.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="py-4 text-center text-zinc-400">
+                      <td colSpan={10} className="py-4 text-center text-zinc-400">
                         No cues in this show.
                       </td>
                     </tr>
@@ -877,6 +878,9 @@ export const PaperworkPanel: React.FC<PaperworkPanelProps> = ({
                         </td>
                         <td data-label="Tag" className="py-2 pr-3 font-mono-tech text-zinc-300">
                           <span>{c.tag}</span>
+                        </td>
+                        <td data-label="Fade" className="py-2 pr-3 font-mono-tech text-zinc-300 whitespace-nowrap">
+                          <span>{c.fadeLabel}</span>
                         </td>
                         <td data-label="Follow" className="py-2 pr-3 font-mono-tech text-zinc-300 whitespace-nowrap">
                           <span>{c.followLabel}</span>

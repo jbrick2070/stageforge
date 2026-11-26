@@ -85,6 +85,7 @@ interface BottomConsoleProps {
   videoPlaying: boolean;
   onToggleVideo: () => void;
   onEditCues: () => void;
+  onBack: () => void;
   onGo: () => void;
   onResetCue: () => void;
   onHold: () => void;
@@ -292,7 +293,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
   onTriggerCue,
   onSaveCue,
   captureVideoPosition, onCaptureVideoPosition,
-  onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onGo, onResetCue, onHold, follow,
+  onUploadScreen, screenName, videoPlaying, onToggleVideo, onEditCues, onBack, onGo, onResetCue, onHold, follow,
   stage, mainScreen, missingMedia, onApplyWallCue, onRemoveWallCue, take,
   clockMode, tempo, audioStore, audioModStore, onToggleAudioReactive, onChangeAudioMap, onUploadAudio, onToggleMic, ilda,
   onSetBump, measureEnabled = false, onToggleMeasure,
@@ -432,6 +433,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                     {follow === 'held' && <span className="cue-countdown">Follow held · manual GO</span>}
                   </div>
                   <div className="cue-actions">
+                    <button disabled={!cues.length || take.mode === 'playing' || clockMode === 'chase'} onClick={onBack}>Back</button>
                     <button className="cue-go" disabled={!cues.length || take.mode === 'playing' || clockMode === 'chase'} onClick={onGo}>GO</button>
                     <button onClick={onResetCue} disabled={!cues.length || take.mode === 'playing' || clockMode === 'chase'}>Reset to cue 1</button>
                     <button onClick={onEditCues} disabled={take.mode !== 'idle'}>Edit cue list</button>
@@ -506,12 +508,12 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                     </div>
                   )}
                   {(take.mode !== 'idle' || take.hasTake) && <ScreenBadges glances={glances} />}
-                  <div className="cue-bank">
+                  <ol className="cue-list" aria-label="Numbered cue list">
                     {cues.map((cue, idx) => {
                       const isActive = activeCueId === cue.id;
                       return (
+                        <li key={cue.id}>
                         <button
-                          key={cue.id}
                           disabled={take.mode === 'playing' || clockMode === 'chase'}
                           onClick={() => {
                             if (storeMode) {
@@ -521,24 +523,23 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                               onTriggerCue(cue);
                             }
                           }}
-                          className="cue-pad"
+                          className="cue-list-row"
                           aria-pressed={isActive}
-                          aria-label={`Cue ${idx + 1}, ${cue.name}`}
+                          aria-label={`Cue ${idx + 1}, ${cue.name}, fade ${cue.fadeSeconds ?? 0} seconds, ${cue.followSeconds ? `follow ${cue.followSeconds} seconds` : 'manual follow'}`}
                           style={{
                             '--cue-a': cue.state.primaryColor || cue.accent,
                             '--cue-b': cue.state.accentColor || cue.accent,
                           } as React.CSSProperties}
                         >
-                          <span className="cue-meta">
-                            <span>{String(idx + 1).padStart(2, '0')}</span>
-                            {cue.followSeconds && <span aria-label={`Follow after ${cue.followSeconds} seconds`}>↻ {cue.followSeconds}s</span>}
-                            {isActive ? <Check aria-hidden="true" /> : <span>{cue.tag}</span>}
-                          </span>
+                          <span className="cue-number">{idx + 1}</span>
                           <strong>{cue.name}</strong>
+                          <span className="cue-timing"><span>Fade {cue.fadeSeconds ?? 0}s</span><span aria-label={cue.followSeconds ? `Follow after ${cue.followSeconds} seconds` : 'Manual GO'}>{cue.followSeconds ? `Follow ${cue.followSeconds}s` : 'Manual'}</span></span>
+                          <span className="cue-tag">{isActive ? <Check aria-hidden="true" /> : cue.tag}</span>
                         </button>
+                        </li>
                       );
                     })}
-                  </div>
+                  </ol>
                 </div>
 
                 {/* Color Palettes + Quick Master Sliders */}

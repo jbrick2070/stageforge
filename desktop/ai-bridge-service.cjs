@@ -60,11 +60,11 @@ function loadMcpSdk(options = {}) {
 }
 
 function loadCanonicalShowSchema() {
-  const preparedPath = path.join(__dirname, 'show-v8.schema.json');
+  const preparedPath = path.join(__dirname, 'show-v9.schema.json');
   if (fs.existsSync(preparedPath)) {
     return fs.readFileSync(preparedPath, 'utf8');
   }
-  const sourcePath = path.resolve(__dirname, '..', 'src', 'schemas', 'show-v8.schema.json');
+  const sourcePath = path.resolve(__dirname, '..', 'src', 'schemas', 'show-v9.schema.json');
   return fs.readFileSync(sourcePath, 'utf8');
 }
 
@@ -450,7 +450,7 @@ function createAiBridgeService(options = {}) {
         };
       }
 
-      // Main serves the canonical v8 schema directly.
+      // Main serves the canonical latest schema directly.
       if (toolName === 'get_schema') {
         return {
           content: [{ type: 'text', text: schemaText }],

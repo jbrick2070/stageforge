@@ -3,8 +3,9 @@ import type { ShowState } from '../types/show';
 import type { ShowTimeline, SmpteFrameRate, TimelineEvent } from '../data/showFile';
 import { resolveTakeFrame, type TransportFrame } from '../data/showClock';
 import { isFullLookSnapshot } from '../data/cueLook';
+import type { CueFadeDescriptor } from '../data/cueFade';
 
-export type DeskFrame = Required<Omit<TimelineEvent, 'atMs' | 'look'>> & { look: ShowState; cueModified: boolean };
+export type DeskFrame = Required<Omit<TimelineEvent, 'atMs' | 'look' | 'cueFade'>> & { look: ShowState; cueModified: boolean };
 type Mode = 'idle' | 'recording' | 'playing';
 
 function changed(a: unknown, b: unknown) {
@@ -63,7 +64,7 @@ const playable = (take?: ShowTimeline): take is ShowTimeline => !!take && (take.
  * `minDurationMs` reports the last secondary-wall cue so a new recording never
  * ends before cues the show already schedules (the v3 reader rejects those).
  */
-export function useShowTimeline(sample: () => DeskFrame, apply: (event: TimelineEvent, lateMs: number) => void, endReplay: () => void,
+export function useShowTimeline(sample: () => DeskFrame, apply: (event: TimelineEvent | ReturnType<typeof resolveTakeFrame>, lateMs: number) => void, endReplay: () => void,
   minDurationMs: () => number = () => 0) {
   const live = useRef({ sample, apply, endReplay, minDurationMs });
   live.current = { sample, apply, endReplay, minDurationMs };
@@ -90,6 +91,43 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
     if (delta) run.events.push(delta);
     run.previous = current;
     run.sampledMs = atMs;
+  };
+  /** Publish cue fire on the recording clock before React can defer the corresponding state commit. */
+  const publishCueTransition = (
+    next: { look: ShowState; cueId: string; screen?: DeskFrame['screen'] },
+    cueFade?: CueFadeDescriptor,
+  ) => {
+    const run = session.current;
+    if (!run || run.mode !== 'recording' || !run.previous) return;
+    // Preserve every mutation that happened before GO, then append GO at the same-or-later monotonic timestamp.
+    sampleChange();
+    const active = session.current;
+    if (!active || active.mode !== 'recording' || !active.previous) return;
+    const atMs = Math.max(active.sampledMs, Math.round(performance.now() - active.started));
+    const after: DeskFrame = {
+      ...active.previous,
+      look: next.look,
+      cueId: next.cueId,
+      cueModified: false,
+      ...(next.screen ? { screen: next.screen } : {}),
+    };
+    const delta = frameDelta(active.previous, after, atMs, atMs - active.sampledMs) ?? { atMs };
+    if (cueFade) delta.cueFade = structuredClone(cueFade);
+    if (Object.keys(delta).length > 1) active.events.push(delta);
+    active.previous = after;
+    active.sampledMs = atMs;
+  };
+
+  /** Record an exceptional preview-only interruption when authored state itself did not change. */
+  const publishCueFadeInterruption = (cueFade: CueFadeDescriptor) => {
+    const run = session.current;
+    if (!run || run.mode !== 'recording') return;
+    sampleChange();
+    const active = session.current;
+    if (!active || active.mode !== 'recording') return;
+    const atMs = Math.max(active.sampledMs, Math.round(performance.now() - active.started));
+    active.events.push({ atMs, cueFade: structuredClone(cueFade) });
+    active.sampledMs = atMs;
   };
   const stop = () => {
     const run = session.current;
@@ -328,5 +366,5 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
       ...(run.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: run.timecodeOffsetMs } : {}),
     };
   };
-  return { timeline, mode, timeMs, canResume, record, play, pause, seek, playhead, stop, replace, syncWallDuration, snapshot, chaseSeek, chaseAdvance, resolveFrameAt, resetChase, setMetadata };
+  return { timeline, mode, timeMs, canResume, record, play, pause, seek, playhead, stop, replace, syncWallDuration, snapshot, chaseSeek, chaseAdvance, resolveFrameAt, resetChase, setMetadata, publishCueTransition, publishCueFadeInterruption };
 }
