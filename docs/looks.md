@@ -278,18 +278,20 @@ checks show bounded behaviour, not universal photosensitivity safety.
 
 ## Budget and evidence boundaries
 
-The final repeated warmed Windows full-gate run measured three A/B pairs at a fixed `1280×720` laptop profile
-and at `390×844` with 4× CPU throttling. Median p50 CPU delta was `0.00 ms` on the laptop profile and
-`-0.30 ms` on the phone-like profile. A focused exact-commit replay that also recorded p95/p99 measured
-`0.00 ms` and `-0.60 ms`, respectively. The look adds zero draws, passes, textures, geometries, or
-application-owned GPU bytes; low-tier half-resolution bloom reduces the existing render-target estimate.
+The exact final-code Windows fallback replayed every Sprint 23 acceptance test. Its additive A–D median p50
+delta was `-0.1 ms` at fixed `1280×720` and `+0.1 ms` at `390×844` with 4× CPU throttling, inside the combined
+`+0.50 / +0.95 ms` ceiling. The promoted look owns at most the B batch's `40,768 B`, one draw and no added pass;
+A, C and D own no application GPU bytes or draws. The narrower slice runs above retain each feature's repeated
+p50/p95/p99 arrays and asynchronous timer samples rather than treating this additive observation as a synthetic
+all-effects benchmark.
 
 Playwright is configured with SwiftShader. Its asynchronous GPU p50 values are software-renderer evidence, not
-Apple, Windows-hardware-GPU, or phone-GPU performance. CPU throttling does not emulate a phone GPU. The final
-Mac gate and Windows Electron/package gates are recorded separately in the Sprint 23A Overnight receipt.
+Apple, Windows-hardware-GPU, or phone-GPU performance. CPU throttling does not emulate a phone GPU. The final Mac
+gate timed out without a completed summary; the exact code SHA instead passed the documented full Windows
+fallback, portable-package gate and all 13 Electron smokes, as recorded in the Sprint 23D Overnight receipt.
 
-The existing preview flash limiter remains authoritative and no flashing or beat-driven decorative brightness
-was added. Automated checks cover final rendered luminance after bloom on the supported StageForge paths,
-including saturated-red and rolling one-second counts. These checks show bounded behaviour, not universal
-safety; uploaded video, arbitrary animated ILDA content, and camera motion can introduce changes outside the
-parameter-level governor.
+The existing preview flash limiter remains authoritative and no flashing or beat-driven decorative brightness was
+added. Automated checks cover final rendered luminance after bloom on the supported StageForge paths, including
+saturated-red and rolling one-second counts. All twelve deliberately reviewed A–D panels total `286,498 B`, below
+`600 KB`. These checks show bounded behaviour, not universal safety; uploaded video, arbitrary animated ILDA
+content, camera motion and a future XR view can introduce changes outside the parameter-level governor.
