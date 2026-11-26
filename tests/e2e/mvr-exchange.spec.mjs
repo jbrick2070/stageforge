@@ -39,7 +39,9 @@ test('export the rig as MVR and reopen it in a fresh desk with no warnings and t
     await second.goto('/?probe');
     const opener = await files(second);
     await opener.getByLabel('Open show file').setInputFiles(path);
-    await expect(opener).toBeHidden();
+    // A fresh context may still be compiling the MVR import path on slower gate hosts.
+    // Wait for the real import completion signal without weakening the clean-round-trip checks below.
+    await expect(opener).toBeHidden({ timeout: 15_000 });
     // Clean StageForge round trip commits directly with no preflight warnings.
     await expect(second.getByText(/from MVR/)).toBeVisible();
     await expect(second.getByRole('dialog', { name: 'MVR import preflight' })).toHaveCount(0);
