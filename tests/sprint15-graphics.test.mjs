@@ -69,7 +69,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       lookOutput: true,
       lookNeonFrame: true,
       lookWetDeck: true,
-      lookAtmosphere: false,
+      lookAtmosphere: true,
       trueColour: false,
       reducedEffects: false,
       fallingCo2: false,

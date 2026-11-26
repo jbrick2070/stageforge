@@ -52,8 +52,8 @@ export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   lookNeonFrame: true,
   // Promoted by Sprint 23C after localized visual, lifecycle and measured-budget evidence.
   lookWetDeck: true,
-  // Development default until Sprint 23D visual and budget evidence is approved.
-  lookAtmosphere: false,
+  // Promoted by Sprint 23D after localized visual, lifecycle and measured-budget evidence.
+  lookAtmosphere: true,
   trueColour: false,
   reducedEffects: false,
   fallingCo2: false,

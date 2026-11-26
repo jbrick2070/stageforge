@@ -1,8 +1,7 @@
-# StageForge Look — Sprint 23A–C Default Look
+# StageForge Look — Sprint 23A–D Default Look
 
-Sprint 23A began the default cyberpunk-club look without adding a selectable look preset. Slices A (colour and
-output), B (neon architecture), and C (wet-deck composition) are promoted. Slice D (coloured atmosphere)
-remains unfinished.
+Sprint 23 delivers the default cyberpunk-club look without adding a selectable look preset. Slices A (colour and
+output), B (neon architecture), C (wet-deck composition), and D (coloured atmospheric depth) are promoted.
 
 ## Promoted output foundation
 
@@ -205,6 +204,77 @@ A+B+C total remains below the combined Sprint 23 CPU and memory ceilings.
 The C source is static and no flash input exists. Irregular final post-bloom sampling recorded zero qualifying
 general or saturated-red transitions after material activation. These checks, the black/clipped-region bounds,
 and the inherited preview limiter show bounded behaviour, not universal photosensitivity safety.
+
+## Promoted coloured atmospheric depth
+
+Sprint 23D lets the one existing global `FogExp2` colour follow the intensity-weighted palette of active moving
+beam and wash fixtures. The device-local `lookAtmosphere` flag is promoted on by default. The controller reads
+the authored per-fixture colour and ungated dimmer after group overrides and demo fades have resolved, then uses
+a frame-rate-independent two-second exponential response. Strobe gates, preview flash governors, catalogue flux,
+lasers, LED walls, blinders, and strobe bars never enter its palette, so a flashing fixture does not make the
+ambient colour pulse.
+
+The colour remains deliberately dark: palette influence is capped at `7.5%` of the existing `0x04060c` base,
+linear luminance at `0.025`, and any channel at `0.060`. Opposing colours average by their active fixture
+intensity before those bounds. Haze density remains the existing `0.008 + 0.015 × haze`; D changes colour only.
+It adds no draw, pass, texture, buffer, dependency, particle, or GPU-owned byte. Authored beam colours and live
+DMX stay on their existing paths, and Sprint 20's local beam-lit smoke plus all particle caps remain unchanged.
+
+Zero haze, blackout, master-dimmer zero, and an empty active palette snap immediately to the legacy neutral fog
+instead of leaving a slow cosmetic afterglow. **True colour** also uses the neutral fog. **Reduced effects**,
+`prefers-reduced-motion`, and the automatic **low tier** bypass D because its cue-following colour is decorative
+motion; a fresh low-tier engine therefore reports the requested default but uses the neutral fallback. High tier
+uses the slow tint. Resize, rig rebuild, media replacement, simulated/real context restore, and disposal own no D
+resource or replacement object. Actual GLB, DXF, MVR, and patch-paperwork downloads are invariant off/on.
+
+### Approved Sprint 23D references
+
+The left half uses the legacy neutral fog and the right half uses the promoted fixture-palette colour. I
+deliberately re-approved the fixed-seed panels: FOH and wide gain restrained cyan/blue depth between crossing
+cyan, blue, magenta, and amber beams; the deck close-up keeps fixture colours and black foreground separation.
+The tint does not flatten the whole frame or turn the fog into a bright emitter.
+
+- [Front of house](looks/sprint23-d-foh-before-after.webp)
+- [Deck close-up](looks/sprint23-d-deck-close-before-after.webp)
+- [Wide view](looks/sprint23-d-wide-before-after.webp)
+
+Regenerate the three panels without changing the ordinary read-only gate:
+
+```powershell
+$env:STAGEFORGE_UPDATE_LOOK_REFS='1'
+npx playwright test tests/e2e/sprint23-atmosphere.spec.mjs --workers=1
+```
+
+The D panels total `78,226 B`; all twelve A–D panels total `286,498 B`, below `600 KB`. Localized
+changed/strong/mean-delta fractions were FOH `70.204% / 0.046% / 0.03188`, deck-close
+`31.502% / 0.124% / 0.01250`, and wide `91.023% / 0.131% / 0.07176`. Clipped fractions were zero;
+black-region coverage remained `8.90% / 27.09% / 11.73%`. The broad changed fraction is expected from a global
+fog colour; the low mean and strong fractions are the bounds that keep it atmospheric rather than a global grade.
+
+### Slice D budget and evidence boundaries
+
+Five order-balanced warmed pairs at `1280×720` measured p50 off/on
+`[1.8, 1.6, 1.6, 1.6, 1.5] / [1.7, 1.7, 1.6, 1.6, 1.6] ms` (median delta `0.0 ms`), p95
+`[2.2, 1.8, 1.9, 1.9, 1.8] / [1.9, 2.1, 1.8, 1.9, 1.7]`, and p99
+`[2.4, 1.9, 2.0, 2.1, 1.8] / [2.1, 2.5, 2.2, 2.2, 1.9]`. A fresh `390×844` low-tier engine with
+4× CPU throttling exercised the documented neutral fallback: p50 off/on
+`[12.6, 11.4, 11.4, 11.4, 11.5] / [12.0, 11.6, 11.0, 11.3, 10.9] ms` (median delta `-0.1 ms`), p95
+`[15.5, 12.7, 12.9, 12.7, 12.8] / [13.7, 14.2, 12.3, 12.4, 12.4]`, and p99
+`[16.3, 13.1, 13.8, 12.9, 14.1] / [14.6, 15.5, 12.7, 12.9, 12.8]`. Both are inside D's exact
+`+0.10 / +0.20 ms` ceilings at the profiler's demonstrated `0.1 ms` resolution without a tolerance allowance.
+
+Asynchronous GPU p50 was laptop off `[244.7409, 243.2747, 247.1172, 245.0724, 245.9839] ms` / on
+`[245.0961, 242.0131, 248.4776, 246.6640, 241.3324] ms`, and phone-like off
+`[143.3916, 143.7193, 144.1269, 144.4714, 144.4520]` / on
+`[144.4271, 144.9798, 143.5194, 144.0499, 144.4694] ms`. These are ANGLE SwiftShader software-renderer
+values, not hardware-GPU measurements; 4× CPU throttling does not emulate a phone GPU. D owns `0 B` and adds
+zero draws/passes. With the C receipt's A+B+C deltas, A–D remains `0.0 ms` laptop / `-0.8 ms` phone-like,
+`40,768 B`, one draw, and no added pass, within the combined Sprint 23 ceilings.
+
+Opposing palettes, beam crossings, zero haze, blackout, master zero, cue transitions, accessibility fallbacks,
+and lifecycle paths have direct browser coverage. Irregular final post-bloom sampling across red/blue cue changes
+recorded zero qualifying general or saturated-red transitions and a rolling one-second count of zero. These
+checks show bounded behaviour, not universal photosensitivity safety.
 
 ## Budget and evidence boundaries
 

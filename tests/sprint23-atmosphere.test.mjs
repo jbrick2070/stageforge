@@ -88,9 +88,9 @@ describe('Sprint 23D: dark fixture-palette global atmosphere', () => {
   });
 
   it('keeps the flag device-local and reports zero GPU/draw/pass ownership', async () => {
-    assert.equal(settings.DEFAULT_RENDER_SETTINGS.lookAtmosphere, false);
+    assert.equal(settings.DEFAULT_RENDER_SETTINGS.lookAtmosphere, true);
     assert.equal(settings.parseRenderSettings({ lookAtmosphere: true }).lookAtmosphere, true);
-    assert.equal(settings.parseRenderSettings({ lookAtmosphere: 'yes' }).lookAtmosphere, false);
+    assert.equal(settings.parseRenderSettings({ lookAtmosphere: 'yes' }).lookAtmosphere, true);
     const stats = activeController().getStats();
     assert.equal(stats.extraGpuBytes, 0);
     assert.equal(stats.addedDraws, 0);

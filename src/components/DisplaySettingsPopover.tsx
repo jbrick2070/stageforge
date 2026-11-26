@@ -154,7 +154,7 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
                 className="h-4 w-4 accent-cyan-400"
               />
               <span>
-                Coloured atmospheric depth <span className="text-zinc-400">(experimental)</span>
+                Coloured atmospheric depth <span className="text-zinc-400">(default)</span>
               </span>
             </label>
 

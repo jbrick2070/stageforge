@@ -1595,6 +1595,7 @@ export const App: React.FC = () => {
       measureFrames: (options?: { warmupFrames?: number; sampleFrames?: number; gpu?: boolean }) =>
         engine.measureFrames(options),
       setRenderSettings: (patch: Partial<RenderSettings>) => updateRenderSettings(patch, false),
+      setPrefersReducedMotion: (enabled: boolean) => engine.setPrefersReducedMotion(Boolean(enabled)),
       setFullRateStrobePreview: (enabled: boolean) => {
         const nextOptIn = Boolean(enabled);
         setFullRateStrobeOptIn(nextOptIn);
