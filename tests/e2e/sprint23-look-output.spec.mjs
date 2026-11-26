@@ -282,7 +282,7 @@ test('Sprint 23A: restrained bloom, accessibility policy, export parity, localiz
   const desktopPairs = await measurePairs(3, 12, 36);
   const desktopOff = desktopPairs.filter((x) => !x.enabled).map((x) => x.report.cpuTotalMs.p50);
   const desktopOn = desktopPairs.filter((x) => x.enabled).map((x) => x.report.cpuTotalMs.p50);
-  const desktopDelta = median(desktopOn) - median(desktopOff);
+  const desktopDelta = Number((median(desktopOn) - median(desktopOff)).toFixed(3));
   const desktopOffProbe = desktopPairs.find((x) => !x.enabled).probe;
   const desktopOnProbe = desktopPairs.find((x) => x.enabled).probe;
   expect(desktopDelta).toBeLessThanOrEqual(0.10);
@@ -333,7 +333,7 @@ test('Sprint 23A: restrained bloom, accessibility policy, export parity, localiz
   const phonePairs = await measurePairs(3, 10, 30);
   const phoneOff = phonePairs.filter((x) => !x.enabled).map((x) => x.report.cpuTotalMs.p50);
   const phoneOn = phonePairs.filter((x) => x.enabled).map((x) => x.report.cpuTotalMs.p50);
-  const phoneDelta = median(phoneOn) - median(phoneOff);
+  const phoneDelta = Number((median(phoneOn) - median(phoneOff)).toFixed(3));
   const phoneOffProbe = phonePairs.find((x) => !x.enabled).probe;
   const phoneOnProbe = phonePairs.find((x) => x.enabled).probe;
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
