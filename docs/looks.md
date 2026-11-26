@@ -155,7 +155,7 @@ and rebuilds the same deterministic plan into the single ownership slot; exactly
 every point. The live probe can isolate the zero-texture material specialization for warmed timing, but it does not
 allocate or replace a PMREM target. GLB canonicalizes the deck to its production material, and actual GLB, DXF, MVR,
 and patch-paperwork downloads are invariant. In the real context-loss test, the grazing view retained a bounded
-`0.0913` mean max-channel pixel delta and whole-image luminance `0.27257 → 0.29120` (`6.84%`) after the deterministic
+`0.0908` mean max-channel pixel delta and whole-image luminance `0.27257 → 0.29079` (`6.68%`) after the deterministic
 single-slot rebuild; the probe reported build count `2`, one persistent target, and restored scene ownership.
 
 ### Approved Sprint 23C references
@@ -177,27 +177,27 @@ npx playwright test tests/e2e/sprint23-wet-deck.spec.mjs --workers=1
 ```
 
 The C panels total `63,652 B`; all nine A–C panels total `208,272 B`, below the `600 KB` allowance. In the focused
-promotion run, changed/strong/mean-delta fractions were FOH `31.43% / 0.033% / 0.01165`, deck-close
-`34.45% / 0.0003% / 0.00936`, and wide `39.72% / 0.018% / 0.01124`. A seven-position grazing sweep had a maximum
-whole-frame luminance step of `0.01793` on the exact post-fix replay, with no seam pop or fixed full-frame streak
+promotion run, changed/strong/mean-delta fractions were FOH `31.25% / 0.021% / 0.01126`, deck-close
+`34.82% / 0% / 0.01008`, and wide `39.86% / 0.040% / 0.01130`. A seven-position grazing sweep had a maximum
+whole-frame luminance step of `0.01756` in the exact full gate, with no seam pop or fixed full-frame streak
 seen in the approved panels.
 
 ### Slice C budget and evidence boundaries
 
 Five order-balanced warmed pairs at `1280×720` high tier measured p50 off/on
-`[1.7, 1.4, 1.5, 1.4, 1.4] / [1.5, 1.5, 1.5, 1.4, 1.4] ms` (median delta `+0.1 ms`), p95
-`[2.1, 1.9, 2.1, 1.7, 1.7] / [1.7, 2.0, 1.8, 1.6, 1.5]`, and p99
-`[3.5, 2.2, 2.3, 1.7, 1.8] / [1.9, 2.1, 1.8, 1.8, 1.8]`. A newly constructed `390×844` low-tier engine
+`[1.6, 1.5, 1.5, 1.5, 1.5] / [1.6, 1.5, 1.5, 1.5, 1.5] ms` (median delta `0.0 ms`), p95
+`[1.9, 1.8, 1.7, 2.1, 1.8] / [1.8, 1.9, 1.7, 2.1, 1.8]`, and p99
+`[2.0, 2.0, 1.9, 2.4, 1.9] / [1.9, 2.0, 1.9, 2.2, 2.0]`. A newly constructed `390×844` low-tier engine
 with 4× CPU throttling exercised the documented bypass: p50 off/on
-`[12.9, 11.4, 10.9, 11.1, 10.5] / [11.4, 10.8, 10.7, 10.7, 11.0] ms` (median delta `-0.3 ms`), p95
-`[15.4, 13.9, 12.6, 12.6, 12.2] / [12.8, 11.9, 12.6, 12.3, 12.2]`, and p99
-`[16.7, 15.4, 13.7, 13.3, 12.6] / [13.4, 14.0, 13.1, 14.2, 12.6]`. Both p50 deltas are below C's
+`[13.3, 11.7, 11.3, 11.3, 10.8] / [12.1, 11.1, 11.0, 11.5, 10.8] ms` (median delta `-0.2 ms`), p95
+`[15.1, 13.0, 13.5, 12.9, 12.1] / [14.4, 12.8, 12.5, 12.2, 12.0]`, and p99
+`[16.2, 13.7, 16.2, 14.1, 12.2] / [14.8, 13.6, 14.0, 13.0, 12.4]`. Both p50 deltas are below C's
 `+0.15 / +0.25 ms` ceilings at the profiler's demonstrated `0.1 ms` resolution.
 
-Asynchronous GPU p50 was laptop off `[189.7414, 189.3899, 188.5163, 188.1720, 191.0283] ms` / on
-`[191.0615, 190.5170, 190.5810, 191.4763, 192.9567] ms`, and low-tier phone-like off
-`[145.0685, 145.0225, 145.7953, 146.7848, 145.4063]` / on
-`[145.5301, 144.6924, 146.0539, 145.8531, 145.0233] ms`. These are ANGLE SwiftShader software-renderer values, not hardware-GPU
+Asynchronous GPU p50 was laptop off `[191.1592, 190.0736, 190.7711, 191.2755, 192.3307] ms` / on
+`[193.8731, 193.0641, 193.7097, 193.9930, 194.1360] ms`, and low-tier phone-like off
+`[145.7650, 146.3162, 145.9592, 145.9309, 145.9082]` / on
+`[147.1325, 145.8182, 146.1988, 145.7202, 145.8089] ms`. These are ANGLE SwiftShader software-renderer values, not hardware-GPU
 measurements; 4× CPU throttling does not emulate a phone GPU. C owns `0 B`, adds zero draws and passes, and leaves
 the promoted A+B `40,768 B` / one-draw ceiling unchanged. Using the B receipt's additive A+B delta, the measured
 A+B+C total remains below the combined Sprint 23 CPU and memory ceilings.
