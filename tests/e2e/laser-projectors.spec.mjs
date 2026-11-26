@@ -37,7 +37,7 @@ test('per-projector beams, pattern resolution and two independent colors survive
   await expect(resolution).toHaveValue('48');
   await button('Show cues').click();
   await button('Store cue').click();
-  await page.locator('.cue-pad').last().click();
+  await page.locator('.cue-list-row').last().click();
   await button('Show files').click();
   const saving = page.waitForEvent('download');
   await files.getByRole('button', { name: 'Save show JSON' }).click();
@@ -49,7 +49,7 @@ test('per-projector beams, pattern resolution and two independent colors survive
   } });
   await open(saved);
   await button('Show cues').click();
-  await page.locator('.cue-pad').last().click();
+  await page.locator('.cue-list-row').last().click();
   await button('Lasers').click();
   await target.selectOption(first);
   await expect(count).toHaveValue('1');

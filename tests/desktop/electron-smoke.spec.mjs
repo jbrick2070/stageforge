@@ -538,7 +538,7 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       };
 
       // Trigger Cue 1 so non-zero ColorSource PAR channels stream while generic channels stay 0.
-      await dmxPage.locator('.cue-pad').first().click();
+      await dmxPage.locator('.cue-list-row').first().click();
       await expect.poll(() => packets.some((p) => p.universe === 1 && p.slots.slice(432, 462).some((v) => v > 0)), { timeout: 5000 }).toBe(true);
       // Sprint 24 (Codex SF-H1 / N1): All generic non-catalogue fixture slots in Universe 1 (0..431) MUST remain 0 on physical sACN!
       const liveCueFrames = packets.filter((p) => p.universe === 1 && p.slots.slice(432, 462).some((v) => v > 0));
@@ -558,7 +558,7 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
         { timeout: 5000 },
       ).toBe(true);
       const beforeBackToCue1 = packets.length;
-      await dmxPage.locator('.cue-pad').first().click();
+      await dmxPage.locator('.cue-list-row').first().click();
       await expect.poll(
         () => packets.slice(beforeBackToCue1).some((p) => p.universe === 1 && p.slots.slice(128, 144).every((v) => v === 0)),
         { timeout: 5000 },
@@ -932,7 +932,7 @@ test('show control boots offline in Master mode, ignores OSC in Master, and trig
     const go2 = encodeOscMessage('/stageforge/go', [{ type: 'i', value: 2 }]);
     udp.send(go2, oscPort, '127.0.0.1');
     udp.send(go2, oscPort, '127.0.0.1');
-    await expect(scPage.locator('.cue-pad').nth(1)).toHaveAttribute('aria-pressed', 'true');
+    await expect(scPage.locator('.cue-list-row').nth(1)).toHaveAttribute('aria-pressed', 'true');
     await expect(scPage.getByTestId('sc-event-log')).toContainText('deduped');
 
     // 6. Verify realtime-bpm-analyzer AudioWorklet loads cleanly under Electron strict script-src 'self' CSP.

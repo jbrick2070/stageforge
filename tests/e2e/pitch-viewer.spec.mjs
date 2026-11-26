@@ -162,7 +162,7 @@ test('?view opens v3 fixture read-only: playback/scrub/cues/relink work, edits/h
   await expect(page.getByRole('button', { name: /2 missing media files · Relink/ })).toBeVisible();
 
   // Cue jump, GO, Back, camera presets, cinema mode, and take play/pause/scrub all work.
-  const cuePads = page.locator('.pitch-viewer-dock .cue-pad');
+  const cuePads = page.locator('.pitch-viewer-dock .cue-list-row');
   const cueCount = await cuePads.count();
   expect(cueCount).toBeGreaterThanOrEqual(2);
 
@@ -329,7 +329,7 @@ test('entering viewer via Show files -> Open in viewer… preserves and restores
   await page.goto('/?probe');
 
   // Make a live desk cue selection and change camera so we prove Exit restores the exact in-memory desk session.
-  await page.locator('.cue-pad').nth(2).click();
+  await page.locator('.cue-list-row').nth(2).click();
   const deskCueId = await page.evaluate(() => window.stageforgeProbe.activeCueId());
   await page.getByLabel('Camera view').selectOption('stage_side');
   const deskRigBefore = await page.evaluate(() => JSON.stringify(window.stageforgeProbe.rig()));
@@ -347,7 +347,7 @@ test('entering viewer via Show files -> Open in viewer… preserves and restores
   expect(await page.evaluate(() => window.stageforgeProbe.viewerMode())).toBe(true);
 
   // Switch cue and camera inside viewer.
-  await page.locator('.pitch-viewer-dock .cue-pad').first().click();
+  await page.locator('.pitch-viewer-dock .cue-list-row').first().click();
   await page.getByLabel('Camera view').selectOption('overhead');
 
   // Exit viewer -> exact desk rig, active cue, camera, and localStorage restored!
