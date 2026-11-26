@@ -24,7 +24,7 @@ export interface WetDeckEnvironmentStats {
   targetUuid: string;
   targetWidth: number;
   targetHeight: number;
-  buildCount: 1;
+  buildCount: number;
   persistentTargetCount: 1;
   narrowStripCount: number;
   extraGpuBytes: 0;

@@ -684,7 +684,7 @@ export class StageEngine {
       }
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
-      this.scene.environment = this.environmentTarget.texture;
+      this.restoreStageEnvironment();
       this.neonFrame?.onContextRestored();
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();
@@ -3560,6 +3560,25 @@ export class StageEngine {
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
     }
+  }
+
+  /**
+   * A real WebGL context loss destroys PMREM contents even though Three.js retains the texture
+   * wrapper. Dispose that invalid target before rebuilding the same construction plan into the
+   * single StageEngine-owned environment slot, so two persistent environments never coexist.
+   */
+  private restoreStageEnvironment(): void {
+    const previousBuildCount = this.wetDeckEnvironmentStats.buildCount;
+    const wetDeck = this.wetDeckEnvironmentStats.composition === 'wet-neutral';
+    this.scene.environment = null;
+    this.environmentTarget.dispose();
+    const environment = buildStageEnvironment(this.renderer, wetDeck);
+    this.environmentTarget = environment.target;
+    this.wetDeckEnvironmentStats = {
+      ...environment.stats,
+      buildCount: previousBuildCount + 1,
+    };
+    this.scene.environment = this.environmentTarget.texture;
   }
 
   private stopControlFallbackTimer() {

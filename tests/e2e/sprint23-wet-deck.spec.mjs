@@ -225,6 +225,8 @@ test('Sprint 23C: wet deck composition, exports, lifecycle, safety and warmed bu
   expect(mvrFingerprint(onExports.mvr)).toEqual(mvrFingerprint(offExports.mvr));
   expect(sha256(onExports.paperwork)).toBe(sha256(offExports.paperwork));
   await loadMode(page, true);
+  await page.evaluate((view) => window.stageforgeProbe.setCameraPose(view.pos, view.target), views.find((view) => view.name === 'deck-close'));
+  await waitFrames(page, 3);
 
   // Target ownership remains stable through resize, rebuild, media replacement and both restore paths.
   const lifecycle = await page.evaluate(async () => {
@@ -236,25 +238,59 @@ test('Sprint 23C: wet deck composition, exports, lifecycle, safety and warmed bu
     p.patchShowState({ led: { visualMode: 'custom', customMediaUrl: null, customMediaType: null } });
     p.simulateContextLoss(true); p.simulateContextLoss(false); await next();
     const afterSimulated = p.graphicsProbe();
+    const beforeRealUrl = p.redrawAndCapture();
     const canvas = document.querySelector('canvas'), gl = canvas?.getContext('webgl2'), ext = gl?.getExtension('WEBGL_lose_context');
     let realRestored = true;
     if (ext) {
       ext.loseContext(); await new Promise((r) => setTimeout(r, 60)); ext.restoreContext();
       for (let i = 0; i < 40 && p.graphicsProbe().contextLost; i++) await new Promise((r) => setTimeout(r, 40));
-      await next(); realRestored = !p.graphicsProbe().contextLost && p.graphicsProbe().wetDeck.sceneOwnsTargetTexture;
+      for (let i = 0; i < 8; i++) await next();
+      realRestored = !p.graphicsProbe().contextLost && p.graphicsProbe().wetDeck.sceneOwnsTargetTexture;
     }
     const after = p.graphicsProbe();
-    return { before, afterSimulated, after, realRestored };
+    const afterRealUrl = p.redrawAndCapture();
+    const decode = (url) => new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => {
+        const c = document.createElement('canvas'); c.width = image.width; c.height = image.height;
+        const ctx = c.getContext('2d'); ctx.drawImage(image, 0, 0);
+        resolve(ctx.getImageData(0, 0, c.width, c.height));
+      };
+      image.onerror = reject; image.src = url;
+    });
+    const a = await decode(beforeRealUrl), b = await decode(afterRealUrl);
+    let sum = 0, changed = 0, beforeLuma = 0, afterLuma = 0, count = 0;
+    for (let i = 0; i < a.data.length; i += 4) {
+      const d = Math.max(Math.abs(a.data[i] - b.data[i]), Math.abs(a.data[i + 1] - b.data[i + 1]), Math.abs(a.data[i + 2] - b.data[i + 2]));
+      sum += d / 255; if (d > 3) changed++;
+      beforeLuma += (0.2126 * a.data[i] + 0.7152 * a.data[i + 1] + 0.0722 * a.data[i + 2]) / 255;
+      afterLuma += (0.2126 * b.data[i] + 0.7152 * b.data[i + 1] + 0.0722 * b.data[i + 2]) / 255;
+      count++;
+    }
+    beforeLuma /= count; afterLuma /= count;
+    return { before, afterSimulated, after, realRestored, hadRealExtension: Boolean(ext), restoreMeanDelta: sum / count, restoreChangedFraction: changed / count, beforeLuma, afterLuma, lumaRelativeDelta: Math.abs(afterLuma - beforeLuma) / Math.max(0.001, beforeLuma) };
   });
   await page.setViewportSize({ width: 1111, height: 703 }); await waitFrames(page, 3);
   const resized = await page.evaluate(() => window.stageforgeProbe.graphicsProbe());
-  for (const state of [lifecycle.afterSimulated, lifecycle.after, resized]) {
-    expect(state.wetDeck.targetUuid).toBe(lifecycle.before.wetDeck.targetUuid);
-    expect(state.wetDeck.buildCount).toBe(1);
+  expect(lifecycle.afterSimulated.wetDeck.targetUuid).toBe(lifecycle.before.wetDeck.targetUuid);
+  expect(lifecycle.afterSimulated.wetDeck.buildCount).toBe(1);
+  expect(lifecycle.afterSimulated.wetDeck.sceneOwnsTargetTexture).toBe(true);
+  if (lifecycle.hadRealExtension) {
+    expect(lifecycle.after.wetDeck.targetUuid).not.toBe(lifecycle.before.wetDeck.targetUuid);
+    expect(lifecycle.after.wetDeck.buildCount).toBe(2);
+  }
+  expect(resized.wetDeck.targetUuid).toBe(lifecycle.after.wetDeck.targetUuid);
+  expect(resized.wetDeck.buildCount).toBe(lifecycle.after.wetDeck.buildCount);
+  for (const state of [lifecycle.after, resized]) {
     expect(state.wetDeck.persistentTargetCount).toBe(1);
     expect(state.wetDeck.sceneOwnsTargetTexture).toBe(true);
   }
   expect(lifecycle.realRestored).toBe(true);
+  console.log('[SPRINT23C_CONTEXT_RESTORE]', JSON.stringify({ meanDelta: lifecycle.restoreMeanDelta, changedFraction: lifecycle.restoreChangedFraction, beforeLuma: lifecycle.beforeLuma, afterLuma: lifecycle.afterLuma, lumaRelativeDelta: lifecycle.lumaRelativeDelta, buildCount: lifecycle.after.wetDeck.buildCount }));
+  expect(lifecycle.restoreMeanDelta).toBeLessThan(0.15);
+  expect(lifecycle.beforeLuma).toBeGreaterThan(0.03);
+  expect(lifecycle.afterLuma).toBeGreaterThan(0.03);
+  expect(lifecycle.lumaRelativeDelta).toBeLessThan(0.25);
 
   // Camera sweep: localized mean luminance changes stay continuous, without a fixed full-frame streak.
   const sweep = await page.evaluate(async ({ deckY, depth }) => {
@@ -343,7 +379,7 @@ test('Sprint 23C: wet deck composition, exports, lifecycle, safety and warmed bu
   expect(lowTier.wetDeck.persistentTargetCount).toBe(1);
   expect(lowTier.wetDeck.buildCount).toBe(1);
   expect(lowTier.wetDeck.sceneOwnsTargetTexture).toBe(true);
-  expect(lowTier.wetDeck.targetUuid).not.toBe(lifecycle.before.wetDeck.targetUuid);
+  expect(lowTier.wetDeck.targetUuid).not.toBe(lifecycle.after.wetDeck.targetUuid);
   expect({ width: lowTier.wetDeck.targetWidth, height: lowTier.wetDeck.targetHeight }).toEqual(legacyDescriptor);
   expect(lowTier.resources.wetDeckExtraGpuBytes).toBe(0);
   expect(lowTier.deckSheen.extraTextureBytes).toBe(0);
