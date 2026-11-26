@@ -41,7 +41,20 @@ async function exportGlbParts(page) {
       sha256: createHash('sha256').update(glb.subarray(start, start + view.byteLength)).digest('hex'),
     };
   });
-  return { byteLength: glb.byteLength, imagePayloads, json };
+  const bufferPayloads = (json.bufferViews ?? []).map((view) => {
+    const start = binStart + (view.byteOffset ?? 0);
+    return createHash('sha256').update(glb.subarray(start, start + view.byteLength)).digest('hex');
+  });
+  return { bufferPayloads, byteLength: glb.byteLength, imagePayloads, json };
+}
+
+function materialsWithoutPreviewColour(materials) {
+  return structuredClone(materials).map((material) => {
+    // The global preview flash governor deliberately evolves fixture preview colour with time.
+    // Device-local output settings must not affect any other exported material property.
+    if (material.pbrMetallicRoughness) delete material.pbrMetallicRoughness.baseColorFactor;
+    return material;
+  });
 }
 
 test('Sprint 23A: restrained bloom, accessibility policy, export parity, localized references and warmed budgets', async ({ page }) => {
@@ -189,29 +202,18 @@ test('Sprint 23A: restrained bloom, accessibility policy, export parity, localiz
     }
   }
 
-  const prepareExport = async (lookOutput) => {
-    await page.evaluate((enabled) => {
-      const p = window.stageforgeProbe;
-      p.setRenderSettings({ lookOutput: enabled, trueColour: false, reducedEffects: false });
-      // Export parity needs a frozen fixture: live fixture materials ease toward authored colours
-      // even while audio is paused, so rebuild the same neutral rig before both captures.
-      p.patchShowState({
-        primaryColor: '#000000', accentColor: '#000000', beamIntensity: 0, washIntensity: 0,
-        blinderLevel: 0, strobeRate: 0,
-        led: { enabled: false, brightness: 0, visualMode: 'custom', customMediaUrl: null, customMediaType: null },
-      });
-      p.rebuildRig();
-    }, lookOutput);
-    await waitFrames(page, 4);
-  };
-  await prepareExport(false);
+  const showBeforeExport = await page.evaluate(() => window.stageforgeProbe.showStateSummary());
+  await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ lookOutput: false, trueColour: false, reducedEffects: false }));
   const glbOff = await exportGlbParts(page);
-  await prepareExport(true);
+  await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ lookOutput: true, trueColour: false, reducedEffects: false }));
   const glbOn = await exportGlbParts(page);
+  const showAfterExport = await page.evaluate(() => window.stageforgeProbe.showStateSummary());
+  expect(showAfterExport).toEqual(showBeforeExport);
   expect(glbOn.json.nodes.length).toBe(glbOff.json.nodes.length);
   expect(glbOn.json.meshes.length).toBe(glbOff.json.meshes.length);
-  expect(glbOn.json.materials).toEqual(glbOff.json.materials);
+  expect(materialsWithoutPreviewColour(glbOn.json.materials)).toEqual(materialsWithoutPreviewColour(glbOff.json.materials));
   expect(glbOn.json.textures).toEqual(glbOff.json.textures);
+  expect(glbOn.bufferPayloads).toEqual(glbOff.bufferPayloads);
   expect(glbOn.imagePayloads).toEqual(glbOff.imagePayloads);
 
   const measurePairs = async (pairs, warmupFrames, sampleFrames) => {
