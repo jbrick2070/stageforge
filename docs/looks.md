@@ -21,10 +21,10 @@ DXF, GLB, or paperwork export.
   fullscreen pass.
 
 The controlled browser fixture uses FFmpeg's standard SMPTE intermediate greys and 75% colour bars. On the
-final Windows SwiftShader run, main-wall video/image mean error improved from `20.25` to `1.58`, and the authored
-secondary wall improved from `18.65` to `2.34`. Toggling the flag changed the corresponding still image by at
-most `1 LSB` and `0 LSB`, respectively. Lossy video is required to improve within a tolerance; it is not claimed
-to be byte-identical to PNG.
+final Windows SwiftShader full-gate run, main-wall video/image mean error improved from `20.83` to `2.44`, and the
+authored secondary wall improved from `18.65` to `2.34`. Toggling the flag changed the corresponding still image
+by at most `4 LSB` (`1.60 LSB` mean) and `0 LSB`, respectively. Lossy video is required to improve within a
+tolerance; it is not claimed to be byte-identical to PNG.
 
 ## Accessible device-local controls
 
@@ -56,13 +56,14 @@ $env:STAGEFORGE_UPDATE_LOOK_REFS='1'
 npx playwright test tests/e2e/sprint23-look-output.spec.mjs -g "restrained bloom" --workers=1
 ```
 
-The three WebP files total 76,612 bytes, below the 600 KB documentation allowance.
+The three WebP files total 76,644 bytes, below the 600 KB documentation allowance.
 
 ## Budget and evidence boundaries
 
-The final repeated warmed Windows run measured three A/B pairs at a fixed `1280×720` laptop profile and at
-`390×844` with 4× CPU throttling. Median p50 CPU delta was `+0.10 ms` on the laptop profile (the exact ceiling)
-and `0.00 ms` on the phone-like profile. The look adds zero draws, passes, textures, geometries, or
+The final repeated warmed Windows full-gate run measured three A/B pairs at a fixed `1280×720` laptop profile
+and at `390×844` with 4× CPU throttling. Median p50 CPU delta was `0.00 ms` on the laptop profile and
+`-0.30 ms` on the phone-like profile. A focused exact-commit replay that also recorded p95/p99 measured
+`0.00 ms` and `-0.60 ms`, respectively. The look adds zero draws, passes, textures, geometries, or
 application-owned GPU bytes; low-tier half-resolution bloom reduces the existing render-target estimate.
 
 Playwright is configured with SwiftShader. Its asynchronous GPU p50 values are software-renderer evidence, not
