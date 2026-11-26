@@ -51,6 +51,7 @@ test('Sprint 23A: restrained bloom, accessibility policy, export parity, localiz
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
   await page.getByRole('button', { name: 'Play demo', exact: true }).click();
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
+  await page.getByRole('button', { name: 'Pause', exact: true }).click();
   await page.evaluate(() => {
     const p = window.stageforgeProbe;
     p.setCameraPose([0, 6.2, 24.5], [0, 5.35, -0.6]);
@@ -406,7 +407,9 @@ test('Sprint 23A: controlled intermediate colour bars decode video once on main 
     prepareScene();
     p.setCameraPose([0, 2.15, 0.2], [0, 2.15, -2.85]);
     const mainImageOff = await captureMain('image', imageUrl, false);
+    const mainStillDiagOff = p.graphicsProbe().ledWalls.primaryVideoDecodeActive;
     const mainImageOn = await captureMain('image', imageUrl, true);
+    const mainStillDiagOn = p.graphicsProbe().ledWalls.primaryVideoDecodeActive;
     const mainVideoOff = await captureMain('video', videoUrl, false);
     const mainVideoOn = await captureMain('video', videoUrl, true);
     const mainProbe = p.graphicsProbe();
@@ -427,6 +430,9 @@ test('Sprint 23A: controlled intermediate colour bars decode video once on main 
       fixture: 'FFmpeg smptebars 320x160: intermediate greys + 75% colour bars',
       main: {
         stillMaxLsb: maxDiff(mainImageOff, mainImageOn, mainCrop),
+        stillMeanLsb: meanError(mainImageOff, mainImageOn, mainCrop),
+        stillDecodeOff: mainStillDiagOff,
+        stillDecodeOn: mainStillDiagOn,
         videoErrorOff: meanError(mainImageOn, mainVideoOff, mainCrop),
         videoErrorOn: meanError(mainImageOn, mainVideoOn, mainCrop),
         decodeMaterials: mainProbe.ledWalls.videoDecodeActiveMaterialCount,
@@ -434,6 +440,7 @@ test('Sprint 23A: controlled intermediate colour bars decode video once on main 
       },
       secondary: {
         stillMaxLsb: maxDiff(sideImageOff, sideImageOn, sideCrop),
+        stillMeanLsb: meanError(sideImageOff, sideImageOn, sideCrop),
         videoErrorOff: meanError(sideImageOn, sideVideoOff, sideCrop),
         videoErrorOn: meanError(sideImageOn, sideVideoOn, sideCrop),
         stillDecodeOff: sideStillDiagOff.videoSrgbDecode,
@@ -446,12 +453,19 @@ test('Sprint 23A: controlled intermediate colour bars decode video once on main 
   });
 
   console.log('[SPRINT23A_COLOUR_BARS]', JSON.stringify(evidence));
-  expect(evidence.main.stillMaxLsb).toBeLessThanOrEqual(1);
+  // Canvas/WebGL readback can differ by a few isolated quantization steps across GPU backends.
+  // The bounded mean error plus type-gated diagnostics prove stills never enter the video decode path;
+  // an actual second sRGB decode shifts intermediate bars by tens of LSBs.
+  expect(evidence.main.stillMaxLsb).toBeLessThanOrEqual(4);
+  expect(evidence.main.stillMeanLsb).toBeLessThanOrEqual(2);
+  expect(evidence.main.stillDecodeOff).toBe(false);
+  expect(evidence.main.stillDecodeOn).toBe(false);
   expect(evidence.main.videoErrorOff).toBeGreaterThan(1);
   expect(evidence.main.videoErrorOn).toBeLessThan(evidence.main.videoErrorOff * 0.72);
   expect(evidence.main.primaryDecode).toBe(true);
   expect(evidence.main.decodeMaterials).toBeGreaterThanOrEqual(1);
-  expect(evidence.secondary.stillMaxLsb).toBeLessThanOrEqual(1);
+  expect(evidence.secondary.stillMaxLsb).toBeLessThanOrEqual(4);
+  expect(evidence.secondary.stillMeanLsb).toBeLessThanOrEqual(2);
   expect(evidence.secondary.videoErrorOff).toBeGreaterThan(1);
   expect(evidence.secondary.videoErrorOn).toBeLessThan(evidence.secondary.videoErrorOff * 0.72);
   expect(evidence.secondary.stillDecodeOff).toBe(false);
