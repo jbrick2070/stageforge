@@ -189,9 +189,24 @@ test('Sprint 23A: restrained bloom, accessibility policy, export parity, localiz
     }
   }
 
-  await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ lookOutput: false, trueColour: false, reducedEffects: false }));
+  const prepareExport = async (lookOutput) => {
+    await page.evaluate((enabled) => {
+      const p = window.stageforgeProbe;
+      p.setRenderSettings({ lookOutput: enabled, trueColour: false, reducedEffects: false });
+      // Export parity needs a frozen fixture: live fixture materials ease toward authored colours
+      // even while audio is paused, so rebuild the same neutral rig before both captures.
+      p.patchShowState({
+        primaryColor: '#000000', accentColor: '#000000', beamIntensity: 0, washIntensity: 0,
+        blinderLevel: 0, strobeRate: 0,
+        led: { enabled: false, brightness: 0, visualMode: 'custom', customMediaUrl: null, customMediaType: null },
+      });
+      p.rebuildRig();
+    }, lookOutput);
+    await waitFrames(page, 4);
+  };
+  await prepareExport(false);
   const glbOff = await exportGlbParts(page);
-  await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ lookOutput: true, trueColour: false, reducedEffects: false }));
+  await prepareExport(true);
   const glbOn = await exportGlbParts(page);
   expect(glbOn.json.nodes.length).toBe(glbOff.json.nodes.length);
   expect(glbOn.json.meshes.length).toBe(glbOff.json.meshes.length);
