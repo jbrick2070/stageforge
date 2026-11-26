@@ -29,9 +29,9 @@ Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay tak
 | Field | Meaning |
 | --- | --- |
 | `$schema` | The public schema URL ending in `show-v1.schema.json` through `show-v9.schema.json`, matching the version. |
-| `format`, `version` | The string `"stageforge-show"` and the integer `1`, `2`, `3`, `4`, `5`, `6`, `7` or `8`. |
-| `stage` | Required in v3, optional in v4–v8. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
-| `interchange` | Required in v4, optional in v5–v8. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
+| `format`, `version` | The string `"stageforge-show"` and the integer `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8` or `9`. |
+| `stage` | Required in v3, optional in v4–v9. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
+| `interchange` | Required in v4, optional in v5–v9. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
 | `rig` | Stage dimensions and venue, optional platforms and scenic props, trusses with their fixtures, floor effects, sound system and LED wall (in v6: `catalogId`/`dmxMode`/`dmxChannels`, `cabinetId`; in v7: `trussProfileId`/`hoistId`/`hoistCount`, `circuitGroup`/`phase`, and `rig.power`). Positions and lengths use metres. |
 | `cues` | Array in playback order. Each cue has a unique `id`, a display `name`, `tag`, hex `accent` and a partial desk `state`. Optional `screen` sets the main-wall media. |
 | `look`, `activeCueId` | Complete current desk settings and the current cue ID, or `null`. Desk changes made after calling a cue belong in `look`. |

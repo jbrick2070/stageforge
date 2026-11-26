@@ -736,6 +736,7 @@ test('show v9 cue fades are additive, bounded, lossless, and leave prior writer 
     ['negative cue duration', s => { s.cues[1].fadeSeconds = -0.01; }],
     ['long cue duration', s => { s.cues[1].fadeSeconds = 3600.01; }],
     ['long recorded duration', s => { s.timeline.events[1].cueFade.durationMs = 3600001; }],
+    ['fractional recorded duration', s => { s.timeline.events[1].cueFade.durationMs = 12.5; }],
     ['invalid recorded origin', s => { s.timeline.events[1].cueFade.from.beamIntensity = -0.01; }],
     ['unknown recorded fade key', s => { s.timeline.events[1].cueFade.private = true; }],
   ]) {
