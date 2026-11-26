@@ -20,7 +20,77 @@ export async function installFakeWebXr(page, options = {}) {
       foveation: null,
       referenceSpaces: [],
       failReferenceSpaceNext: false,
+      offsetTransforms: [],
+      inputEvents: [],
     };
+
+    const quatMultiply = (a, b) => ({
+      x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+      y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+      z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+      w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    });
+    const quatInverse = (q) => ({ x: -q.x, y: -q.y, z: -q.z, w: q.w });
+    const rotate = (q, p) => {
+      const out = quatMultiply(quatMultiply(q, { ...p, w: 0 }), quatInverse(q));
+      return { x: out.x, y: out.y, z: out.z };
+    };
+    const compose = (a, b) => {
+      const p = rotate(a.orientation, b.position);
+      return {
+        position: { x: a.position.x + p.x, y: a.position.y + p.y, z: a.position.z + p.z },
+        orientation: quatMultiply(a.orientation, b.orientation),
+      };
+    };
+    const inverse = (pose) => {
+      const orientation = quatInverse(pose.orientation);
+      return {
+        position: rotate(orientation, { x: -pose.position.x, y: -pose.position.y, z: -pose.position.z }),
+        orientation,
+      };
+    };
+    const matrixFor = (pose) => {
+      const { x, y, z, w } = pose.orientation;
+      const x2 = x + x, y2 = y + y, z2 = z + z;
+      const xx = x * x2, xy = x * y2, xz = x * z2;
+      const yy = y * y2, yz = y * z2, zz = z * z2;
+      const wx = w * x2, wy = w * y2, wz = w * z2;
+      return new Float32Array([
+        1 - (yy + zz), xy + wz, xz - wy, 0,
+        xy - wz, 1 - (xx + zz), yz + wx, 0,
+        xz + wy, yz - wx, 1 - (xx + yy), 0,
+        pose.position.x, pose.position.y, pose.position.z, 1,
+      ]);
+    };
+    class FakeRigidTransform {
+      constructor(position = {}, orientation = {}) {
+        this.position = { x: position.x ?? 0, y: position.y ?? 0, z: position.z ?? 0, w: 1 };
+        this.orientation = { x: orientation.x ?? 0, y: orientation.y ?? 0, z: orientation.z ?? 0, w: orientation.w ?? 1 };
+        this.matrix = matrixFor(this);
+      }
+      get inverse() {
+        const pose = inverse(this);
+        return new FakeRigidTransform(pose.position, pose.orientation);
+      }
+    }
+    globalThis.XRRigidTransform = FakeRigidTransform;
+
+    class FakeReferenceSpace extends EventTarget {
+      constructor(type, offset = new FakeRigidTransform()) {
+        super();
+        this.type = type;
+        this.offset = offset;
+      }
+      getOffsetReferenceSpace(originOffset) {
+        const combined = compose(this.offset, originOffset);
+        const next = new FakeReferenceSpace(this.type, new FakeRigidTransform(combined.position, combined.orientation));
+        state.offsetTransforms.push({
+          position: { ...next.offset.position },
+          orientation: { ...next.offset.orientation },
+        });
+        return next;
+      }
+    }
 
     const perspective = (near = 0.1, far = 220) => {
       const f = 1;
@@ -32,18 +102,15 @@ export async function installFakeWebXr(page, options = {}) {
         0, 0, 2 * far * near * nf, 0,
       ]);
     };
-    const eyeView = (eye, x) => ({
+    const eyeView = (eye, x, referenceSpace) => {
+      const base = { position: { x, y: 1.62, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } };
+      const derived = referenceSpace?.offset ? compose(inverse(referenceSpace.offset), base) : base;
+      return ({
       eye,
       projectionMatrix: perspective(),
-      transform: {
-        matrix: new Float32Array([
-          1, 0, 0, 0,
-          0, 1, 0, 0,
-          0, 0, 1, 0,
-          x, 1.62, 0, 1,
-        ]),
-      },
+      transform: new FakeRigidTransform(derived.position, derived.orientation),
     });
+    };
 
     class FakeSession extends EventTarget {
       constructor() {
@@ -76,7 +143,7 @@ export async function installFakeWebXr(page, options = {}) {
           state.failReferenceSpaceNext = false;
           return Promise.reject(new Error('Fake reference-space failure'));
         }
-        return Promise.resolve({ type });
+        return Promise.resolve(new FakeReferenceSpace(type));
       }
       requestAnimationFrame(callback) {
         const id = window.requestAnimationFrame((time) => {
@@ -84,7 +151,19 @@ export async function installFakeWebXr(page, options = {}) {
           if (this.ended) return;
           const frame = {
             session: this,
-            getViewerPose: () => ({ views: [eyeView('left', -0.032), eyeView('right', 0.032)] }),
+            getViewerPose: (referenceSpace) => {
+              const baseHead = { position: { x: 0, y: 1.62, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } };
+              const derived = referenceSpace?.offset ? compose(inverse(referenceSpace.offset), baseHead) : baseHead;
+              return {
+                transform: new FakeRigidTransform(derived.position, derived.orientation),
+                views: [eyeView('left', -0.032, referenceSpace), eyeView('right', 0.032, referenceSpace)],
+              };
+            },
+            getPose: (space, referenceSpace) => {
+              const base = space?.pose ?? { position: { x: 0, y: 1.3, z: -0.35 }, orientation: { x: 0, y: 0, z: 0, w: 1 } };
+              const derived = referenceSpace?.offset ? compose(inverse(referenceSpace.offset), base) : base;
+              return { transform: new FakeRigidTransform(derived.position, derived.orientation) };
+            },
           };
           callback(time, frame);
         });
@@ -129,6 +208,35 @@ export async function installFakeWebXr(page, options = {}) {
       setVisibility(value) {
         this.visibilityState = value;
         this.dispatchEvent(new Event('visibilitychange'));
+      }
+      connectController(index = 0) {
+        const source = {
+          handedness: index === 0 ? 'right' : 'left',
+          targetRayMode: 'tracked-pointer',
+          targetRaySpace: { pose: { position: { x: index ? -0.25 : 0.25, y: 1.3, z: -0.35 }, orientation: { x: 0, y: 0, z: 0, w: 1 } } },
+          gripSpace: null,
+          profiles: ['generic-trigger'],
+          gamepad: null,
+          hand: null,
+        };
+        this.inputSources.push(source);
+        const event = new Event('inputsourceschange');
+        Object.defineProperties(event, { added: { value: [source] }, removed: { value: [] } });
+        this.dispatchEvent(event);
+        return source;
+      }
+      dispatchInput(type, index = 0) {
+        const inputSource = this.inputSources[index] ?? this.connectController(index);
+        const referenceSpace = new FakeReferenceSpace('local-floor');
+        const frame = {
+          session: this,
+          getPose: (space) => ({ transform: new FakeRigidTransform(space.pose.position, space.pose.orientation) }),
+          getViewerPose: () => ({ transform: new FakeRigidTransform({ x: 0, y: 1.62, z: 0 }), views: [eyeView('left', -0.032, referenceSpace), eyeView('right', 0.032, referenceSpace)] }),
+        };
+        const event = new Event(type);
+        Object.defineProperties(event, { inputSource: { value: inputSource }, frame: { value: frame } });
+        state.inputEvents.push({ type, index });
+        this.dispatchEvent(event);
       }
     }
 
@@ -206,6 +314,8 @@ export async function installFakeWebXr(page, options = {}) {
       resolvePendingEnd() { state.pendingEnds.shift()?.resolve(); },
       systemExit() { return state.activeSession?.end(); },
       setVisibility(value) { state.activeSession?.setVisibility(value); },
+      connectController(index = 0) { return state.activeSession?.connectController(index); },
+      dispatchInput(type, index = 0) { state.activeSession?.dispatchInput(type, index); },
       snapshot() {
         return {
           supported: state.supported,
@@ -217,6 +327,8 @@ export async function installFakeWebXr(page, options = {}) {
           scaleFactor: state.scaleFactor,
           foveation: state.foveation,
           referenceSpaces: [...state.referenceSpaces],
+          offsetTransforms: state.offsetTransforms.map((value) => ({ position: { ...value.position }, orientation: { ...value.orientation } })),
+          inputEvents: state.inputEvents.map((value) => ({ ...value })),
           listenerBalances: state.sessions.map((session) => session.listenerBalance),
           rafCounts: state.sessions.map((session) => session.rafIds.size),
         };

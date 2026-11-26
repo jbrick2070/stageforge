@@ -10,6 +10,8 @@ import {
   type RenderSettings,
 } from './engine/renderSettings';
 import { detectRenderTier } from './engine/hardwareMaterials';
+import type { XrAudienceActions } from './xr/audienceScene';
+import type { XrQualityProfile } from './xr/audienceExperience';
 import { AudioEngine } from './audio/AudioEngine';
 import {
   analyzeFileBeatGrid,
@@ -251,8 +253,22 @@ export const App: React.FC = () => {
   const webXrModuleRef = useRef<WebXrModule | null>(null);
   const webXrRequestGenerationRef = useRef(0);
   const webXrWarningAcknowledgedRef = useRef(false);
+  const webXrLimiterOverrideRef = useRef(false);
+  const requestWebXrExitRef = useRef<() => void>(() => {});
+  // Loaded only after an immersive session has been granted so the default-off/non-XR path
+  // performs no XR preference read or resource allocation.
+  const webXrQualityProfileRef = useRef<XrQualityProfile | null>(null);
+  const webXrAudienceActionsRef = useRef<XrAudienceActions>({
+    goCue: () => {}, backCue: () => {}, setHaze: () => {}, toggleDemo: () => {}, toggleMute: () => {},
+    setLimiterOverride: () => {}, setQualityProfile: () => {}, requestExit: () => {},
+    getStatus: () => ({
+      cueLabel: 'No cue', hazeLevel: 0, demoPlaying: false, muted: false,
+      limiterOverride: false, preflightLabel: 'Not checked', laserLabel: 'Lasers: simulated visualization only',
+    }),
+  });
   const renderTier = useMemo(() => detectRenderTier(), []);
-  // Session-only opt-in for full-rate strobe preview (never persisted; always off under reduced motion / viewer / XR)
+  // Desktop session-only opt-in. XR entry forces this off; the in-world menu owns a separate
+  // warning-acknowledged, non-persistent override and clears it on hide/exit.
   const [fullRateStrobeOptIn, setFullRateStrobeOptIn] = useState(false);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState<boolean>(() =>
     typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -442,6 +458,9 @@ export const App: React.FC = () => {
   }), []);
   const [audioDiscrete, setAudioDiscrete] = useState(INITIAL_DISCRETE_AUDIO);
   const [volume, setVolume] = useState(0.72);
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  const webXrUnmutedVolumeRef = useRef(0.72);
   const [activeCamera, setActiveCamera] = useState<CameraPreset>('foh');
   const activeCameraRef = useRef(activeCamera);
   activeCameraRef.current = activeCamera;
@@ -686,11 +705,22 @@ export const App: React.FC = () => {
         }
         throw new Error('The 3D stage is still loading.');
       }
+      const quality = webXrQualityProfileRef.current ?? mod.loadXrQualityProfile();
+      webXrQualityProfileRef.current = quality;
+      const qualitySettings = mod.xrSessionQuality(quality);
       await engine.enterWebXrSession(session, {
         referenceSpaceType: mod.WEBXR_REFERENCE_SPACE,
-        framebufferScale: mod.WEBXR_FRAMEBUFFER_SCALE,
-        foveation: mod.WEBXR_FOVEATION,
+        framebufferScale: qualitySettings.framebufferScale,
+        foveation: qualitySettings.foveation,
+        audience: {
+          eyeMode: 'standing',
+          qualityProfile: quality,
+          actions: webXrAudienceActionsRef.current,
+        },
         onEnded: (reason) => {
+          webXrLimiterOverrideRef.current = false;
+          setFullRateStrobeOptIn(false);
+          engineRef.current?.setFullRateStrobePreview(false);
           if (generation !== webXrRequestGenerationRef.current) return;
           const next: WebXrPhase =
             renderSettingsRef.current.webxrAudience && !viewerModeRef.current && !window.stageforgeDesktop
@@ -770,6 +800,7 @@ export const App: React.FC = () => {
     setWebXrPhase('exiting');
     void engineRef.current?.exitWebXrSession();
   }, []);
+  requestWebXrExitRef.current = exitWebXr;
 
   // Synchronous fail-closed barrier (Codex qa-04 R1): detach StageEngine's DMX frame listener and initiate
   // emergency blackout/shutdown BEFORE any document/rig/stage/MVR/ILDA/cue/ack mutation touches StageEngine.
@@ -1876,6 +1907,7 @@ export const App: React.FC = () => {
       rebuildRig: () => engine.forceRebuildCurrentRig(),
       controlLoopHealth: () => engine.getControlLoopHealth(),
       webXr: () => ({ phase: webXrPhaseRef.current, ...engine.webXrDiagnostics() }),
+      webXrMenuAction: (action: string) => engine.activateWebXrMenuForTest(action),
       attemptWebXrDmxListener: () => {
         engine.setDmxFrameListener(() => {});
         return engine.webXrDiagnostics();
@@ -2224,6 +2256,68 @@ export const App: React.FC = () => {
     }
     const playing = ae.togglePlayPause();
     showToast(playing ? `Playing: ${ae.getStatus().trackName}` : 'Audio Paused');
+  };
+
+  webXrAudienceActionsRef.current = {
+    goCue: () => {
+      const list = cuesRef.current;
+      if (!list.length) return;
+      const index = list.findIndex((cue) => cue.id === activeCueIdRef.current);
+      triggerCue(list[index >= 0 && index + 1 < list.length ? index + 1 : 0]);
+    },
+    backCue: () => {
+      const list = cuesRef.current;
+      if (!list.length) return;
+      const index = list.findIndex((cue) => cue.id === activeCueIdRef.current);
+      triggerCue(list[index > 0 ? index - 1 : list.length - 1]);
+    },
+    setHaze: (level) => {
+      const clamped = Math.max(0, Math.min(1, level));
+      const current = showStateRef.current;
+      const next = { ...current, atmo: { ...current.atmo, hazeLevel: clamped } };
+      showStateRef.current = next;
+      engineRef.current?.setShowState(next);
+      setShowState(next);
+      setCueModified(true);
+    },
+    toggleDemo: handleTogglePlay,
+    toggleMute: () => {
+      const muted = volumeRef.current <= 0.001;
+      const next = muted ? Math.max(0.05, webXrUnmutedVolumeRef.current) : 0;
+      if (!muted) webXrUnmutedVolumeRef.current = volumeRef.current;
+      volumeRef.current = next;
+      setVolume(next);
+      audioEngineRef.current?.setVolume(next);
+    },
+    setLimiterOverride: (enabled) => {
+      const allowed = Boolean(
+        enabled &&
+        webXrWarningAcknowledgedRef.current &&
+        webXrPhaseRef.current === 'active' &&
+        !prefersReducedMotion,
+      );
+      webXrLimiterOverrideRef.current = allowed;
+      engineRef.current?.setFullRateStrobePreview(allowed);
+    },
+    setQualityProfile: (profile) => {
+      webXrQualityProfileRef.current = profile;
+      webXrModuleRef.current?.saveXrQualityProfile(profile);
+    },
+    getStatus: () => {
+      const active = cuesRef.current.find((cue) => cue.id === activeCueIdRef.current);
+      const audio = audioEngineRef.current?.getStatus();
+      const preflight = preflightRef.current;
+      return {
+        cueLabel: active ? `Cue: ${active.name}` : 'Cue: none',
+        hazeLevel: showStateRef.current.atmo.hazeLevel,
+        demoPlaying: Boolean(audio?.playing),
+        muted: volumeRef.current <= 0.001,
+        limiterOverride: webXrLimiterOverrideRef.current,
+        preflightLabel: preflight?.badgeLabel ?? 'Not checked',
+        laserLabel: 'Lasers: simulated visualization only · pre-flight/LSO required',
+      };
+    },
+    requestExit: () => requestWebXrExitRef.current(),
   };
 
   const handleUploadAudio = async (file: File) => {

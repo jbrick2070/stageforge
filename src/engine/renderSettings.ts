@@ -286,7 +286,8 @@ export interface FullRateStrobePolicyInput {
 
 /**
  * Preview-only full-rate strobe opt-in policy.
- * Always disabled under prefers-reduced-motion, WebXR sessions, or read-only pitch viewer mode.
+ * Always disables the desktop opt-in under prefers-reduced-motion, WebXR sessions, or read-only
+ * pitch viewer mode. WebXR's explicit in-world, warning-acknowledged override is scoped separately.
  * Never persisted across page reloads and never affects physical DMX output.
  */
 export function resolveEffectiveFullRateStrobe(input: FullRateStrobePolicyInput): boolean {

@@ -3,8 +3,7 @@
  * this chunk exists only to keep WebXR allocation and request code off first load.
  */
 export const WEBXR_REFERENCE_SPACE: XRReferenceSpaceType = 'local-floor';
-export const WEBXR_FRAMEBUFFER_SCALE = 0.85;
-export const WEBXR_FOVEATION = 0.5;
+export { loadXrQualityProfile, saveXrQualityProfile, xrSessionQuality } from './audienceExperience';
 
 /**
  * Deliberately not async: requestSession is the first operation after the caller's

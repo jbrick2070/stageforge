@@ -108,6 +108,7 @@ import {
   type MeasureOverlayOptions,
 } from './measureOverlay';
 import { fitAuthoredFoh, LED_DISPLAY_MATERIAL_NAME } from './fohFraming';
+import type { WebXrAudienceScene, XrAudienceSceneConfig } from '../xr/audienceScene';
 import { buildScenicPiece, ScenicPiece } from './scenicProps';
 import { SPEAKER_PROFILES } from '../data/speakerProfiles';
 import { PROP_CATALOG } from '../data/stageProps';
@@ -279,6 +280,7 @@ export interface WebXrSessionConfig {
   referenceSpaceType: XRReferenceSpaceType;
   framebufferScale: number;
   foveation: number;
+  audience: Omit<XrAudienceSceneConfig, 'viewpoints'>;
   onEnded?: (reason: 'system-exit' | 'requested-exit' | 'error' | 'context-loss' | 'dispose') => void;
 }
 
@@ -306,6 +308,8 @@ interface WebXrLease {
   fitFohOnResize: boolean;
   litPuffs: boolean;
   xrEnabled: boolean;
+  audience: WebXrAudienceScene | null;
+  baseReferenceSpace: XRReferenceSpace | null;
   restored: boolean;
 }
 
@@ -1150,6 +1154,25 @@ export class StageEngine {
     if (this.particles.isLitPuffsEnabled()) this.particles.setLitPuffs(false);
   }
 
+  private buildWebXrFohFrame() {
+    const rig = this.currentRig;
+    if (!rig) return undefined;
+    const rearLimit = this.room
+      ? this.room.rearZ - 1.5
+      : rig.venue === 'warehouse'
+        ? 32
+        : rig.venue === 'arena'
+          ? 45
+          : 60;
+    const eyeCeiling = this.room ? this.room.ceilingY : this.roofY;
+    const subjects = [...this.rigGroup.children.slice(1), ...Array.from(this.scenicPieces.values(), (piece) => piece.root)];
+    const frame = fitAuthoredFoh(subjects, this.ledWallMats, this.camera.aspect, eyeCeiling, rearLimit, CAMERA_FOV);
+    return {
+      position: { x: frame.position.x, y: frame.position.y, z: frame.position.z },
+      target: { x: frame.target.x, y: frame.target.y, z: frame.target.z },
+    };
+  }
+
   /** Acquire the renderer's single animation-loop lease for an already-requested immersive session. */
   public async enterWebXrSession(session: XRSession, config: WebXrSessionConfig): Promise<void> {
     if (this.disposed || this.contextLost) throw new Error('The 3D renderer is unavailable.');
@@ -1163,7 +1186,10 @@ export class StageEngine {
       onEnded: config.onEnded,
       endReason: 'system-exit',
       endListener: () => queueMicrotask(() => this.restoreWebXrLease(lease.endReason)),
-      visibilityListener: () => { this.webXrVisibility = session.visibilityState; },
+      visibilityListener: () => {
+        this.webXrVisibility = session.visibilityState;
+        this.webXrLease?.audience?.setVisible(session.visibilityState === 'visible');
+      },
       rendererPixelRatio: this.renderer.getPixelRatio(),
       rendererSize,
       cameraPosition: this.camera.position.clone(),
@@ -1182,6 +1208,8 @@ export class StageEngine {
       fitFohOnResize: this.fitFohOnResize,
       litPuffs: this.particles.isLitPuffsEnabled(),
       xrEnabled: this.renderer.xr.enabled,
+      audience: null,
+      baseReferenceSpace: null,
       restored: false,
     };
     this.webXrLease = lease;
@@ -1212,7 +1240,7 @@ export class StageEngine {
     this.renderer.xr.setFramebufferScaleFactor(config.framebufferScale);
     this.renderer.xr.setFoveation(config.foveation);
     this.lastFrameTime = performance.now();
-    this.renderer.setAnimationLoop((time: number) => {
+    this.renderer.setAnimationLoop((time: number, frame?: XRFrame) => {
       if (this.disposed || this.contextLost || this.webXrLease !== lease) return;
       this.lastRafTickMs = performance.now();
       if (this.webXrVisibility !== 'visible') {
@@ -1220,17 +1248,40 @@ export class StageEngine {
         this.lastFrameTime = time;
         return;
       }
+      const xrCamera = this.renderer.xr.getCamera();
+      lease.audience?.update(frame, time / 1000, xrCamera);
       this.runControlTick(time, true, 'xr');
       this.webXrFrames++;
-      const xrCamera = this.renderer.xr.getCamera();
       this.webXrLastViews = xrCamera.cameras.length;
       this.webXrLastCalls = this.renderer.info.render.calls;
       this.webXrLastTriangles = this.renderer.info.render.triangles;
     });
 
     try {
+      lease.baseReferenceSpace = await session.requestReferenceSpace(config.referenceSpaceType);
       await this.renderer.xr.setSession(session);
       if (this.webXrLease !== lease || lease.restored) throw new Error('VR session ended during startup.');
+      const [{ WebXrAudienceScene }, { deriveAudienceViewpoints }] = await Promise.all([
+        import('../xr/audienceScene'),
+        import('../xr/audienceExperience'),
+      ]);
+      if (this.webXrLease !== lease || lease.restored) throw new Error('VR session ended during audience setup.');
+      const foh = this.buildWebXrFohFrame();
+      lease.audience = new WebXrAudienceScene(
+        this.renderer,
+        this.scene,
+        session,
+        lease.baseReferenceSpace,
+        {
+          ...config.audience,
+          viewpoints: deriveAudienceViewpoints(this.currentRig ?? {
+            venue: 'arena',
+            stageWidth: 22,
+            stageDepth: 11,
+          }, foh),
+        },
+      );
+      lease.audience.setVisible(this.webXrVisibility === 'visible');
       this.webXrEntries++;
     } catch (error) {
       lease.endReason = 'error';
@@ -1270,6 +1321,10 @@ export class StageEngine {
     this.webXrPhysicalOutputInterlock = false;
     lease.session.removeEventListener('end', lease.endListener);
     lease.session.removeEventListener('visibilitychange', lease.visibilityListener);
+    if (lease.baseReferenceSpace) this.renderer.xr.setReferenceSpace(lease.baseReferenceSpace);
+    lease.audience?.dispose();
+    lease.audience = null;
+    lease.baseReferenceSpace = null;
     this.renderer.setAnimationLoop(null);
     this.renderer.xr.enabled = lease.xrEnabled;
 
@@ -1342,6 +1397,7 @@ export class StageEngine {
         textures: this.renderer.info.memory.textures,
         programs: this.renderer.info.programs?.length ?? 0,
       },
+      audience: lease?.audience?.diagnostics() ?? null,
       camera: {
         position: this.camera.position.toArray(),
         quaternion: this.camera.quaternion.toArray(),
@@ -1363,6 +1419,10 @@ export class StageEngine {
 
   public isWebXrSessionActive(): boolean {
     return Boolean(this.webXrLease);
+  }
+
+  public activateWebXrMenuForTest(action: string) {
+    this.webXrLease?.audience?.activateForTest(action);
   }
 
   public isWebXrPhysicalOutputInterlocked(): boolean {

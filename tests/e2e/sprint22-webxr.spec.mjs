@@ -74,15 +74,18 @@ test('warning-gated stereo entry restores one loop owner and every renderer leas
   }));
   expect(firstSession.fake.requests[0]).toEqual({ mode: 'immersive-vr', requiredFeatures: ['local-floor'] });
   expect(firstSession.fake.referenceSpaces.at(-1)).toBe('local-floor');
-  expect(firstSession.fake.scaleFactor).toBe(0.85);
-  expect(firstSession.fake.foveation).toBe(0.5);
+  expect(firstSession.fake.scaleFactor).toBe(1);
+  expect(firstSession.fake.foveation).toBe(0.25);
   expect(firstSession.graphics.fullRateStrobePreview).toBe(false);
   expect(firstSession.graphics.neonFrame.active).toBe(false);
   expect(firstSession.graphics.atmosphere.active).toBe(false);
   expect(firstSession.graphics.wetDeck.active).toBe(false);
 
-  const visibleFrames = (await xrState(page)).frames;
-  await page.evaluate(() => window.__fakeWebXr.setVisibility('hidden'));
+  const visibleFrames = await page.evaluate(() => {
+    const frames = window.stageforgeProbe.webXr().frames;
+    window.__fakeWebXr.setVisibility('hidden');
+    return frames;
+  });
   await page.waitForTimeout(150);
   expect((await xrState(page)).frames).toBe(visibleFrames);
   await page.evaluate(() => window.__fakeWebXr.setVisibility('visible'));
@@ -217,4 +220,112 @@ test('a canceled chooser whose late session cannot end keeps physical output lat
   if (!(await advanced.evaluate((element) => element.parentElement?.hasAttribute('open')))) await advanced.click();
   await expect(page.locator('[data-testid="dmx-webxr-blocked"]:visible')).toBeVisible();
   await expect(page.locator('[data-testid="dmx-output-arm"]:visible')).toBeDisabled();
+});
+
+test('audience viewpoints, comfort menu, preview workflows and emulator budgets stay isolated', async ({ page }) => {
+  await boot(page);
+  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await page.getByRole('button', { name: /Arena Rock/ }).first().click();
+  await enter(page, true);
+  await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
+
+  const initial = await xrState(page);
+  expect(initial.audience.currentViewpoint).toBe('floor');
+  expect(initial.audience.eyeMode).toBe('standing');
+  expect(initial.audience.smoothLocomotion).toBe(false);
+  expect(initial.audience.controllerCount).toBe(2);
+  expect(initial.audience.ownedTextures).toBe(1);
+  expect(initial.audience.status.laserLabel).toContain('simulated visualization only');
+  expect(initial.audience.status.preflightLabel.length).toBeGreaterThan(0);
+  expect(initial.audience.buttons).not.toEqual(expect.arrayContaining(['arm', 'file', 'ai']));
+
+  const action = async (id) => {
+    await page.evaluate((value) => window.stageforgeProbe.webXrMenuAction(value), id);
+  };
+  for (const seat of ['stage-front', 'mezzanine', 'balcony', 'foh', 'floor']) {
+    await action(`seat:${seat}`);
+    await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
+    expect((await xrState(page)).audience.currentViewpoint).toBe(seat);
+  }
+
+  await action('eye:seated');
+  await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
+  const seated = (await xrState(page)).audience;
+  expect(seated.eyeMode).toBe('seated');
+  expect(seated.desiredHeadPose.position.y - seated.baseHeadPose.position.y).not.toBeNaN();
+  await action('eye:standing');
+  await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
+  const standing = (await xrState(page)).audience;
+  expect(standing.desiredHeadPose.position.y - seated.desiredHeadPose.position.y).toBeCloseTo(0.4, 5);
+
+  await action('snap:right');
+  await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
+  expect((await xrState(page)).audience.yawOffsetDeg).toBe(30);
+  await action('snap:left');
+  await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
+  expect((await xrState(page)).audience.yawOffsetDeg).toBe(0);
+  await action('snap:left');
+  await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
+  await action('reset');
+  await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
+  expect((await xrState(page)).audience.yawOffsetDeg).toBe(0);
+  await action('vignette');
+  expect((await xrState(page)).audience.vignette).toBe(true);
+
+  await action('cue:go');
+  const cueBefore = await page.evaluate(() => window.stageforgeProbe.activeCueId());
+  await action('cue:go');
+  const cueAfterGo = await page.evaluate(() => window.stageforgeProbe.activeCueId());
+  expect(cueAfterGo).not.toBe(cueBefore);
+  await action('cue:back');
+  expect(await page.evaluate(() => window.stageforgeProbe.activeCueId())).toBe(cueBefore);
+
+  const hazeBefore = (await xrState(page)).audience.status.hazeLevel;
+  await action('haze:up');
+  await expect.poll(async () => (await xrState(page)).audience?.status.hazeLevel).toBeCloseTo(Math.min(1, hazeBefore + 0.1), 5);
+  const demoWasPlaying = (await xrState(page)).audience.status.demoPlaying;
+  await action('demo');
+  await expect.poll(async () => (await xrState(page)).audience?.status.demoPlaying).toBe(!demoWasPlaying);
+  await action('demo');
+  await expect.poll(async () => (await xrState(page)).audience?.status.demoPlaying).toBe(demoWasPlaying);
+  await action('mute');
+  expect((await xrState(page)).audience.status.muted).toBe(true);
+  await action('mute');
+  expect((await xrState(page)).audience.status.muted).toBe(false);
+
+  await action('limiter');
+  expect((await xrState(page)).audience.limiterConfirmArmed).toBe(true);
+  expect((await xrState(page)).audience.status.limiterOverride).toBe(false);
+  await action('limiter');
+  expect((await xrState(page)).audience.status.limiterOverride).toBe(true);
+  expect((await page.evaluate(() => window.stageforgeProbe.graphicsProbe())).fullRateStrobePreview).toBe(true);
+  const optionalBeforeHidden = await page.evaluate(() => {
+    const frames = window.stageforgeProbe.webXr().audience.optionalFrames;
+    window.__fakeWebXr.setVisibility('hidden');
+    return frames;
+  });
+  await page.waitForTimeout(150);
+  const hidden = (await xrState(page)).audience;
+  expect(hidden.optionalFrames).toBe(optionalBeforeHidden);
+  expect(hidden.status.limiterOverride).toBe(false);
+  await page.evaluate(() => window.__fakeWebXr.setVisibility('visible'));
+  await expect.poll(async () => (await xrState(page)).audience?.optionalFrames).toBeGreaterThan(optionalBeforeHidden);
+
+  const budgeted = await xrState(page);
+  expect(budgeted.lastCalls).toBeLessThanOrEqual(budgeted.audience.emulatorBudget.calls);
+  expect(budgeted.lastTriangles).toBeLessThanOrEqual(budgeted.audience.emulatorBudget.triangles);
+  expect(budgeted.memory.textures).toBeLessThanOrEqual(budgeted.audience.emulatorBudget.rendererTextures);
+  expect(budgeted.audience.ownedTextures).toBe(budgeted.audience.emulatorBudget.ownedTextures);
+
+  await action('quality:standalone-low');
+  expect((await xrState(page)).audience.currentQuality).toBe('pc-link-high');
+  expect((await xrState(page)).audience.nextQuality).toBe('standalone-low');
+  await action('exit');
+  await expect.poll(async () => (await xrState(page)).phase).toBe('ready');
+  await enter(page);
+  const lowProfile = await page.evaluate(() => window.__fakeWebXr.snapshot());
+  expect(lowProfile.scaleFactor).toBe(0.75);
+  expect(lowProfile.foveation).toBe(0.65);
+  expect((await xrState(page)).audience.currentQuality).toBe('standalone-low');
+  await exit(page);
 });

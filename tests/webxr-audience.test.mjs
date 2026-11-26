@@ -1,0 +1,109 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createServer } from 'vite';
+
+const loader = await createServer({
+  configFile: false,
+  server: { middlewareMode: true, hmr: false, ws: false },
+  appType: 'custom',
+});
+const mod = await loader.ssrLoadModule('/src/xr/audienceExperience.ts');
+
+test.after(async () => loader.close());
+
+test('audience viewpoints are bounded and preserve seated/standing eye heights', () => {
+  for (const venue of ['arena', 'warehouse', 'festival', 'theatre', 'club']) {
+    const rig = { venue, stageWidth: 24, stageDepth: 12 };
+    const foh = { position: { x: 2, y: 6.4, z: 40 }, target: { x: 0, y: 4, z: 0 } };
+    const seats = mod.deriveAudienceViewpoints(rig, foh);
+    assert.deepEqual(seats.map((seat) => seat.id), ['stage-front', 'floor', 'mezzanine', 'balcony', 'foh']);
+    for (const seat of seats) {
+      assert.ok(Number.isFinite(seat.x) && Number.isFinite(seat.z) && Number.isFinite(seat.yawRad));
+      const standing = mod.viewpointHeadPose(seat, 'standing');
+      const seated = mod.viewpointHeadPose(seat, 'seated');
+      assert.equal(Number((standing.position.y - seat.floorY).toFixed(6)), 1.6);
+      assert.equal(Number((seated.position.y - seat.floorY).toFixed(6)), 1.2);
+      assert.equal(Number((standing.position.y - seated.position.y).toFixed(6)), 0.4);
+    }
+    assert.equal(seats.find((seat) => seat.id === 'foh').x, 2);
+  }
+  const arena = mod.deriveAudienceViewpoints({ venue: 'arena', stageWidth: 24, stageDepth: 12 });
+  assert.equal(arena.find((seat) => seat.id === 'mezzanine').virtualTier, false);
+  assert.equal(arena.find((seat) => seat.id === 'balcony').floorY, 4.29);
+  const festival = mod.deriveAudienceViewpoints({ venue: 'festival', stageWidth: 24, stageDepth: 12 });
+  assert.equal(festival.find((seat) => seat.id === 'balcony').virtualTier, true);
+});
+
+test('offset reference-space transform resolves viewer and controller poses coherently', () => {
+  const q = (yaw) => ({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) });
+  const baseHead = { position: { x: 0.12, y: 1.62, z: -0.08 }, orientation: q(0.1) };
+  const desired = { position: { x: 5, y: 4.17, z: 28 }, orientation: q(-0.8) };
+  const offset = mod.offsetPoseForDesiredHead(baseHead, desired);
+  const resolved = mod.resolvePoseInOffsetSpace(baseHead, offset);
+  for (const axis of ['x', 'y', 'z']) assert.ok(Math.abs(resolved.position[axis] - desired.position[axis]) < 1e-9);
+  assert.ok(Math.abs(resolved.orientation.y - desired.orientation.y) < 1e-9);
+  assert.ok(Math.abs(resolved.orientation.w - desired.orientation.w) < 1e-9);
+
+  const baseController = { position: { x: 0.4, y: 1.25, z: -0.5 }, orientation: q(0.1) };
+  const resolvedController = mod.resolvePoseInOffsetSpace(baseController, offset);
+  const headToControllerBase = Math.hypot(
+    baseController.position.x - baseHead.position.x,
+    baseController.position.y - baseHead.position.y,
+    baseController.position.z - baseHead.position.z,
+  );
+  const headToControllerDerived = Math.hypot(
+    resolvedController.position.x - resolved.position.x,
+    resolvedController.position.y - resolved.position.y,
+    resolvedController.position.z - resolved.position.z,
+  );
+  assert.ok(Math.abs(headToControllerBase - headToControllerDerived) < 1e-9);
+  assert.equal(Number(mod.snapYaw(0, 1).toFixed(9)), Number((Math.PI / 6).toFixed(9)));
+  assert.equal(Number(mod.snapYaw(0, -1).toFixed(9)), Number((-Math.PI / 6).toFixed(9)));
+});
+
+test('menu hit testing uses half-open button bounds and input edges are globally one-shot per frame', () => {
+  const rects = [
+    { id: 'left', x: 0, y: 0, width: 100, height: 100 },
+    { id: 'right', x: 100, y: 0, width: 100, height: 100 },
+  ];
+  assert.equal(mod.menuHitTest({ x: -0.25, y: 0.25, z: 1 }, { x: 0, y: 0, z: -1 }, 200, 200, rects)?.id, 'left');
+  assert.equal(mod.menuHitTest({ x: 0, y: 0.25, z: 1 }, { x: 0, y: 0, z: -1 }, 200, 200, rects)?.id, 'right');
+  assert.equal(mod.menuHitTest({ x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 }, 200, 200, rects), null);
+  assert.equal(mod.menuHitTest({ x: 0.6, y: 0, z: 1 }, { x: 0, y: 0, z: -1 }, 200, 200, rects), null);
+
+  const state = mod.createInputEdgeState();
+  assert.equal(mod.consumeInputEdge(state, 'left', 'select', true, 12), true);
+  assert.equal(mod.consumeInputEdge(state, 'left', 'select', true, 12), false);
+  assert.equal(mod.consumeInputEdge(state, 'right', 'select', true, 12), false);
+  assert.equal(mod.consumeInputEdge(state, 'left', 'select', false, 13), false);
+  assert.equal(mod.consumeInputEdge(state, 'left', 'select', true, 13), true);
+});
+
+test('XR quality preference is validated and defaults to standalone only for Oculus Browser', () => {
+  assert.equal(mod.defaultXrQualityProfile('Mozilla OculusBrowser/35'), 'standalone-low');
+  assert.equal(mod.defaultXrQualityProfile('Mozilla Chrome/130'), 'pc-link-high');
+  assert.deepEqual(mod.XR_ARENA_EMULATOR_BUDGET, {
+    calls: 270,
+    triangles: 760000,
+    rendererTextures: 26,
+    ownedTextures: 1,
+  });
+  const values = new Map();
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  try {
+    mod.saveXrQualityProfile('standalone-low');
+    assert.equal(mod.loadXrQualityProfile('Chrome'), 'standalone-low');
+    values.set(mod.XR_PROFILE_STORAGE_KEY, 'corrupt');
+    assert.equal(mod.loadXrQualityProfile('Chrome'), 'pc-link-high');
+    globalThis.localStorage = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+    assert.equal(mod.loadXrQualityProfile('OculusBrowser'), 'standalone-low');
+    assert.doesNotThrow(() => mod.saveXrQualityProfile('pc-link-high'));
+  } finally {
+    if (previous === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previous;
+  }
+});
