@@ -10,6 +10,7 @@ export async function installFakeWebXr(page, options = {}) {
       denyNext: Boolean(initial.denyNext),
       deferNext: false,
       deferEndNext: false,
+      rejectEndNext: false,
       requests: [],
       sessions: [],
       pending: [],
@@ -106,6 +107,10 @@ export async function installFakeWebXr(page, options = {}) {
       end() {
         if (this.ended) return Promise.resolve();
         if (this.ending && this.endPromise) return this.endPromise;
+        if (state.rejectEndNext) {
+          state.rejectEndNext = false;
+          return Promise.reject(new DOMException('End rejected by test', 'OperationError'));
+        }
         if (state.deferEndNext) {
           state.deferEndNext = false;
           this.ending = true;
@@ -197,6 +202,7 @@ export async function installFakeWebXr(page, options = {}) {
       },
       failReferenceSpaceNext() { state.failReferenceSpaceNext = true; },
       deferEndNext() { state.deferEndNext = true; },
+      rejectEndNext() { state.rejectEndNext = true; },
       resolvePendingEnd() { state.pendingEnds.shift()?.resolve(); },
       systemExit() { return state.activeSession?.end(); },
       setVisibility(value) { state.activeSession?.setVisibility(value); },

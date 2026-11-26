@@ -119,6 +119,20 @@ test('warning-gated stereo entry restores one loop owner and every renderer leas
   await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ webxrAudience: true }));
   await expect.poll(async () => (await xrState(page)).phase).toBe('ready');
 
+  // A rejected end() is not proof of shutdown: retain both interlocks until a later system end event.
+  await enter(page);
+  await page.evaluate(() => window.__fakeWebXr.rejectEndNext());
+  await page.getByTestId('webxr-exit').click();
+  await expect.poll(async () => (await xrState(page)).phase).toBe('exiting');
+  await page.waitForTimeout(100);
+  const rejectedEnd = await xrState(page);
+  expect(rejectedEnd.active).toBe(true);
+  expect(rejectedEnd.physicalOutputInterlocked).toBe(true);
+  expect((await page.evaluate(() => window.stageforgeProbe.attemptWebXrDmxListener())).physicalOutputListenerAttached).toBe(false);
+  await page.evaluate(() => window.__fakeWebXr.systemExit());
+  await expect.poll(async () => (await xrState(page)).phase).toBe('ready');
+  await expect.poll(async () => (await xrState(page)).physicalOutputInterlocked).toBe(false);
+
   // Permission denial never transfers renderer ownership.
   const entriesAfterFirst = (await xrState(page)).entries;
   await page.evaluate(() => window.__fakeWebXr.denyNext());
@@ -146,7 +160,7 @@ test('warning-gated stereo entry restores one loop owner and every renderer leas
   await enter(page);
   await page.evaluate(() => window.__fakeWebXr.systemExit());
   await expect.poll(async () => (await xrState(page)).phase).toBe('ready');
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 6; i++) {
     await enter(page);
     await exit(page);
   }
@@ -169,4 +183,38 @@ test('warning-gated stereo entry restores one loop owner and every renderer leas
   expect(restored.composerPasses).toEqual(baseline.composerPasses);
   expect(fake.listenerBalances.every((count) => count === 0)).toBe(true);
   expect(fake.rafCounts.every((count) => count === 0)).toBe(true);
+});
+
+test('a canceled chooser whose late session cannot end keeps physical output latched', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => window.__fakeWebXr.deferNext());
+  await page.getByTestId('webxr-enter').click();
+  await expect(page.getByTestId('webxr-warning')).toBeVisible();
+  await page.getByTestId('webxr-warning-confirm').click();
+  await expect.poll(async () => (await xrState(page)).phase).toBe('requesting');
+  await page.getByRole('button', { name: 'DMX monitor' }).click();
+  let advanced = page.locator('[data-testid="dmx-advanced-summary"]:visible');
+  if (!(await advanced.evaluate((element) => element.parentElement?.hasAttribute('open')))) await advanced.click();
+  await expect(page.locator('[data-testid="dmx-webxr-blocked"]:visible')).toBeVisible();
+  await expect(page.locator('[data-testid="dmx-output-arm"]:visible')).toBeDisabled();
+  await page.getByRole('button', { name: 'Close DMX monitor' }).click();
+  await page.getByTestId('webxr-cancel-request').click();
+  await expect.poll(async () => (await xrState(page)).phase).toBe('exiting');
+  await page.evaluate(() => {
+    window.__fakeWebXr.rejectEndNext();
+    window.__fakeWebXr.resolvePending();
+  });
+  await expect.poll(() => page.evaluate(() => window.__fakeWebXr.snapshot().active)).toBe(true);
+  await page.waitForTimeout(100);
+  const latched = await xrState(page);
+  expect(latched.phase).toBe('exiting');
+  expect(latched.active).toBe(false);
+  expect(latched.physicalOutputInterlocked).toBe(true);
+  expect((await page.evaluate(() => window.stageforgeProbe.attemptWebXrDmxListener())).physicalOutputListenerAttached).toBe(false);
+
+  await page.getByRole('button', { name: 'DMX monitor' }).click();
+  advanced = page.locator('[data-testid="dmx-advanced-summary"]:visible');
+  if (!(await advanced.evaluate((element) => element.parentElement?.hasAttribute('open')))) await advanced.click();
+  await expect(page.locator('[data-testid="dmx-webxr-blocked"]:visible')).toBeVisible();
+  await expect(page.locator('[data-testid="dmx-output-arm"]:visible')).toBeDisabled();
 });

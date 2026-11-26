@@ -600,7 +600,10 @@ export const App: React.FC = () => {
     capabilities.liveOutput,
     clearAllBumps,
     () => {
-      if (webXrBlocksPhysicalOutput(webXrPhaseRef.current) || engineRef.current?.isWebXrSessionActive()) {
+      if (
+        webXrBlocksPhysicalOutput(webXrPhaseRef.current) ||
+        engineRef.current?.isWebXrPhysicalOutputInterlocked()
+      ) {
         return {
           allowed: false,
           reason: 'Cannot arm physical output while VR is pending or active.',
@@ -638,7 +641,9 @@ export const App: React.FC = () => {
 
     // Keep this request first after synchronous interlock checks: the warning-confirm click owns activation.
     const sessionPromise = mod.requestAudienceSession();
+    engineRef.current?.setWebXrPhysicalOutputInterlock(true);
     const generation = ++webXrRequestGenerationRef.current;
+    let sessionObtained = false;
     webXrWarningAcknowledgedRef.current = true;
     webXrPhaseRef.current = 'requesting';
     setWebXrPhase('requesting');
@@ -646,12 +651,19 @@ export const App: React.FC = () => {
     engineRef.current?.setFullRateStrobePreview(false);
 
     void sessionPromise.then(async (session) => {
+      sessionObtained = true;
       if (
         generation !== webXrRequestGenerationRef.current ||
         liveDmxRef.current.armed || liveDmxRef.current.isLive ||
         !renderSettingsRef.current.webxrAudience
       ) {
-        await session.end().catch(() => {});
+        try {
+          await session.end();
+        } catch {
+          showToast('VR could not confirm that the session ended. Physical output remains blocked; reload after leaving VR.');
+          return;
+        }
+        engineRef.current?.setWebXrPhysicalOutputInterlock(false);
         if (generation !== webXrRequestGenerationRef.current && webXrPhaseRef.current === 'exiting') {
           const next: WebXrPhase =
             renderSettingsRef.current.webxrAudience && !viewerModeRef.current && !window.stageforgeDesktop
@@ -664,7 +676,14 @@ export const App: React.FC = () => {
       }
       const engine = engineRef.current;
       if (!engine) {
-        await session.end().catch(() => {});
+        try {
+          await session.end();
+        } catch {
+          webXrPhaseRef.current = 'exiting';
+          setWebXrPhase('exiting');
+          showToast('VR could not confirm that the session ended. Reload after leaving VR.');
+          return;
+        }
         throw new Error('The 3D stage is still loading.');
       }
       await engine.enterWebXrSession(session, {
@@ -689,6 +708,14 @@ export const App: React.FC = () => {
       webXrPhaseRef.current = 'active';
       setWebXrPhase('active');
     }).catch((error) => {
+      const engine = engineRef.current;
+      if (sessionObtained && engine?.isWebXrPhysicalOutputInterlocked()) {
+        webXrPhaseRef.current = 'exiting';
+        setWebXrPhase('exiting');
+        showToast('VR could not confirm that the session ended. Physical output remains blocked; reload after leaving VR.');
+        return;
+      }
+      if (!sessionObtained) engine?.setWebXrPhysicalOutputInterlock(false);
       if (generation !== webXrRequestGenerationRef.current) {
         if (webXrPhaseRef.current === 'exiting') {
           const next: WebXrPhase =

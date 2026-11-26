@@ -648,6 +648,7 @@ export class StageEngine {
   private telemetryAccum = 0;
   private resizeObserver: ResizeObserver;
   private webXrLease: WebXrLease | null = null;
+  private webXrPhysicalOutputInterlock = false;
   private webXrVisibility: XRVisibilityState = 'visible';
   private webXrEntries = 0;
   private webXrExits = 0;
@@ -1154,6 +1155,7 @@ export class StageEngine {
     if (this.disposed || this.contextLost) throw new Error('The 3D renderer is unavailable.');
     if (this.dmxFrameListener) throw new Error('VR cannot start while physical output is live.');
     if (this.webXrLease) throw new Error('A VR session is already pending or active.');
+    this.setWebXrPhysicalOutputInterlock(true);
 
     const rendererSize = this.renderer.getSize(new THREE.Vector2());
     const lease: WebXrLease = {
@@ -1232,8 +1234,13 @@ export class StageEngine {
       this.webXrEntries++;
     } catch (error) {
       lease.endReason = 'error';
-      await session.end().catch(() => {});
-      this.restoreWebXrLease('error');
+      try {
+        await session.end();
+        // A fulfilled end() is authoritative even if a non-conforming runtime omitted the event.
+        if (this.webXrLease === lease) this.restoreWebXrLease('error');
+      } catch {
+        // Do not restore ownership or release the physical-output latch without confirmed session end.
+      }
       throw error;
     }
   }
@@ -1247,7 +1254,8 @@ export class StageEngine {
     try {
       await lease.session.end();
     } catch {
-      this.restoreWebXrLease(reason === 'requested-exit' ? 'error' : reason);
+      // Stay fail-closed until the session later emits `end` (or the page is reloaded).
+      lease.endReason = 'error';
       return;
     }
     // Standards-compliant sessions dispatch `end`; keep fake/quirky runtimes fail-safe.
@@ -1259,6 +1267,7 @@ export class StageEngine {
     if (!lease || lease.restored) return;
     lease.restored = true;
     this.webXrLease = null;
+    this.webXrPhysicalOutputInterlock = false;
     lease.session.removeEventListener('end', lease.endListener);
     lease.session.removeEventListener('visibilitychange', lease.visibilityListener);
     this.renderer.setAnimationLoop(null);
@@ -1347,12 +1356,26 @@ export class StageEngine {
       controlsTarget: this.controls.target.toArray(),
       composerPasses: this.composer.passes.map((pass) => ({ name: pass.constructor?.name ?? 'Pass', enabled: pass.enabled })),
       directRendering: Boolean(lease),
+      physicalOutputInterlocked: this.webXrPhysicalOutputInterlock,
       physicalOutputListenerAttached: Boolean(this.dmxFrameListener),
     };
   }
 
   public isWebXrSessionActive(): boolean {
     return Boolean(this.webXrLease);
+  }
+
+  public isWebXrPhysicalOutputInterlocked(): boolean {
+    return this.webXrPhysicalOutputInterlock;
+  }
+
+  public setWebXrPhysicalOutputInterlock(active: boolean) {
+    if (!active && this.webXrLease) return;
+    this.webXrPhysicalOutputInterlock = active;
+    if (active) {
+      this.dmxFrameListener = undefined;
+      this.stopControlFallbackTimer();
+    }
   }
 
   /**
@@ -3906,7 +3929,7 @@ export class StageEngine {
       serialU2: Uint8Array,
     ) => void
   ) {
-    if (listener && this.webXrLease) {
+    if (listener && (this.webXrLease || this.webXrPhysicalOutputInterlock)) {
       // Renderer-level safety authority: never emit physical frames while XR owns the camera/loop.
       this.dmxFrameListener = undefined;
       this.stopControlFallbackTimer();
