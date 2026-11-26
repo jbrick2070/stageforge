@@ -353,10 +353,13 @@ describe('Sprint 19: shader specialization, CrowdLightingController lifecycle, v
     assert.equal(ctrl.getStats().lightSlotCount, 0);
     assert.equal(ctrl.getStats().phonesShareInstanceMatrix, true);
 
-    // Enable: swaps in dedicated lit variant without mutating baseMat, and keeps phones sharing instanceMatrix
+    // Enable: swaps in dedicated lit variant without mutating baseMat, keeps phones sharing instanceMatrix,
+    // and keeps crowdMesh sorting ahead of phonesMesh despite cloned litMat.id > phonesMesh.material.id.
+    assert.equal(arena.crowdMesh.renderOrder, 0);
     ctrl.setEnabled(true);
     const litMat = arena.crowdMesh.material;
     assert.notEqual(litMat, baseMat);
+    assert.ok(arena.crowdMesh.renderOrder < arena.phonesMesh.renderOrder, 'crowdMesh draws before phonesMesh while lit');
     assert.equal(baseMat.onBeforeCompile, origBeforeCompile, 'base material hook never mutated');
     assert.equal(arena.phonesMesh.instanceMatrix, arena.crowdMesh.instanceMatrix, 'phones stay attached when enabled');
     assert.equal(ctrl.getStats().active, true);
@@ -374,6 +377,7 @@ describe('Sprint 19: shader specialization, CrowdLightingController lifecycle, v
     ctrl.setEnabled(false);
     assert.equal(litDisposed, 1, 'disabling disposes lit material variant immediately');
     assert.equal(arena.crowdMesh.material, baseMat, 'disabling restores exact original MeshStandardMaterial');
+    assert.equal(arena.crowdMesh.renderOrder, 0, 'disabling restores original crowdMesh renderOrder');
     assert.equal(baseMat.onBeforeCompile, origBeforeCompile);
     assert.equal(baseMat.customProgramCacheKey, origCacheKey);
     const snapOff = stageGlb.stageSnapshot(rig, [arena.group, deck], mats);

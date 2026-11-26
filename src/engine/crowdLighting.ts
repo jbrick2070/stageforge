@@ -661,6 +661,7 @@ export class CrowdLightingController {
   private phonesMesh: THREE.InstancedMesh | null = null;
   private baseMaterial: THREE.MeshStandardMaterial | null = null;
   private litMaterial: THREE.MeshStandardMaterial | null = null;
+  private origRenderOrder = 0;
   private seated = false;
   private crowdCenter = { x: 0, y: 1.25, z: 15.5 };
   private readonly state: CrowdShowLightState;
@@ -681,6 +682,7 @@ export class CrowdLightingController {
     this.unbindVenue();
     this.crowdMesh = params.crowdMesh;
     this.phonesMesh = params.phonesMesh;
+    this.origRenderOrder = params.crowdMesh ? params.crowdMesh.renderOrder : 0;
     this.seated = Boolean(params.seated);
     this.crowdCenter = computeCrowdCenter(params.transforms, params.stageDepth);
     if (params.crowdMesh && params.crowdMesh.material instanceof THREE.MeshStandardMaterial) {
@@ -696,11 +698,13 @@ export class CrowdLightingController {
   public unbindVenue(): void {
     if (this.crowdMesh && this.baseMaterial) {
       this.crowdMesh.material = this.baseMaterial;
+      this.crowdMesh.renderOrder = this.origRenderOrder;
     }
     this.releaseLitMaterial();
     this.crowdMesh = null;
     this.phonesMesh = null;
     this.baseMaterial = null;
+    this.origRenderOrder = 0;
   }
 
   public setEnabled(enabled: boolean): void {
@@ -718,6 +722,7 @@ export class CrowdLightingController {
     } else {
       if (this.crowdMesh && this.baseMaterial) {
         this.crowdMesh.material = this.baseMaterial;
+        this.crowdMesh.renderOrder = this.origRenderOrder;
       }
       this.releaseLitMaterial();
       this.state.color0.setRGB(0, 0, 0);
@@ -814,6 +819,10 @@ export class CrowdLightingController {
 
     this.litMaterial = lit;
     this.crowdMesh.material = lit;
+    // Preserve baseMaterial-before-phonesMesh opaque sort order (cloned lit.id > phonesMesh.material.id).
+    if (this.phonesMesh && this.origRenderOrder >= this.phonesMesh.renderOrder) {
+      this.crowdMesh.renderOrder = this.phonesMesh.renderOrder - 1;
+    }
     this.syncUniformValues();
   }
 
