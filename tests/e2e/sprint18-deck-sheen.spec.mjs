@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +24,16 @@ async function exportGlbParts(page) {
   await expect(files).toBeHidden();
   const jsonLen = glb.readUInt32LE(12);
   const json = JSON.parse(glb.toString('utf8', 20, 20 + jsonLen));
-  return { byteLength: glb.byteLength, json };
+  const binStart = 20 + jsonLen + 8;
+  const imagePayloads = (json.images ?? []).map((image) => {
+    const view = json.bufferViews[image.bufferView];
+    const start = binStart + (view.byteOffset ?? 0);
+    return {
+      mimeType: image.mimeType,
+      sha256: createHash('sha256').update(glb.subarray(start, start + view.byteLength)).digest('hex'),
+    };
+  });
+  return { byteLength: glb.byteLength, imagePayloads, json };
 }
 
 test('Sprint 18: default-off parity, close grazing & far FOH specular response, anti-shimmer sweep, legacy & platform decks, GLB invariance, and toggle/context-restore lifecycle', async ({ page }) => {
@@ -286,7 +296,9 @@ test('Sprint 18: default-off parity, close grazing & far FOH specular response, 
   expect(glbOn.json.meshes.length).toBe(glbOff.json.meshes.length);
   expect(glbOn.json.materials.length).toBe(glbOff.json.materials.length);
   expect(glbOn.json.textures).toEqual(glbOff.json.textures);
-  expect(glbOn.json.images).toEqual(glbOff.json.images);
+  // GLTFExporter appends embedded image bufferViews as async encodes finish, so
+  // compare the referenced bytes rather than their nondeterministic bufferView IDs.
+  expect(glbOn.imagePayloads).toEqual(glbOff.imagePayloads);
   const exportedDeckOff = glbOff.json.materials.find((m) => m.name === 'stageDeck');
   const exportedDeckOn = glbOn.json.materials.find((m) => m.name === 'stageDeck');
   expect(exportedDeckOn).toBeDefined();
