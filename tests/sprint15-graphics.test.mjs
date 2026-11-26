@@ -80,6 +80,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       crowdLighting: false,
       litPuffs: false,
       ildaScanEnergy: false,
+      webxrAudience: false,
     });
 
     const hostile = renderSettings.parseRenderSettings({
@@ -99,6 +100,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       crowdLighting: 1,
       litPuffs: 'yes',
       ildaScanEnergy: 'yes',
+      webxrAudience: 'yes',
     });
     assert.deepEqual(hostile, def);
 
@@ -123,6 +125,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       crowdLighting: true,
       litPuffs: true,
       ildaScanEnergy: true,
+      webxrAudience: true,
     });
     assert.deepEqual(valid, {
       bloom: 'half',
@@ -141,6 +144,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       crowdLighting: true,
       litPuffs: true,
       ildaScanEnergy: true,
+      webxrAudience: true,
     });
 
     assert.equal(renderSettings.shouldRunBloom('auto', 0, 'high'), false);

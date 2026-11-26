@@ -123,8 +123,9 @@ export const VOLUMETRIC_BEAM_FRAG = /* glsl */ `
     float density = airDensity(vWorld, uTime, uHaze);
     float body = mix(0.40, 0.20, wash) * density * attenuation * profile * scatter;
     float lens = 0.30 * exp(-35.0 * reach) * profile * (0.06 + uHaze);
+    float nearEyeFade = smoothstep(0.30, 1.00, length(cameraPosition - vWorld));
     // AdditiveBlending applies source alpha: supply straight linear RGB once per face.
-    gl_FragColor = vec4(uColor, clamp((body + lens) * uIntensity, 0.0, 1.0));
+    gl_FragColor = vec4(uColor, clamp((body + lens) * uIntensity * nearEyeFade, 0.0, 1.0));
   }
 `;
 
@@ -238,7 +239,8 @@ export const LASER_SHEET_FRAG = /* glsl */ `
     float density = airDensity(vWorld, uTime, uHaze);
     float signal = (0.69 * rays + sheet) * side * laserTransmission(reach);
     float glow = 0.20 * exp(-48.0 * reach);
-    float alpha = (signal + glow) * density * uIntensity * (1.0 + 0.15 * uAudioPulse);
+    float nearEyeFade = smoothstep(0.30, 1.00, length(cameraPosition - vWorld));
+    float alpha = (signal + glow) * density * uIntensity * (1.0 + 0.15 * uAudioPulse) * nearEyeFade;
     gl_FragColor = vec4(laserColor(x, t), clamp(alpha, 0.0, 1.0));
   }
 `;
@@ -281,7 +283,8 @@ export const LASER_CONE_FRAG = /* glsl */ `
     float sheet = 0.012 + 0.055 * rim * rim * rim;
     float density = airDensity(vWorld, uTime, uHaze);
     float energy = (0.55 * rays + sheet) * laserTransmission(reach) + 0.11 * exp(-45.0 * reach);
-    float alpha = energy * density * uIntensity * (1.0 + 0.14 * uAudioPulse);
+    float nearEyeFade = smoothstep(0.30, 1.00, length(cameraPosition - vWorld));
+    float alpha = energy * density * uIntensity * (1.0 + 0.14 * uAudioPulse) * nearEyeFade;
     gl_FragColor = vec4(laserColor(around, t), clamp(alpha, 0.0, 1.0));
   }
 `;

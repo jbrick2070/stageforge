@@ -78,7 +78,8 @@ import {
   isMeasureOverlayActive,
   type MeasureOverlayOptions,
 } from './engine/measureOverlay';
-import { evaluateLaserZones, type MeasureSnapshot } from './data/measure';
+import { evaluateLaserZones, LASER_LSO_NOTICE, type MeasureSnapshot } from './data/measure';
+import { LASER_SAFETY_DISCLAIMER } from './data/laserSafety';
 import {
   EMPTY_PREFLIGHT_ACKS,
   evaluatePreflight,
@@ -142,6 +143,13 @@ const EMPTY_AUDIO: AudioMetrics = {
   drop: false,
   spectrum: new Float32Array(32),
 };
+
+type WebXrPhase = 'disabled' | 'checking' | 'ready' | 'warning' | 'requesting' | 'active' | 'exiting';
+type WebXrModule = typeof import('./xr/webXrAudience');
+
+function webXrBlocksPhysicalOutput(phase: WebXrPhase): boolean {
+  return phase === 'requesting' || phase === 'active' || phase === 'exiting';
+}
 
 const EMPTY_BUMP: BumpState = {
   blinder: false,
@@ -237,6 +245,12 @@ export const App: React.FC = () => {
   const [renderSettings, setRenderSettings] = useState<RenderSettings>(() => loadRenderSettings());
   const renderSettingsRef = useRef(renderSettings);
   renderSettingsRef.current = renderSettings;
+  const [webXrPhase, setWebXrPhase] = useState<WebXrPhase>('disabled');
+  const webXrPhaseRef = useRef<WebXrPhase>('disabled');
+  webXrPhaseRef.current = webXrPhase;
+  const webXrModuleRef = useRef<WebXrModule | null>(null);
+  const webXrRequestGenerationRef = useRef(0);
+  const webXrWarningAcknowledgedRef = useRef(false);
   const renderTier = useMemo(() => detectRenderTier(), []);
   // Session-only opt-in for full-rate strobe preview (never persisted; always off under reduced motion / viewer / XR)
   const [fullRateStrobeOptIn, setFullRateStrobeOptIn] = useState(false);
@@ -259,12 +273,37 @@ export const App: React.FC = () => {
   const effectiveFullRateStrobe = resolveEffectiveFullRateStrobe({
     userOptIn: fullRateStrobeOptIn,
     prefersReducedMotion,
-    xrPresenting: false,
+    xrPresenting: webXrBlocksPhysicalOutput(webXrPhase),
     viewerMode,
   });
   const effectiveFullRateStrobeRef = useRef(effectiveFullRateStrobe);
   effectiveFullRateStrobeRef.current = effectiveFullRateStrobe;
   const effectiveLookOutput = resolveEffectiveLookOutput(renderSettings, renderTier, prefersReducedMotion);
+
+  useEffect(() => {
+    let cancelled = false;
+    const xr = navigator.xr;
+    const eligible = renderSettings.webxrAudience && !viewerMode && !window.stageforgeDesktop && Boolean(xr?.isSessionSupported);
+    if (!eligible || !xr) {
+      if (webXrBlocksPhysicalOutput(webXrPhaseRef.current)) void engineRef.current?.exitWebXrSession();
+      webXrPhaseRef.current = 'disabled';
+      setWebXrPhase('disabled');
+      return;
+    }
+    webXrPhaseRef.current = 'checking';
+    setWebXrPhase('checking');
+    void xr.isSessionSupported('immersive-vr').then((supported) => {
+      if (cancelled) return;
+      const next: WebXrPhase = supported ? 'ready' : 'disabled';
+      webXrPhaseRef.current = next;
+      setWebXrPhase(next);
+    }).catch(() => {
+      if (cancelled) return;
+      webXrPhaseRef.current = 'disabled';
+      setWebXrPhase('disabled');
+    });
+    return () => { cancelled = true; };
+  }, [renderSettings.webxrAudience, viewerMode]);
 
   const updateRenderSettings = useCallback((patch: Partial<RenderSettings>, persist = true) => {
     const next = parseRenderSettings({ ...renderSettingsRef.current, ...patch });
@@ -278,10 +317,10 @@ export const App: React.FC = () => {
   // Clear the session-only full-rate opt-in whenever reduced-motion turns on or Pitch Viewer is entered
   // so leaving Pitch Viewer or disabling reduced-motion never silently re-arms full-rate flashing.
   useEffect(() => {
-    if (prefersReducedMotion || viewerMode) {
+    if (prefersReducedMotion || viewerMode || webXrBlocksPhysicalOutput(webXrPhase)) {
       setFullRateStrobeOptIn(false);
     }
-  }, [prefersReducedMotion, viewerMode]);
+  }, [prefersReducedMotion, viewerMode, webXrPhase]);
 
   useEffect(() => {
     engineRef.current?.setFullRateStrobePreview(effectiveFullRateStrobe);
@@ -552,6 +591,12 @@ export const App: React.FC = () => {
     capabilities.liveOutput,
     clearAllBumps,
     () => {
+      if (webXrBlocksPhysicalOutput(webXrPhaseRef.current)) {
+        return {
+          allowed: false,
+          reason: 'Cannot arm physical output while VR is pending or active.',
+        };
+      }
       if (engineRef.current?.isContextLost() || engineRef.current?.isDisposed()) {
         return {
           allowed: false,
@@ -573,6 +618,100 @@ export const App: React.FC = () => {
   );
   const liveDmxRef = useRef(liveDmx);
   liveDmxRef.current = liveDmx;
+
+  const beginWebXrRequest = useCallback((mod: WebXrModule) => {
+    const dmx = liveDmxRef.current;
+    if (dmx.armed || dmx.isLive) {
+      showToast('VR is blocked while physical output is armed or live.');
+      return;
+    }
+    if (webXrBlocksPhysicalOutput(webXrPhaseRef.current)) return;
+
+    // Keep this request first after synchronous interlock checks: the warning-confirm click owns activation.
+    const sessionPromise = mod.requestAudienceSession();
+    const generation = ++webXrRequestGenerationRef.current;
+    webXrWarningAcknowledgedRef.current = true;
+    webXrPhaseRef.current = 'requesting';
+    setWebXrPhase('requesting');
+    setFullRateStrobeOptIn(false);
+    engineRef.current?.setFullRateStrobePreview(false);
+
+    void sessionPromise.then(async (session) => {
+      if (
+        generation !== webXrRequestGenerationRef.current ||
+        liveDmxRef.current.armed || liveDmxRef.current.isLive ||
+        !renderSettingsRef.current.webxrAudience
+      ) {
+        await session.end().catch(() => {});
+        return;
+      }
+      const engine = engineRef.current;
+      if (!engine) {
+        await session.end().catch(() => {});
+        throw new Error('The 3D stage is still loading.');
+      }
+      await engine.enterWebXrSession(session, {
+        referenceSpaceType: mod.WEBXR_REFERENCE_SPACE,
+        framebufferScale: mod.WEBXR_FRAMEBUFFER_SCALE,
+        foveation: mod.WEBXR_FOVEATION,
+        onEnded: (reason) => {
+          if (generation !== webXrRequestGenerationRef.current) return;
+          const next: WebXrPhase = renderSettingsRef.current.webxrAudience && !window.stageforgeDesktop ? 'ready' : 'disabled';
+          webXrPhaseRef.current = next;
+          setWebXrPhase(next);
+          if (reason === 'system-exit') showToast('VR session ended by the headset.');
+        },
+      });
+      if (generation !== webXrRequestGenerationRef.current) {
+        await engine.exitWebXrSession();
+        return;
+      }
+      webXrPhaseRef.current = 'active';
+      setWebXrPhase('active');
+    }).catch((error) => {
+      if (generation !== webXrRequestGenerationRef.current) return;
+      const next: WebXrPhase = renderSettingsRef.current.webxrAudience ? 'ready' : 'disabled';
+      webXrPhaseRef.current = next;
+      setWebXrPhase(next);
+      showToast(mod.webXrErrorMessage(error));
+    });
+  }, [showToast]);
+
+  const handleWebXrEntry = useCallback(() => {
+    if (liveDmxRef.current.armed || liveDmxRef.current.isLive) {
+      showToast('VR is blocked while physical output is armed or live.');
+      return;
+    }
+    const loaded = webXrModuleRef.current;
+    if (loaded) {
+      if (webXrWarningAcknowledgedRef.current) beginWebXrRequest(loaded);
+      else {
+        webXrPhaseRef.current = 'warning';
+        setWebXrPhase('warning');
+      }
+      return;
+    }
+    void import('./xr/webXrAudience').then((mod) => {
+      webXrModuleRef.current = mod;
+      if (webXrPhaseRef.current !== 'ready') return;
+      webXrPhaseRef.current = 'warning';
+      setWebXrPhase('warning');
+    }).catch(() => showToast('VR entry code could not be loaded.'));
+  }, [beginWebXrRequest, showToast]);
+
+  const cancelWebXrRequest = useCallback(() => {
+    webXrRequestGenerationRef.current++;
+    const next: WebXrPhase = renderSettingsRef.current.webxrAudience ? 'ready' : 'disabled';
+    webXrPhaseRef.current = next;
+    setWebXrPhase(next);
+  }, []);
+
+  const exitWebXr = useCallback(() => {
+    if (webXrPhaseRef.current !== 'active') return;
+    webXrPhaseRef.current = 'exiting';
+    setWebXrPhase('exiting');
+    void engineRef.current?.exitWebXrSession();
+  }, []);
 
   // Synchronous fail-closed barrier (Codex qa-04 R1): detach StageEngine's DMX frame listener and initiate
   // emergency blackout/shutdown BEFORE any document/rig/stage/MVR/ILDA/cue/ack mutation touches StageEngine.
@@ -1604,7 +1743,7 @@ export const App: React.FC = () => {
           prefersReducedMotion: typeof window !== 'undefined' && typeof window.matchMedia === 'function'
             ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
             : false,
-          xrPresenting: false,
+          xrPresenting: webXrBlocksPhysicalOutput(webXrPhaseRef.current),
           viewerMode: viewerModeRef.current,
         });
         effectiveFullRateStrobeRef.current = eff;
@@ -1678,6 +1817,7 @@ export const App: React.FC = () => {
       redrawAndCapture: (options?: { hideBeams?: boolean; hidePools?: boolean }) => engine.redrawAndCapture(options),
       rebuildRig: () => engine.forceRebuildCurrentRig(),
       controlLoopHealth: () => engine.getControlLoopHealth(),
+      webXr: () => ({ phase: webXrPhaseRef.current, ...engine.webXrDiagnostics() }),
       simulateContextLoss: (lost: boolean) => engine.simulateContextLossForTest(Boolean(lost)),
     };
 
@@ -3414,6 +3554,7 @@ export const App: React.FC = () => {
             effectiveFullRate: effectiveFullRateStrobe,
             prefersReducedMotion,
             viewerMode: true,
+            showWebXrSetting: false,
             effectiveReducedEffects: effectiveLookOutput.reducedEffects,
             reducedEffectsReason: effectiveLookOutput.reducedReason,
             onSetFullRateOptIn: setFullRateStrobeOptIn,
@@ -3507,6 +3648,7 @@ export const App: React.FC = () => {
           effectiveFullRate: effectiveFullRateStrobe,
           prefersReducedMotion,
           viewerMode: false,
+          showWebXrSetting: !window.stageforgeDesktop,
           effectiveReducedEffects: effectiveLookOutput.reducedEffects,
           reducedEffectsReason: effectiveLookOutput.reducedReason,
           onSetFullRateOptIn: setFullRateStrobeOptIn,
@@ -3574,6 +3716,91 @@ export const App: React.FC = () => {
           setDmxDrawerOpen(true);
         }}
       />
+
+      {webXrPhase !== 'disabled' && webXrPhase !== 'checking' && (
+        <div className="fixed top-16 right-3 z-50">
+          {webXrPhase === 'ready' && (
+            <button
+              type="button"
+              data-testid="webxr-enter"
+              onClick={handleWebXrEntry}
+              disabled={liveDmx.armed || liveDmx.isLive}
+              title={liveDmx.armed || liveDmx.isLive ? 'Exit or disarm physical output before VR' : 'Enter immersive VR audience preview'}
+              className="rounded-lg border border-cyan-400/70 bg-cyan-950/90 px-3 py-2 font-mono-tech text-xs font-bold text-cyan-100 shadow-2xl disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              Enter VR
+            </button>
+          )}
+          {webXrPhase === 'requesting' && (
+            <button
+              type="button"
+              data-testid="webxr-cancel-request"
+              onClick={cancelWebXrRequest}
+              className="rounded-lg border border-amber-400/70 bg-amber-950/90 px-3 py-2 font-mono-tech text-xs font-bold text-amber-100 shadow-2xl"
+            >
+              Cancel VR request
+            </button>
+          )}
+          {webXrPhase === 'active' && (
+            <button
+              type="button"
+              data-testid="webxr-exit"
+              onClick={exitWebXr}
+              className="rounded-lg border border-cyan-400/70 bg-cyan-950/90 px-3 py-2 font-mono-tech text-xs font-bold text-cyan-100 shadow-2xl"
+            >
+              Exit VR
+            </button>
+          )}
+          {webXrPhase === 'exiting' && (
+            <span data-testid="webxr-exiting" className="rounded-lg border border-white/20 bg-black/85 px-3 py-2 font-mono-tech text-xs text-zinc-300 shadow-2xl">
+              Exiting VR…
+            </span>
+          )}
+        </div>
+      )}
+
+      {webXrPhase === 'warning' && (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="webxr-warning-title"
+          aria-describedby="webxr-warning-description"
+          data-testid="webxr-warning"
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-black/80 p-4"
+        >
+          <div className="w-full max-w-lg space-y-3 rounded-xl border border-amber-400/70 bg-zinc-950 p-5 shadow-2xl">
+            <h2 id="webxr-warning-title" className="text-base font-bold text-amber-200">Before entering immersive VR</h2>
+            <div id="webxr-warning-description" className="space-y-2 text-xs leading-relaxed text-zinc-200">
+              <p>Immersive motion, bright concert lighting, haze, strobes, and rapid colour changes may cause motion sickness, disorientation, or photosensitive reactions. Stop immediately if you feel unwell.</p>
+              <p>The preview flash limiter will be forced on for VR. Keep the play area clear and follow your headset’s guardian and safety guidance.</p>
+              <p>{LASER_SAFETY_DISCLAIMER} {LASER_LSO_NOTICE}</p>
+              <p className="text-amber-200">VR is a simulated visualization only. It does not prove laser safety, visibility, performance, comfort, or regulatory compliance.</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                autoFocus
+                data-testid="webxr-warning-cancel"
+                onClick={() => {
+                  webXrPhaseRef.current = 'ready';
+                  setWebXrPhase('ready');
+                }}
+                className="rounded border border-white/20 bg-white/10 px-3 py-1.5 text-xs text-zinc-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid="webxr-warning-confirm"
+                onClick={() => beginWebXrRequest(webXrModuleRef.current!)}
+                className="rounded border border-cyan-400/60 bg-cyan-500/20 px-3 py-1.5 text-xs font-bold text-cyan-100"
+              >
+                I understand — enter VR
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Always-visible Full-Rate Strobe Preview warning badge (even in cinema mode) */}
       {effectiveFullRateStrobe && (
@@ -3699,6 +3926,7 @@ export const App: React.FC = () => {
             preflight={preflightReport}
             liveViolationMessage={liveSafetyViolation}
             aiBridgeBlocking={aiBridgeBlocking}
+            webXrBlocking={webXrBlocksPhysicalOutput(webXrPhase)}
             onOpenPreflight={() => setPreflightOpen(true)}
             onClose={() => setDmxDrawerOpen(false)}
           />

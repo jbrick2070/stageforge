@@ -39,6 +39,8 @@ export interface RenderSettings {
   litPuffs: boolean;
   /** Flag-gated bounded ILDA scan-energy ribbons with legacy line fallback (Sprint 21, default off). */
   ildaScanEnergy: boolean;
+  /** Sprint 22 browser-only immersive audience preview. Device-local, experimental, and default off. */
+  webxrAudience: boolean;
 }
 
 export const RENDER_SETTINGS_STORAGE_KEY = 'stageforge.render.v1';
@@ -65,6 +67,7 @@ export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   crowdLighting: false,
   litPuffs: false,
   ildaScanEnergy: false,
+  webxrAudience: false,
 });
 
 const VALID_BLOOM_MODES: ReadonlySet<string> = new Set<BloomMode>(['auto', 'full', 'half', 'off']);
@@ -127,6 +130,9 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   const ildaScanEnergy = Object.hasOwn(obj, 'ildaScanEnergy') && typeof obj.ildaScanEnergy === 'boolean'
     ? obj.ildaScanEnergy
     : DEFAULT_RENDER_SETTINGS.ildaScanEnergy;
+  const webxrAudience = Object.hasOwn(obj, 'webxrAudience') && typeof obj.webxrAudience === 'boolean'
+    ? obj.webxrAudience
+    : DEFAULT_RENDER_SETTINGS.webxrAudience;
   return {
     bloom,
     aa,
@@ -144,6 +150,7 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
     crowdLighting,
     litPuffs,
     ildaScanEnergy,
+    webxrAudience,
   };
 }
 

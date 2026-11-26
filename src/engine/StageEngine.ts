@@ -275,6 +275,40 @@ interface LaserUnitInstance {
   physRgbGov: RgbGovernorState;
 }
 
+export interface WebXrSessionConfig {
+  referenceSpaceType: XRReferenceSpaceType;
+  framebufferScale: number;
+  foveation: number;
+  onEnded?: (reason: 'system-exit' | 'requested-exit' | 'error' | 'context-loss' | 'dispose') => void;
+}
+
+interface WebXrLease {
+  session: XRSession;
+  onEnded?: WebXrSessionConfig['onEnded'];
+  endReason: 'system-exit' | 'requested-exit' | 'error' | 'context-loss' | 'dispose';
+  endListener: () => void;
+  visibilityListener: () => void;
+  rendererPixelRatio: number;
+  rendererSize: THREE.Vector2;
+  cameraPosition: THREE.Vector3;
+  cameraQuaternion: THREE.Quaternion;
+  cameraScale: THREE.Vector3;
+  cameraUp: THREE.Vector3;
+  cameraFov: number;
+  cameraAspect: number;
+  cameraNear: number;
+  cameraFar: number;
+  cameraZoom: number;
+  controlsEnabled: boolean;
+  controlsTarget: THREE.Vector3;
+  cameraLerpActive: boolean;
+  orbitAuto: boolean;
+  fitFohOnResize: boolean;
+  litPuffs: boolean;
+  xrEnabled: boolean;
+  restored: boolean;
+}
+
 interface DmxOutput {
   buffer: Uint8Array;
   physBuffer: Uint8Array;
@@ -613,6 +647,14 @@ export class StageEngine {
   private currentFps = 60;
   private telemetryAccum = 0;
   private resizeObserver: ResizeObserver;
+  private webXrLease: WebXrLease | null = null;
+  private webXrVisibility: XRVisibilityState = 'visible';
+  private webXrEntries = 0;
+  private webXrExits = 0;
+  private webXrFrames = 0;
+  private webXrLastViews = 0;
+  private webXrLastCalls = 0;
+  private webXrLastTriangles = 0;
 
   constructor(
     container: HTMLElement,
@@ -665,6 +707,7 @@ export class StageEngine {
     this.handleContextLostBound = (event: Event) => {
       event.preventDefault();
       this.contextLost = true;
+      if (this.webXrLease) void this.exitWebXrSession('context-loss');
       if (this.rafId !== null) {
         cancelAnimationFrame(this.rafId);
         this.rafId = null;
@@ -695,7 +738,7 @@ export class StageEngine {
       this.bakedIlda?.onContextRestored();
       if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
-      if (!this.disposed && this.rafId === null) this.startLoop();
+      if (!this.disposed && !this.webXrLease && this.rafId === null) this.startLoop();
     };
     this.renderer.domElement.addEventListener('webglcontextlost', this.handleContextLostBound);
     this.renderer.domElement.addEventListener('webglcontextrestored', this.handleContextRestoredBound);
@@ -965,6 +1008,7 @@ export class StageEngine {
     if (prev.lookNeonFrame !== next.lookNeonFrame || prev.trueColour !== next.trueColour) {
       this.neonFrame.setPolicy(next.lookNeonFrame, next.trueColour);
     }
+    if (this.webXrLease) this.applyWebXrVisualSuppression();
   }
 
   /** Update the system accessibility signal without changing the stored device preference. */
@@ -1093,6 +1137,219 @@ export class StageEngine {
     return { ...this.renderSettings };
   }
 
+  private applyWebXrVisualSuppression() {
+    // Round 1 has no headset evidence for Sprint 23 optional looks or mono CPU particle sorting.
+    this.neonFrame.setPolicy(false, true);
+    this.atmosphereLook.setPolicy({
+      requested: this.renderSettings.lookAtmosphere,
+      active: false,
+      suppressedReason: 'disabled',
+    });
+    setWetDeckMaterial(this.mats.stageDeck, false);
+    if (this.particles.isLitPuffsEnabled()) this.particles.setLitPuffs(false);
+  }
+
+  /** Acquire the renderer's single animation-loop lease for an already-requested immersive session. */
+  public async enterWebXrSession(session: XRSession, config: WebXrSessionConfig): Promise<void> {
+    if (this.disposed || this.contextLost) throw new Error('The 3D renderer is unavailable.');
+    if (this.dmxFrameListener) throw new Error('VR cannot start while physical output is live.');
+    if (this.webXrLease) throw new Error('A VR session is already pending or active.');
+
+    const rendererSize = this.renderer.getSize(new THREE.Vector2());
+    const lease: WebXrLease = {
+      session,
+      onEnded: config.onEnded,
+      endReason: 'system-exit',
+      endListener: () => queueMicrotask(() => this.restoreWebXrLease(lease.endReason)),
+      visibilityListener: () => { this.webXrVisibility = session.visibilityState; },
+      rendererPixelRatio: this.renderer.getPixelRatio(),
+      rendererSize,
+      cameraPosition: this.camera.position.clone(),
+      cameraQuaternion: this.camera.quaternion.clone(),
+      cameraScale: this.camera.scale.clone(),
+      cameraUp: this.camera.up.clone(),
+      cameraFov: this.camera.fov,
+      cameraAspect: this.camera.aspect,
+      cameraNear: this.camera.near,
+      cameraFar: this.camera.far,
+      cameraZoom: this.camera.zoom,
+      controlsEnabled: this.controls.enabled,
+      controlsTarget: this.controls.target.clone(),
+      cameraLerpActive: this.cameraLerpActive,
+      orbitAuto: this.orbitAuto,
+      fitFohOnResize: this.fitFohOnResize,
+      litPuffs: this.particles.isLitPuffsEnabled(),
+      xrEnabled: this.renderer.xr.enabled,
+      restored: false,
+    };
+    this.webXrLease = lease;
+    this.webXrVisibility = session.visibilityState;
+    session.addEventListener('end', lease.endListener);
+    session.addEventListener('visibilitychange', lease.visibilityListener);
+
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+    this.stopControlFallbackTimer();
+    this.controls.enabled = false;
+    this.cameraLerpActive = false;
+    this.orbitAuto = false;
+    this.fitFohOnResize = false;
+    this.effectiveFullRateStrobe = false;
+    this.camera.position.set(0, 0, 18);
+    this.camera.quaternion.identity();
+    this.camera.scale.set(1, 1, 1);
+    this.camera.up.set(0, 1, 0);
+    this.camera.updateMatrixWorld(true);
+    this.applyWebXrVisualSuppression();
+    if (this.wetDeckEnvironmentStats.composition === 'wet-neutral') this.restoreStageEnvironment(false);
+
+    this.renderer.xr.enabled = true;
+    this.renderer.xr.setReferenceSpaceType(config.referenceSpaceType);
+    this.renderer.xr.setFramebufferScaleFactor(config.framebufferScale);
+    this.renderer.xr.setFoveation(config.foveation);
+    this.lastFrameTime = performance.now();
+    this.renderer.setAnimationLoop((time: number) => {
+      if (this.disposed || this.contextLost || this.webXrLease !== lease) return;
+      this.lastRafTickMs = performance.now();
+      if (this.webXrVisibility !== 'visible') {
+        // Do not spend simulation or optional-effect work while the headset is hidden/system-blurred.
+        this.lastFrameTime = time;
+        return;
+      }
+      this.runControlTick(time, true, 'xr');
+      this.webXrFrames++;
+      const xrCamera = this.renderer.xr.getCamera();
+      this.webXrLastViews = xrCamera.cameras.length;
+      this.webXrLastCalls = this.renderer.info.render.calls;
+      this.webXrLastTriangles = this.renderer.info.render.triangles;
+    });
+
+    try {
+      await this.renderer.xr.setSession(session);
+      if (this.webXrLease !== lease || lease.restored) throw new Error('VR session ended during startup.');
+      this.webXrEntries++;
+    } catch (error) {
+      lease.endReason = 'error';
+      await session.end().catch(() => {});
+      this.restoreWebXrLease('error');
+      throw error;
+    }
+  }
+
+  public async exitWebXrSession(
+    reason: WebXrLease['endReason'] = 'requested-exit',
+  ): Promise<void> {
+    const lease = this.webXrLease;
+    if (!lease || lease.restored) return;
+    lease.endReason = reason;
+    try {
+      await lease.session.end();
+    } catch {
+      this.restoreWebXrLease(reason === 'requested-exit' ? 'error' : reason);
+      return;
+    }
+    // Standards-compliant sessions dispatch `end`; keep fake/quirky runtimes fail-safe.
+    if (this.webXrLease === lease) this.restoreWebXrLease(reason);
+  }
+
+  private restoreWebXrLease(reason: WebXrLease['endReason']) {
+    const lease = this.webXrLease;
+    if (!lease || lease.restored) return;
+    lease.restored = true;
+    this.webXrLease = null;
+    lease.session.removeEventListener('end', lease.endListener);
+    lease.session.removeEventListener('visibilitychange', lease.visibilityListener);
+    this.renderer.setAnimationLoop(null);
+    this.renderer.xr.enabled = lease.xrEnabled;
+
+    this.camera.position.copy(lease.cameraPosition);
+    this.camera.quaternion.copy(lease.cameraQuaternion);
+    this.camera.scale.copy(lease.cameraScale);
+    this.camera.up.copy(lease.cameraUp);
+    this.camera.fov = lease.cameraFov;
+    this.camera.aspect = lease.cameraAspect;
+    this.camera.near = lease.cameraNear;
+    this.camera.far = lease.cameraFar;
+    this.camera.zoom = lease.cameraZoom;
+    this.camera.updateProjectionMatrix();
+    this.camera.updateMatrixWorld(true);
+    this.controls.target.copy(lease.controlsTarget);
+    this.controls.enabled = lease.controlsEnabled;
+    this.cameraLerpActive = lease.cameraLerpActive;
+    this.orbitAuto = lease.orbitAuto;
+    this.fitFohOnResize = lease.fitFohOnResize;
+    // Session-only full-rate opt-in is intentionally not re-armed after a VR warning cycle.
+    this.effectiveFullRateStrobe = false;
+
+    this.renderer.setPixelRatio(lease.rendererPixelRatio);
+    this.renderer.setSize(lease.rendererSize.x, lease.rendererSize.y, false);
+    this.composer.setPixelRatio(lease.rendererPixelRatio);
+    this.composer.setSize(lease.rendererSize.x, lease.rendererSize.y);
+    this.updateFxaaResolution();
+    this.neonFrame.setViewportHeight(this.renderer.domElement.height);
+    this.neonFrame.setPolicy(this.renderSettings.lookNeonFrame, this.renderSettings.trueColour);
+    this.syncAtmospherePolicy();
+    setWetDeckMaterial(this.mats.stageDeck, this.renderSettings.lookWetDeck && this.renderTier === 'high');
+    if (
+      this.renderSettings.lookWetDeck && this.renderTier === 'high' &&
+      this.wetDeckEnvironmentStats.composition !== 'wet-neutral'
+    ) {
+      this.restoreStageEnvironment(true);
+    }
+    if (lease.litPuffs && this.renderSettings.litPuffs) {
+      this.refreshCommittedFixtureWorldTransforms();
+      this.particles.setLitPuffs(true, this.buildParticleLightingUpdate());
+    }
+    this.webXrVisibility = 'visible';
+    this.webXrExits++;
+    this.lastFrameTime = performance.now();
+    if (!this.disposed && !this.contextLost && this.rafId === null) this.startLoop();
+    if (this.dmxFrameListener) this.startControlFallbackTimer();
+    lease.onEnded?.(reason);
+  }
+
+  public webXrDiagnostics() {
+    const lease = this.webXrLease;
+    const rendererSize = this.renderer.getSize(new THREE.Vector2());
+    return {
+      active: Boolean(lease),
+      visibility: this.webXrVisibility,
+      loopOwner: lease ? 'webxr-setAnimationLoop' : this.rafId !== null ? 'window-requestAnimationFrame' : 'none',
+      entries: this.webXrEntries,
+      exits: this.webXrExits,
+      frames: this.webXrFrames,
+      lastViews: this.webXrLastViews,
+      lastCalls: this.webXrLastCalls,
+      lastTriangles: this.webXrLastTriangles,
+      sessionListeners: lease ? 2 : 0,
+      controlsEnabled: this.controls.enabled,
+      rendererPixelRatio: this.renderer.getPixelRatio(),
+      rendererSize: rendererSize.toArray(),
+      rendererXrEnabled: this.renderer.xr.enabled,
+      memory: {
+        geometries: this.renderer.info.memory.geometries,
+        textures: this.renderer.info.memory.textures,
+        programs: this.renderer.info.programs?.length ?? 0,
+      },
+      camera: {
+        position: this.camera.position.toArray(),
+        quaternion: this.camera.quaternion.toArray(),
+        scale: this.camera.scale.toArray(),
+        up: this.camera.up.toArray(),
+        fov: this.camera.fov,
+        aspect: this.camera.aspect,
+        near: this.camera.near,
+        far: this.camera.far,
+        zoom: this.camera.zoom,
+      },
+      controlsTarget: this.controls.target.toArray(),
+      composerPasses: this.composer.passes.map((pass) => ({ name: pass.constructor?.name ?? 'Pass', enabled: pass.enabled })),
+      directRendering: Boolean(lease),
+    };
+  }
+
   /**
    * Toggle preview-only full-rate strobe opt-in (already policy-resolved against reduced-motion / viewer / XR).
    * Never affects physical DMX output buffers or AudioModulationState.
@@ -1106,6 +1363,7 @@ export class StageEngine {
   }
 
   private handleResize() {
+    if (this.webXrLease) return;
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
     const aspectChanged = Math.abs(this.camera.aspect - w / h) > 0.01;
@@ -1332,6 +1590,7 @@ export class StageEngine {
       fullRateStrobePreview: this.effectiveFullRateStrobe,
       previewFlashLimiting: this.previewFlashOut.activeLimiting,
       settings: this.getRenderSettings(),
+      webXr: this.webXrDiagnostics(),
       particles,
       litPuffs,
       prismPools,
@@ -3580,7 +3839,7 @@ export class StageEngine {
       this.bakedIlda?.onContextRestored();
       if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
-      if (!this.disposed && this.rafId === null) this.startLoop();
+      if (!this.disposed && !this.webXrLease && this.rafId === null) this.startLoop();
     }
   }
 
@@ -3589,9 +3848,9 @@ export class StageEngine {
    * wrapper. Dispose that invalid target before rebuilding the same construction plan into the
    * single StageEngine-owned environment slot, so two persistent environments never coexist.
    */
-  private restoreStageEnvironment(): void {
+  private restoreStageEnvironment(wetDeckOverride?: boolean): void {
     const previousBuildCount = this.wetDeckEnvironmentStats.buildCount;
-    const wetDeck = this.wetDeckEnvironmentStats.composition === 'wet-neutral';
+    const wetDeck = wetDeckOverride ?? this.wetDeckEnvironmentStats.composition === 'wet-neutral';
     this.scene.environment = null;
     this.environmentTarget.dispose();
     const environment = buildStageEnvironment(this.renderer, wetDeck);
@@ -3700,7 +3959,7 @@ export class StageEngine {
     );
   }
 
-  private runControlTick(now: number, allowRender: boolean) {
+  private runControlTick(now: number, allowRender: boolean, renderMode: 'composer' | 'xr' = 'composer') {
     if (this.disposed || this.isContextLost()) return;
     const elapsed = this.lastFrameTime ? Math.max(0, (now - this.lastFrameTime) / 1000) : 1 / 60;
     this.lastFrameTime = now;
@@ -3750,7 +4009,10 @@ export class StageEngine {
       const renderStart = prof ? performance.now() : 0;
       const gpuStarted = recordGpu && shouldRenderScene ? (this.gpuTimer?.beginFrame() ?? false) : false;
       try {
-        if (shouldRenderScene) this.composer.render();
+        if (shouldRenderScene) {
+          if (renderMode === 'xr') this.renderer.render(this.scene, this.camera);
+          else this.composer.render();
+        }
         else this.clearStage();
       } finally {
         if (gpuStarted) this.gpuTimer?.endFrame();
@@ -3781,6 +4043,7 @@ export class StageEngine {
   }
 
   private startLoop() {
+    if (this.webXrLease || this.rafId !== null || this.disposed) return;
     const animate = (now: number) => {
       if (this.disposed || this.contextLost) {
         this.rafId = null;
@@ -4478,6 +4741,8 @@ export class StageEngine {
           if (previewLaserVisible && ribbonFrame.active) selectedPath = 'ribbon';
           else if (!ribbonFrame.fallback) selectedPath = 'none';
         }
+        // The legacy GL line has no per-eye near fade. Keep only the audited ribbon path in XR.
+        if (this.webXrLease && selectedPath === 'line') selectedPath = 'none';
         this.selectIldaPath(l, selectedPath);
         l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(previewUnitInt * flicker * 2.6);
       } else {
@@ -4793,7 +5058,7 @@ export class StageEngine {
     if (prof) prof.curCrowdMs = performance.now() - crowdStart;
 
     // 9. Camera Smooth Transitions & Arena Drone Orbit (updated before particle upload so depth sort matches this frame's view)
-    if (this.orbitAuto) {
+    if (!this.webXrLease && this.orbitAuto) {
       // Small rooms orbit inside their walls and under the ceiling.
       const room = this.room;
       const radius = room ? Math.max(3, room.halfWidth - 1.2) : 29;
@@ -4804,14 +5069,14 @@ export class StageEngine {
         ? room.ceilingY * 0.6 + Math.sin(t * 0.28) * room.ceilingY * 0.15
         : 7.5 + Math.sin(t * 0.28) * 3.4;
       this.controls.target.lerp(this.cameraTargetLook, dt * 3);
-    } else if (this.cameraLerpActive) {
+    } else if (!this.webXrLease && this.cameraLerpActive) {
       this.camera.position.lerp(this.cameraTargetPos, Math.min(1, dt * 4.5));
       this.controls.target.lerp(this.cameraTargetLook, Math.min(1, dt * 4.5));
       if (this.camera.position.distanceTo(this.cameraTargetPos) < 0.08) {
         this.cameraLerpActive = false;
       }
     }
-    this.controls.update();
+    if (!this.webXrLease) this.controls.update();
 
     // 10. Smoke Machines, Haze, & CO2 Cryo Cannons
     // Emergency blackout suppresses CO2, smoke, and haze after all modulation and bumps (preserving programmed levels underneath).
@@ -4906,6 +5171,12 @@ export class StageEngine {
 
   public dispose() {
     this.disposed = true;
+    if (this.webXrLease) {
+      const lease = this.webXrLease;
+      lease.endReason = 'dispose';
+      void lease.session.end().catch(() => {});
+      this.restoreWebXrLease('dispose');
+    }
     this.stopControlFallbackTimer();
     this.dmxFrameListener = undefined;
     for (const player of this.secondaryPlayers.values()) player.dispose();

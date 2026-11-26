@@ -9,6 +9,7 @@ export interface DisplaySettingsPopoverProps {
   effectiveFullRate: boolean;
   prefersReducedMotion: boolean;
   viewerMode: boolean;
+  showWebXrSetting: boolean;
   effectiveReducedEffects: boolean;
   reducedEffectsReason: 'preference' | 'low-tier' | 'reduced-motion' | null;
   onSetFullRateOptIn: (enabled: boolean) => void;
@@ -27,6 +28,7 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
   effectiveFullRate,
   prefersReducedMotion,
   viewerMode,
+  showWebXrSetting,
   effectiveReducedEffects,
   reducedEffectsReason,
   onSetFullRateOptIn,
@@ -144,6 +146,21 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
                 True colour <span className="text-zinc-400">(bypasses cosmetic effects and bloom)</span>
               </span>
             </label>
+
+            {showWebXrSetting && (
+              <label className="flex items-center gap-2 min-h-[44px] cursor-pointer text-zinc-200">
+                <input
+                  type="checkbox"
+                  data-testid="render-webxr-audience-checkbox"
+                  checked={settings.webxrAudience}
+                  onChange={(e) => onChangeSettings({ webxrAudience: e.target.checked })}
+                  className="h-4 w-4 accent-cyan-400"
+                />
+                <span>
+                  Immersive VR audience preview <span className="text-zinc-400">(experimental)</span>
+                </span>
+              </label>
+            )}
 
             <label className="flex items-center gap-2 min-h-[44px] cursor-pointer text-zinc-200">
               <input

@@ -31,6 +31,7 @@ interface DmxOutputSectionProps {
   preflight?: PreflightReport;
   liveViolationMessage?: string | null;
   aiBridgeBlocking?: boolean;
+  webXrBlocking?: boolean;
   onOpenPreflight?: () => void;
 }
 
@@ -41,6 +42,7 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
   preflight,
   liveViolationMessage,
   aiBridgeBlocking = false,
+  webXrBlocking = false,
   onOpenPreflight,
 }) => {
   const [advancedOpen, setAdvancedOpen] = useState<boolean>(readAdvancedOpen);
@@ -77,7 +79,7 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
   }, [advancedOpen, hasDesktopBridge, refreshInterfaces]);
 
   // Automatically disarm if output goes live, Advanced collapses, AI bridge activates, or pre-flight stops allowing arming.
-  const canArmByPreflight = (preflight ? preflight.canArm : true) && !aiBridgeBlocking;
+  const canArmByPreflight = (preflight ? preflight.canArm : true) && !aiBridgeBlocking && !webXrBlocking;
   useEffect(() => {
     if (isLive || !advancedOpen || !canArmByPreflight) disarm();
   }, [isLive, advancedOpen, canArmByPreflight, disarm]);
@@ -587,7 +589,16 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
                 </div>
               )}
 
-              {!aiBridgeBlocking && preflight && !preflight.canArm && (
+              {webXrBlocking && (
+                <div
+                  data-testid="dmx-webxr-blocked"
+                  className="rounded border border-cyan-400/50 bg-cyan-950/40 px-2 py-1.5 text-[9px] text-cyan-100"
+                >
+                  Physical output cannot be armed while VR is pending or active. Exit VR first.
+                </div>
+              )}
+
+              {!aiBridgeBlocking && !webXrBlocking && preflight && !preflight.canArm && (
                 <div className="rounded border border-amber-400/40 bg-amber-950/35 px-2 py-1.5 space-y-1 text-[9px] text-amber-100">
                   <p>{preflight.blockingReasons[0] ?? 'Complete pre-flight checks before arming output.'}</p>
                   {onOpenPreflight && (
@@ -638,7 +649,7 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
                   onClick={() => void arm()}
                   className="w-full py-1.5 rounded border border-amber-400/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-100 font-semibold cursor-pointer disabled:opacity-40"
                 >
-                  Arm output · {aiBridgeBlocking ? 'AI bridge active' : preflightLabel}
+                  Arm output · {webXrBlocking ? 'VR active' : aiBridgeBlocking ? 'AI bridge active' : preflightLabel}
                 </button>
               )}
             </div>
