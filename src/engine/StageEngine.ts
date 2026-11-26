@@ -141,9 +141,9 @@ import {
   DEFAULT_RENDER_SETTINGS,
   estimateRenderTargetBytes,
   parseRenderSettings,
-  resolveBloomScale,
+  resolveEffectiveBloomScale,
   resolveEffectiveAa,
-  shouldRunBloom,
+  resolveEffectiveLookOutput,
   type RenderSettings,
 } from './renderSettings';
 import {
@@ -336,6 +336,7 @@ export class StageEngine {
   private outputPass: OutputPass;
   private fxaaPass: ShaderPass | null = null;
   private renderSettings: RenderSettings = { ...DEFAULT_RENDER_SETTINGS };
+  private prefersReducedMotion = false;
   private effectiveFullRateStrobe = false;
   private contextAntialias = false;
   private composerSamplesRequested = 2;
@@ -611,6 +612,7 @@ export class StageEngine {
     options?: {
       renderSettings?: Partial<RenderSettings>;
       fullRateStrobePreview?: boolean;
+      prefersReducedMotion?: boolean;
       onContextLossChange?: (lost: boolean) => void;
     },
   ) {
@@ -621,6 +623,7 @@ export class StageEngine {
     this.onContextLossChange = options?.onContextLossChange;
     this.renderSettings = parseRenderSettings(options?.renderSettings);
     this.effectiveFullRateStrobe = Boolean(options?.fullRateStrobePreview);
+    this.prefersReducedMotion = Boolean(options?.prefersReducedMotion);
 
     const width = Math.max(1, container.clientWidth);
     const height = Math.max(1, container.clientHeight);
@@ -853,7 +856,9 @@ export class StageEngine {
       this.composer.renderTarget2.dispose();
     }
 
-    const bloomScale = resolveBloomScale(this.renderSettings.bloom, this.renderTier);
+    const look = resolveEffectiveLookOutput(this.renderSettings, this.renderTier, this.prefersReducedMotion);
+    const bloomScale = resolveEffectiveBloomScale(this.renderSettings, this.renderTier, this.prefersReducedMotion);
+    const effectiveBloomStrength = bloomStrength * look.bloomStrengthScale;
     if (bloomScale === 0) {
       if (this.bloomPass) {
         this.composer.removePass(this.bloomPass);
@@ -866,9 +871,9 @@ export class StageEngine {
       if (!this.bloomPass) {
         this.bloomPass = new ScaledBloomPass(
           new THREE.Vector2(drawW, drawH),
-          bloomStrength,
-          0.38,
-          0.66,
+          effectiveBloomStrength,
+          look.bloomRadius,
+          look.bloomThreshold,
           bloomScale,
         );
         const outputIdx = this.composer.passes.indexOf(this.outputPass);
@@ -876,8 +881,10 @@ export class StageEngine {
       } else {
         this.bloomPass.setScaleFactor(bloomScale, drawW, drawH);
       }
-      this.bloomPass.strength = bloomStrength;
-      this.bloomPass.enabled = shouldRunBloom(this.renderSettings.bloom, bloomStrength, this.renderTier);
+      this.bloomPass.strength = effectiveBloomStrength;
+      this.bloomPass.radius = look.bloomRadius;
+      this.bloomPass.threshold = look.bloomThreshold;
+      this.bloomPass.enabled = effectiveBloomStrength > 0.001;
     }
 
     // FXAA strictly follows OutputPass (operates on tone-mapped sRGB values) and never stacks with MSAA.
@@ -902,16 +909,23 @@ export class StageEngine {
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
     const dpr = this.renderer.getPixelRatio();
-    if (prev.bloom !== next.bloom || prev.aa !== next.aa) {
+    if (
+      prev.bloom !== next.bloom ||
+      prev.aa !== next.aa ||
+      prev.lookOutput !== next.lookOutput ||
+      prev.trueColour !== next.trueColour ||
+      prev.reducedEffects !== next.reducedEffects
+    ) {
       this.applyOutputPipeline(w, h, dpr, this.currentState.bloomStrength);
     }
     if (prev.fallingCo2 !== next.fallingCo2) {
       this.particles.setFallingCo2(next.fallingCo2);
     }
-    if (prev.videoSrgbDecode !== next.videoSrgbDecode) {
+    if (prev.videoSrgbDecode !== next.videoSrgbDecode || prev.lookOutput !== next.lookOutput) {
       this.bindScreenTexture();
+      const decodeVideo = resolveEffectiveLookOutput(next, this.renderTier, this.prefersReducedMotion).videoSrgbDecode;
       for (const player of this.secondaryPlayers.values()) {
-        player.setVideoSrgbDecode(next.videoSrgbDecode);
+        player.setVideoSrgbDecode(decodeVideo);
       }
     }
     if (prev.prismPools !== next.prismPools && this.currentRig) {
@@ -940,6 +954,16 @@ export class StageEngine {
     if (prev.ildaScanEnergy !== next.ildaScanEnergy && this.activeIldaClip) {
       this.syncIldaScanEnergyResources(next.ildaScanEnergy);
     }
+  }
+
+  /** Update the system accessibility signal without changing the stored device preference. */
+  public setPrefersReducedMotion(enabled: boolean) {
+    const next = Boolean(enabled);
+    if (next === this.prefersReducedMotion) return;
+    this.prefersReducedMotion = next;
+    const w = Math.max(1, this.container.clientWidth);
+    const h = Math.max(1, this.container.clientHeight);
+    this.applyOutputPipeline(w, h, this.renderer.getPixelRatio(), this.currentState.bloomStrength);
   }
 
   private refreshCommittedFixtureWorldTransforms() {
@@ -1158,7 +1182,8 @@ export class StageEngine {
       else activePasses.push(p.constructor?.name ?? 'Pass');
     }
 
-    const bloomScale = resolveBloomScale(this.renderSettings.bloom, this.renderTier);
+    const lookOutput = resolveEffectiveLookOutput(this.renderSettings, this.renderTier, this.prefersReducedMotion);
+    const bloomScale = resolveEffectiveBloomScale(this.renderSettings, this.renderTier, this.prefersReducedMotion);
     const bloomAllocated = this.bloomPass !== null;
     const bloomActive = Boolean(this.bloomPass && this.bloomPass.enabled);
 
@@ -1242,6 +1267,11 @@ export class StageEngine {
       materialCount: this.allLedMaterials.length,
       primaryAndWingMaterialCount: this.ledWallMats.length,
       secondaryMaterialCount: Math.max(0, this.allLedMaterials.length - this.ledWallMats.length),
+      primaryVideoDecodeActive: this.ledWallMats.some((m) => (m.uniforms.uCustomTexDecode?.value ?? 0) > 0.5),
+      videoDecodeActiveMaterialCount: this.allLedMaterials.reduce(
+        (count, m) => count + ((m.uniforms.uCustomTexDecode?.value ?? 0) > 0.5 ? 1 : 0),
+        0,
+      ),
       primaryCenter,
     };
     const deckSheen: DeckSheenStats = this.deckSheen.getStats();
@@ -1267,6 +1297,7 @@ export class StageEngine {
       bloomActive,
       bloomScale,
       bloomStrength: this.currentState.bloomStrength,
+      lookOutput,
       activePasses,
       fullRateStrobePreview: this.effectiveFullRateStrobe,
       previewFlashLimiting: this.previewFlashOut.activeLimiting,
@@ -1301,6 +1332,7 @@ export class StageEngine {
         deckSheenExtraTextureBytes: deckSheen.extraTextureBytes,
         litPuffsExtraBufferBytes: litPuffs.extraBufferBytes,
         ildaScanEnergyExtraBufferBytes,
+        lookOutputExtraGpuBytes: 0,
       },
       gpuTimerStatus: this.gpuTimer?.getStatus() ?? (isWebGL2 ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') ? 'ok' : 'unsupported') : 'unsupported'),
       gpuTimerPending: this.gpuTimer?.pendingCount() ?? 0,
@@ -1632,8 +1664,10 @@ export class StageEngine {
     if (state.autoDirector && !this.currentState.autoDirector) this.manualFadeStart = undefined;
     this.currentState = state;
     if (this.bloomPass) {
-      this.bloomPass.strength = state.bloomStrength;
-      this.bloomPass.enabled = shouldRunBloom(this.renderSettings.bloom, state.bloomStrength, this.renderTier);
+      const look = resolveEffectiveLookOutput(this.renderSettings, this.renderTier, this.prefersReducedMotion);
+      const strength = state.bloomStrength * look.bloomStrengthScale;
+      this.bloomPass.strength = strength;
+      this.bloomPass.enabled = strength > 0.001;
     }
     if (state.led.tourText !== this.lastTourText) {
       this.updateTourTextTexture(state.led.tourText);
@@ -2110,7 +2144,11 @@ export class StageEngine {
 
   private bindScreenTexture() {
     const texture = this.customTex ?? this.missingScreenTex;
-    const decodeVideo = Boolean(this.customTex && this.customVideoEl && this.renderSettings.videoSrgbDecode);
+    const decodeVideo = Boolean(
+      this.customTex &&
+      this.customVideoEl &&
+      resolveEffectiveLookOutput(this.renderSettings, this.renderTier, this.prefersReducedMotion).videoSrgbDecode
+    );
     for (const material of this.ledWallMats) {
       material.uniforms.uCustomTex.value = texture ?? this.textTex;
       material.uniforms.uHasCustom.value = texture ? 1 : 0;
@@ -2315,7 +2353,9 @@ export class StageEngine {
     for (const id of ids) {
       if (!this.secondaryPlayers.has(id)) {
         const player = new WallPlayer(id, this.textTex, this.onMediaError);
-        player.setVideoSrgbDecode(this.renderSettings.videoSrgbDecode);
+        player.setVideoSrgbDecode(
+          resolveEffectiveLookOutput(this.renderSettings, this.renderTier, this.prefersReducedMotion).videoSrgbDecode,
+        );
         this.secondaryPlayers.set(id, player);
       }
     }
@@ -2953,7 +2993,13 @@ export class StageEngine {
         uCustomTex: { value: this.customTex ?? this.missingScreenTex ?? this.textTex },
         uTextTex: { value: this.textTex },
         uHasCustom: { value: (this.customTex || this.missingScreenTex) ? 1 : 0 },
-        uCustomTexDecode: { value: (this.customTex && this.customVideoEl && this.renderSettings.videoSrgbDecode) ? 1.0 : 0.0 },
+        uCustomTexDecode: {
+          value: (
+            this.customTex &&
+            this.customVideoEl &&
+            resolveEffectiveLookOutput(this.renderSettings, this.renderTier, this.prefersReducedMotion).videoSrgbDecode
+          ) ? 1.0 : 0.0,
+        },
         uFlashLimited: { value: this.effectiveFullRateStrobe ? 0.0 : 1.0 },
         uAspect: { value: surface.width / surface.height },
         uCanvasPixels: { value: new THREE.Vector2(surface.pixelsWide, surface.pixelsHigh) },

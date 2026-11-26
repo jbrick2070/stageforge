@@ -182,7 +182,8 @@ export class WallPlayer {
       missing: this.isMissing(),
       playing: !!this.video && !this.video.paused, offsetSeconds: this.video?.currentTime ?? 0,
       width: this.video?.videoWidth ?? 0, height: this.video?.videoHeight ?? 0,
-      brightness: this.material?.uniforms.uBrightness.value ?? 0 };
+      brightness: this.material?.uniforms.uBrightness.value ?? 0,
+      videoSrgbDecode: (this.material?.uniforms.uCustomTexDecode?.value ?? 0) > 0.5 };
   }
 
   private releaseMedia() {

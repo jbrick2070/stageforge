@@ -6,14 +6,20 @@ export type AaMode = 'auto' | 'msaa' | 'fxaa' | 'none';
 /**
  * Device-local renderer preferences (Sprint 15).
  * Stored exclusively in localStorage (`stageforge.render.v1`); never serialized into show files or bundles.
- * All non-parity visual features default to off (`auto` preserves existing behavior on both tiers).
+ * Experimental geometry/material features default off; the measured Sprint 23A output foundation is promoted.
  */
 export interface RenderSettings {
   bloom: BloomMode;
   aa: AaMode;
+  /** Sprint 23A development gate for the promoted colour/output foundation. */
+  lookOutput: boolean;
+  /** Device-local accessibility view: bypass cosmetic look effects and bloom. */
+  trueColour: boolean;
+  /** Device-local accessibility view: reduce optional effects without changing authored show data. */
+  reducedEffects: boolean;
   /** Flag-gated falling dense-vapour CO2 plume approximation (default off). */
   fallingCo2: boolean;
-  /** Flag-gated conditional sRGB EOTF decode for HTMLVideoElement textures in LED_WALL_FRAG (default off). */
+  /** Conditional sRGB EOTF decode sub-gate for HTMLVideoElement textures in LED_WALL_FRAG. */
   videoSrgbDecode: boolean;
   /** Flag-gated 8-facet prism floor projections in BeamPools (Sprint 16, default off). */
   prismPools: boolean;
@@ -34,8 +40,13 @@ export const RENDER_SETTINGS_STORAGE_KEY = 'stageforge.render.v1';
 export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   bloom: 'auto',
   aa: 'auto',
+  // Promoted by Sprint 23A after localized visual, lifecycle and measured-budget evidence.
+  lookOutput: true,
+  trueColour: false,
+  reducedEffects: false,
   fallingCo2: false,
-  videoSrgbDecode: false,
+  // Sub-feature gate retained for probe isolation; lookOutput is the outer development gate.
+  videoSrgbDecode: true,
   prismPools: false,
   ledAngularResponse: false,
   deckSheen: false,
@@ -58,10 +69,23 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   const aa = Object.hasOwn(obj, 'aa') && typeof obj.aa === 'string' && VALID_AA_MODES.has(obj.aa)
     ? (obj.aa as AaMode)
     : DEFAULT_RENDER_SETTINGS.aa;
+  const lookOutput = Object.hasOwn(obj, 'lookOutput') && typeof obj.lookOutput === 'boolean'
+    ? obj.lookOutput
+    : DEFAULT_RENDER_SETTINGS.lookOutput;
+  const trueColour = Object.hasOwn(obj, 'trueColour') && typeof obj.trueColour === 'boolean'
+    ? obj.trueColour
+    : DEFAULT_RENDER_SETTINGS.trueColour;
+  const reducedEffects = Object.hasOwn(obj, 'reducedEffects') && typeof obj.reducedEffects === 'boolean'
+    ? obj.reducedEffects
+    : DEFAULT_RENDER_SETTINGS.reducedEffects;
   const fallingCo2 = Object.hasOwn(obj, 'fallingCo2') && typeof obj.fallingCo2 === 'boolean'
     ? obj.fallingCo2
     : DEFAULT_RENDER_SETTINGS.fallingCo2;
-  const videoSrgbDecode = Object.hasOwn(obj, 'videoSrgbDecode') && typeof obj.videoSrgbDecode === 'boolean'
+  // Pre-Sprint-23 persisted objects contain videoSrgbDecode:false as the old experimental default but
+  // no lookOutput key. Migrate those objects to the promoted correctness path; explicit Sprint-23 probe
+  // objects can still isolate the sub-feature once they carry lookOutput.
+  const legacyBeforeLookOutput = !Object.hasOwn(obj, 'lookOutput');
+  const videoSrgbDecode = !legacyBeforeLookOutput && Object.hasOwn(obj, 'videoSrgbDecode') && typeof obj.videoSrgbDecode === 'boolean'
     ? obj.videoSrgbDecode
     : DEFAULT_RENDER_SETTINGS.videoSrgbDecode;
   const prismPools = Object.hasOwn(obj, 'prismPools') && typeof obj.prismPools === 'boolean'
@@ -85,6 +109,9 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   return {
     bloom,
     aa,
+    lookOutput,
+    trueColour,
+    reducedEffects,
     fallingCo2,
     videoSrgbDecode,
     prismPools,
@@ -94,6 +121,75 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
     litPuffs,
     ildaScanEnergy,
   };
+}
+
+export interface EffectiveLookOutputPolicy {
+  enabled: boolean;
+  trueColour: boolean;
+  reducedEffects: boolean;
+  reducedReason: 'preference' | 'low-tier' | 'reduced-motion' | null;
+  videoSrgbDecode: boolean;
+  bloomScaleCap: 1 | 0.5 | 0;
+  bloomStrengthScale: number;
+  bloomRadius: number;
+  bloomThreshold: number;
+}
+
+/**
+ * Resolve device/accessibility overrides without mutating requested preferences or authored show state.
+ * `lookOutput=false` is the exact pre-Sprint-23A output path used for visual and performance A/B evidence.
+ */
+export function resolveEffectiveLookOutput(
+  settings: RenderSettings,
+  tier: RenderTier,
+  prefersReducedMotion: boolean,
+): EffectiveLookOutputPolicy {
+  if (!settings.lookOutput) {
+    return {
+      enabled: false,
+      trueColour: false,
+      reducedEffects: false,
+      reducedReason: null,
+      videoSrgbDecode: false,
+      bloomScaleCap: 1,
+      bloomStrengthScale: 1,
+      bloomRadius: 0.38,
+      bloomThreshold: 0.66,
+    };
+  }
+
+  const reducedReason = prefersReducedMotion
+    ? 'reduced-motion'
+    : tier === 'low'
+      ? 'low-tier'
+      : settings.reducedEffects
+        ? 'preference'
+        : null;
+  const reducedEffects = reducedReason !== null;
+  const trueColour = settings.trueColour;
+
+  return {
+    enabled: true,
+    trueColour,
+    reducedEffects,
+    reducedReason,
+    // Colour-correct media decoding is not cosmetic and remains active in True colour.
+    videoSrgbDecode: settings.videoSrgbDecode,
+    bloomScaleCap: trueColour ? 0 : reducedEffects ? 0.5 : 1,
+    bloomStrengthScale: trueColour ? 0 : reducedEffects ? 0.36 : 0.72,
+    bloomRadius: reducedEffects ? 0.18 : 0.26,
+    bloomThreshold: reducedEffects ? 0.80 : 0.74,
+  };
+}
+
+export function resolveEffectiveBloomScale(
+  settings: RenderSettings,
+  tier: RenderTier,
+  prefersReducedMotion: boolean,
+): 1 | 0.5 | 0 {
+  const requested = resolveBloomScale(settings.bloom, tier);
+  const cap = resolveEffectiveLookOutput(settings, tier, prefersReducedMotion).bloomScaleCap;
+  return Math.min(requested, cap) as 1 | 0.5 | 0;
 }
 
 export function loadRenderSettings(): RenderSettings {

@@ -66,8 +66,11 @@ describe('Sprint 15: renderSettings & policy', () => {
     assert.deepEqual(def, {
       bloom: 'auto',
       aa: 'auto',
+      lookOutput: true,
+      trueColour: false,
+      reducedEffects: false,
       fallingCo2: false,
-      videoSrgbDecode: false,
+      videoSrgbDecode: true,
       prismPools: false,
       ledAngularResponse: false,
       deckSheen: false,
@@ -79,6 +82,9 @@ describe('Sprint 15: renderSettings & policy', () => {
     const hostile = renderSettings.parseRenderSettings({
       bloom: 'quarter',
       aa: '__proto__',
+      lookOutput: 'yes',
+      trueColour: 1,
+      reducedEffects: 'yes',
       fallingCo2: 'yes',
       videoSrgbDecode: 1,
       prismPools: 'true',
@@ -90,9 +96,16 @@ describe('Sprint 15: renderSettings & policy', () => {
     });
     assert.deepEqual(hostile, def);
 
+    const migrated = renderSettings.parseRenderSettings({ bloom: 'auto', aa: 'auto', videoSrgbDecode: false });
+    assert.equal(migrated.lookOutput, true);
+    assert.equal(migrated.videoSrgbDecode, true, 'old default-off decode migrates with promoted lookOutput');
+
     const valid = renderSettings.parseRenderSettings({
       bloom: 'half',
       aa: 'fxaa',
+      lookOutput: true,
+      trueColour: true,
+      reducedEffects: true,
       fallingCo2: true,
       videoSrgbDecode: true,
       prismPools: true,
@@ -105,6 +118,9 @@ describe('Sprint 15: renderSettings & policy', () => {
     assert.deepEqual(valid, {
       bloom: 'half',
       aa: 'fxaa',
+      lookOutput: true,
+      trueColour: true,
+      reducedEffects: true,
       fallingCo2: true,
       videoSrgbDecode: true,
       prismPools: true,
@@ -123,6 +139,33 @@ describe('Sprint 15: renderSettings & policy', () => {
     assert.equal(renderSettings.resolveEffectiveAa('auto'), 'msaa');
     assert.equal(renderSettings.resolveEffectiveAa('fxaa'), 'fxaa');
     assert.equal(renderSettings.resolveEffectiveAa('none'), 'none');
+
+    const legacyLook = renderSettings.resolveEffectiveLookOutput({ ...def, lookOutput: false }, 'low', true);
+    assert.deepEqual(legacyLook, {
+      enabled: false,
+      trueColour: false,
+      reducedEffects: false,
+      reducedReason: null,
+      videoSrgbDecode: false,
+      bloomScaleCap: 1,
+      bloomStrengthScale: 1,
+      bloomRadius: 0.38,
+      bloomThreshold: 0.66,
+    });
+    const normalLook = renderSettings.resolveEffectiveLookOutput({ ...def, lookOutput: true }, 'high', false);
+    assert.equal(normalLook.videoSrgbDecode, true);
+    assert.equal(normalLook.bloomStrengthScale, 0.72);
+    assert.equal(normalLook.bloomScaleCap, 1);
+    const lowLook = renderSettings.resolveEffectiveLookOutput({ ...def, lookOutput: true }, 'low', false);
+    assert.equal(lowLook.reducedReason, 'low-tier');
+    assert.equal(lowLook.bloomScaleCap, 0.5);
+    const motionLook = renderSettings.resolveEffectiveLookOutput({ ...def, lookOutput: true }, 'high', true);
+    assert.equal(motionLook.reducedReason, 'reduced-motion');
+    assert.equal(motionLook.bloomScaleCap, 0.5);
+    const trueColourLook = renderSettings.resolveEffectiveLookOutput({ ...def, lookOutput: true, trueColour: true }, 'high', false);
+    assert.equal(trueColourLook.trueColour, true);
+    assert.equal(trueColourLook.videoSrgbDecode, true, 'True colour keeps correctness decode');
+    assert.equal(trueColourLook.bloomScaleCap, 0);
 
     // Full-rate strobe preview policy: requires opt-in and denies reduced-motion, XR, and viewer mode.
     assert.equal(renderSettings.resolveEffectiveFullRateStrobe({ userOptIn: false, prefersReducedMotion: false, xrPresenting: false, viewerMode: false }), false);

@@ -550,7 +550,7 @@ test('Sprint 15: image vs video sRGB colour equivalence diagnosis and videoSrgbD
     const pngUrl = URL.createObjectURL(pngBlob);
 
     const probe = window.stageforgeProbe;
-    probe.setRenderSettings({ bloom: 'off', videoSrgbDecode: false });
+    probe.setRenderSettings({ bloom: 'off', lookOutput: false, videoSrgbDecode: false });
     probe.patchShowState({
       autoDirector: false,
       audioReactive: false,
@@ -577,11 +577,11 @@ test('Sprint 15: image vs video sRGB colour equivalence diagnosis and videoSrgbD
     const imgOff = centerWallY();
 
     // Turning videoSrgbDecode on must NEVER alter still images (no double-decode).
-    probe.setRenderSettings({ videoSrgbDecode: true });
+    probe.setRenderSettings({ lookOutput: true, videoSrgbDecode: true });
     const imgOn = centerWallY();
 
     // Now load the exact same MP4 video paused at the exact same `targetTime` on the LED wall and compare videoSrgbDecode off vs on.
-    probe.setRenderSettings({ videoSrgbDecode: false });
+    probe.setRenderSettings({ lookOutput: true, videoSrgbDecode: false });
     probe.patchShowState({
       led: { enabled: true, brightness: 1, visualMode: 'custom', customMediaUrl: videoUrl, customMediaType: 'video' },
     });
@@ -600,7 +600,7 @@ test('Sprint 15: image vs video sRGB colour equivalence diagnosis and videoSrgbD
     const vidOn = vidOff !== null ? centerWallY() : null;
 
     URL.revokeObjectURL(pngUrl);
-    probe.setRenderSettings({ bloom: 'auto', videoSrgbDecode: false });
+    probe.setRenderSettings({ bloom: 'auto', lookOutput: false, videoSrgbDecode: true });
     return { imgOff, imgOn, vidOff, vidOn };
   });
 

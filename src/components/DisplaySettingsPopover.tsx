@@ -9,6 +9,8 @@ export interface DisplaySettingsPopoverProps {
   effectiveFullRate: boolean;
   prefersReducedMotion: boolean;
   viewerMode: boolean;
+  effectiveReducedEffects: boolean;
+  reducedEffectsReason: 'preference' | 'low-tier' | 'reduced-motion' | null;
   onSetFullRateOptIn: (enabled: boolean) => void;
 }
 
@@ -25,6 +27,8 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
   effectiveFullRate,
   prefersReducedMotion,
   viewerMode,
+  effectiveReducedEffects,
+  reducedEffectsReason,
   onSetFullRateOptIn,
 }) => {
   const [open, setOpen] = useState(false);
@@ -128,6 +132,46 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
           </div>
 
           <div className="space-y-2 text-[11px]">
+            <label className="flex items-center gap-2 min-h-[44px] cursor-pointer text-zinc-200">
+              <input
+                type="checkbox"
+                data-testid="render-true-colour-checkbox"
+                checked={settings.trueColour}
+                onChange={(e) => onChangeSettings({ trueColour: e.target.checked })}
+                className="h-4 w-4 accent-cyan-400"
+              />
+              <span>
+                True colour <span className="text-zinc-400">(bypasses cosmetic effects and bloom)</span>
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2 min-h-[44px] cursor-pointer text-zinc-200">
+              <input
+                type="checkbox"
+                data-testid="render-reduced-effects-checkbox"
+                checked={settings.reducedEffects}
+                onChange={(e) => onChangeSettings({ reducedEffects: e.target.checked })}
+                className="h-4 w-4 accent-cyan-400"
+              />
+              <span>
+                Reduced effects <span className="text-zinc-400">(less bloom and decorative motion)</span>
+              </span>
+            </label>
+
+            <div className="sr-only" role="status" aria-live="polite" data-testid="look-accessibility-status">
+              {settings.trueColour
+                ? 'True colour active. Cosmetic effects and bloom are bypassed.'
+                : 'True colour inactive.'}
+              {' '}
+              {effectiveReducedEffects
+                ? `Reduced effects active${reducedEffectsReason === 'low-tier'
+                  ? ' automatically for this low-tier device.'
+                  : reducedEffectsReason === 'reduced-motion'
+                    ? ' automatically because reduced motion is enabled.'
+                    : ' by device preference.'}`
+                : 'Reduced effects inactive.'}
+            </div>
+
             <label className="flex items-center justify-between gap-2 min-h-[36px]">
               <span className="text-zinc-300 font-mono-tech">Bloom</span>
               <select
@@ -170,19 +214,6 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
               />
               <span>
                 Falling CO2 plume <span className="text-zinc-400">(stylised approximation)</span>
-              </span>
-            </label>
-
-            <label className="flex items-center gap-2 min-h-[44px] cursor-pointer text-zinc-200">
-              <input
-                type="checkbox"
-                data-testid="render-video-srgb-checkbox"
-                checked={settings.videoSrgbDecode}
-                onChange={(e) => onChangeSettings({ videoSrgbDecode: e.target.checked })}
-                className="h-4 w-4 accent-cyan-400"
-              />
-              <span>
-                Decode video sRGB on LED walls <span className="text-zinc-400">(experimental)</span>
               </span>
             </label>
 

@@ -1,12 +1,15 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StageEngine } from './engine/StageEngine';
+import type { SecondaryScreenState } from './engine/StageScreens';
 import {
   loadRenderSettings,
   parseRenderSettings,
   resolveEffectiveFullRateStrobe,
+  resolveEffectiveLookOutput,
   saveRenderSettings,
   type RenderSettings,
 } from './engine/renderSettings';
+import { detectRenderTier } from './engine/hardwareMaterials';
 import { AudioEngine } from './audio/AudioEngine';
 import {
   analyzeFileBeatGrid,
@@ -234,6 +237,7 @@ export const App: React.FC = () => {
   const [renderSettings, setRenderSettings] = useState<RenderSettings>(() => loadRenderSettings());
   const renderSettingsRef = useRef(renderSettings);
   renderSettingsRef.current = renderSettings;
+  const renderTier = useMemo(() => detectRenderTier(), []);
   // Session-only opt-in for full-rate strobe preview (never persisted; always off under reduced motion / viewer / XR)
   const [fullRateStrobeOptIn, setFullRateStrobeOptIn] = useState(false);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState<boolean>(() =>
@@ -260,6 +264,7 @@ export const App: React.FC = () => {
   });
   const effectiveFullRateStrobeRef = useRef(effectiveFullRateStrobe);
   effectiveFullRateStrobeRef.current = effectiveFullRateStrobe;
+  const effectiveLookOutput = resolveEffectiveLookOutput(renderSettings, renderTier, prefersReducedMotion);
 
   const updateRenderSettings = useCallback((patch: Partial<RenderSettings>, persist = true) => {
     const next = parseRenderSettings({ ...renderSettingsRef.current, ...patch });
@@ -281,6 +286,9 @@ export const App: React.FC = () => {
   useEffect(() => {
     engineRef.current?.setFullRateStrobePreview(effectiveFullRateStrobe);
   }, [effectiveFullRateStrobe]);
+  useEffect(() => {
+    engineRef.current?.setPrefersReducedMotion(prefersReducedMotion);
+  }, [prefersReducedMotion]);
   const capabilities = useMemo(() => capabilitiesForMode(viewerMode ? 'viewer' : 'editor'), [viewerMode]);
   const capabilitiesRef = useRef(capabilities);
   capabilitiesRef.current = capabilities;
@@ -1538,6 +1546,7 @@ export const App: React.FC = () => {
         {
           renderSettings: renderSettingsRef.current,
           fullRateStrobePreview: effectiveFullRateStrobeRef.current,
+          prefersReducedMotion,
           onContextLossChange: (lost) => {
             setWebglContextLost(lost);
             if (lost) {
@@ -1575,6 +1584,8 @@ export const App: React.FC = () => {
       seekTrack: (seconds: number) => handleSeekTrackRef.current(seconds),
       jumpDemoSection: (delta: -1 | 1) => handleJumpDemoSectionRef.current(delta),
       screens: () => engine.screenDiagnostics(),
+      setSecondaryScreenStates: (states: Readonly<Record<string, SecondaryScreenState>>) =>
+        engine.syncSecondaryScreens(states),
       primaryScreen: () => engine.screenTransport(),
       setPrimaryScreenTransport: (playing: boolean, offsetSeconds?: number) =>
         engine.restoreScreenTransport(playing, offsetSeconds),
@@ -3402,6 +3413,8 @@ export const App: React.FC = () => {
             effectiveFullRate: effectiveFullRateStrobe,
             prefersReducedMotion,
             viewerMode: true,
+            effectiveReducedEffects: effectiveLookOutput.reducedEffects,
+            reducedEffectsReason: effectiveLookOutput.reducedReason,
             onSetFullRateOptIn: setFullRateStrobeOptIn,
           }}
         />
@@ -3493,6 +3506,8 @@ export const App: React.FC = () => {
           effectiveFullRate: effectiveFullRateStrobe,
           prefersReducedMotion,
           viewerMode: false,
+          effectiveReducedEffects: effectiveLookOutput.reducedEffects,
+          reducedEffectsReason: effectiveLookOutput.reducedReason,
           onSetFullRateOptIn: setFullRateStrobeOptIn,
         }}
       />
