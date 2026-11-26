@@ -15,6 +15,8 @@ export interface RenderSettings {
   lookOutput: boolean;
   /** Sprint 23B development gate for one renderer-only neon architecture batch. */
   lookNeonFrame: boolean;
+  /** Sprint 23C construction-time gate for the single neutral-strip PMREM and zero-texture deck breakup. */
+  lookWetDeck: boolean;
   /** Device-local accessibility view: bypass cosmetic look effects and bloom. */
   trueColour: boolean;
   /** Device-local accessibility view: reduce optional effects without changing authored show data. */
@@ -46,6 +48,8 @@ export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   lookOutput: true,
   // Promoted by Sprint 23B after localized visual, lifecycle and measured-budget evidence.
   lookNeonFrame: true,
+  // Promoted by Sprint 23C after localized visual, lifecycle and measured-budget evidence.
+  lookWetDeck: true,
   trueColour: false,
   reducedEffects: false,
   fallingCo2: false,
@@ -79,6 +83,9 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   const lookNeonFrame = Object.hasOwn(obj, 'lookNeonFrame') && typeof obj.lookNeonFrame === 'boolean'
     ? obj.lookNeonFrame
     : DEFAULT_RENDER_SETTINGS.lookNeonFrame;
+  const lookWetDeck = Object.hasOwn(obj, 'lookWetDeck') && typeof obj.lookWetDeck === 'boolean'
+    ? obj.lookWetDeck
+    : DEFAULT_RENDER_SETTINGS.lookWetDeck;
   const trueColour = Object.hasOwn(obj, 'trueColour') && typeof obj.trueColour === 'boolean'
     ? obj.trueColour
     : DEFAULT_RENDER_SETTINGS.trueColour;
@@ -118,6 +125,7 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
     aa,
     lookOutput,
     lookNeonFrame,
+    lookWetDeck,
     trueColour,
     reducedEffects,
     fallingCo2,

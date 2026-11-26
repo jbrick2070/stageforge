@@ -33,6 +33,11 @@ import {
 } from './shaders';
 import { LED_ANGULAR_DEFINE } from './ledWallResponse';
 import { DeckSheenController, type DeckSheenStats } from './deckSheen';
+import {
+  buildStageEnvironment,
+  setWetDeckMaterial,
+  type WetDeckEnvironmentStats,
+} from './wetDeck';
 import { NeonFrameController, type NeonFrameStats } from './neonFrame';
 import {
   CrowdLightingController,
@@ -360,6 +365,7 @@ export class StageEngine {
   private crowdLighting!: CrowdLightingController;
   private lastCrowdFrameInputs: CrowdFrameInputs = createCrowdFrameInputs();
   private environmentTarget: THREE.WebGLRenderTarget;
+  private wetDeckEnvironmentStats!: Omit<WetDeckEnvironmentStats, 'sceneOwnsTargetTexture'>;
   private currentRig?: RigConfig;
   private lastRebuildSource?: RigConfig;
   private lastRebuildStage?: NativeStage;
@@ -678,6 +684,7 @@ export class StageEngine {
       }
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
+      this.scene.environment = this.environmentTarget.texture;
       this.neonFrame?.onContextRestored();
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();
@@ -697,35 +704,16 @@ export class StageEngine {
     this.scene.background = this.backgroundColor.clone();
     this.scene.fog = new THREE.FogExp2(this.fogColor, 0.015);
 
-    // Generate dark metallic reflection environment map via PMREM
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    const envScene = new THREE.Scene();
-    envScene.background = new THREE.Color(0x090c14);
-    const envLight1 = new THREE.Mesh(
-      new THREE.PlaneGeometry(20, 6),
-      new THREE.MeshBasicMaterial({ color: 0x3b6699, side: THREE.DoubleSide })
+    // One construction-time PMREM target. Sprint 23C replaces its source composition rather than
+    // retaining a second environment or rebuilding it during normal runtime.
+    const environment = buildStageEnvironment(
+      this.renderer,
+      this.renderSettings.lookWetDeck && this.renderTier === 'high',
     );
-    envLight1.position.set(0, 10, -10);
-    const envLight2 = new THREE.Mesh(
-      new THREE.PlaneGeometry(20, 4),
-      new THREE.MeshBasicMaterial({ color: 0x552266, side: THREE.DoubleSide })
-    );
-    envLight2.position.set(12, 6, 8);
-    envLight2.rotation.y = -Math.PI / 2;
-    envScene.add(envLight1, envLight2);
-    const softbox = new THREE.Mesh(new THREE.PlaneGeometry(16, 8),
-      new THREE.MeshBasicMaterial({ color: new THREE.Color(1.8, 1.7, 1.55), side: THREE.DoubleSide }));
-    softbox.position.set(-4, 12, 7);
-    softbox.lookAt(0, 3, 0);
-    envScene.add(softbox);
-    this.environmentTarget = pmrem.fromScene(envScene, 0.04);
+    this.environmentTarget = environment.target;
+    this.wetDeckEnvironmentStats = environment.stats;
     this.scene.environment = this.environmentTarget.texture;
     this.scene.environmentIntensity = 0.55;
-    for (const panel of [envLight1, envLight2, softbox]) {
-      panel.geometry.dispose();
-      panel.material.dispose();
-    }
-    pmrem.dispose();
 
     // Camera & OrbitControls
     this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, width / height, 0.18, 220);
@@ -796,6 +784,10 @@ export class StageEngine {
     if (this.renderSettings.deckSheen) {
       this.deckSheen.apply(this.mats.stageDeck, true);
     }
+    setWetDeckMaterial(
+      this.mats.stageDeck,
+      this.renderSettings.lookWetDeck && this.renderTier === 'high',
+    );
     this.crowdLighting = new CrowdLightingController(this.renderTier);
     if (this.renderSettings.crowdLighting) {
       this.crowdLighting.setEnabled(true);
@@ -940,6 +932,11 @@ export class StageEngine {
     }
     if (prev.deckSheen !== next.deckSheen) {
       this.deckSheen.apply(this.mats.stageDeck, next.deckSheen);
+    }
+    if (prev.lookWetDeck !== next.lookWetDeck) {
+      // The PMREM composition is construction-only to guarantee one persistent target. This live
+      // path still isolates the zero-texture material cost for probe measurements.
+      setWetDeckMaterial(this.mats.stageDeck, next.lookWetDeck && this.renderTier === 'high');
     }
     if (prev.crowdLighting !== next.crowdLighting) {
       this.crowdLighting.setEnabled(next.crowdLighting);
@@ -1283,6 +1280,15 @@ export class StageEngine {
       primaryCenter,
     };
     const deckSheen: DeckSheenStats = this.deckSheen.getStats();
+    const wetDeck: WetDeckEnvironmentStats = {
+      ...this.wetDeckEnvironmentStats,
+      requested: this.renderSettings.lookWetDeck,
+      active:
+        this.renderSettings.lookWetDeck &&
+        this.renderTier === 'high' &&
+        this.wetDeckEnvironmentStats.composition === 'wet-neutral',
+      sceneOwnsTargetTexture: this.scene.environment === this.environmentTarget.texture,
+    };
     const neonFrame: NeonFrameStats = this.neonFrame.getStats();
     const crowd: CrowdLightingStats = this.crowdLighting.getStats();
     const litPuffs: LitPuffsStats = this.particles.getLitPuffsStats();
@@ -1316,6 +1322,7 @@ export class StageEngine {
       prismPools,
       ledWalls,
       deckSheen,
+      wetDeck,
       neonFrame,
       crowd,
       ilda: {
@@ -1344,7 +1351,8 @@ export class StageEngine {
         ildaScanEnergyExtraBufferBytes,
         lookOutputExtraGpuBytes: 0,
         neonFrameExtraBufferBytes: neonFrame.extraBufferBytes,
-        sprint23ExtraGpuBytes: neonFrame.extraBufferBytes,
+        wetDeckExtraGpuBytes: wetDeck.extraGpuBytes,
+        sprint23ExtraGpuBytes: neonFrame.extraBufferBytes + wetDeck.extraGpuBytes,
       },
       gpuTimerStatus: this.gpuTimer?.getStatus() ?? (isWebGL2 ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') ? 'ok' : 'unsupported') : 'unsupported'),
       gpuTimerPending: this.gpuTimer?.pendingCount() ?? 0,
@@ -3543,6 +3551,7 @@ export class StageEngine {
       }
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
+      this.scene.environment = this.environmentTarget.texture;
       this.neonFrame?.onContextRestored();
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();

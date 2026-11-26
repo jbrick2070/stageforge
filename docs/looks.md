@@ -1,8 +1,8 @@
-# StageForge Look — Sprint 23A–B Default Look
+# StageForge Look — Sprint 23A–C Default Look
 
-Sprint 23A is the first shippable slice of the planned default cyberpunk-club look. It improves colour handling
-and output restraint without adding a selectable look preset. Slices B (neon architecture), C (wet-deck
-composition), and D (coloured atmosphere) are not part of the completed work and remain unfinished.
+Sprint 23A began the default cyberpunk-club look without adding a selectable look preset. Slices A (colour and
+output), B (neon architecture), and C (wet-deck composition) are promoted. Slice D (coloured atmosphere)
+remains unfinished.
 
 ## Promoted output foundation
 
@@ -124,6 +124,82 @@ Localized changed-pixel fractions were `14.67%` FOH, `18.66%` deck-close, and `8
 coverage remained `0.53%`, `0.37%`, and `0.21%`. At a camera intersection, strong-delta coverage was `0.10%`.
 Irregular final post-bloom sampling recorded no repeated qualifying transition after activation. These checks,
 along with inherited preview-flash limits, show bounded behaviour, not universal photosensitivity safety.
+
+## Promoted wet-deck composition
+
+Sprint 23C replaces the source composition of the one existing PMREM target during engine initialization. The
+legacy broad blue, purple, and warm cards become five long, narrow, near-neutral strips against a darker neutral
+background. The PMREM target keeps the same descriptor, intensity, construction/disposal lifetime, and room-gain
+control; StageForge never retains a second environment. The effect adds no draw, pass, texture, geometry, buffer,
+or application-owned GPU byte.
+
+The deck remains the existing `MeshStandardMaterial`. When `lookWetDeck` is active and the independent Sprint 18
+`deckSheen` maps are not requested, a material specialization derives conservative spatial roughness
+from the already-sampled seeded Marley albedo. Its seams, grain, and scuffs therefore break the grazing strips
+without another texture lookup or allocation. If `deckSheen` is explicitly enabled, its registered roughness and
+normal maps remain authoritative and retain their original Sprint 18 lifecycle and budget. C does not silently
+allocate them.
+
+The strips are deliberately neutral, so **True colour** has no wet-deck tint to remove and retains the physical
+material response. **Reduced effects** and reduced motion also retain it because it is static. The automatic
+**low tier bypasses C** and constructs the legacy PMREM/material path: the high-tier spatial-roughness shader did
+not stay within the phone-like software-renderer proxy budget before that fallback was applied. Authored stage
+lights continue to supply the visible cyan, magenta, amber, or other colour through direct PBR lighting. The PMREM
+is only a distant-light approximation: it does **not** provide position-correct fixture, LED-wall, video, planar,
+screen-space, or ray-traced reflections.
+
+The environment is construction-time owned. Probe A/B tests start a fresh engine for legacy versus wet-neutral
+composition; normal resize, rig rebuild, media replacement, simulated/real context restore, and renderer disposal
+keep exactly one logical target. The live probe can isolate the zero-texture material specialization for warmed
+timing, but it does not allocate or replace a PMREM target. GLB canonicalizes the deck to its production material,
+and actual GLB, DXF, MVR, and patch-paperwork downloads are invariant.
+
+### Approved Sprint 23C references
+
+The left half uses the legacy environment and the right half uses the promoted neutral-strip composition, with a
+fixed rig, authored cyan/magenta state, and fixed cameras. I deliberately re-approved the restrained result: the
+deck-close panel shows broken grazing response and scuff/seam variation without turning the whole surface into a
+mirror; FOH and wide retain dark negative space and do not imply reflected fixture or wall positions.
+
+- [Front of house](looks/sprint23-c-foh-before-after.webp)
+- [Deck close-up](looks/sprint23-c-deck-close-before-after.webp)
+- [Wide view](looks/sprint23-c-wide-before-after.webp)
+
+Regenerate the three panels without changing the ordinary read-only gate:
+
+```powershell
+$env:STAGEFORGE_UPDATE_LOOK_REFS='1'
+npx playwright test tests/e2e/sprint23-wet-deck.spec.mjs --workers=1
+```
+
+The C panels total `63,652 B`; all nine A–C panels total `208,272 B`, below the `600 KB` allowance. In the focused
+promotion run, changed/strong/mean-delta fractions were FOH `31.43% / 0.033% / 0.01165`, deck-close
+`34.45% / 0.0003% / 0.00936`, and wide `39.72% / 0.018% / 0.01124`. A seven-position grazing sweep had a maximum
+whole-frame luminance step of `0.02770`, with no seam pop or fixed full-frame streak seen in the approved panels.
+
+### Slice C budget and evidence boundaries
+
+Five order-balanced warmed pairs at `1280×720` high tier measured p50 off/on
+`[1.6, 1.5, 1.5, 1.5, 1.4] / [1.6, 1.5, 1.5, 1.5, 1.4] ms` (median delta `0.0 ms`), p95
+`[2.0, 1.8, 1.7, 1.8, 1.8] / [2.3, 1.9, 1.9, 1.6, 1.7]`, and p99
+`[2.1, 2.0, 1.9, 2.0, 1.9] / [2.6, 1.9, 2.0, 1.8, 2.0]`. A newly constructed `390×844` low-tier engine
+with 4× CPU throttling exercised the documented bypass: p50 off/on
+`[13.0, 11.3, 11.0, 11.1, 10.7] / [11.7, 11.0, 10.6, 11.0, 10.6] ms` (median delta `-0.1 ms`), p95
+`[15.6, 13.0, 12.5, 12.5, 12.0] / [13.1, 12.3, 12.1, 13.6, 12.5]`, and p99
+`[16.0, 13.7, 13.3, 12.9, 13.6] / [13.5, 12.4, 13.2, 14.7, 12.9]`. Both p50 deltas are below C's
+`+0.15 / +0.25 ms` ceilings at the profiler's demonstrated `0.1 ms` resolution.
+
+Asynchronous GPU p50 was laptop off `[181.0192, 177.1625, 180.3914, 181.2915, 182.2674] ms` / on
+`[179.8349, 179.6695, 178.8478, 179.6124, 181.4530] ms`, and low-tier phone-like off
+`[144.1452, 145.6106, 143.8322, 147.2787, 147.7343]` / on
+`[144.1163, 143.9798, 144.4386, 146.4418, 145.5104] ms`. These are ANGLE SwiftShader software-renderer values, not hardware-GPU
+measurements; 4× CPU throttling does not emulate a phone GPU. C owns `0 B`, adds zero draws and passes, and leaves
+the promoted A+B `40,768 B` / one-draw ceiling unchanged. Using the B receipt's additive A+B delta, the measured
+A+B+C total remains below the combined Sprint 23 CPU and memory ceilings.
+
+The C source is static and no flash input exists. Irregular final post-bloom sampling recorded zero qualifying
+general or saturated-red transitions after material activation. These checks, the black/clipped-region bounds,
+and the inherited preview limiter show bounded behaviour, not universal photosensitivity safety.
 
 ## Budget and evidence boundaries
 
