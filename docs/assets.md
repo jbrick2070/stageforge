@@ -20,6 +20,7 @@ Every visual asset ships as MIT-licensed source code in this repository, generat
 | Speaker grille perforations & acoustic cloth | `src/engine/geometryBuilders.ts` | 128×128 sRGB `CanvasTexture` | Deterministic geometry loop | MIT (StageForge original) |
 | Procedural hardware 3D models (all 34 catalogue entries + 14 body families) | `src/engine/fixtureModels.ts` | Merged `BufferGeometry` per articulated sub-part + instanced LED cabinet backs | Deterministic procedural builders | MIT (StageForge original) |
 | Built-in ILDA demo clips & GPU line buffers | `src/data/ilda.ts`, `src/engine/ildaRenderer.ts` | Big-endian IDTF Format 5 bytes + baked shared-attribute `LineSegments` | Deterministic math encoder | MIT (StageForge original) |
+| Optional ILDA scan-energy ribbons | `src/engine/ildaScanEnergy.ts` | Runtime-generated fixed-capacity camera-facing `BufferGeometry` (≤ 4,000 low / 16,000 high triangles scene-wide) | Deterministic clip processing; no asset file | MIT (StageForge original) |
 | 2D plan & elevation silhouettes (SVG & DXF) | `src/data/equipmentSymbols.ts`, `src/components/EquipmentThumbnail.tsx` | Pure vector primitives (`rect`, `circle`, `poly`) in metres | Deterministic data table | MIT (StageForge original) |
 
 ---
@@ -54,6 +55,7 @@ StageForge selects a `RenderTier` (`'high'` vs `'low'`) once at `StageEngine` in
 | Draw calls per moving head / static fixture | ≤ 7 / ≤ 6 | ≤ 7 / ≤ 6 |
 | Reference template rig (`arena_mainstage`) | ≤ 350 draw calls, ≤ 400k triangles | ≤ 200 draw calls, ≤ 150k triangles |
 | Hardware textures (GPU VRAM, incl. mipmaps) | ≤ 4 MB (512² albedo + 512² RM + 256² normal) | ≤ 1 MB (256² albedo + 256² RM + 128² normal) |
+| Optional ILDA scan-energy ribbon buffers (scene-wide) | ≤ 2 MiB / 16,000 triangles | ≤ 0.5 MiB / 4,000 triangles |
 | Max devicePixelRatio | 2.0 (4× anisotropy on atlas) | 1.5 (1× anisotropy) |
 | GLB export safety cap | Normal maps stripped, `maxTextureSize: 512`, LED cabinet backs capped at 2,000 instances (omitted silently above cap with `scene.userData.cabinetBacksOmitted = true` in glTF extras) | Same |
 
@@ -63,7 +65,7 @@ StageForge selects a `RenderTier` (`'high'` vs `'low'`) once at `StageEngine` in
 
 - Reusable `BufferGeometry` parts are cached in `FixtureModelCache` per `(modelId, isFloor, tier)` and registered in `sharedResources`.
 - `StageEngine.releaseGroup()` skips disposing cached geometries and shared materials across `rebuildRig()` calls, while `beginRebuild()` / `endRebuild()` prunes any unused custom-sized LED cabinet back tiles so wall-size slider drags never leak GPU memory.
-- `StageEngine.dispose()` frees the entire `FixtureModelCache`, any active `BakedIldaClip` (disposing all per-projector shared-attribute wrapper geometries together), and every unique texture in `SharedMaterials`.
+- `StageEngine.dispose()` frees the entire `FixtureModelCache`, any active `BakedIldaClip` (disposing all shared-attribute line wrappers together plus each explicitly-owned optional scan-energy geometry/material), and every unique texture in `SharedMaterials`.
 - Loaded ILDA clips cap total points at 200,000 (`high` tier) and 60,000 (`low` tier), bake once into shared `BufferAttribute`s (1 `LineSegments` draw call per projector), and update only `geometry.setDrawRange` during playback.
 - Every moving fixture builder anchors its `head` group origin strictly at `dir * pivotY` (`HEAD_PIVOT = 0.46 m` for legacy fixtures, catalogue-realistic `pivotY` for catalogue fixtures), preserving `focusAim.ts` and `beamAxes()` convergence.
 

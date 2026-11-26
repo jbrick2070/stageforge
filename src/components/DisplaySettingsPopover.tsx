@@ -250,6 +250,19 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
                 Locally beam-lit smoke &amp; CO2 puffs <span className="text-zinc-400">(experimental)</span>
               </span>
             </label>
+
+            <label className="flex items-center gap-2 min-h-[44px] cursor-pointer text-zinc-200">
+              <input
+                type="checkbox"
+                data-testid="render-ilda-scan-energy-checkbox"
+                checked={settings.ildaScanEnergy}
+                onChange={(e) => onChangeSettings({ ildaScanEnergy: e.target.checked })}
+                className="h-4 w-4 accent-cyan-400"
+              />
+              <span>
+                ILDA laser scan-energy ribbons <span className="text-zinc-400">(experimental)</span>
+              </span>
+            </label>
           </div>
 
           <div className="mt-3 border-t border-white/10 pt-2.5 space-y-2">

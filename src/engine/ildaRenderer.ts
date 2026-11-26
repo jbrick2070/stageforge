@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { normalizeIldaCoord, type IldaClip } from '../data/ilda';
 import { ildaScanTangents, LASER_APERTURE_Z_M, LASER_BEAM_LENGTH_M } from '../data/laserAim';
+import { IldaScanEnergyProjector } from './ildaScanEnergy';
 
 export type IldaRenderMode = 'both' | 'beam' | 'graphic';
 
@@ -37,6 +38,7 @@ export class BakedIldaClip {
   readonly rgbColorAttr: THREE.BufferAttribute;
   readonly monoColorAttr: THREE.BufferAttribute;
   private readonly wrappers = new Set<THREE.BufferGeometry>();
+  private readonly scanEnergyProjectors = new Set<IldaScanEnergyProjector>();
   private disposed = false;
 
   constructor(clip: IldaClip, throwLengthM = LASER_BEAM_LENGTH_M) {
@@ -199,7 +201,32 @@ export class BakedIldaClip {
 
   /** Returns true when `geo` is a shared-attribute wrapper owned by this baked clip. */
   ownsGeometry(geo: THREE.BufferGeometry): boolean {
-    return this.wrappers.has(geo);
+    if (this.wrappers.has(geo)) return true;
+    for (const projector of this.scanEnergyProjectors) {
+      if (projector.geometry === geo) return true;
+    }
+    return false;
+  }
+
+  /** Create one explicitly-owned fixed-capacity scan-energy ribbon for a live projector. */
+  createScanEnergyProjector(capacitySegments: number, singleColor: boolean): IldaScanEnergyProjector {
+    if (this.disposed) {
+      throw new Error('Cannot create a scan-energy projector from a disposed BakedIldaClip.');
+    }
+    const projector = new IldaScanEnergyProjector(this.clip, capacitySegments, singleColor);
+    this.scanEnergyProjectors.add(projector);
+    return projector;
+  }
+
+  /** Re-upload optional dynamic ribbon buffers after WebGL context restoration. */
+  onContextRestored(): void {
+    for (const projector of this.scanEnergyProjectors) projector.onContextRestored();
+  }
+
+  /** Dispose only optional ribbon resources while preserving byte/pixel-identical legacy line wrappers. */
+  disposeScanEnergyProjectors(): void {
+    for (const projector of this.scanEnergyProjectors) projector.dispose();
+    this.scanEnergyProjectors.clear();
   }
 
   /** Compute the exact draw-range `[start, count]` for a given frame index and Beam/Graphic/Both mode (optionally reusing `out` for zero-alloc rendering). */
@@ -232,6 +259,7 @@ export class BakedIldaClip {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.disposeScanEnergyProjectors();
     for (const geo of this.wrappers) {
       geo.dispose();
     }

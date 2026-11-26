@@ -75,6 +75,7 @@ import { AtmosphericParticles, type ParticleLightingUpdate } from './ParticleSys
 import type { LitPuffsStats } from './litPuffs';
 import { laserGeometry } from './laserGeometry';
 import { BakedIldaClip, type IldaRenderMode } from './ildaRenderer';
+import { ildaScanEnergyBudget, type IldaScanEnergyProjector } from './ildaScanEnergy';
 import type { IldaClip } from '../data/ilda';
 import { getCatalogEntry, getCatalogMode, type CatalogDmxMode, type CatalogLaserSpec } from '../data/equipmentCatalog';
 import { encodeLaserDmxChannels, ildaScanTangents, LASER_ILDA_ROLL_SCALE, LASER_SHEET_ROLL_SCALE, laserPitch, laserPowerPresence } from '../data/laserAim';
@@ -243,6 +244,15 @@ interface LaserUnitInstance {
   innerConeMat: THREE.ShaderMaterial;
   ildaMesh?: THREE.LineSegments;
   ildaMat?: THREE.LineBasicMaterial;
+  ildaRibbon?: IldaScanEnergyProjector;
+  ildaLastFrame?: number;
+  ildaLastMode?: IldaRenderMode;
+  ildaLastScaleX?: number;
+  ildaLastScaleY?: number;
+  ildaLastRoll?: number;
+  ildaLastGain?: number;
+  ildaLastHaze?: number;
+  ildaLastVisible?: boolean;
   catalogId?: string;
   dmxMode?: string;
   laserSpec?: CatalogLaserSpec;
@@ -665,6 +675,7 @@ export class StageEngine {
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();
+      this.bakedIlda?.onContextRestored();
       if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
@@ -926,6 +937,9 @@ export class StageEngine {
         this.particles.setLitPuffs(false);
       }
     }
+    if (prev.ildaScanEnergy !== next.ildaScanEnergy && this.activeIldaClip) {
+      this.syncIldaScanEnergyResources(next.ildaScanEnergy);
+    }
   }
 
   private refreshCommittedFixtureWorldTransforms() {
@@ -1151,10 +1165,31 @@ export class StageEngine {
     let ildaActiveProjectors = 0;
     let ildaVisibleSegments = 0;
     let ildaBakedSegments = 0;
+    let ildaRibbonProjectors = 0;
+    let ildaFallbackProjectors = 0;
+    let ildaRibbonSegments = 0;
+    let ildaRibbonCapacitySegments = 0;
+    let ildaScanEnergyExtraBufferBytes = 0;
+    let ildaScanEnergyUploadBytes = 0;
     if (this.bakedIlda) {
       ildaBakedSegments = Math.floor(this.bakedIlda.positionAttr.count / 2);
       for (const l of this.laserUnits) {
-        if (l.ildaMesh?.visible) {
+        const ribbonStats = l.ildaRibbon?.getStats();
+        if (ribbonStats) {
+          ildaRibbonCapacitySegments += ribbonStats.capacitySegments;
+          ildaScanEnergyExtraBufferBytes += ribbonStats.extraBufferBytes;
+          ildaScanEnergyUploadBytes += ribbonStats.uploadBytes;
+          if (l.ildaRibbon?.mesh.visible) {
+            ildaRibbonProjectors++;
+            ildaRibbonSegments += ribbonStats.segments;
+          } else if (l.ildaMesh?.visible && ribbonStats.fallback) {
+            ildaFallbackProjectors++;
+          }
+        }
+        if (l.ildaRibbon?.mesh.visible) {
+          ildaActiveProjectors++;
+          ildaVisibleSegments += ribbonStats?.segments ?? 0;
+        } else if (l.ildaMesh?.visible) {
           ildaActiveProjectors++;
           ildaVisibleSegments += Math.floor(l.ildaMesh.geometry.drawRange.count / 2);
         }
@@ -1246,12 +1281,26 @@ export class StageEngine {
         activeProjectors: ildaActiveProjectors,
         visibleSegments: ildaVisibleSegments,
         bakedSegments: ildaBakedSegments,
+        scanEnergy: {
+          requested: this.renderSettings.ildaScanEnergy,
+          allocated: ildaRibbonCapacitySegments > 0,
+          active: ildaRibbonProjectors > 0,
+          ribbonProjectors: ildaRibbonProjectors,
+          fallbackProjectors: ildaFallbackProjectors,
+          activeSegments: ildaRibbonSegments,
+          activeTriangles: ildaRibbonSegments * 2,
+          capacitySegments: ildaRibbonCapacitySegments,
+          capacityTriangles: ildaRibbonCapacitySegments * 2,
+          extraBufferBytes: ildaScanEnergyExtraBufferBytes,
+          uploadBytes: ildaScanEnergyUploadBytes,
+        },
       },
       resources: {
         renderTargetBytesEstimate,
         prismPoolExtraBufferBytes: prismPools.extraBufferBytes,
         deckSheenExtraTextureBytes: deckSheen.extraTextureBytes,
         litPuffsExtraBufferBytes: litPuffs.extraBufferBytes,
+        ildaScanEnergyExtraBufferBytes,
       },
       gpuTimerStatus: this.gpuTimer?.getStatus() ?? (isWebGL2 ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') ? 'ok' : 'unsupported') : 'unsupported'),
       gpuTimerPending: this.gpuTimer?.pendingCount() ?? 0,
@@ -1480,6 +1529,10 @@ export class StageEngine {
         l.ildaMat.dispose();
         l.ildaMat = undefined;
       }
+      if (l.ildaRibbon) {
+        l.ildaRibbon.mesh.removeFromParent();
+        l.ildaRibbon = undefined;
+      }
     }
     this.bakedIlda?.dispose();
     this.bakedIlda = null;
@@ -1507,6 +1560,46 @@ export class StageEngine {
       l.ildaMesh = mesh;
       l.ildaMat = mat;
     }
+    this.syncIldaScanEnergyResources(this.renderSettings.ildaScanEnergy);
+  }
+
+  /** Toggle only optional ribbons; legacy shared line buffers/materials retain exact identity and pixels. */
+  private syncIldaScanEnergyResources(enabled: boolean) {
+    const baked = this.bakedIlda;
+    if (!baked) return;
+    for (const l of this.laserUnits) {
+      const restoreLine = Boolean(l.ildaRibbon?.mesh.visible);
+      if (l.ildaRibbon) l.ildaRibbon.mesh.removeFromParent();
+      l.ildaRibbon = undefined;
+      if (restoreLine && l.ildaMesh && l.ildaMesh.geometry.drawRange.count > 0) l.ildaMesh.visible = true;
+    }
+    baked.disposeScanEnergyProjectors();
+    if (!enabled) return;
+    const ribbonBudget = ildaScanEnergyBudget(this.renderTier, this.laserUnits.length);
+    if (ribbonBudget.segmentsPerProjector <= 0) return;
+    for (const l of this.laserUnits) {
+      const ribbon = baked.createScanEnergyProjector(
+        ribbonBudget.segmentsPerProjector,
+        l.laserSpec?.colorType === 'single',
+      );
+      l.root.add(ribbon.mesh);
+      l.ildaRibbon = ribbon;
+      if (l.ildaLastFrame !== undefined && l.ildaLastMode) {
+        const state = ribbon.updateFrame(l.ildaLastFrame, l.ildaLastMode);
+        ribbon.mesh.scale.set(l.ildaLastScaleX ?? 1, l.ildaLastScaleY ?? 1, 1);
+        ribbon.mesh.rotation.z = l.ildaLastRoll ?? 0;
+        ribbon.setAppearance(l.ildaLastGain ?? 0, l.ildaLastHaze ?? 0, l.singleColor);
+        if (l.ildaLastVisible && state.active) this.selectIldaPath(l, 'ribbon');
+      }
+    }
+  }
+
+  /** Select exactly one ILDA preview path so the optional ribbon always replaces the legacy line draw. */
+  private selectIldaPath(laser: LaserUnitInstance, path: 'line' | 'ribbon' | 'none') {
+    if (laser.ildaMesh) laser.ildaMesh.visible = false;
+    if (laser.ildaRibbon) laser.ildaRibbon.mesh.visible = false;
+    if (path === 'line' && laser.ildaMesh) laser.ildaMesh.visible = true;
+    if (path === 'ribbon' && laser.ildaRibbon) laser.ildaRibbon.mesh.visible = true;
   }
 
   /** Force a full rig teardown + rebuild (used by `?probe` leak tests). */
@@ -3389,6 +3482,7 @@ export class StageEngine {
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();
+      this.bakedIlda?.onContextRestored();
       if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
@@ -4232,8 +4326,8 @@ export class StageEngine {
         l.ildaMesh.geometry.setDrawRange(dr.start, dr.count);
         const tangents = ildaScanTangents(l.laserSpec?.maxScanAngleDeg, effSpreadX, effSpreadY);
         l.ildaMesh.scale.set(tangents.scaleX, tangents.scaleY, 1);
-        l.ildaMesh.rotation.z = effRotation * Math.sin(t * (0.4 + s.laser.speed * 1.4) + speedPhaseOff * 0.54 + l.index) * LASER_ILDA_ROLL_SCALE;
-        l.ildaMesh.visible = previewLaserVisible && dr.count > 0;
+        const ildaRoll = effRotation * Math.sin(t * (0.4 + s.laser.speed * 1.4) + speedPhaseOff * 0.54 + l.index) * LASER_ILDA_ROLL_SCALE;
+        l.ildaMesh.rotation.z = ildaRoll;
 
         const hazeGain = 0.35 + 0.65 * effHaze;
         const ildaGain = Math.min(1.5, previewUnitInt * flicker * hazeGain);
@@ -4242,9 +4336,29 @@ export class StageEngine {
         } else {
           l.ildaMat.color.setRGB(ildaGain, ildaGain, ildaGain);
         }
+        l.ildaLastFrame = ildaFrameIdx;
+        l.ildaLastMode = effectiveMode;
+        l.ildaLastScaleX = tangents.scaleX;
+        l.ildaLastScaleY = tangents.scaleY;
+        l.ildaLastRoll = ildaRoll;
+        l.ildaLastGain = Math.min(1.5, previewUnitInt * flicker);
+        l.ildaLastHaze = effHaze;
+        l.ildaLastVisible = previewLaserVisible && dr.count > 0;
+        let selectedPath: 'line' | 'ribbon' | 'none' = previewLaserVisible && dr.count > 0 ? 'line' : 'none';
+        if (this.renderSettings.ildaScanEnergy && l.ildaRibbon) {
+          const ribbon = l.ildaRibbon;
+          const ribbonFrame = ribbon.updateFrame(ildaFrameIdx, effectiveMode);
+          ribbon.mesh.scale.set(tangents.scaleX, tangents.scaleY, 1);
+          ribbon.mesh.rotation.z = ildaRoll;
+          ribbon.setAppearance(Math.min(1.5, previewUnitInt * flicker), effHaze, l.singleColor);
+          if (previewLaserVisible && ribbonFrame.active) selectedPath = 'ribbon';
+          else if (!ribbonFrame.fallback) selectedPath = 'none';
+        }
+        this.selectIldaPath(l, selectedPath);
         l.apertureMat.color.copy(su.uColorA.value).multiplyScalar(previewUnitInt * flicker * 2.6);
       } else {
-        if (l.ildaMesh) l.ildaMesh.visible = false;
+        l.ildaLastVisible = false;
+        this.selectIldaPath(l, 'none');
         const shapes = this.laserShape(override?.patternSegments ?? s.laser.patternSegments ?? DEFAULT_LASER_RESOLUTION);
         l.sheetMesh.geometry = shapes.sheet;
         l.coneMesh.geometry = shapes.cone;

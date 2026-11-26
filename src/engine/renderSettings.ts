@@ -25,6 +25,8 @@ export interface RenderSettings {
   crowdLighting: boolean;
   /** Flag-gated locally beam-lit smoke & CO2 puffs with intra-batch depth sorting (Sprint 20, default off). */
   litPuffs: boolean;
+  /** Flag-gated bounded ILDA scan-energy ribbons with legacy line fallback (Sprint 21, default off). */
+  ildaScanEnergy: boolean;
 }
 
 export const RENDER_SETTINGS_STORAGE_KEY = 'stageforge.render.v1';
@@ -39,6 +41,7 @@ export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   deckSheen: false,
   crowdLighting: false,
   litPuffs: false,
+  ildaScanEnergy: false,
 });
 
 const VALID_BLOOM_MODES: ReadonlySet<string> = new Set<BloomMode>(['auto', 'full', 'half', 'off']);
@@ -76,6 +79,9 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   const litPuffs = Object.hasOwn(obj, 'litPuffs') && typeof obj.litPuffs === 'boolean'
     ? obj.litPuffs
     : DEFAULT_RENDER_SETTINGS.litPuffs;
+  const ildaScanEnergy = Object.hasOwn(obj, 'ildaScanEnergy') && typeof obj.ildaScanEnergy === 'boolean'
+    ? obj.ildaScanEnergy
+    : DEFAULT_RENDER_SETTINGS.ildaScanEnergy;
   return {
     bloom,
     aa,
@@ -86,6 +92,7 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
     deckSheen,
     crowdLighting,
     litPuffs,
+    ildaScanEnergy,
   };
 }
 
