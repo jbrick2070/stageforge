@@ -128,14 +128,21 @@ describe('Sprint 21: dwell, corner, blanking and draw-range processing', () => {
   });
 
   it('falls back whole for a dense frame instead of truncating or leaving stale triangles', () => {
-    const dense = clipFromPoints(Array.from({ length: 80 }, (_, i) => point(-30000 + i * 700, (i % 2) * 500)));
-    const ribbon = new scanMod.IldaScanEnergyProjector(dense, 20, false);
-    const result = ribbon.updateFrame(0, 'both');
+    const clip = ildaMod.parseIlda(ildaMod.encodeIlda([
+      { name: 'SPARSE', format: 5, points: [point(-10000, 0), point(0, 10000), point(10000, 0)] },
+      { name: 'DENSE', format: 5, points: Array.from({ length: 80 }, (_, i) => point(-30000 + i * 700, (i % 2) * 500)) },
+    ]), { tier: 'high' });
+    const ribbon = new scanMod.IldaScanEnergyProjector(clip, 20, false);
+    const sparseResult = ribbon.updateFrame(0, 'both');
+    assert.equal(sparseResult.fallback, false);
+    assert.ok(ribbon.getStats().uploadBytes > 0);
+    const result = ribbon.updateFrame(1, 'both');
     assert.equal(result.fallback, true);
     assert.equal(result.active, false);
     assert.ok(result.requiredSegments > 20);
     assert.equal(result.segments, 0);
     assert.equal(ribbon.geometry.drawRange.count, 0);
+    assert.equal(ribbon.getStats().uploadBytes, 0, 'fallback reports no current ribbon upload');
     ribbon.dispose();
   });
 
@@ -148,8 +155,11 @@ describe('Sprint 21: dwell, corner, blanking and draw-range processing', () => {
     ]), { tier: 'high' });
     const animated = new scanMod.IldaScanEnergyProjector(clip, 8000, false);
     const positionArray = animated.geometry.getAttribute('position').array;
-    assert.equal(animated.updateFrame(0, 'beam').segments, 4000);
-    assert.equal(animated.updateFrame(1, 'beam').segments, 4000);
+    const resultA = animated.updateFrame(0, 'beam');
+    assert.equal(resultA.segments, 4000);
+    const resultB = animated.updateFrame(1, 'beam');
+    assert.equal(resultB.segments, 4000);
+    assert.equal(resultB, resultA, 'animated updates reuse the result object');
     assert.equal(animated.geometry.getAttribute('position').array, positionArray, 'fixed typed-array storage is reused');
 
     const source = readFileSync(join(process.cwd(), 'src/engine/ildaScanEnergy.ts'), 'utf8');

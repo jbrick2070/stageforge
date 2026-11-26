@@ -142,11 +142,6 @@ void main() {
 }
 `;
 
-interface CompactFrame {
-  count: number;
-  outlineSegments: number;
-}
-
 /**
  * One projector's optional fixed-capacity ribbon. The controller is the sole owner of its
  * geometry/material and never changes the clip's source-point timing metadata.
@@ -176,9 +171,11 @@ export class IldaScanEnergyProjector {
   private readonly compactDwell = new Float32Array(ILDA_MAX_POINTS_PER_FRAME);
   private readonly compactBreak = new Uint8Array(ILDA_MAX_POINTS_PER_FRAME);
   private readonly compactEnergy = new Float32Array(ILDA_MAX_POINTS_PER_FRAME);
+  private compactCount = 0;
+  private compactOutlineSegments = 0;
   private cachedFrame = -1;
   private cachedMode: IldaRenderMode | null = null;
-  private last: IldaRibbonUpdate = { active: false, fallback: false, segments: 0, requiredSegments: 0, compactedLitPoints: 0 };
+  private readonly last = { active: false, fallback: false, segments: 0, requiredSegments: 0, compactedLitPoints: 0 };
   private uploadBytes = 0;
   private disposed = false;
 
@@ -226,7 +223,7 @@ export class IldaScanEnergyProjector {
     this.mesh.userData.noBatch = true;
   }
 
-  private compact(frame: IldaFrameSlice): CompactFrame {
+  private compact(frame: IldaFrameSlice): void {
     let count = 0;
     let outlineSegments = 0;
     let previousLit = false;
@@ -289,7 +286,8 @@ export class IldaScanEnergyProjector {
       }
       this.compactEnergy[i] = Math.min(1.8, energy);
     }
-    return { count, outlineSegments };
+    this.compactCount = count;
+    this.compactOutlineSegments = outlineSegments;
   }
 
   private writeSegment(
@@ -319,23 +317,33 @@ export class IldaScanEnergyProjector {
   updateFrame(frameIndex: number, mode: IldaRenderMode): IldaRibbonUpdate {
     if (this.disposed || this.clip.frames.length === 0 || this.capacitySegments <= 0) {
       this.geometry.setDrawRange(0, 0);
-      this.last = { active: false, fallback: true, segments: 0, requiredSegments: 0, compactedLitPoints: 0 };
+      this.uploadBytes = 0;
+      this.last.active = false;
+      this.last.fallback = true;
+      this.last.segments = 0;
+      this.last.requiredSegments = 0;
+      this.last.compactedLitPoints = 0;
       return this.last;
     }
     const safeFrame = ((Math.floor(frameIndex) % this.clip.frames.length) + this.clip.frames.length) % this.clip.frames.length;
     if (this.cachedFrame === safeFrame && this.cachedMode === mode) return this.last;
 
     const frame = this.clip.frames[safeFrame];
-    const compact = this.compact(frame);
-    const rays = mode === 'graphic' ? 0 : compact.count;
-    const outlines = mode === 'beam' ? 0 : compact.outlineSegments;
+    this.compact(frame);
+    const rays = mode === 'graphic' ? 0 : this.compactCount;
+    const outlines = mode === 'beam' ? 0 : this.compactOutlineSegments;
     const required = rays + outlines;
     this.cachedFrame = safeFrame;
     this.cachedMode = mode;
 
     if (required > this.capacitySegments) {
       this.geometry.setDrawRange(0, 0);
-      this.last = { active: false, fallback: true, segments: 0, requiredSegments: required, compactedLitPoints: compact.count };
+      this.uploadBytes = 0;
+      this.last.active = false;
+      this.last.fallback = true;
+      this.last.segments = 0;
+      this.last.requiredSegments = required;
+      this.last.compactedLitPoints = this.compactCount;
       return this.last;
     }
 
@@ -343,7 +351,7 @@ export class IldaScanEnergyProjector {
     const apertureZ = LASER_APERTURE_Z_M;
     const farZ = LASER_APERTURE_Z_M + this.throwLengthM;
     if (mode !== 'graphic') {
-      for (let i = 0; i < compact.count; i++) {
+      for (let i = 0; i < this.compactCount; i++) {
         const energy = this.compactEnergy[i];
         this.writeSegment(
           segment++, 0, 0, apertureZ, this.compactX[i], this.compactY[i], farZ,
@@ -353,7 +361,7 @@ export class IldaScanEnergyProjector {
       }
     }
     if (mode !== 'beam') {
-      for (let i = 1; i < compact.count; i++) {
+      for (let i = 1; i < this.compactCount; i++) {
         if (this.compactBreak[i] !== 0) continue;
         const e0 = this.compactEnergy[i - 1];
         const e1 = this.compactEnergy[i];
@@ -380,7 +388,11 @@ export class IldaScanEnergyProjector {
     this.edgeAttr.addUpdateRange(0, vertices);
     this.geometry.setDrawRange(0, vertices);
     this.uploadBytes = segment * ILDA_SCAN_ENERGY_BYTES_PER_SEGMENT;
-    this.last = { active: segment > 0, fallback: false, segments: segment, requiredSegments: required, compactedLitPoints: compact.count };
+    this.last.active = segment > 0;
+    this.last.fallback = false;
+    this.last.segments = segment;
+    this.last.requiredSegments = required;
+    this.last.compactedLitPoints = this.compactCount;
     return this.last;
   }
 
@@ -404,6 +416,7 @@ export class IldaScanEnergyProjector {
     if (this.disposed) return;
     this.cachedFrame = -1;
     this.cachedMode = null;
+    this.uploadBytes = 0;
     this.positionAttr.needsUpdate = true;
     this.otherAttr.needsUpdate = true;
     this.colorAttr.needsUpdate = true;
@@ -417,6 +430,7 @@ export class IldaScanEnergyProjector {
     this.mesh.removeFromParent();
     this.mesh.visible = false;
     this.geometry.setDrawRange(0, 0);
+    this.uploadBytes = 0;
     this.geometry.dispose();
     this.material.dispose();
   }
