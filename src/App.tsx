@@ -285,11 +285,20 @@ export const App: React.FC = () => {
     const xr = navigator.xr;
     const eligible = renderSettings.webxrAudience && !viewerMode && !window.stageforgeDesktop && Boolean(xr?.isSessionSupported);
     if (!eligible || !xr) {
-      if (webXrBlocksPhysicalOutput(webXrPhaseRef.current)) void engineRef.current?.exitWebXrSession();
+      const engine = engineRef.current;
+      if (webXrBlocksPhysicalOutput(webXrPhaseRef.current) || engine?.isWebXrSessionActive()) {
+        if (webXrPhaseRef.current === 'requesting') webXrRequestGenerationRef.current++;
+        webXrPhaseRef.current = 'exiting';
+        setWebXrPhase('exiting');
+        if (engine?.isWebXrSessionActive()) void engine.exitWebXrSession();
+        return;
+      }
       webXrPhaseRef.current = 'disabled';
       setWebXrPhase('disabled');
       return;
     }
+    // A slow session.end() remains fail-closed. Its completion callback chooses ready/disabled.
+    if (webXrPhaseRef.current === 'exiting') return;
     webXrPhaseRef.current = 'checking';
     setWebXrPhase('checking');
     void xr.isSessionSupported('immersive-vr').then((supported) => {
@@ -591,7 +600,7 @@ export const App: React.FC = () => {
     capabilities.liveOutput,
     clearAllBumps,
     () => {
-      if (webXrBlocksPhysicalOutput(webXrPhaseRef.current)) {
+      if (webXrBlocksPhysicalOutput(webXrPhaseRef.current) || engineRef.current?.isWebXrSessionActive()) {
         return {
           allowed: false,
           reason: 'Cannot arm physical output while VR is pending or active.',
@@ -643,6 +652,14 @@ export const App: React.FC = () => {
         !renderSettingsRef.current.webxrAudience
       ) {
         await session.end().catch(() => {});
+        if (generation !== webXrRequestGenerationRef.current && webXrPhaseRef.current === 'exiting') {
+          const next: WebXrPhase =
+            renderSettingsRef.current.webxrAudience && !viewerModeRef.current && !window.stageforgeDesktop
+              ? 'ready'
+              : 'disabled';
+          webXrPhaseRef.current = next;
+          setWebXrPhase(next);
+        }
         return;
       }
       const engine = engineRef.current;
@@ -656,7 +673,10 @@ export const App: React.FC = () => {
         foveation: mod.WEBXR_FOVEATION,
         onEnded: (reason) => {
           if (generation !== webXrRequestGenerationRef.current) return;
-          const next: WebXrPhase = renderSettingsRef.current.webxrAudience && !window.stageforgeDesktop ? 'ready' : 'disabled';
+          const next: WebXrPhase =
+            renderSettingsRef.current.webxrAudience && !viewerModeRef.current && !window.stageforgeDesktop
+              ? 'ready'
+              : 'disabled';
           webXrPhaseRef.current = next;
           setWebXrPhase(next);
           if (reason === 'system-exit') showToast('VR session ended by the headset.');
@@ -669,7 +689,17 @@ export const App: React.FC = () => {
       webXrPhaseRef.current = 'active';
       setWebXrPhase('active');
     }).catch((error) => {
-      if (generation !== webXrRequestGenerationRef.current) return;
+      if (generation !== webXrRequestGenerationRef.current) {
+        if (webXrPhaseRef.current === 'exiting') {
+          const next: WebXrPhase =
+            renderSettingsRef.current.webxrAudience && !viewerModeRef.current && !window.stageforgeDesktop
+              ? 'ready'
+              : 'disabled';
+          webXrPhaseRef.current = next;
+          setWebXrPhase(next);
+        }
+        return;
+      }
       const next: WebXrPhase = renderSettingsRef.current.webxrAudience ? 'ready' : 'disabled';
       webXrPhaseRef.current = next;
       setWebXrPhase(next);
@@ -700,10 +730,11 @@ export const App: React.FC = () => {
   }, [beginWebXrRequest, showToast]);
 
   const cancelWebXrRequest = useCallback(() => {
+    if (webXrPhaseRef.current !== 'requesting') return;
     webXrRequestGenerationRef.current++;
-    const next: WebXrPhase = renderSettingsRef.current.webxrAudience ? 'ready' : 'disabled';
-    webXrPhaseRef.current = next;
-    setWebXrPhase(next);
+    // requestSession has no abort API: remain interlocked until the browser settles the promise.
+    webXrPhaseRef.current = 'exiting';
+    setWebXrPhase('exiting');
   }, []);
 
   const exitWebXr = useCallback(() => {
@@ -1818,6 +1849,10 @@ export const App: React.FC = () => {
       rebuildRig: () => engine.forceRebuildCurrentRig(),
       controlLoopHealth: () => engine.getControlLoopHealth(),
       webXr: () => ({ phase: webXrPhaseRef.current, ...engine.webXrDiagnostics() }),
+      attemptWebXrDmxListener: () => {
+        engine.setDmxFrameListener(() => {});
+        return engine.webXrDiagnostics();
+      },
       simulateContextLoss: (lost: boolean) => engine.simulateContextLossForTest(Boolean(lost)),
     };
 

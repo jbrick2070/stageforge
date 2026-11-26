@@ -9,9 +9,11 @@ export async function installFakeWebXr(page, options = {}) {
       supported: initial.supported !== false,
       denyNext: Boolean(initial.denyNext),
       deferNext: false,
+      deferEndNext: false,
       requests: [],
       sessions: [],
       pending: [],
+      pendingEnds: [],
       activeSession: null,
       scaleFactor: null,
       foveation: null,
@@ -51,6 +53,8 @@ export async function installFakeWebXr(page, options = {}) {
         this.enabledFeatures = ['local-floor'];
         this.renderState = { baseLayer: null, depthNear: 0.1, depthFar: 220 };
         this.ended = false;
+        this.ending = false;
+        this.endPromise = null;
         this.rafIds = new Set();
         this.listenerBalance = 0;
       }
@@ -90,13 +94,31 @@ export async function installFakeWebXr(page, options = {}) {
         this.rafIds.delete(id);
         window.cancelAnimationFrame(id);
       }
-      end() {
-        if (this.ended) return Promise.resolve();
+      finishEnd() {
+        if (this.ended) return;
         this.ended = true;
+        this.ending = false;
         for (const id of this.rafIds) window.cancelAnimationFrame(id);
         this.rafIds.clear();
         this.dispatchEvent(new Event('end'));
         if (state.activeSession === this) state.activeSession = null;
+      }
+      end() {
+        if (this.ended) return Promise.resolve();
+        if (this.ending && this.endPromise) return this.endPromise;
+        if (state.deferEndNext) {
+          state.deferEndNext = false;
+          this.ending = true;
+          this.endPromise = new Promise((resolve) => state.pendingEnds.push({
+            session: this,
+            resolve: () => {
+              this.finishEnd();
+              resolve();
+            },
+          }));
+          return this.endPromise;
+        }
+        this.finishEnd();
         return Promise.resolve();
       }
       setVisibility(value) {
@@ -174,6 +196,8 @@ export async function installFakeWebXr(page, options = {}) {
         if (pending) pending.reject(new DOMException('Canceled by test', name));
       },
       failReferenceSpaceNext() { state.failReferenceSpaceNext = true; },
+      deferEndNext() { state.deferEndNext = true; },
+      resolvePendingEnd() { state.pendingEnds.shift()?.resolve(); },
       systemExit() { return state.activeSession?.end(); },
       setVisibility(value) { state.activeSession?.setVisibility(value); },
       snapshot() {
@@ -182,6 +206,7 @@ export async function installFakeWebXr(page, options = {}) {
           requests: state.requests.map((request) => ({ ...request })),
           sessions: state.sessions.length,
           pending: state.pending.length,
+          pendingEnds: state.pendingEnds.length,
           active: Boolean(state.activeSession),
           scaleFactor: state.scaleFactor,
           foveation: state.foveation,

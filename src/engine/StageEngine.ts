@@ -1347,7 +1347,12 @@ export class StageEngine {
       controlsTarget: this.controls.target.toArray(),
       composerPasses: this.composer.passes.map((pass) => ({ name: pass.constructor?.name ?? 'Pass', enabled: pass.enabled })),
       directRendering: Boolean(lease),
+      physicalOutputListenerAttached: Boolean(this.dmxFrameListener),
     };
+  }
+
+  public isWebXrSessionActive(): boolean {
+    return Boolean(this.webXrLease);
   }
 
   /**
@@ -3901,6 +3906,12 @@ export class StageEngine {
       serialU2: Uint8Array,
     ) => void
   ) {
+    if (listener && this.webXrLease) {
+      // Renderer-level safety authority: never emit physical frames while XR owns the camera/loop.
+      this.dmxFrameListener = undefined;
+      this.stopControlFallbackTimer();
+      return;
+    }
     this.dmxFrameListener = listener;
     this.dmxAccum = 0;
     if (!listener) {

@@ -90,12 +90,34 @@ test('warning-gated stereo entry restores one loop owner and every renderer leas
 
   // The same interlock authority disables physical arming while XR owns or awaits the loop.
   await page.getByRole('button', { name: 'DMX monitor' }).click();
-  await page.getByTestId('dmx-advanced-summary').click();
-  await expect(page.getByTestId('dmx-webxr-blocked')).toBeVisible();
-  await expect(page.getByTestId('dmx-output-arm')).toBeDisabled();
+  await page.locator('[data-testid="dmx-advanced-summary"]:visible').click();
+  await expect(page.locator('[data-testid="dmx-webxr-blocked"]:visible')).toBeVisible();
+  await expect(page.locator('[data-testid="dmx-output-arm"]:visible')).toBeDisabled();
   await page.getByRole('button', { name: 'Close DMX monitor' }).click();
   await exit(page);
   const warmedAfterFirst = await xrState(page);
+
+  // A slow browser end keeps both UI and renderer interlocks fail-closed until the lease restores.
+  await enter(page);
+  const guarded = await page.evaluate(() => window.stageforgeProbe.attemptWebXrDmxListener());
+  expect(guarded.physicalOutputListenerAttached).toBe(false);
+  await page.evaluate(() => window.__fakeWebXr.deferEndNext());
+  await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ webxrAudience: false }));
+  await expect.poll(async () => (await xrState(page)).phase).toBe('exiting');
+  await page.waitForTimeout(150);
+  expect((await xrState(page)).active).toBe(true);
+  expect((await page.evaluate(() => window.__fakeWebXr.snapshot())).pendingEnds).toBe(1);
+  await page.getByRole('button', { name: 'DMX monitor' }).click();
+  const advanced = page.locator('[data-testid="dmx-advanced-summary"]:visible');
+  if (!(await advanced.evaluate((element) => element.parentElement?.hasAttribute('open')))) await advanced.click();
+  await expect(page.locator('[data-testid="dmx-webxr-blocked"]:visible')).toBeVisible();
+  await expect(page.locator('[data-testid="dmx-output-arm"]:visible')).toBeDisabled();
+  await page.getByRole('button', { name: 'Close DMX monitor' }).click();
+  await page.evaluate(() => window.__fakeWebXr.resolvePendingEnd());
+  await expect.poll(async () => (await xrState(page)).phase).toBe('disabled');
+  await expect.poll(() => page.evaluate(() => window.__fakeWebXr.snapshot().active)).toBe(false);
+  await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ webxrAudience: true }));
+  await expect.poll(async () => (await xrState(page)).phase).toBe('ready');
 
   // Permission denial never transfers renderer ownership.
   const entriesAfterFirst = (await xrState(page)).entries;
@@ -109,6 +131,7 @@ test('warning-gated stereo entry restores one loop owner and every renderer leas
   await page.getByTestId('webxr-enter').click();
   await expect.poll(async () => (await xrState(page)).phase).toBe('requesting');
   await page.getByTestId('webxr-cancel-request').click();
+  await expect.poll(async () => (await xrState(page)).phase).toBe('exiting');
   await page.evaluate(() => window.__fakeWebXr.resolvePending());
   await expect.poll(async () => (await xrState(page)).phase).toBe('ready');
   await expect.poll(() => page.evaluate(() => window.__fakeWebXr.snapshot().active)).toBe(false);
@@ -123,7 +146,7 @@ test('warning-gated stereo entry restores one loop owner and every renderer leas
   await enter(page);
   await page.evaluate(() => window.__fakeWebXr.systemExit());
   await expect.poll(async () => (await xrState(page)).phase).toBe('ready');
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 7; i++) {
     await enter(page);
     await exit(page);
   }
