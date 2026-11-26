@@ -21,6 +21,8 @@ export interface RenderSettings {
   ledAngularResponse: boolean;
   /** Flag-gated stage-deck PBR roughness & weak normal response (Sprint 18, default off). */
   deckSheen: boolean;
+  /** Flag-gated restrained directional & rim show-light response on instanced crowd (Sprint 19, default off). */
+  crowdLighting: boolean;
 }
 
 export const RENDER_SETTINGS_STORAGE_KEY = 'stageforge.render.v1';
@@ -33,6 +35,7 @@ export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   prismPools: false,
   ledAngularResponse: false,
   deckSheen: false,
+  crowdLighting: false,
 });
 
 const VALID_BLOOM_MODES: ReadonlySet<string> = new Set<BloomMode>(['auto', 'full', 'half', 'off']);
@@ -64,7 +67,10 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   const deckSheen = Object.hasOwn(obj, 'deckSheen') && typeof obj.deckSheen === 'boolean'
     ? obj.deckSheen
     : DEFAULT_RENDER_SETTINGS.deckSheen;
-  return { bloom, aa, fallingCo2, videoSrgbDecode, prismPools, ledAngularResponse, deckSheen };
+  const crowdLighting = Object.hasOwn(obj, 'crowdLighting') && typeof obj.crowdLighting === 'boolean'
+    ? obj.crowdLighting
+    : DEFAULT_RENDER_SETTINGS.crowdLighting;
+  return { bloom, aa, fallingCo2, videoSrgbDecode, prismPools, ledAngularResponse, deckSheen, crowdLighting };
 }
 
 export function loadRenderSettings(): RenderSettings {

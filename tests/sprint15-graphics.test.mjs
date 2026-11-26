@@ -71,6 +71,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       prismPools: false,
       ledAngularResponse: false,
       deckSheen: false,
+      crowdLighting: false,
     });
 
     const hostile = renderSettings.parseRenderSettings({
@@ -81,6 +82,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       prismPools: 'true',
       ledAngularResponse: 1,
       deckSheen: 'on',
+      crowdLighting: 1,
     });
     assert.deepEqual(hostile, def);
 
@@ -92,6 +94,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       prismPools: true,
       ledAngularResponse: true,
       deckSheen: true,
+      crowdLighting: true,
     });
     assert.deepEqual(valid, {
       bloom: 'half',
@@ -101,6 +104,7 @@ describe('Sprint 15: renderSettings & policy', () => {
       prismPools: true,
       ledAngularResponse: true,
       deckSheen: true,
+      crowdLighting: true,
     });
 
     assert.equal(renderSettings.shouldRunBloom('auto', 0, 'high'), false);

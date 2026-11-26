@@ -34,6 +34,12 @@ import {
 import { LED_ANGULAR_DEFINE } from './ledWallResponse';
 import { DeckSheenController, type DeckSheenStats } from './deckSheen';
 import {
+  CrowdLightingController,
+  createCrowdFrameInputs,
+  type CrowdFrameInputs,
+  type CrowdLightingStats,
+} from './crowdLighting';
+import {
   SharedMaterials,
   buildPlatformDeck,
   buildTrussGeometry,
@@ -188,6 +194,14 @@ interface MovingFixtureInstance {
   appliedDimmer: number;
   lastZoomScale: number;
   lastPoolIntensity: number;
+  lastPreviewIntensity: number;
+  lastPreviewR: number;
+  lastPreviewG: number;
+  lastPreviewB: number;
+  lastWorldX: number;
+  lastWorldY: number;
+  lastWorldZ: number;
+  lastAimZ: number;
   isFloor: boolean;
   index: number;
   fanPosition: number;
@@ -327,6 +341,8 @@ export class StageEngine {
   private modelCache: FixtureModelCache;
   private mats: SharedMaterials;
   private deckSheen!: DeckSheenController;
+  private crowdLighting!: CrowdLightingController;
+  private lastCrowdFrameInputs: CrowdFrameInputs = createCrowdFrameInputs();
   private environmentTarget: THREE.WebGLRenderTarget;
   private currentRig?: RigConfig;
   private lastRebuildSource?: RigConfig;
@@ -631,6 +647,7 @@ export class StageEngine {
       }
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
+      this.crowdLighting?.onContextRestored();
       if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
@@ -743,6 +760,10 @@ export class StageEngine {
     );
     if (this.renderSettings.deckSheen) {
       this.deckSheen.apply(this.mats.stageDeck, true);
+    }
+    this.crowdLighting = new CrowdLightingController(this.renderTier);
+    if (this.renderSettings.crowdLighting) {
+      this.crowdLighting.setEnabled(true);
     }
 
     // Tour text offscreen texture for LED wall mode 6
@@ -871,6 +892,36 @@ export class StageEngine {
     if (prev.deckSheen !== next.deckSheen) {
       this.deckSheen.apply(this.mats.stageDeck, next.deckSheen);
     }
+    if (prev.crowdLighting !== next.crowdLighting) {
+      this.crowdLighting.setEnabled(next.crowdLighting);
+      if (next.crowdLighting) {
+        this.syncCrowdLightingFromCommittedState();
+      }
+    }
+  }
+
+  /**
+   * Refresh crowd show-light uniforms from the most recent committed preview-light snapshot
+   * without advancing simulation time or re-entering stateful flash governors.
+   */
+  private syncCrowdLightingFromCommittedState() {
+    if (!this.crowdLighting?.isActive()) return;
+    for (let i = 0; i < this.movingFixtures.length; i++) {
+      const fx = this.movingFixtures[i];
+      if (fx.lastPreviewIntensity <= 0.001) continue;
+      fx.head.updateWorldMatrix(true, false);
+      const he = fx.head.matrixWorld.elements;
+      const sign = fx.isFloor ? 1 : -1;
+      const ax = he[4] * sign;
+      const ay = he[5] * sign;
+      const az = he[6] * sign;
+      const lenSq = ax * ax + ay * ay + az * az;
+      fx.lastWorldX = he[12];
+      fx.lastWorldY = he[13];
+      fx.lastWorldZ = he[14];
+      fx.lastAimZ = lenSq > 1e-12 ? az / Math.sqrt(lenSq) : 0;
+    }
+    this.crowdLighting.updateFromScene(this.movingFixtures, this.lastCrowdFrameInputs);
   }
 
   private applyLedAngularResponse(enabled: boolean) {
@@ -1107,6 +1158,7 @@ export class StageEngine {
       primaryCenter,
     };
     const deckSheen: DeckSheenStats = this.deckSheen.getStats();
+    const crowd: CrowdLightingStats = this.crowdLighting.getStats();
 
     return {
       schemaVersion: 1 as const,
@@ -1135,6 +1187,7 @@ export class StageEngine {
       prismPools,
       ledWalls,
       deckSheen,
+      crowd,
       ilda: {
         activeProjectors: ildaActiveProjectors,
         visibleSegments: ildaVisibleSegments,
@@ -2164,6 +2217,7 @@ export class StageEngine {
     this.lastMeasureTickMs = -Infinity;
     this.detachIldaMeshes();
     this.batcher?.clear();
+    this.crowdLighting?.unbindVenue();
     this.releaseGroup(this.rigGroup);
     this.modelCache.beginRebuild();
     try {
@@ -2193,6 +2247,15 @@ export class StageEngine {
     this.crowdMesh = venueBuild.crowdMesh;
     this.crowdBaseTransforms = venueBuild.crowdBaseTransforms;
     this.crowdSeated = venueBuild.seated;
+    this.crowdLighting?.bindVenue({
+      crowdMesh: venueBuild.crowdMesh,
+      phonesMesh: venueBuild.phonesMesh,
+      transforms: venueBuild.crowdBaseTransforms,
+      seated: venueBuild.seated,
+      stageDepth: rig.stageDepth,
+    });
+    this.lastCrowdFrameInputs.stageWidth = rig.stageWidth;
+    this.lastCrowdFrameInputs.stageDepth = rig.stageDepth;
     this.room = venueBuild.room;
     this.roofY = venueBuild.roofY;
     this.sideFills.forEach((light, i) => {
@@ -2674,6 +2737,9 @@ export class StageEngine {
       this.setCameraPreset(this.activeView);
     }
     this.batcher?.rebuild(this.rigGroup);
+    if (this.crowdLighting?.isActive()) {
+      this.syncCrowdLightingFromCommittedState();
+    }
     } finally {
       this.modelCache.endRebuild();
     }
@@ -2898,6 +2964,14 @@ export class StageEngine {
       appliedDimmer: 0,
       lastZoomScale: 1,
       lastPoolIntensity: 0,
+      lastPreviewIntensity: 0,
+      lastPreviewR: 0,
+      lastPreviewG: 0,
+      lastPreviewB: 0,
+      lastWorldX: 0,
+      lastWorldY: 8.5,
+      lastWorldZ: 0,
+      lastAimZ: 0,
       isFloor,
       index,
       fanPosition,
@@ -3245,6 +3319,7 @@ export class StageEngine {
       }
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
+      this.crowdLighting?.onContextRestored();
       if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
       this.onContextLossChange?.(false);
       if (!this.disposed && this.rafId === null) this.startLoop();
@@ -3882,6 +3957,25 @@ export class StageEngine {
         previewPrismMix,
         previewPrismMix > 0.001 ? prismPhase(t, fxSeed) : 0,
       );
+      fx.lastPreviewIntensity = previewFinalInt;
+      fx.lastPreviewR = previewTempCol.r;
+      fx.lastPreviewG = previewTempCol.g;
+      fx.lastPreviewB = previewTempCol.b;
+      if (previewFinalInt > 0.001) {
+        if (!this.beamPools || poolIntensity <= 0.001) {
+          fx.head.updateWorldMatrix(true, false);
+        }
+        const he = fx.head.matrixWorld.elements;
+        const sign = fx.isFloor ? 1 : -1;
+        const ax = he[4] * sign;
+        const ay = he[5] * sign;
+        const az = he[6] * sign;
+        const lenSq = ax * ax + ay * ay + az * az;
+        fx.lastWorldX = he[12];
+        fx.lastWorldY = he[13];
+        fx.lastWorldZ = he[14];
+        fx.lastAimZ = lenSq > 1e-12 ? az / Math.sqrt(lenSq) : 0;
+      }
 
       // Glowing optical fixture lens
       fx.lensMat.color.copy(previewTempCol).multiplyScalar(previewFinalInt * fx.optics.fluxRatio * 2.6);
@@ -4342,7 +4436,26 @@ export class StageEngine {
       if (piece.lamps) piece.lamps.emissiveIntensity = previewMaster * roomGain * (1.35 + previewFlash.beatPulse * 0.38);
     }
 
-    // 8. Animated Silhouetted Arena Crowd Bounce!
+    // 8. Animated Silhouetted Arena Crowd Bounce & Optional Show-Light Response!
+    const cf = this.lastCrowdFrameInputs;
+    cf.blackout = blackoutActive || darkOpening;
+    cf.master = previewMaster;
+    cf.roomGain = roomGain;
+    cf.blinder = previewBlinder;
+    cf.strobeBarBright = previewStrobeBarBright;
+    cf.ledBright = previewLedBright;
+    cf.hasLedWalls = this.ledWallMats.length > 0;
+    cf.laserInt = laserInt;
+    cf.hasLasers = this.laserUnits.length > 0;
+    cf.primaryR = previewPrimaryColor.r;
+    cf.primaryG = previewPrimaryColor.g;
+    cf.primaryB = previewPrimaryColor.b;
+    cf.accentR = previewAccentColor.r;
+    cf.accentG = previewAccentColor.g;
+    cf.accentB = previewAccentColor.b;
+    cf.stageWidth = this.currentRig?.stageWidth ?? 22;
+    cf.stageDepth = this.currentRig?.stageDepth ?? 11;
+
     const prof = this.profiler;
     const crowdStart = prof ? performance.now() : 0;
     if (this.crowdMesh && this.crowdBaseTransforms.length > 0) {
@@ -4363,6 +4476,9 @@ export class StageEngine {
       if (prof) {
         prof.curUploadBytes += (this.crowdMesh.instanceMatrix.array as Float32Array).byteLength;
       }
+    }
+    if (this.crowdLighting.isActive()) {
+      this.crowdLighting.updateFromScene(this.movingFixtures, cf);
     }
     if (prof) prof.curCrowdMs = performance.now() - crowdStart;
 
@@ -4524,6 +4640,7 @@ export class StageEngine {
     this.detachIldaMeshes();
     this.activeIldaClip = null;
     this.batcher?.dispose();
+    this.crowdLighting?.dispose();
     this.releaseGroup(this.rigGroup);
     this.laserShapeGeometries.forEach(geometry => geometry.dispose());
     this.laserShapeGeometries.clear();

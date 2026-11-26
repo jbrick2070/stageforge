@@ -217,6 +217,19 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
                 Deck sheen response <span className="text-zinc-400">(experimental)</span>
               </span>
             </label>
+
+            <label className="flex items-center gap-2 min-h-[44px] cursor-pointer text-zinc-200">
+              <input
+                type="checkbox"
+                data-testid="render-crowd-lighting-checkbox"
+                checked={settings.crowdLighting}
+                onChange={(e) => onChangeSettings({ crowdLighting: e.target.checked })}
+                className="h-4 w-4 accent-cyan-400"
+              />
+              <span>
+                Crowd show-light response <span className="text-zinc-400">(experimental)</span>
+              </span>
+            </label>
           </div>
 
           <div className="mt-3 border-t border-white/10 pt-2.5 space-y-2">

@@ -1230,6 +1230,7 @@ export function buildVenueArchitecture(
 ): {
   group: THREE.Group;
   crowdMesh: THREE.InstancedMesh | null;
+  phonesMesh: THREE.InstancedMesh | null;
   practicals: (THREE.MeshBasicMaterial | THREE.PointsMaterial)[];
   crowdBaseTransforms: { x: number; y: number; z: number; scaleY: number; phase: number; rotY: number }[];
   roofY: number;
@@ -1425,6 +1426,7 @@ export function buildVenueArchitecture(
   const density = THREE.MathUtils.clamp(crowdDensity, 0, 1);
   const maxCrowd = Math.floor((seats ? seats.length : standingFloor ? 300 : 680) * density);
   let crowdMesh: THREE.InstancedMesh | null = null;
+  let phonesMesh: THREE.InstancedMesh | null = null;
   const crowdBaseTransforms: { x: number; y: number; z: number; scaleY: number; phase: number; rotY: number }[] = [];
 
   if (maxCrowd > 0) {
@@ -1507,11 +1509,11 @@ export function buildVenueArchitecture(
       screen.rotateY(Math.PI).translate(0.37, 1.90, 0.145);
       const screenMat = new THREE.MeshBasicMaterial({ color: 0x94a9c6 });
       practicals.push(screenMat);
-      const phones = new THREE.InstancedMesh(screen, screenMat, phoneCount);
-      phones.instanceMatrix = crowdMesh.instanceMatrix;
-      group.add(phones);
+      phonesMesh = new THREE.InstancedMesh(screen, screenMat, phoneCount);
+      phonesMesh.instanceMatrix = crowdMesh.instanceMatrix;
+      group.add(phonesMesh);
     }
   }
 
-  return { group, practicals, crowdMesh, crowdBaseTransforms, roofY, room, seated: !!seats };
+  return { group, practicals, crowdMesh, phonesMesh, crowdBaseTransforms, roofY, room, seated: !!seats };
 }
