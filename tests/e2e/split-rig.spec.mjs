@@ -9,7 +9,7 @@ test('split rehearsal heads move and tint independently, and can share an attrib
   await button('Open Split Rig rehearsal').click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await button('Show cues').click();
-  await button('Cue 3, Blue sweep').click();
+  await page.getByRole('button', { name: /^Cue 3, Blue sweep,/ }).click();
   const heads = () => page.evaluate(() => window.stageforgeProbe.beamAxes());
   await expect.poll(async () => (await heads()).filter(h => h.group === 'wash').map(h => h.rgb))
     .toEqual(['ffb869', 'ffb869']);
