@@ -13,6 +13,8 @@ export interface RenderSettings {
   aa: AaMode;
   /** Sprint 23A development gate for the promoted colour/output foundation. */
   lookOutput: boolean;
+  /** Sprint 23B development gate for one renderer-only neon architecture batch. */
+  lookNeonFrame: boolean;
   /** Device-local accessibility view: bypass cosmetic look effects and bloom. */
   trueColour: boolean;
   /** Device-local accessibility view: reduce optional effects without changing authored show data. */
@@ -42,6 +44,8 @@ export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   aa: 'auto',
   // Promoted by Sprint 23A after localized visual, lifecycle and measured-budget evidence.
   lookOutput: true,
+  // Promoted by Sprint 23B after localized visual, lifecycle and measured-budget evidence.
+  lookNeonFrame: true,
   trueColour: false,
   reducedEffects: false,
   fallingCo2: false,
@@ -72,6 +76,9 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   const lookOutput = Object.hasOwn(obj, 'lookOutput') && typeof obj.lookOutput === 'boolean'
     ? obj.lookOutput
     : DEFAULT_RENDER_SETTINGS.lookOutput;
+  const lookNeonFrame = Object.hasOwn(obj, 'lookNeonFrame') && typeof obj.lookNeonFrame === 'boolean'
+    ? obj.lookNeonFrame
+    : DEFAULT_RENDER_SETTINGS.lookNeonFrame;
   const trueColour = Object.hasOwn(obj, 'trueColour') && typeof obj.trueColour === 'boolean'
     ? obj.trueColour
     : DEFAULT_RENDER_SETTINGS.trueColour;
@@ -110,6 +117,7 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
     bloom,
     aa,
     lookOutput,
+    lookNeonFrame,
     trueColour,
     reducedEffects,
     fallingCo2,

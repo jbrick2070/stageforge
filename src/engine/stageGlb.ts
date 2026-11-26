@@ -77,7 +77,7 @@ export function stageSnapshot(rig: RigConfig, roots: THREE.Object3D[], mats: Sha
   }
 
   function copyNode(source: THREE.Object3D, index: number): THREE.Object3D | undefined {
-    if (source.userData.kind === 'venue' || source instanceof THREE.Light || source instanceof THREE.Camera) return;
+    if (source.userData.kind === 'venue' || source.userData.cosmeticLook || source instanceof THREE.Light || source instanceof THREE.Camera) return;
     let sourceForChildren = source;
     if (source.userData.scenicProp && source.userData.scenicTier === 'low') {
       // Always export canonical high-detail scenery regardless of preview tier.

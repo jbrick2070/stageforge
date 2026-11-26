@@ -1,8 +1,8 @@
-# StageForge Look — Sprint 23A Colour and Output Foundation
+# StageForge Look — Sprint 23A–B Default Look
 
 Sprint 23A is the first shippable slice of the planned default cyberpunk-club look. It improves colour handling
 and output restraint without adding a selectable look preset. Slices B (neon architecture), C (wet-deck
-composition), and D (coloured atmosphere) are not part of this slice and remain unfinished.
+composition), and D (coloured atmosphere) are not part of the completed work and remain unfinished.
 
 ## Promoted output foundation
 
@@ -57,6 +57,72 @@ npx playwright test tests/e2e/sprint23-look-output.spec.mjs -g "restrained bloom
 ```
 
 The three WebP files total 76,644 bytes, below the 600 KB documentation allowance.
+
+## Promoted neon architectural framing
+
+Sprint 23B adds one renderer-only `InstancedMesh`, promoted through the device-local `lookNeonFrame` flag after
+its localized visual, lifecycle, export, safety, and repeated-budget checks passed. The batch draws long,
+continuous lines rather than outlining production equipment: one exposed stage lip across the legacy deck or
+the exposed front edges of authored platforms, a restrained two-line wing at each side, and four-line frames
+around the main, stock-wing, and authored secondary screens. The fixed cyan/magenta appearance in the approved
+references comes from that show's static `primaryColor` and `accentColor`; no audio, beat, demo phase, strobe,
+or clock value enters the shader or palette update.
+
+The batch is capped by deterministic family quotas at `128` instances on the low tier and `512` on the high
+tier. It costs at most one draw and adds no fullscreen pass or dependency. Normal premultiplied-alpha blending,
+depth testing, a sub-pixel fade, and a `0.40–1.35 m` near-eye fade keep the lines architectural instead of
+camera-filling decoration. Blackout hides the batch. **True colour** releases its GPU resources; **Reduced
+effects**, automatic low-tier policy, and reduced motion retain the framing because it is completely static.
+Authored stage geometry, fixture and material colours, show/DMX data, and production materials are not changed.
+
+GLB snapshotting defensively rejects nodes marked `cosmeticLook`, although the batch also lives outside the GLB
+root. Browser coverage invokes the actual GLB, DXF, MVR, and patch-paperwork download buttons with the feature
+off and on: structural GLB fingerprints, DXF bytes, normalized MVR archive contents, and paperwork bytes remain
+invariant. The setting remains absent from show schemas and bundle data.
+
+### Approved Sprint 23B references
+
+The left half has framing disabled and the right half has the promoted static batch enabled. I deliberately
+re-approved all three fixed-camera panels after checking that the long lip, side wings, and screen silhouette
+remain visible without flattening dark space or disguising the lines as authored fixtures.
+
+- [Front of house](looks/sprint23-b-foh-before-after.webp)
+- [Deck close-up](looks/sprint23-b-deck-close-before-after.webp)
+- [Wide view](looks/sprint23-b-wide-before-after.webp)
+
+Regenerate the three panels without changing the normal read-only gate:
+
+```powershell
+$env:STAGEFORGE_UPDATE_LOOK_REFS='1'
+npx playwright test tests/e2e/sprint23-neon-frame.spec.mjs --workers=1
+```
+
+The B panels total 67,976 bytes; all six Sprint 23 panels total 144,620 bytes, below the 600 KB allowance.
+
+### Slice B budget and evidence boundaries
+
+The focused promotion run used three alternating warmed pairs at fixed `1280×720` and at `390×844` with 4×
+CPU throttling. Laptop p50 was off `[1.0, 1.0, 0.9] ms` / on `[0.9, 0.9, 0.9] ms` (median delta
+`-0.10 ms`), p95 off `[1.1, 1.2, 1.1]` / on `[1.2, 1.1, 1.1]`, and p99 off
+`[1.1, 1.7, 1.3]` / on `[1.4, 1.2, 1.4]`. Phone-like p50 was off `[6.9, 5.9, 6.9] ms` / on
+`[6.6, 6.3, 6.5] ms` (median delta `-0.40 ms`), p95 off `[9.3, 9.0, 10.6]` / on
+`[9.1, 9.8, 9.4]`, and p99 off `[10.2, 11.1, 11.4]` / on `[11.0, 11.8, 9.9]`.
+At the profiler's demonstrated `0.1 ms` CPU resolution, both median p50 costs are below zero and the p95 medians
+are equal on the laptop and one resolution bin apart on the throttled profile; both remain inside B's
+`+0.15 / +0.30 ms` ceilings. Slice A measured zero incremental cost, so these are also the measured combined
+Sprint 23 A+B CPU deltas, within the combined `+0.50 / +0.95 ms` ceilings.
+
+Asynchronous GPU p50 was laptop off `[141.9056, 142.1850, 142.1092] ms` / on
+`[141.4555, 142.3043, 141.0474] ms`, and phone-like off `[68.6884, 68.9063, 69.2964] ms` / on
+`[68.8982, 69.9525, 69.2509] ms`. These are ANGLE SwiftShader software-renderer timings, not hardware-GPU
+measurements; CPU throttling does not emulate a phone GPU. The one batch owns `11,584 B` on low tier and
+`40,768 B` on high tier (`1,856 B` geometry plus fixed matrix/colour attributes), within `0.10 MiB`; A+B remains
+within `0.11 MiB`, adds at most one draw, and adds no pass.
+
+Localized changed-pixel fractions were `14.67%` FOH, `18.66%` deck-close, and `8.31%` wide while strong-delta
+coverage remained `0.53%`, `0.37%`, and `0.21%`. At a camera intersection, strong-delta coverage was `0.10%`.
+Irregular final post-bloom sampling recorded no repeated qualifying transition after activation. These checks,
+along with inherited preview-flash limits, show bounded behaviour, not universal photosensitivity safety.
 
 ## Budget and evidence boundaries
 

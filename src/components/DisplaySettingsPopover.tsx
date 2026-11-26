@@ -207,6 +207,19 @@ export const DisplaySettingsPopover: React.FC<DisplaySettingsPopoverProps> = ({
             <label className="flex items-center gap-2 min-h-[44px] cursor-pointer text-zinc-200">
               <input
                 type="checkbox"
+                data-testid="render-neon-frame-checkbox"
+                checked={settings.lookNeonFrame}
+                onChange={(e) => onChangeSettings({ lookNeonFrame: e.target.checked })}
+                className="h-4 w-4 accent-cyan-400"
+              />
+              <span>
+                Neon architectural framing <span className="text-zinc-400">(default)</span>
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2 min-h-[44px] cursor-pointer text-zinc-200">
+              <input
+                type="checkbox"
                 data-testid="render-falling-co2-checkbox"
                 checked={settings.fallingCo2}
                 onChange={(e) => onChangeSettings({ fallingCo2: e.target.checked })}

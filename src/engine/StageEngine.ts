@@ -33,6 +33,7 @@ import {
 } from './shaders';
 import { LED_ANGULAR_DEFINE } from './ledWallResponse';
 import { DeckSheenController, type DeckSheenStats } from './deckSheen';
+import { NeonFrameController, type NeonFrameStats } from './neonFrame';
 import {
   CrowdLightingController,
   createCrowdFrameInputs,
@@ -355,6 +356,7 @@ export class StageEngine {
   private modelCache: FixtureModelCache;
   private mats: SharedMaterials;
   private deckSheen!: DeckSheenController;
+  private neonFrame!: NeonFrameController;
   private crowdLighting!: CrowdLightingController;
   private lastCrowdFrameInputs: CrowdFrameInputs = createCrowdFrameInputs();
   private environmentTarget: THREE.WebGLRenderTarget;
@@ -676,6 +678,7 @@ export class StageEngine {
       }
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
+      this.neonFrame?.onContextRestored();
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();
       this.bakedIlda?.onContextRestored();
@@ -690,6 +693,7 @@ export class StageEngine {
     this.scene = new THREE.Scene();
     this.batcher = new RenderBatcher(this.scene);
     this.batcher.registerShaderProxy(volumetricBeamProxy);
+    this.neonFrame = new NeonFrameController(this.scene, this.renderTier, this.renderer.domElement.height);
     this.scene.background = this.backgroundColor.clone();
     this.scene.fog = new THREE.FogExp2(this.fogColor, 0.015);
 
@@ -954,6 +958,9 @@ export class StageEngine {
     if (prev.ildaScanEnergy !== next.ildaScanEnergy && this.activeIldaClip) {
       this.syncIldaScanEnergyResources(next.ildaScanEnergy);
     }
+    if (prev.lookNeonFrame !== next.lookNeonFrame || prev.trueColour !== next.trueColour) {
+      this.neonFrame.setPolicy(next.lookNeonFrame, next.trueColour);
+    }
   }
 
   /** Update the system accessibility signal without changing the stored device preference. */
@@ -1099,6 +1106,7 @@ export class StageEngine {
     this.composer.setPixelRatio(dpr);
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
+    this.neonFrame.setViewportHeight(this.renderer.domElement.height);
     this.updateFxaaResolution();
   }
 
@@ -1275,6 +1283,7 @@ export class StageEngine {
       primaryCenter,
     };
     const deckSheen: DeckSheenStats = this.deckSheen.getStats();
+    const neonFrame: NeonFrameStats = this.neonFrame.getStats();
     const crowd: CrowdLightingStats = this.crowdLighting.getStats();
     const litPuffs: LitPuffsStats = this.particles.getLitPuffsStats();
 
@@ -1307,6 +1316,7 @@ export class StageEngine {
       prismPools,
       ledWalls,
       deckSheen,
+      neonFrame,
       crowd,
       ilda: {
         activeProjectors: ildaActiveProjectors,
@@ -1333,6 +1343,8 @@ export class StageEngine {
         litPuffsExtraBufferBytes: litPuffs.extraBufferBytes,
         ildaScanEnergyExtraBufferBytes,
         lookOutputExtraGpuBytes: 0,
+        neonFrameExtraBufferBytes: neonFrame.extraBufferBytes,
+        sprint23ExtraGpuBytes: neonFrame.extraBufferBytes,
       },
       gpuTimerStatus: this.gpuTimer?.getStatus() ?? (isWebGL2 ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') ? 'ok' : 'unsupported') : 'unsupported'),
       gpuTimerPending: this.gpuTimer?.pendingCount() ?? 0,
@@ -1663,6 +1675,7 @@ export class StageEngine {
   public setShowState(state: ShowState) {
     if (state.autoDirector && !this.currentState.autoDirector) this.manualFadeStart = undefined;
     this.currentState = state;
+    this.neonFrame?.setPalette(state.primaryColor, state.accentColor);
     if (this.bloomPass) {
       const look = resolveEffectiveLookOutput(this.renderSettings, this.renderTier, this.prefersReducedMotion);
       const strength = state.bloomStrength * look.bloomStrengthScale;
@@ -2346,6 +2359,7 @@ export class StageEngine {
   public setStageScreens(walls?: StageScreen[]) {
     if (this.screenLayout === walls) return;
     this.screenLayout = walls;
+    if (this.currentRig) this.neonFrame?.setLayout(this.currentRig, walls);
     const ids = new Set(walls?.filter(w => w.id !== 'main-led').map(w => w.id));
     for (const [id, player] of this.secondaryPlayers) {
       if (!ids.has(id)) { player.dispose(); this.secondaryPlayers.delete(id); }
@@ -2936,6 +2950,9 @@ export class StageEngine {
       this.setCameraPreset(this.activeView);
     }
     this.batcher?.rebuild(this.rigGroup);
+    this.neonFrame.setLayout(rig, this.screenLayout);
+    this.neonFrame.setPalette(this.currentState.primaryColor, this.currentState.accentColor);
+    this.neonFrame.setPolicy(this.renderSettings.lookNeonFrame, this.renderSettings.trueColour);
     if (this.crowdLighting?.isActive()) {
       this.syncCrowdLightingFromCommittedState();
     }
@@ -3526,6 +3543,7 @@ export class StageEngine {
       }
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
+      this.neonFrame?.onContextRestored();
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();
       this.bakedIlda?.onContextRestored();
@@ -3746,6 +3764,7 @@ export class StageEngine {
     const blackoutActive = Boolean(s.blackout);
     const darkOpening = !!demo && (!!demo.beforeDownbeat || demoOpeningStep! <= DEMO_BLACKOUT_STEPS);
     const master = blackoutActive || darkOpening ? 0 : s.masterDimmer;
+    this.neonFrame.setBlackout(blackoutActive || darkOpening);
     // Clear physical buffers before encoding so repatched, generic, or simulation-only ranges always stay neutral 0.
     this.physicalDmxU1.fill(0);
     this.physicalDmxU2.fill(0);
@@ -4874,6 +4893,7 @@ export class StageEngine {
     this.detachIldaMeshes();
     this.activeIldaClip = null;
     this.batcher?.dispose();
+    this.neonFrame?.dispose();
     this.crowdLighting?.dispose();
     this.releaseGroup(this.rigGroup);
     this.laserShapeGeometries.forEach(geometry => geometry.dispose());
