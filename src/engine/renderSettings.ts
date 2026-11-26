@@ -17,6 +17,8 @@ export interface RenderSettings {
   lookNeonFrame: boolean;
   /** Sprint 23C construction-time gate for the single neutral-strip PMREM and zero-texture deck breakup. */
   lookWetDeck: boolean;
+  /** Sprint 23D gate for the dark, slow, fixture-palette global FogExp2 colour. */
+  lookAtmosphere: boolean;
   /** Device-local accessibility view: bypass cosmetic look effects and bloom. */
   trueColour: boolean;
   /** Device-local accessibility view: reduce optional effects without changing authored show data. */
@@ -50,6 +52,8 @@ export const DEFAULT_RENDER_SETTINGS: Readonly<RenderSettings> = Object.freeze({
   lookNeonFrame: true,
   // Promoted by Sprint 23C after localized visual, lifecycle and measured-budget evidence.
   lookWetDeck: true,
+  // Development default until Sprint 23D visual and budget evidence is approved.
+  lookAtmosphere: false,
   trueColour: false,
   reducedEffects: false,
   fallingCo2: false,
@@ -86,6 +90,9 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
   const lookWetDeck = Object.hasOwn(obj, 'lookWetDeck') && typeof obj.lookWetDeck === 'boolean'
     ? obj.lookWetDeck
     : DEFAULT_RENDER_SETTINGS.lookWetDeck;
+  const lookAtmosphere = Object.hasOwn(obj, 'lookAtmosphere') && typeof obj.lookAtmosphere === 'boolean'
+    ? obj.lookAtmosphere
+    : DEFAULT_RENDER_SETTINGS.lookAtmosphere;
   const trueColour = Object.hasOwn(obj, 'trueColour') && typeof obj.trueColour === 'boolean'
     ? obj.trueColour
     : DEFAULT_RENDER_SETTINGS.trueColour;
@@ -126,6 +133,7 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
     lookOutput,
     lookNeonFrame,
     lookWetDeck,
+    lookAtmosphere,
     trueColour,
     reducedEffects,
     fallingCo2,
@@ -137,6 +145,20 @@ export function parseRenderSettings(raw: unknown): RenderSettings {
     litPuffs,
     ildaScanEnergy,
   };
+}
+
+export function resolveEffectiveAtmosphere(
+  settings: RenderSettings,
+  tier: RenderTier,
+  prefersReducedMotion: boolean,
+): import('./atmosphereLook').AtmospherePolicy {
+  const look = resolveEffectiveLookOutput(settings, tier, prefersReducedMotion);
+  const requested = settings.lookAtmosphere;
+  if (!requested) return { requested, active: false, suppressedReason: 'disabled' };
+  if (!look.enabled) return { requested, active: false, suppressedReason: 'disabled' };
+  if (look.trueColour) return { requested, active: false, suppressedReason: 'true-colour' };
+  if (look.reducedEffects) return { requested, active: false, suppressedReason: 'reduced-effects' };
+  return { requested, active: true, suppressedReason: null };
 }
 
 export interface EffectiveLookOutputPolicy {

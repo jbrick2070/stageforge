@@ -39,6 +39,7 @@ import {
   type WetDeckEnvironmentStats,
 } from './wetDeck';
 import { NeonFrameController, type NeonFrameStats } from './neonFrame';
+import { AtmosphereLookController } from './atmosphereLook';
 import {
   CrowdLightingController,
   createCrowdFrameInputs,
@@ -149,6 +150,7 @@ import {
   parseRenderSettings,
   resolveEffectiveBloomScale,
   resolveEffectiveAa,
+  resolveEffectiveAtmosphere,
   resolveEffectiveLookOutput,
   type RenderSettings,
 } from './renderSettings';
@@ -331,6 +333,8 @@ export class StageEngine {
   private houseColors: { color: THREE.Color; full: THREE.Color }[] = [];
   private backgroundColor = new THREE.Color(0x030408);
   private fogColor = new THREE.Color(0x04060c);
+  private fog!: THREE.FogExp2;
+  private atmosphereLook = new AtmosphereLookController(this.fogColor.r, this.fogColor.g, this.fogColor.b);
   private container: HTMLElement;
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -702,7 +706,9 @@ export class StageEngine {
     this.batcher.registerShaderProxy(volumetricBeamProxy);
     this.neonFrame = new NeonFrameController(this.scene, this.renderTier, this.renderer.domElement.height);
     this.scene.background = this.backgroundColor.clone();
-    this.scene.fog = new THREE.FogExp2(this.fogColor, 0.015);
+    this.fog = new THREE.FogExp2(this.fogColor, 0.015);
+    this.scene.fog = this.fog;
+    this.syncAtmospherePolicy();
 
     // One construction-time PMREM target. Sprint 23C replaces its source composition rather than
     // retaining a second environment or rebuilding it during normal runtime.
@@ -902,6 +908,7 @@ export class StageEngine {
     const next = parseRenderSettings({ ...this.renderSettings, ...partial });
     const prev = this.renderSettings;
     this.renderSettings = next;
+    this.syncAtmospherePolicy();
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
     const dpr = this.renderer.getPixelRatio();
@@ -965,9 +972,16 @@ export class StageEngine {
     const next = Boolean(enabled);
     if (next === this.prefersReducedMotion) return;
     this.prefersReducedMotion = next;
+    this.syncAtmospherePolicy();
     const w = Math.max(1, this.container.clientWidth);
     const h = Math.max(1, this.container.clientHeight);
     this.applyOutputPipeline(w, h, this.renderer.getPixelRatio(), this.currentState.bloomStrength);
+  }
+
+  private syncAtmospherePolicy() {
+    this.atmosphereLook.setPolicy(
+      resolveEffectiveAtmosphere(this.renderSettings, this.renderTier, this.prefersReducedMotion),
+    );
   }
 
   private refreshCommittedFixtureWorldTransforms() {
@@ -1290,6 +1304,7 @@ export class StageEngine {
       sceneOwnsTargetTexture: this.scene.environment === this.environmentTarget.texture,
     };
     const neonFrame: NeonFrameStats = this.neonFrame.getStats();
+    const atmosphere = this.atmosphereLook.getStats();
     const crowd: CrowdLightingStats = this.crowdLighting.getStats();
     const litPuffs: LitPuffsStats = this.particles.getLitPuffsStats();
 
@@ -1324,6 +1339,12 @@ export class StageEngine {
       deckSheen,
       wetDeck,
       neonFrame,
+      atmosphere: {
+        ...atmosphere,
+        fog: [this.fog.color.r, this.fog.color.g, this.fog.color.b] as [number, number, number],
+        density: this.fog.density,
+        sceneOwnsFog: this.scene.fog === this.fog,
+      },
       crowd,
       ilda: {
         activeProjectors: ildaActiveProjectors,
@@ -1352,7 +1373,8 @@ export class StageEngine {
         lookOutputExtraGpuBytes: 0,
         neonFrameExtraBufferBytes: neonFrame.extraBufferBytes,
         wetDeckExtraGpuBytes: wetDeck.extraGpuBytes,
-        sprint23ExtraGpuBytes: neonFrame.extraBufferBytes + wetDeck.extraGpuBytes,
+        atmosphereExtraGpuBytes: atmosphere.extraGpuBytes,
+        sprint23ExtraGpuBytes: neonFrame.extraBufferBytes + wetDeck.extraGpuBytes + atmosphere.extraGpuBytes,
       },
       gpuTimerStatus: this.gpuTimer?.getStatus() ?? (isWebGL2 ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') ? 'ok' : 'unsupported') : 'unsupported'),
       gpuTimerPending: this.gpuTimer?.pendingCount() ?? 0,
@@ -3803,7 +3825,7 @@ export class StageEngine {
     this.houseAmbient.intensity = 0.36 * roomGain;
     this.scene.environmentIntensity = 0.55 * roomGain;
     (this.scene.background as THREE.Color).copy(this.backgroundColor).multiplyScalar(roomGain);
-    (this.scene.fog as THREE.FogExp2).color.copy(this.fogColor).multiplyScalar(roomGain);
+    this.fog.color.copy(this.fogColor).multiplyScalar(roomGain);
     for (const lamp of this.houseColors) lamp.color.copy(lamp.full).multiplyScalar(roomGain);
 
     // Evaluate per-mapping audio modulation once per frame BEFORE rendering and DMX output.
@@ -3815,6 +3837,7 @@ export class StageEngine {
     const audioBoost = mod.active ? 0 : (s.audioReactive && audio.playing ? audio.beatPulse * 0.45 + audio.bass * 0.35 : 0);
     const beatPulse = s.audioReactive && audio.playing ? audio.beatPulse : 0.15 * Math.max(0, Math.sin(t * (s.bpm / 60) * Math.PI));
     const effHaze = blackoutActive ? 0 : (mod.active && mod.haze.mapped ? mod.haze.level : s.atmo.hazeLevel);
+    this.atmosphereLook.beginFrame();
 
     const primaryColor = this.primaryColorScratch.set(s.primaryColor);
     const accentColor = this.accentColorScratch.set(s.accentColor);
@@ -4171,6 +4194,7 @@ export class StageEngine {
       if (demo) fx.directedDimmer = groupGain * baseInt;
       const dimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, baseInt, manualMix) : baseInt;
       const previewDimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, previewBaseInt, manualMix) : previewBaseInt;
+      this.atmosphereLook.addFixture(tempCol.r, tempCol.g, tempCol.b, dimmer, master);
       const finalInt = Math.min(1.6, dimmer * master * groupStrobeGate * (1.0 + audioBoost * 0.48)) * composedBrightScale;
       const rawPreviewFinalInt =
         Math.min(1.6, previewDimmer * previewMaster * previewGroupStrobeGate * (1.0 + audioBoost * 0.48)) *
@@ -4293,6 +4317,12 @@ export class StageEngine {
     if (this.profiler) {
       this.profiler.curUploadBytes += poolUploadBytes;
     }
+    this.atmosphereLook.step(dt, effHaze, master, roomGain, blackoutActive, darkOpening);
+    this.fog.color.setRGB(
+      this.atmosphereLook.getAppliedR(),
+      this.atmosphereLook.getAppliedG(),
+      this.atmosphereLook.getAppliedB(),
+    );
 
     // 3. Update Volumetric RGB / Single-Color Laser Projectors & ILDA Playback
     const laserEnabled = (s.laser.enabled || b.laser) && master > 0.01;
@@ -4803,7 +4833,7 @@ export class StageEngine {
     if (prof) prof.curParticlesMs = performance.now() - particlesStart;
 
     // Update arena fog slightly with haze density for rich depth
-    (this.scene.fog as THREE.FogExp2).density = 0.008 + effHaze * 0.015;
+    this.fog.density = 0.008 + effHaze * 0.015;
 
     // Record applied per-group parameters for `?probe` `fixtureParams(group)` (zero per-frame allocations).
     const ap = this.appliedParams;

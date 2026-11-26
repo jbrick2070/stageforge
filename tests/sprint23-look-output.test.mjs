@@ -80,7 +80,7 @@ describe('Sprint 23A: colour/output policy', () => {
   it('keeps look preferences device-local and out of every show schema', async () => {
     for (let version = 1; version <= 8; version++) {
       const schema = await readFile(join(process.cwd(), 'src', 'schemas', `show-v${version}.schema.json`), 'utf8');
-      for (const key of ['lookOutput', 'lookNeonFrame', 'lookWetDeck', 'trueColour', 'reducedEffects', 'videoSrgbDecode']) {
+      for (const key of ['lookOutput', 'lookNeonFrame', 'lookWetDeck', 'lookAtmosphere', 'trueColour', 'reducedEffects', 'videoSrgbDecode']) {
         assert.equal(schema.includes(key), false, `${key} must not enter show-v${version}`);
       }
     }
