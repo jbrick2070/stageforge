@@ -222,6 +222,20 @@ test('a canceled chooser whose late session cannot end keeps physical output lat
   await expect(page.locator('[data-testid="dmx-output-arm"]:visible')).toBeDisabled();
 });
 
+test('dispose stays fail-closed when the headset session rejects termination', async ({ page }) => {
+  await boot(page);
+  await enter(page, true);
+  await page.evaluate(() => {
+    window.__fakeWebXr.rejectEndNext();
+    window.stageforgeProbe.disposeWebXrEngineForTest();
+  });
+  expect((await page.evaluate(() => window.__fakeWebXr.snapshot())).active).toBe(true);
+  const disposed = await page.evaluate(() => window.stageforgeProbe.attemptWebXrDmxListener());
+  expect(disposed.active).toBe(false);
+  expect(disposed.physicalOutputInterlocked).toBe(true);
+  expect(disposed.physicalOutputListenerAttached).toBe(false);
+});
+
 test('audience viewpoints, comfort menu, preview workflows and emulator budgets stay isolated', async ({ page }) => {
   await boot(page);
   await page.getByRole('button', { name: 'Play demo', exact: true }).click();
@@ -293,12 +307,29 @@ test('audience viewpoints, comfort menu, preview workflows and emulator budgets 
   await action('mute');
   expect((await xrState(page)).audience.status.muted).toBe(false);
 
-  await action('limiter');
+  // Exercise the real WebXR controller event path. A repeated start without an end is one edge.
+  await page.evaluate(() => {
+    const menu = window.stageforgeProbe.webXr().audience.menuPose;
+    window.__fakeWebXr.aimControllerAtMenu(menu, 750, 520, 0);
+    window.__fakeWebXr.dispatchInput('selectstart', 0);
+    window.__fakeWebXr.dispatchInput('selectstart', 0);
+  });
   expect((await xrState(page)).audience.limiterConfirmArmed).toBe(true);
   expect((await xrState(page)).audience.status.limiterOverride).toBe(false);
+  await page.evaluate(() => window.__fakeWebXr.dispatchInput('selectend', 0));
   await action('limiter');
   expect((await xrState(page)).audience.status.limiterOverride).toBe(true);
   expect((await page.evaluate(() => window.stageforgeProbe.graphicsProbe())).fullRateStrobePreview).toBe(true);
+  const inputEvents = await page.evaluate(() => window.__fakeWebXr.snapshot().inputEvents);
+  expect(inputEvents.map((event) => event.type)).toEqual(['selectstart', 'selectstart', 'selectend']);
+
+  await page.evaluate(() => window.__fakeWebXr.setReducedMotion(true));
+  await expect.poll(async () => (await xrState(page)).audience?.status.limiterOverride).toBe(false);
+  expect((await page.evaluate(() => window.stageforgeProbe.graphicsProbe())).fullRateStrobePreview).toBe(false);
+  await page.evaluate(() => window.__fakeWebXr.setReducedMotion(false));
+  await action('limiter');
+  await action('limiter');
+  expect((await xrState(page)).audience.status.limiterOverride).toBe(true);
   const optionalBeforeHidden = await page.evaluate(() => {
     const frames = window.stageforgeProbe.webXr().audience.optionalFrames;
     window.__fakeWebXr.setVisibility('hidden');

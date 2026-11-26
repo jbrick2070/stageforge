@@ -275,12 +275,22 @@ export const App: React.FC = () => {
       ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
       : false,
   );
+  const prefersReducedMotionRef = useRef(prefersReducedMotion);
+  prefersReducedMotionRef.current = prefersReducedMotion;
   const [webglContextLost, setWebglContextLost] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
     const mql = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const onChange = (e: MediaQueryListEvent) => setPrefersReducedMotion(e.matches);
+    const onChange = (e: MediaQueryListEvent) => {
+      prefersReducedMotionRef.current = e.matches;
+      if (e.matches) {
+        webXrLimiterOverrideRef.current = false;
+        engineRef.current?.setFullRateStrobePreview(false);
+      }
+      setPrefersReducedMotion(e.matches);
+    };
+    prefersReducedMotionRef.current = mql.matches;
     setPrefersReducedMotion(mql.matches);
     mql.addEventListener('change', onChange);
     return () => mql.removeEventListener('change', onChange);
@@ -344,6 +354,10 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (prefersReducedMotion || viewerMode || webXrBlocksPhysicalOutput(webXrPhase)) {
       setFullRateStrobeOptIn(false);
+    }
+    if (prefersReducedMotion) {
+      webXrLimiterOverrideRef.current = false;
+      engineRef.current?.setFullRateStrobePreview(false);
     }
   }, [prefersReducedMotion, viewerMode, webXrPhase]);
 
@@ -1912,6 +1926,7 @@ export const App: React.FC = () => {
         engine.setDmxFrameListener(() => {});
         return engine.webXrDiagnostics();
       },
+      disposeWebXrEngineForTest: () => engine.dispose(),
       simulateContextLoss: (lost: boolean) => engine.simulateContextLossForTest(Boolean(lost)),
     };
 
@@ -2294,7 +2309,7 @@ export const App: React.FC = () => {
         enabled &&
         webXrWarningAcknowledgedRef.current &&
         webXrPhaseRef.current === 'active' &&
-        !prefersReducedMotion,
+        !prefersReducedMotionRef.current,
       );
       webXrLimiterOverrideRef.current = allowed;
       engineRef.current?.setFullRateStrobePreview(allowed);

@@ -1318,7 +1318,7 @@ export class StageEngine {
     if (!lease || lease.restored) return;
     lease.restored = true;
     this.webXrLease = null;
-    this.webXrPhysicalOutputInterlock = false;
+    this.webXrPhysicalOutputInterlock = this.disposed;
     lease.session.removeEventListener('end', lease.endListener);
     lease.session.removeEventListener('visibilitychange', lease.visibilityListener);
     if (lease.baseReferenceSpace) this.renderer.xr.setReferenceSpace(lease.baseReferenceSpace);
@@ -1326,6 +1326,15 @@ export class StageEngine {
     lease.audience = null;
     lease.baseReferenceSpace = null;
     this.renderer.setAnimationLoop(null);
+    if (this.disposed) {
+      // Disposal releases owned scene/listener/loop resources, but it cannot restore output
+      // authority when the runtime has not authoritatively ended the headset session.
+      this.effectiveFullRateStrobe = false;
+      this.webXrVisibility = 'visible';
+      this.webXrExits++;
+      lease.onEnded?.(reason);
+      return;
+    }
     this.renderer.xr.enabled = lease.xrEnabled;
 
     this.camera.position.copy(lease.cameraPosition);
@@ -1430,7 +1439,7 @@ export class StageEngine {
   }
 
   public setWebXrPhysicalOutputInterlock(active: boolean) {
-    if (!active && this.webXrLease) return;
+    if (!active && (this.webXrLease || this.disposed)) return;
     this.webXrPhysicalOutputInterlock = active;
     if (active) {
       this.dmxFrameListener = undefined;
@@ -3989,7 +3998,7 @@ export class StageEngine {
       serialU2: Uint8Array,
     ) => void
   ) {
-    if (listener && (this.webXrLease || this.webXrPhysicalOutputInterlock)) {
+    if (listener && (this.disposed || this.webXrLease || this.webXrPhysicalOutputInterlock)) {
       // Renderer-level safety authority: never emit physical frames while XR owns the camera/loop.
       this.dmxFrameListener = undefined;
       this.stopControlFallbackTimer();
@@ -5264,12 +5273,16 @@ export class StageEngine {
   }
 
   public dispose() {
+    if (this.disposed) return;
     this.disposed = true;
     if (this.webXrLease) {
       const lease = this.webXrLease;
       lease.endReason = 'dispose';
       void lease.session.end().catch(() => {});
       this.restoreWebXrLease('dispose');
+      // A disposed engine can no longer establish output authority. Keep its independent latch
+      // fail-closed even when a non-conforming runtime rejects or omits session termination.
+      this.webXrPhysicalOutputInterlock = true;
     }
     this.stopControlFallbackTimer();
     this.dmxFrameListener = undefined;

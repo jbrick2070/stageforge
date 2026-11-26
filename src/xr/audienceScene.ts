@@ -9,6 +9,7 @@ import {
   viewpointHeadPose,
   type XrEyeMode,
   type XrInputEdgeState,
+  type XrMenuHit,
   type XrMenuRect,
   type XrPoint3,
   type XrPose,
@@ -95,10 +96,6 @@ function poseFromTransform(transform: XRRigidTransform): XrPose {
   };
 }
 
-function point(value: THREE.Vector3): XrPoint3 {
-  return { x: value.x, y: value.y, z: value.z };
-}
-
 export class WebXrAudienceScene {
   private readonly root = new THREE.Group();
   private readonly canvas: HTMLCanvasElement;
@@ -116,6 +113,12 @@ export class WebXrAudienceScene {
   private readonly reticleMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, depthTest: false });
   private readonly controllers: Array<{ group: THREE.Group; ray: THREE.Line; reticle: THREE.Mesh; cleanups: Array<() => void> }> = [];
   private readonly edgeState: XrInputEdgeState = createInputEdgeState();
+  private readonly overlayForward = new THREE.Vector3();
+  private readonly controllerWorldOrigin = new THREE.Vector3();
+  private readonly controllerWorldEnd = new THREE.Vector3();
+  private readonly controllerLocalOrigin = new THREE.Vector3();
+  private readonly controllerLocalEnd = new THREE.Vector3();
+  private readonly menuHitScratch: XrMenuHit = { id: '', pixelX: 0, pixelY: 0, distance: 0 };
   private baseHeadPose: XrPose | null = null;
   private currentViewpoint: XrViewpoint;
   private eyeMode: XrEyeMode;
@@ -209,10 +212,10 @@ export class WebXrAudienceScene {
   private controllerHit(controller: { group: THREE.Group }): string | null {
     this.menu.updateWorldMatrix(true, false);
     controller.group.updateWorldMatrix(true, false);
-    const worldOrigin = new THREE.Vector3().setFromMatrixPosition(controller.group.matrixWorld);
-    const worldEnd = new THREE.Vector3(0, 0, -1).applyMatrix4(controller.group.matrixWorld);
-    const localOrigin = this.menu.worldToLocal(worldOrigin.clone());
-    const localEnd = this.menu.worldToLocal(worldEnd.clone());
+    const worldOrigin = this.controllerWorldOrigin.setFromMatrixPosition(controller.group.matrixWorld);
+    const worldEnd = this.controllerWorldEnd.set(0, 0, -1).applyMatrix4(controller.group.matrixWorld);
+    const localOrigin = this.menu.worldToLocal(this.controllerLocalOrigin.copy(worldOrigin));
+    const localEnd = this.menu.worldToLocal(this.controllerLocalEnd.copy(worldEnd));
     const hit = menuHitTest(
       { x: localOrigin.x / MENU_WIDTH_M, y: localOrigin.y / MENU_HEIGHT_M, z: localOrigin.z },
       {
@@ -223,6 +226,7 @@ export class WebXrAudienceScene {
       CANVAS_SIZE,
       CANVAS_SIZE,
       buttons,
+      this.menuHitScratch,
     );
     return hit?.id ?? null;
   }
@@ -386,11 +390,11 @@ export class WebXrAudienceScene {
     this.frameSerial++;
     if (!this.visible || !frame) return;
     this.optionalFrames++;
-    const forward = new THREE.Vector3(0, 0, -0.11).applyQuaternion(xrCamera.quaternion);
-    for (const overlay of [this.fade, this.vignette]) {
-      overlay.position.copy(xrCamera.position).add(forward);
-      overlay.quaternion.copy(xrCamera.quaternion);
-    }
+    const forward = this.overlayForward.set(0, 0, -0.11).applyQuaternion(xrCamera.quaternion);
+    this.fade.position.copy(xrCamera.position).add(forward);
+    this.fade.quaternion.copy(xrCamera.quaternion);
+    this.vignette.position.copy(xrCamera.position).add(forward);
+    this.vignette.quaternion.copy(xrCamera.quaternion);
     if (this.blink === 'out') {
       const p = Math.min(1, (timeSeconds - this.blinkStarted) / BLINK_SECONDS);
       this.fadeMaterial.opacity = p;
@@ -440,6 +444,10 @@ export class WebXrAudienceScene {
       emulatorBudget: XR_ARENA_EMULATOR_BUDGET,
       baseHeadPose: this.baseHeadPose,
       desiredHeadPose: viewpointHeadPose(this.currentViewpoint, this.eyeMode, this.yawOffset),
+      menuPose: {
+        position: { x: this.menu.position.x, y: this.menu.position.y, z: this.menu.position.z },
+        orientation: { x: this.menu.quaternion.x, y: this.menu.quaternion.y, z: this.menu.quaternion.z, w: this.menu.quaternion.w },
+      },
     };
   }
 

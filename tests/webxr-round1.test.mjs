@@ -25,5 +25,5 @@ test('WebXR physical-output interlocks use both UI phase and renderer lease auth
   const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const engine = await readFile(new URL('../src/engine/StageEngine.ts', import.meta.url), 'utf8');
   assert.match(app, /webXrBlocksPhysicalOutput\(webXrPhaseRef\.current\)[\s\S]{0,120}engineRef\.current\?\.isWebXrPhysicalOutputInterlocked\(\)/);
-  assert.match(engine, /if \(listener && \(this\.webXrLease \|\| this\.webXrPhysicalOutputInterlock\)\)/);
+  assert.match(engine, /if \(listener && \(this\.disposed \|\| this\.webXrLease \|\| this\.webXrPhysicalOutputInterlock\)\)/);
 });

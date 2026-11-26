@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createServer } from 'vite';
 
@@ -70,6 +71,9 @@ test('menu hit testing uses half-open button bounds and input edges are globally
   assert.equal(mod.menuHitTest({ x: 0, y: 0.25, z: 1 }, { x: 0, y: 0, z: -1 }, 200, 200, rects)?.id, 'right');
   assert.equal(mod.menuHitTest({ x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 }, 200, 200, rects), null);
   assert.equal(mod.menuHitTest({ x: 0.6, y: 0, z: 1 }, { x: 0, y: 0, z: -1 }, 200, 200, rects), null);
+  const scratch = { id: '', pixelX: 0, pixelY: 0, distance: 0 };
+  assert.equal(mod.menuHitTest({ x: 0, y: 0.25, z: 1 }, { x: 0, y: 0, z: -1 }, 200, 200, rects, scratch), scratch);
+  assert.equal(scratch.id, 'right');
 
   const state = mod.createInputEdgeState();
   assert.equal(mod.consumeInputEdge(state, 'left', 'select', true, 12), true);
@@ -77,6 +81,16 @@ test('menu hit testing uses half-open button bounds and input edges are globally
   assert.equal(mod.consumeInputEdge(state, 'right', 'select', true, 12), false);
   assert.equal(mod.consumeInputEdge(state, 'left', 'select', false, 13), false);
   assert.equal(mod.consumeInputEdge(state, 'left', 'select', true, 13), true);
+});
+
+test('visible XR frame/controller hot paths reuse retained scratch objects', () => {
+  const source = readFileSync(new URL('../src/xr/audienceScene.ts', import.meta.url), 'utf8');
+  const controllerHit = source.slice(source.indexOf('private controllerHit'), source.indexOf('private beginTeleport'));
+  const update = source.slice(source.indexOf('public update('), source.indexOf('public activateForTest'));
+  assert.doesNotMatch(controllerHit, /new THREE\.(?:Vector|Quaternion|Matrix)/);
+  assert.doesNotMatch(controllerHit, /\.clone\(\)/);
+  assert.doesNotMatch(update, /new THREE\.(?:Vector|Quaternion|Matrix)/);
+  assert.doesNotMatch(update, /for \(const .* of \[/);
 });
 
 test('XR quality preference is validated and defaults to standalone only for Oculus Browser', () => {

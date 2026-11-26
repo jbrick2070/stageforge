@@ -57,6 +57,13 @@ export interface XrMenuRect {
   height: number;
 }
 
+export interface XrMenuHit {
+  id: string;
+  pixelX: number;
+  pixelY: number;
+  distance: number;
+}
+
 export interface XrInputEdgeState {
   held: Set<string>;
   claimedFrame: number;
@@ -212,7 +219,8 @@ export function menuHitTest(
   canvasWidth: number,
   canvasHeight: number,
   rects: readonly XrMenuRect[],
-): { id: string; pixelX: number; pixelY: number; distance: number } | null {
+  out?: XrMenuHit,
+): XrMenuHit | null {
   if (!Number.isFinite(direction.z) || direction.z >= -1e-6) return null;
   const distance = -origin.z / direction.z;
   if (!(distance > 0)) return null;
@@ -223,7 +231,13 @@ export function menuHitTest(
   const pixelY = (0.5 - y) * canvasHeight;
   const rect = rects.find((item) =>
     pixelX >= item.x && pixelX < item.x + item.width && pixelY >= item.y && pixelY < item.y + item.height);
-  return rect ? { id: rect.id, pixelX, pixelY, distance } : null;
+  if (!rect) return null;
+  const hit = out ?? { id: rect.id, pixelX, pixelY, distance };
+  hit.id = rect.id;
+  hit.pixelX = pixelX;
+  hit.pixelY = pixelY;
+  hit.distance = distance;
+  return hit;
 }
 
 export function createInputEdgeState(): XrInputEdgeState {

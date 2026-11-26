@@ -5,6 +5,23 @@ export async function installFakeWebXr(page, options = {}) {
       localStorage.setItem('stageforge.render.v1', JSON.stringify({ webxrAudience: true }));
     } catch { /* origin is not available on about:blank */ }
 
+    let reducedMotion = Boolean(initial.reducedMotion);
+    const reducedMotionListeners = new Set();
+    const nativeMatchMedia = window.matchMedia.bind(window);
+    window.matchMedia = (query) => {
+      if (query !== '(prefers-reduced-motion: reduce)') return nativeMatchMedia(query);
+      return {
+        media: query,
+        get matches() { return reducedMotion; },
+        onchange: null,
+        addEventListener(type, listener) { if (type === 'change') reducedMotionListeners.add(listener); },
+        removeEventListener(type, listener) { if (type === 'change') reducedMotionListeners.delete(listener); },
+        addListener(listener) { reducedMotionListeners.add(listener); },
+        removeListener(listener) { reducedMotionListeners.delete(listener); },
+        dispatchEvent() { return true; },
+      };
+    };
+
     const state = {
       supported: initial.supported !== false,
       denyNext: Boolean(initial.denyNext),
@@ -22,6 +39,7 @@ export async function installFakeWebXr(page, options = {}) {
       failReferenceSpaceNext: false,
       offsetTransforms: [],
       inputEvents: [],
+      reducedMotion,
     };
 
     const quatMultiply = (a, b) => ({
@@ -230,7 +248,11 @@ export async function installFakeWebXr(page, options = {}) {
         const referenceSpace = new FakeReferenceSpace('local-floor');
         const frame = {
           session: this,
-          getPose: (space) => ({ transform: new FakeRigidTransform(space.pose.position, space.pose.orientation) }),
+          getPose: (space, activeReferenceSpace) => {
+            const base = space.pose;
+            const derived = activeReferenceSpace?.offset ? compose(inverse(activeReferenceSpace.offset), base) : base;
+            return { transform: new FakeRigidTransform(derived.position, derived.orientation) };
+          },
           getViewerPose: () => ({ transform: new FakeRigidTransform({ x: 0, y: 1.62, z: 0 }), views: [eyeView('left', -0.032, referenceSpace), eyeView('right', 0.032, referenceSpace)] }),
         };
         const event = new Event(type);
@@ -316,6 +338,35 @@ export async function installFakeWebXr(page, options = {}) {
       setVisibility(value) { state.activeSession?.setVisibility(value); },
       connectController(index = 0) { return state.activeSession?.connectController(index); },
       dispatchInput(type, index = 0) { state.activeSession?.dispatchInput(type, index); },
+      aimControllerAtMenu(menuPose, pixelX = 750, pixelY = 520, index = 0) {
+        const session = state.activeSession;
+        if (!session) return;
+        const source = session.inputSources[index] ?? session.connectController(index);
+        const local = {
+          position: {
+            x: (pixelX / 1024 - 0.5) * 1.25,
+            y: (0.5 - pixelY / 1024) * 1.25,
+            z: 0.8,
+          },
+          orientation: { x: 0, y: 0, z: 0, w: 1 },
+        };
+        const desired = compose(menuPose, local);
+        const offset = state.offsetTransforms.at(-1) ?? {
+          position: { x: 0, y: 0, z: 0 },
+          orientation: { x: 0, y: 0, z: 0, w: 1 },
+        };
+        source.targetRaySpace.pose = compose(offset, desired);
+      },
+      setReducedMotion(value) {
+        reducedMotion = Boolean(value);
+        state.reducedMotion = reducedMotion;
+        const event = new Event('change');
+        Object.defineProperties(event, {
+          matches: { value: reducedMotion },
+          media: { value: '(prefers-reduced-motion: reduce)' },
+        });
+        for (const listener of [...reducedMotionListeners]) listener.call(null, event);
+      },
       snapshot() {
         return {
           supported: state.supported,
@@ -329,6 +380,7 @@ export async function installFakeWebXr(page, options = {}) {
           referenceSpaces: [...state.referenceSpaces],
           offsetTransforms: state.offsetTransforms.map((value) => ({ position: { ...value.position }, orientation: { ...value.orientation } })),
           inputEvents: state.inputEvents.map((value) => ({ ...value })),
+          reducedMotion: state.reducedMotion,
           listenerBalances: state.sessions.map((session) => session.listenerBalance),
           rafCounts: state.sessions.map((session) => session.rafIds.size),
         };
