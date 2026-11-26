@@ -493,6 +493,10 @@ describe('Sprint 20: WebGL1/WebGL2 shader compatibility, context restore & docs'
     for (const src of [litPuffsMod.VAPOR_VERT_LIT, litPuffsMod.VAPOR_FRAG_LIT]) {
       assert.equal(/dFdx|dFdy|fwidth|\bflat\s|\bivec|\buvec|\bfor\s*\(|\bwhile\s*\(/.test(src), false);
     }
+    const e2eSrc = readFileSync(join(process.cwd(), 'tests/e2e/sprint20-lit-puffs.spec.mjs'), 'utf8').replace(/\r\n/g, '\n');
+    const normWs = (s) => s.replace(/\s+/g, ' ').trim();
+    assert.ok(normWs(e2eSrc).includes(normWs(litPuffsMod.VAPOR_VERT_LIT)), 'E2E WebGL1 compile test must match live VAPOR_VERT_LIT');
+    assert.ok(normWs(e2eSrc).includes(normWs(litPuffsMod.VAPOR_FRAG_LIT)), 'E2E WebGL1 compile test must match live VAPOR_FRAG_LIT');
 
     const p = new particleMod.AtmosphericParticles('high', 555);
     p.setEmitters([new THREE.Vector3(0, 0, 0)], [new THREE.Vector3(1, 0, 2)], 0);
@@ -518,5 +522,54 @@ describe('Sprint 20: WebGL1/WebGL2 shader compatibility, context restore & docs'
     assert.match(doc, /litPuffs/);
     assert.match(doc, /cannot cast a truss shadow/i);
     assert.match(doc, /cannot resolve per-particle cross-batch intersections/i);
+  });
+
+  it('qa-30 R1 regression: hot per-frame particle upload & sort paths allocate zero per-puff/per-frame objects', () => {
+    const psSrc = readFileSync(join(process.cwd(), 'src/engine/ParticleSystem.ts'), 'utf8');
+    const lpSrc = readFileSync(join(process.cwd(), 'src/engine/litPuffs.ts'), 'utf8');
+
+    // 1. `computePuffShape` returning `{ diameter, opacity }` per puff is gone; scalar `writePuffShape` is used instead.
+    assert.equal(/computePuffShape\s*\([^)]*\)\s*:\s*\{/.test(psSrc), false);
+    assert.equal(/return\s*\{\s*diameter\b/.test(psSrc), false);
+    assert.equal(/return\s*\{\s*litCount\b/.test(psSrc), false);
+
+    // 2. `sortPuffsBackToFront` uses module-hoisted `SHELL_SORT_GAPS` Int32Array rather than per-call `[301, ...]` array literal,
+    //    and `LitCandidateSet` uses preallocated `Int32Array` rather than `Set` iterators.
+    const sortBody = litPuffsMod.sortPuffsBackToFront.toString();
+    assert.equal(/\[\s*301\b/.test(sortBody), false);
+    assert.equal(/new\s+Set\s*\(/.test(lpSrc), false);
+
+    // 3. `resolveSmokeCryoRenderOrder` mutates and returns a caller-provided `out` object in-place without allocating.
+    const out = { smokeOrder: 1, cryoOrder: 2, smokeFirst: true };
+    const ret = litPuffsMod.resolveSmokeCryoRenderOrder(25, 10.0, 25, 14.0, true, out);
+    assert.equal(ret, out, 'resolveSmokeCryoRenderOrder must reuse caller out object');
+    assert.deepEqual(out, { smokeOrder: 2, cryoOrder: 1, smokeFirst: false });
+
+    // 4. Steady-state hot-loop execution across both `litPuffs: false` and `litPuffs: true` with dense smoke + cryo:
+    const p = new particleMod.AtmosphericParticles('high', 2026);
+    p.setEmitters([new THREE.Vector3(-2, 0, 0), new THREE.Vector3(2, 0, 0)], [new THREE.Vector3(0, 0, 2)], 0);
+    const tint = new THREE.Color('#00f0ff');
+    const lighting = {
+      beams: Array.from({ length: 20 }, (_, i) => makeBeam({ index: i, lastWorldX: (i - 10) * 0.5 })),
+      blackout: false,
+      master: 1,
+      roomGain: 1,
+      camPosX: 0,
+      camPosY: 4,
+      camPosZ: 22,
+      camFwdX: 0,
+      camFwdY: -0.1,
+      camFwdZ: -0.995,
+    };
+    for (let i = 0; i < 90; i++) {
+      p.update(1 / 60, i / 60, 0.5, 1.0, true, tint, 1.0);
+    }
+    assert.ok(p.getStats().smoke.alive > 40 && p.getStats().cryo.alive > 40);
+    p.setLitPuffs(true, lighting);
+    for (let i = 0; i < 90; i++) {
+      p.update(1 / 60, (90 + i) / 60, 0.5, 1.0, true, tint, 1.0, lighting);
+    }
+    assert.equal(p.getLitPuffsStats().selectedCandidateCount, 16);
+    p.dispose();
   });
 });

@@ -519,6 +519,95 @@ test('Sprint 20: default-off parity, blackout, crossing coloured beams, overlapp
     };
   });
 
+  // Verify real WebGL1 context compiles & links VAPOR_VERT_LIT + VAPOR_FRAG_LIT cleanly on the GPU driver
+  const webgl1Compile = await page.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 16;
+    c.height = 16;
+    const gl1 = c.getContext('webgl');
+    if (!gl1) return { supported: false, linked: true, log: '' };
+    const vertSrc = `
+      precision highp float;
+      uniform mat4 modelViewMatrix;
+      uniform mat4 projectionMatrix;
+      attribute vec3 position;
+      attribute vec3 center, shape;
+      attribute vec3 broadLight, lobeLight;
+      attribute vec4 lobeOffset;
+      uniform float aspect;
+      varying vec2 texUv;
+      varying float density;
+      varying vec3 vBroadLight;
+      varying vec3 vLobeLight;
+      varying vec3 vLobeUvAndConc;
+      void main() {
+        texUv = position.xy + 0.5;
+        float safeDiam = max(shape.x, 0.05);
+        vec2 quadScale = vec2(aspect, 1.0) * safeDiam;
+        vec2 offset = position.xy * quadScale;
+        float c = cos(shape.y), s = sin(shape.y);
+        vec4 eye = modelViewMatrix * vec4(center, 1.0);
+        float nearFade = smoothstep(0.35, 2.05, -eye.z);
+        density = shape.z * nearFade;
+        vBroadLight = broadLight;
+        vLobeLight = lobeLight;
+        vec2 lobeEye = (modelViewMatrix * vec4(lobeOffset.xyz, 0.0)).xy;
+        vec2 unrot = mat2(c, -s, s, c) * lobeEye;
+        vec2 lobeUv = clamp(unrot / quadScale, vec2(-0.65), vec2(0.65));
+        vLobeUvAndConc = vec3(lobeUv, max(0.0, lobeOffset.w));
+        eye.xy += mat2(c, s, -s, c) * offset;
+        gl_Position = projectionMatrix * eye;
+      }
+    `;
+    const fragSrc = `
+      precision highp float;
+      uniform sampler2D vapor;
+      uniform vec3 tint;
+      varying vec2 texUv;
+      varying float density;
+      varying vec3 vBroadLight;
+      varying vec3 vLobeLight;
+      varying vec3 vLobeUvAndConc;
+      void main() {
+        vec4 cloud = texture2D(vapor, texUv);
+        float alpha = density * cloud.a;
+        if (alpha < 0.001) discard;
+        vec3 baseCol = tint * cloud.r;
+        vec2 uvDelta = (texUv - 0.5) - vLobeUvAndConc.xy;
+        float lobeMask = exp(-vLobeUvAndConc.z * dot(uvDelta, uvDelta));
+        float cloudBody = 0.42 + 0.78 * cloud.r;
+        vec3 added = (vBroadLight + vLobeLight * lobeMask) * cloudBody;
+        float peak = max(added.r, max(added.g, added.b));
+        if (peak > 1e-5) {
+          float comp = 0.68 * (peak / (peak + 0.48));
+          added *= min(1.0, comp / peak);
+        }
+        gl_FragColor = vec4(baseCol + added, alpha);
+      }
+    `;
+    const compile = (type, src) => {
+      const sh = gl1.createShader(type);
+      gl1.shaderSource(sh, src);
+      gl1.compileShader(sh);
+      return { sh, ok: Boolean(gl1.getShaderParameter(sh, gl1.COMPILE_STATUS)), log: gl1.getShaderInfoLog(sh) || '' };
+    };
+    const vs = compile(gl1.VERTEX_SHADER, vertSrc);
+    const fs = compile(gl1.FRAGMENT_SHADER, fragSrc);
+    const prog = gl1.createProgram();
+    gl1.attachShader(prog, vs.sh);
+    gl1.attachShader(prog, fs.sh);
+    gl1.linkProgram(prog);
+    const linked = Boolean(vs.ok && fs.ok && gl1.getProgramParameter(prog, gl1.LINK_STATUS));
+    const log = `${vs.log}${fs.log}${gl1.getProgramInfoLog(prog) || ''}`;
+    gl1.deleteProgram(prog);
+    gl1.deleteShader(vs.sh);
+    gl1.deleteShader(fs.sh);
+    gl1.getExtension('WEBGL_lose_context')?.loseContext();
+    return { supported: true, linked, log };
+  });
+  expect(webgl1Compile.linked).toBe(true);
+  expect(webgl1Compile.log).toBe('');
+
   expect(lifecycleAndFlash.afterToggles.geometries).toBe(lifecycleAndFlash.baseline.geometries);
   expect(lifecycleAndFlash.afterToggles.textures).toBe(lifecycleAndFlash.baseline.textures);
   expect(lifecycleAndFlash.postRestoreActive).toBe(true);

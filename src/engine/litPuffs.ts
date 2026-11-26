@@ -342,8 +342,8 @@ export class LitCandidateSet {
   readonly g: Float32Array;
   readonly b: Float32Array;
   readonly score: Float32Array;
-  private readonly prevSelected = new Set<number>();
-  private readonly nextSelected = new Set<number>();
+  private readonly prevSelectedIds: Int32Array;
+  private prevSelectedCount = 0;
 
   constructor(capacity: number) {
     const cap = Math.max(1, Math.floor(capacity));
@@ -363,12 +363,19 @@ export class LitCandidateSet {
     this.g = new Float32Array(cap);
     this.b = new Float32Array(cap);
     this.score = new Float32Array(cap);
+    this.prevSelectedIds = new Int32Array(cap);
   }
 
   clear(): void {
     this.count = 0;
-    this.prevSelected.clear();
-    this.nextSelected.clear();
+    this.prevSelectedCount = 0;
+  }
+
+  private wasPreviouslySelected(fxIdx: number): boolean {
+    for (let i = 0; i < this.prevSelectedCount; i++) {
+      if (this.prevSelectedIds[i] === fxIdx) return true;
+    }
+    return false;
   }
 
   /**
@@ -393,7 +400,7 @@ export class LitCandidateSet {
       frame.roomGain <= 0.001 ||
       beams.length === 0
     ) {
-      this.prevSelected.clear();
+      this.prevSelectedCount = 0;
       return 0;
     }
 
@@ -416,11 +423,12 @@ export class LitCandidateSet {
       let ax = Number.isFinite(fx.lastAimX) ? fx.lastAimX! : 0;
       let ay = Number.isFinite(fx.lastAimY) ? fx.lastAimY! : -1;
       let az = Number.isFinite(fx.lastAimZ) ? fx.lastAimZ : 0;
-      const aLen = Math.hypot(ax, ay, az);
-      if (!Number.isFinite(aLen) || aLen <= 1e-8) continue;
-      ax /= aLen;
-      ay /= aLen;
-      az /= aLen;
+      const aLenSq = ax * ax + ay * ay + az * az;
+      if (!Number.isFinite(aLenSq) || aLenSq <= 1e-16) continue;
+      const invALen = 1 / Math.sqrt(aLenSq);
+      ax *= invALen;
+      ay *= invALen;
+      az *= invALen;
 
       const lensOff = Number.isFinite(fx.lensOffsetY) ? fx.lensOffsetY : 0.16;
       const wx = Number.isFinite(fx.lastWorldX) ? fx.lastWorldX : 0;
@@ -467,9 +475,9 @@ export class LitCandidateSet {
       }
 
       const proxWeight = 0.22 + 0.78 * bestProx;
-      const hysteresis = this.prevSelected.has(fx.index) ? LIT_PUFFS_HYSTERESIS_BONUS : 1.0;
-      const candScore = power * Math.max(cr, cg, cb) * proxWeight * hysteresis;
       const fxIdx = Number.isFinite(fx.index) ? Math.trunc(fx.index) : i;
+      const hysteresis = this.wasPreviouslySelected(fxIdx) ? LIT_PUFFS_HYSTERESIS_BONUS : 1.0;
+      const candScore = power * Math.max(cr, cg, cb) * proxWeight * hysteresis;
 
       // Insert into descending-score bounded array (N <= 16 -> tiny linear shift, 0 allocations).
       let pos = this.count;
@@ -520,13 +528,9 @@ export class LitCandidateSet {
       if (this.count < this.capacity) this.count++;
     }
 
-    this.nextSelected.clear();
+    this.prevSelectedCount = this.count;
     for (let i = 0; i < this.count; i++) {
-      this.nextSelected.add(this.fixtureIndex[i]);
-    }
-    this.prevSelected.clear();
-    for (const idx of this.nextSelected) {
-      this.prevSelected.add(idx);
+      this.prevSelectedIds[i] = this.fixtureIndex[i];
     }
     return this.count;
   }
@@ -893,6 +897,8 @@ export function evaluateSinglePuffLighting(
   return totalPeak > 0.002;
 }
 
+const SHELL_SORT_GAPS = new Int32Array([301, 132, 57, 23, 10, 4, 1]);
+
 /**
  * Zero-allocation back-to-front Shell sort of `sortOrder[0 .. count - 1]` descending by
  * signed camera view depth `dot(pos - camPos, camFwd)`.
@@ -912,9 +918,8 @@ export function sortPuffsBackToFront(
   if (n <= 1) return;
 
   // Ciura gap sequence covering particle capacities <= 420 with zero recursion or heap allocation.
-  const gaps = [301, 132, 57, 23, 10, 4, 1];
-  for (let gi = 0; gi < gaps.length; gi++) {
-    const gap = gaps[gi];
+  for (let gi = 0; gi < SHELL_SORT_GAPS.length; gi++) {
+    const gap = SHELL_SORT_GAPS[gi];
     if (gap >= n) continue;
     for (let i = gap; i < n; i++) {
       const idx = sortOrder[i];
@@ -938,9 +943,16 @@ export function sortPuffsBackToFront(
   }
 }
 
+export interface SmokeCryoBatchOrder {
+  smokeOrder: 1 | 2;
+  cryoOrder: 1 | 2;
+  smokeFirst: boolean;
+}
+
 /**
  * Resolve inter-batch `renderOrder` (`1` farther, `2` nearer) between `smoke` and `cryo`
  * from opacity-weighted mean camera depth with a `0.30 m` hysteresis deadband.
+ * Writes into `out` when provided so the render loop allocates zero objects per frame.
  * Note: orders whole batches rather than interleaving individual smoke/cryo puffs.
  */
 export function resolveSmokeCryoRenderOrder(
@@ -949,24 +961,33 @@ export function resolveSmokeCryoRenderOrder(
   cryoAlive: number,
   cryoMeanDepth: number,
   prevSmokeFirst: boolean,
-): { smokeOrder: 1 | 2; cryoOrder: 1 | 2; smokeFirst: boolean } {
-  if (smokeAlive <= 0 || cryoAlive <= 0 || !Number.isFinite(smokeMeanDepth) || !Number.isFinite(cryoMeanDepth)) {
-    return prevSmokeFirst
-      ? { smokeOrder: 1, cryoOrder: 2, smokeFirst: true }
-      : { smokeOrder: 2, cryoOrder: 1, smokeFirst: false };
-  }
-  const delta = smokeMeanDepth - cryoMeanDepth;
+  out?: SmokeCryoBatchOrder,
+): SmokeCryoBatchOrder {
   let smokeFirst = prevSmokeFirst;
-  if (delta > LIT_PUFFS_BATCH_ORDER_DEADBAND_M) {
-    // Smoke is farther from camera -> draw smoke first (1), cryo second (2).
-    smokeFirst = true;
-  } else if (delta < -LIT_PUFFS_BATCH_ORDER_DEADBAND_M) {
-    // Cryo is farther from camera -> draw cryo first (1), smoke second (2).
-    smokeFirst = false;
+  if (
+    smokeAlive > 0 &&
+    cryoAlive > 0 &&
+    Number.isFinite(smokeMeanDepth) &&
+    Number.isFinite(cryoMeanDepth)
+  ) {
+    const delta = smokeMeanDepth - cryoMeanDepth;
+    if (delta > LIT_PUFFS_BATCH_ORDER_DEADBAND_M) {
+      // Smoke is farther from camera -> draw smoke first (1), cryo second (2).
+      smokeFirst = true;
+    } else if (delta < -LIT_PUFFS_BATCH_ORDER_DEADBAND_M) {
+      // Cryo is farther from camera -> draw cryo first (1), smoke second (2).
+      smokeFirst = false;
+    }
   }
-  return smokeFirst
-    ? { smokeOrder: 1, cryoOrder: 2, smokeFirst: true }
-    : { smokeOrder: 2, cryoOrder: 1, smokeFirst: false };
+  const smokeOrder: 1 | 2 = smokeFirst ? 1 : 2;
+  const cryoOrder: 1 | 2 = smokeFirst ? 2 : 1;
+  if (out) {
+    out.smokeOrder = smokeOrder;
+    out.cryoOrder = cryoOrder;
+    out.smokeFirst = smokeFirst;
+    return out;
+  }
+  return { smokeOrder, cryoOrder, smokeFirst };
 }
 
 export interface LitPuffFragmentOracleInput {

@@ -23,6 +23,7 @@ import {
   type LitBeamSource,
   type LitPuffsFrameContext,
   type LitPuffsStats,
+  type SmokeCryoBatchOrder,
 } from './litPuffs';
 
 export const DEFAULT_PARTICLE_SEED = 0x51a9e015;
@@ -383,6 +384,11 @@ interface HazeOrigin {
   seed: number;
 }
 
+interface UploadPoolLitSummary {
+  litCount: number;
+  meanDepth: number;
+}
+
 /**
  * Lazy runtime allocated exclusively while `litPuffs` is enabled (`null` / `0 B` when disabled).
  */
@@ -395,6 +401,9 @@ interface LitPuffsRuntime {
   readonly smokeRegion: CloudSphereRegion;
   readonly cryoRegion: CloudSphereRegion;
   readonly frameCtx: LitPuffsFrameContext;
+  readonly smokeSummaryScratch: UploadPoolLitSummary;
+  readonly cryoSummaryScratch: UploadPoolLitSummary;
+  readonly batchOrderScratch: SmokeCryoBatchOrder;
   nextSpawnSeq: number;
   smokeFirstOrder: boolean;
   lastLitSmokePuffs: number;
@@ -447,6 +456,9 @@ export class AtmosphericParticles {
   private lastCamFwdX = 0;
   private lastCamFwdY = -0.1;
   private lastCamFwdZ = -0.995;
+  // Scalar scratch outputs for `writePuffShape` (avoids per-puff `{ diameter, opacity }` allocations).
+  private shapeDiamScratch = 0;
+  private shapeOpacScratch = 0;
 
   constructor(tier: RenderTier = 'high', seed = DEFAULT_PARTICLE_SEED) {
     this.tier = tier;
@@ -518,6 +530,9 @@ export class AtmosphericParticles {
             camFwdY: this.lastCamFwdY,
             camFwdZ: this.lastCamFwdZ,
           },
+          smokeSummaryScratch: { litCount: 0, meanDepth: 0 },
+          cryoSummaryScratch: { litCount: 0, meanDepth: 0 },
+          batchOrderScratch: { smokeOrder: 1, cryoOrder: 2, smokeFirst: true },
           nextSpawnSeq: seq,
           smokeFirstOrder: true,
           lastLitSmokePuffs: 0,
@@ -887,8 +902,26 @@ export class AtmosphericParticles {
       rt.candidates.clear();
     }
 
-    const smokeSummary = this.uploadPoolLit(this.smokePool, rt.smokeState, this.smoke, alpha, false, dt, rt);
-    const cryoSummary = this.uploadPoolLit(this.cryoPool, rt.cryoState, this.cryo, alpha, true, dt, rt);
+    const smokeSummary = this.uploadPoolLit(
+      this.smokePool,
+      rt.smokeState,
+      this.smoke,
+      alpha,
+      false,
+      dt,
+      rt,
+      rt.smokeSummaryScratch,
+    );
+    const cryoSummary = this.uploadPoolLit(
+      this.cryoPool,
+      rt.cryoState,
+      this.cryo,
+      alpha,
+      true,
+      dt,
+      rt,
+      rt.cryoSummaryScratch,
+    );
     rt.lastLitSmokePuffs = smokeSummary.litCount;
     rt.lastLitCryoPuffs = cryoSummary.litCount;
 
@@ -898,6 +931,7 @@ export class AtmosphericParticles {
       this.cryoPool.alive,
       cryoSummary.meanDepth,
       rt.smokeFirstOrder,
+      rt.batchOrderScratch,
     );
     rt.smokeFirstOrder = order.smokeFirst;
     this.smoke.mesh.renderOrder = order.smokeOrder;
@@ -1087,32 +1121,33 @@ export class AtmosphericParticles {
     pool.alive = live;
   }
 
-  private computePuffShape(pool: PuffPool, i: number, cryo: boolean): { diameter: number; opacity: number } {
+  private writePuffShape(pool: PuffPool, i: number, cryo: boolean): void {
     const age = pool.age[i];
     const ageNorm = age / Math.max(1e-4, pool.lifetime[i]);
     if (cryo && this.fallingCo2) {
-      const diameter = pool.size[i] + 1.9 * (1 - Math.exp(-1.4 * age));
+      this.shapeDiamScratch = pool.size[i] + 1.9 * (1 - Math.exp(-1.4 * age));
       const envelope =
         THREE.MathUtils.smoothstep(ageNorm, 0, 0.04) *
         (1 - THREE.MathUtils.smoothstep(ageNorm, 0.42, 1)) *
         (1 - 0.35 * THREE.MathUtils.smoothstep(ageNorm, 0.2, 0.5));
-      return { diameter, opacity: 0.72 * envelope };
+      this.shapeOpacScratch = 0.72 * envelope;
+      return;
     }
-    const diameter = pool.size[i] + age * pool.growth[i];
+    this.shapeDiamScratch = pool.size[i] + age * pool.growth[i];
     const envelope =
       THREE.MathUtils.smoothstep(ageNorm, 0, 0.05) *
       (1 - THREE.MathUtils.smoothstep(ageNorm, 0.19, 1));
-    return { diameter, opacity: (cryo ? 0.72 : 0.29) * envelope };
+    this.shapeOpacScratch = (cryo ? 0.72 : 0.29) * envelope;
   }
 
   private uploadPoolUnlit(pool: PuffPool, batch: VaporBatch, alpha: number, cryo: boolean) {
     for (let i = 0; i < pool.alive; i++) {
       const age = pool.age[i];
-      const x = THREE.MathUtils.lerp(pool.px[i], pool.x[i], alpha);
-      const y = THREE.MathUtils.lerp(pool.py[i], pool.y[i], alpha);
-      const z = THREE.MathUtils.lerp(pool.pz[i], pool.z[i], alpha);
-      const { diameter, opacity } = this.computePuffShape(pool, i, cryo);
-      batch.write(i, x, y, z, diameter, pool.rotation[i] + pool.spin[i] * age, opacity);
+      const x = pool.px[i] + (pool.x[i] - pool.px[i]) * alpha;
+      const y = pool.py[i] + (pool.y[i] - pool.py[i]) * alpha;
+      const z = pool.pz[i] + (pool.z[i] - pool.pz[i]) * alpha;
+      this.writePuffShape(pool, i, cryo);
+      batch.write(i, x, y, z, this.shapeDiamScratch, pool.rotation[i] + pool.spin[i] * age, this.shapeOpacScratch);
     }
     batch.finish(pool.alive);
   }
@@ -1125,11 +1160,14 @@ export class AtmosphericParticles {
     cryo: boolean,
     dt: number,
     rt: LitPuffsRuntime,
-  ): { litCount: number; meanDepth: number } {
+    out: UploadPoolLitSummary,
+  ): UploadPoolLitSummary {
     const alive = pool.alive;
     if (alive <= 0) {
       batch.finish(0);
-      return { litCount: 0, meanDepth: 0 };
+      out.litCount = 0;
+      out.meanDepth = 0;
+      return out;
     }
 
     const fCtx = rt.frameCtx;
@@ -1147,7 +1185,9 @@ export class AtmosphericParticles {
       const x = pool.px[i] + (pool.x[i] - pool.px[i]) * alpha;
       const y = pool.py[i] + (pool.y[i] - pool.py[i]) * alpha;
       const z = pool.pz[i] + (pool.z[i] - pool.pz[i]) * alpha;
-      const { diameter, opacity } = this.computePuffShape(pool, i, cryo);
+      this.writePuffShape(pool, i, cryo);
+      const diameter = this.shapeDiamScratch;
+      const opacity = this.shapeOpacScratch;
       sX[i] = x;
       sY[i] = y;
       sZ[i] = z;
@@ -1199,10 +1239,9 @@ export class AtmosphericParticles {
     }
 
     batch.finish(alive);
-    return {
-      litCount,
-      meanDepth: depthWeightSum > 1e-6 ? weightedDepthSum / depthWeightSum : 0,
-    };
+    out.litCount = litCount;
+    out.meanDepth = depthWeightSum > 1e-6 ? weightedDepthSum / depthWeightSum : 0;
+    return out;
   }
 
   public dispose() {
