@@ -48,10 +48,8 @@ async function exportGlbParts(page) {
   return { bufferPayloads, byteLength: glb.byteLength, imagePayloads, json };
 }
 
-function materialsWithoutPreviewColour(materials) {
+function materialsWithoutBaseColours(materials) {
   return structuredClone(materials).map((material) => {
-    // The global preview flash governor deliberately evolves fixture preview colour with time.
-    // Device-local output settings must not affect any other exported material property.
     if (material.pbrMetallicRoughness) delete material.pbrMetallicRoughness.baseColorFactor;
     return material;
   });
@@ -202,19 +200,60 @@ test('Sprint 23A: restrained bloom, accessibility policy, export parity, localiz
     }
   }
 
+  await page.evaluate(() => {
+    const p = window.stageforgeProbe;
+    // Freeze fixture preview colours without rebuilding the rig: audio is paused and this session-only
+    // opt-in bypasses the time-easing flash governor. Restore safe limiting immediately after export.
+    p.setFullRateStrobePreview(true);
+    p.patchShowState({
+      autoDirector: false, audioReactive: false, primaryColor: '#00d9ff', accentColor: '#ff2d86',
+      beamIntensity: 0.82, washIntensity: 0.72, blinderLevel: 0, strobeRate: 0,
+      movementMode: 'manual', manualPan: 0, manualTilt: 0.42,
+    });
+  });
+  await waitFrames(page, 4);
   const showBeforeExport = await page.evaluate(() => window.stageforgeProbe.showStateSummary());
   await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ lookOutput: false, trueColour: false, reducedEffects: false }));
-  const glbOff = await exportGlbParts(page);
+  const glbOffBefore = await exportGlbParts(page);
   await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ lookOutput: true, trueColour: false, reducedEffects: false }));
   const glbOn = await exportGlbParts(page);
+  await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ lookOutput: false, trueColour: false, reducedEffects: false }));
+  const glbOffAfter = await exportGlbParts(page);
   const showAfterExport = await page.evaluate(() => window.stageforgeProbe.showStateSummary());
   expect(showAfterExport).toEqual(showBeforeExport);
-  expect(glbOn.json.nodes.length).toBe(glbOff.json.nodes.length);
-  expect(glbOn.json.meshes.length).toBe(glbOff.json.meshes.length);
-  expect(materialsWithoutPreviewColour(glbOn.json.materials)).toEqual(materialsWithoutPreviewColour(glbOff.json.materials));
-  expect(glbOn.json.textures).toEqual(glbOff.json.textures);
-  expect(glbOn.bufferPayloads).toEqual(glbOff.bufferPayloads);
-  expect(glbOn.imagePayloads).toEqual(glbOff.imagePayloads);
+  expect(glbOn.json.nodes.length).toBe(glbOffBefore.json.nodes.length);
+  expect(glbOn.json.meshes.length).toBe(glbOffBefore.json.meshes.length);
+  expect(materialsWithoutBaseColours(glbOn.json.materials)).toEqual(materialsWithoutBaseColours(glbOffBefore.json.materials));
+  expect(materialsWithoutBaseColours(glbOffAfter.json.materials)).toEqual(materialsWithoutBaseColours(glbOffBefore.json.materials));
+  // Identify time-varying preview materials only from the two identical-setting captures. Every
+  // stable base colour must compare exactly; the small dynamic set gets a bounded drift envelope.
+  let dynamicMaterialCount = 0;
+  for (let i = 0; i < glbOn.json.materials.length; i++) {
+    const before = glbOffBefore.json.materials[i].pbrMetallicRoughness?.baseColorFactor ?? [1, 1, 1, 1];
+    const during = glbOn.json.materials[i].pbrMetallicRoughness?.baseColorFactor ?? [1, 1, 1, 1];
+    const after = glbOffAfter.json.materials[i].pbrMetallicRoughness?.baseColorFactor ?? [1, 1, 1, 1];
+    expect(during).toHaveLength(before.length);
+    const dynamic = before.some((value, channel) => Math.abs(value - after[channel]) > 1e-9);
+    if (!dynamic) {
+      expect(during).toEqual(before);
+      continue;
+    }
+    dynamicMaterialCount++;
+    for (let channel = 0; channel < before.length; channel++) {
+      const drift = Math.max(0.015, Math.abs(before[channel] - after[channel]) * 1.5);
+      expect(during[channel]).toBeGreaterThanOrEqual(Math.min(before[channel], after[channel]) - drift);
+      expect(during[channel]).toBeLessThanOrEqual(Math.max(before[channel], after[channel]) + drift);
+    }
+  }
+  expect(dynamicMaterialCount).toBeGreaterThan(0);
+  expect(dynamicMaterialCount).toBeLessThanOrEqual(2);
+  expect(glbOn.json.textures).toEqual(glbOffBefore.json.textures);
+  expect(glbOffAfter.json.textures).toEqual(glbOffBefore.json.textures);
+  expect([...glbOn.bufferPayloads].sort()).toEqual([...glbOffBefore.bufferPayloads].sort());
+  expect([...glbOffAfter.bufferPayloads].sort()).toEqual([...glbOffBefore.bufferPayloads].sort());
+  expect(glbOn.imagePayloads).toEqual(glbOffBefore.imagePayloads);
+  expect(glbOffAfter.imagePayloads).toEqual(glbOffBefore.imagePayloads);
+  await page.evaluate(() => window.stageforgeProbe.setFullRateStrobePreview(false));
 
   const measurePairs = async (pairs, warmupFrames, sampleFrames) => {
     const out = [];
