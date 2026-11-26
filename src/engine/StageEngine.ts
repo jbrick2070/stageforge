@@ -75,6 +75,7 @@ import {
 import { floorUnitX, hungUnits, mountSlotIndex } from '../data/fixturePlacement';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import type { NativeStage } from '../data/showFile';
+import { resolveCrowdLayout, type CrowdLayout } from '../data/crowdPlacement';
 import { authoredWallSurface, isCustomMainWall, resolveStudioGeometry, resolveWallFrame } from '../data/studioGeometry';
 import { createAuthoredProp } from './authoredScenery';
 import { ledPlacement, monitorPositions, type LedSurface } from '../data/stageEquipment';
@@ -411,6 +412,8 @@ export class StageEngine {
   private currentRig?: RigConfig;
   private lastRebuildSource?: RigConfig;
   private lastRebuildStage?: NativeStage;
+  private lastRebuildCrowd?: CrowdLayout;
+  private currentCrowd?: CrowdLayout;
   private beamPools?: BeamPools;
   private lastPoolTime = 0;
   private spillFluxGain = 1;
@@ -2043,7 +2046,7 @@ export class StageEngine {
     if (!this.lastRebuildSource) return;
     this.currentRig = undefined;
     this.geometryKey = undefined;
-    this.rebuildRig(this.lastRebuildSource, this.lastRebuildStage);
+    this.rebuildRig(this.lastRebuildSource, this.lastRebuildStage, this.lastRebuildCrowd);
   }
 
   public previewRig() {
@@ -2791,9 +2794,23 @@ export class StageEngine {
     return out;
   }
 
-  public rebuildRig(sourceRig: RigConfig, stage?: NativeStage) {
+  /** Read-only browser acceptance evidence; authored IDs remain in the pure resolver, not Three userData. */
+  public crowdDiagnostics() {
+    return {
+      authored: Boolean(this.currentCrowd),
+      count: this.crowdMesh?.count ?? 0,
+      transforms: this.crowdBaseTransforms.map((item) => ({ ...item })),
+      seated: this.crowdSeated,
+      phones: this.crowdLighting?.getStats().phoneCount ?? 0,
+    };
+  }
+
+  public rebuildRig(sourceRig: RigConfig, stage?: NativeStage, crowd?: CrowdLayout) {
+    // Resolve and validate every authored placement before releasing or allocating Three resources.
+    const resolvedCrowd = crowd ? resolveCrowdLayout(sourceRig, crowd) : undefined;
     this.lastRebuildSource = sourceRig;
     this.lastRebuildStage = stage;
+    this.lastRebuildCrowd = crowd;
     // Screen-event edits clone the stage; compare the physical layout by value so
     // they do not rebuild the rig, and reuse the resolved rig so identity checks hold.
     const layoutKey = JSON.stringify([stage?.layout ?? null, this.screenLayout ?? null]);
@@ -2806,11 +2823,13 @@ export class StageEngine {
     this.geometryCache = geometry;
     this.geometryLayout = stage?.layout;
     const old = this.currentRig;
+    const oldCrowd = this.currentCrowd;
     this.currentRig = rig;
+    this.currentCrowd = crowd;
     this.syncScreenPlayback();
     this.syncScenery(rig);
     if (sameLayout && old && old.stageWidth === rig.stageWidth && old.stageHeight === rig.stageHeight &&
-      old.platforms === rig.platforms &&
+      old.platforms === rig.platforms && oldCrowd === crowd &&
       old.stageDepth === rig.stageDepth && old.venue === rig.venue && old.audioRig === rig.audioRig &&
       old.ledWall === rig.ledWall && old.trussPods === rig.trussPods && old.floorFx === rig.floorFx) return;
     this.beamPools?.dispose();
@@ -2845,7 +2864,7 @@ export class StageEngine {
 
     // 1. Venue architecture + animated arena crowd
     const venueBuild = buildVenueArchitecture(rig.venue, rig.audioRig.crowdDensity, this.mats, rig.stageWidth,
-      rig.stageDepth, rig.stageHeight);
+      rig.stageDepth, rig.stageHeight, resolvedCrowd);
     venueBuild.group.userData.kind = 'venue';
     this.rigGroup.add(venueBuild.group);
     this.houseColors = venueBuild.practicals.map(material => ({ color: material.color, full: material.color.clone() }));

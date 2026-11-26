@@ -34,6 +34,7 @@ import {
 import type { PlanPoint, RigConfig, ShowState, StagePlatform, TrussPodConfig } from '../types/show';
 import type { IldaClip } from '../data/ilda';
 import type { NativeStage } from '../data/showFile';
+import { makeDefaultCrowd, resolveCrowdLayout, type CrowdLayout } from '../data/crowdPlacement';
 import { GRID_HEIGHT } from '../data/stageEquipment';
 import { placeFixtures } from '../data/fixturePlacement';
 import { computeReachMap, computeVenueBounds, evaluateLaserZones } from '../data/measure';
@@ -88,14 +89,15 @@ type Selection = { kind: Kind; id: string; node?: number };
 type View = { x: number; z: number; width: number };
 type Drag = { origin: PlanPoint; at: PlanPoint; pointer: number; selection?: Selection; pan?: View };
 /** One undoable state: the rig plus the native stage overlay (walls, hangs, layout, wall cues). */
-type Draft = { rig: RigConfig; stage?: NativeStage };
+type Draft = { rig: RigConfig; stage?: NativeStage; crowd?: CrowdLayout };
 type EditorProps = {
   rig: RigConfig;
   stage?: NativeStage;
+  crowd?: CrowdLayout;
   laserState?: ShowState['laser'];
   ildaClip?: IldaClip | null;
   /** Return false to keep the designer open (for example when the user declines a discard prompt). */
-  onChange: (rig: RigConfig, stage: NativeStage | undefined, replacing: boolean) => boolean | void;
+  onChange: (rig: RigConfig, stage: NativeStage | undefined, crowd: CrowdLayout | undefined, replacing: boolean) => boolean | void;
   onClose: () => void;
 };
 const guides = [
@@ -228,9 +230,9 @@ function moveRigItem(rig: RigConfig, selection: Selection, from: PlanPoint, at: 
 }
 function moveItem(draft: Draft, selection: Selection, from: PlanPoint, at: PlanPoint, angleStep: number): Draft {
   if (isStageKind(selection.kind)) {
-    return { rig: draft.rig, stage: moveStageItem(draft.rig, draft.stage, selection as PlanItem, from, at, angleStep) };
+    return { ...draft, stage: moveStageItem(draft.rig, draft.stage, selection as PlanItem, from, at, angleStep) };
   }
-  return { rig: moveRigItem(draft.rig, selection, from, at), stage: draft.stage };
+  return { ...draft, rig: moveRigItem(draft.rig, selection, from, at) };
 }
 function Field({
   label,
@@ -345,15 +347,16 @@ function Arrow({ from, to, size }: { from: PlanPoint; to: PlanPoint; size: numbe
   );
 }
 
-export function StageDesigner({ rig, stage, laserState, ildaClip, onChange, onClose }: EditorProps) {
+export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChange, onClose }: EditorProps) {
   const [history, setHistory] = useState(() => ({
     past: [] as Draft[],
     // The designer edits private copies; Cancel discards them without touching the live rig or stage.
-    now: { rig: structuredClone(rig), stage: stage && structuredClone(stage) } as Draft,
+    now: { rig: structuredClone(rig), stage: stage && structuredClone(stage), crowd: crowd && structuredClone(crowd) } as Draft,
     future: [] as Draft[],
   }));
   const draft = history.now.rig;
   const stageDraft = history.now.stage;
+  const crowdDraft = history.now.crowd;
   const [tool, setTool] = useState<Tool>('select');
   const [selected, setSelected] = useState<Selection>();
   const [points, setPoints] = useState<PlanPoint[]>([]);
@@ -405,7 +408,8 @@ export function StageDesigner({ rig, stage, laserState, ildaClip, onChange, onCl
     : history.now;
   const showing = drag?.selection ? moveItem(previewBase, drag.selection, drag.origin, drag.at, angleStep) : history.now;
   const shownRig = showing.rig,
-    shownStage = showing.stage;
+    shownStage = showing.stage,
+    shownCrowd = showing.crowd;
   const platforms = getPlatforms(shownRig);
   const walls = planWalls(shownRig, shownStage);
   const hangInfo = effectiveHangs(shownRig, shownStage);
@@ -435,6 +439,14 @@ export function StageDesigner({ rig, stage, laserState, ildaClip, onChange, onCl
     () => (showReachMap && !replaced ? computeReachMap(shownRig, shownStage) : null),
     [showReachMap, replaced, shownRig, shownStage],
   );
+  const crowdResult = useMemo(() => {
+    if (!shownCrowd) return null;
+    try {
+      return { value: resolveCrowdLayout(shownRig, shownCrowd), error: '' };
+    } catch (error) {
+      return { value: null, error: error instanceof Error ? error.message : 'Invalid crowd layout.' };
+    }
+  }, [shownRig, shownCrowd]);
   const index = selected && !['platform', 'truss', 'wall'].includes(selected.kind) ? Number(selected.id) : -1;
   const platform = selected?.kind === 'platform' ? platforms.find((p) => p.id === selected.id) : undefined;
   const truss = selected?.kind === 'truss' ? shownRig.trussPods.find((p) => p.id === selected.id) : undefined;
@@ -461,8 +473,9 @@ export function StageDesigner({ rig, stage, laserState, ildaClip, onChange, onCl
     setHistory((h) => ({ past: [...h.past.slice(-79), h.now], now: next, future: [] }));
     setMessage('');
   };
-  const commit = (next: RigConfig, replacing = false) => commitDraft({ rig: next, stage: stageDraft }, replacing);
-  const commitStage = (next: NativeStage | undefined) => commitDraft({ rig: draft, stage: next });
+  const commit = (next: RigConfig, replacing = false) => commitDraft({ ...history.now, rig: next }, replacing);
+  const commitStage = (next: NativeStage | undefined) => commitDraft({ ...history.now, stage: next });
+  const commitCrowd = (next: CrowdLayout | undefined) => commitDraft({ ...history.now, crowd: next });
   const resetGesture = () => {
     setDrag(undefined);
     setPoints([]);
@@ -809,14 +822,17 @@ export function StageDesigner({ rig, stage, laserState, ildaClip, onChange, onCl
     }
     let next: RigConfig;
     let nextStage: NativeStage | undefined;
+    let nextCrowd: CrowdLayout | undefined;
     try {
       next = parseRigJson(JSON.stringify(draft));
       nextStage = finalizeStage(next, stageDraft);
+      nextCrowd = crowdDraft ? structuredClone(crowdDraft) : undefined;
+      if (nextCrowd) resolveCrowdLayout(next, nextCrowd);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Check the geometry before applying this design.');
       return;
     }
-    if (onChange(next, nextStage, newDesignDrafts.current.has(draft)) === false) return;
+    if (onChange(next, nextStage, nextCrowd, newDesignDrafts.current.has(draft)) === false) return;
     onClose();
   };
   const selectedKey = selected && (platform || truss || wall || hang || span || prop) ? `${PREFIX[selected.kind]}:${selected.id}` : '';
@@ -1080,6 +1096,44 @@ export function StageDesigner({ rig, stage, laserState, ildaClip, onChange, onCl
               </defs>
               <rect x={left} y={top} width={view.width} height={height} fill="url(#sd-grid-major)" />
               <path d={`M${left} 0h${view.width} M0 ${top}v${height}`} className="sd-axis" />
+              {shownCrowd && (
+                <g data-testid="crowd-plan-overlay" pointerEvents="none" aria-hidden="true">
+                  {shownCrowd.zones.map((zone) => (
+                    <rect
+                      key={`zone:${zone.id}`}
+                      x={zone.rect.minX}
+                      y={zone.rect.minZ}
+                      width={zone.rect.maxX - zone.rect.minX}
+                      height={zone.rect.maxZ - zone.rect.minZ}
+                      fill="rgba(70, 170, 255, 0.08)"
+                      stroke="rgba(70, 170, 255, 0.85)"
+                      strokeWidth={Math.max(0.04, units)}
+                      strokeDasharray={`${Math.max(0.18, units * 3)} ${Math.max(0.12, units * 2)}`}
+                    />
+                  ))}
+                  {shownCrowd.exclusions.map((item) => (
+                    <rect
+                      key={`exclusion:${item.id}`}
+                      x={item.rect.minX}
+                      y={item.rect.minZ}
+                      width={item.rect.maxX - item.rect.minX}
+                      height={item.rect.maxZ - item.rect.minZ}
+                      fill="rgba(255, 95, 95, 0.18)"
+                      stroke="rgba(255, 95, 95, 0.9)"
+                      strokeWidth={Math.max(0.05, units)}
+                    />
+                  ))}
+                  {crowdResult?.value?.placements.map((person) => (
+                    <circle
+                      key={person.id}
+                      cx={person.x}
+                      cy={person.z}
+                      r={person.source === 'explicit' ? 0.16 : 0.09}
+                      fill={person.source === 'explicit' ? '#ffd166' : 'rgba(150, 220, 255, 0.75)'}
+                    />
+                  ))}
+                </g>
+              )}
               <g className="sd-grid-label" fontSize={9 * units}>
                 {ticks(left + 60 * units, left + view.width - 20 * units).map((x) => (
                   <text key={'x' + x} x={x + 3 * units} y={top + 13 * units}>
@@ -1673,6 +1727,82 @@ export function StageDesigner({ rig, stage, laserState, ildaClip, onChange, onCl
                         ? 'The rig’s decks, trusses, floor effects and stock arrays are hidden; only the layout below builds in 3D and in the CAD plan.'
                         : 'Layout trusses, hangs and props add to the rig.'}
                     </p>
+                    <label className="sd-check">
+                      <input
+                        type="checkbox"
+                        aria-label="Authored crowd"
+                        checked={!!crowdDraft}
+                        onChange={(e) => commitCrowd(e.target.checked ? makeDefaultCrowd(draft) : undefined)}
+                      />
+                      <span>Authored crowd</span>
+                    </label>
+                    {crowdDraft && (
+                      <div data-testid="crowd-editor">
+                        <label className="sd-field">
+                          <span>Generator seed</span>
+                          <input
+                            aria-label="Crowd generator seed"
+                            type="number"
+                            min={0}
+                            max={4294967295}
+                            step={1}
+                            value={crowdDraft.seed}
+                            onChange={(e) => {
+                              const seed = Number(e.target.value);
+                              if (Number.isSafeInteger(seed) && seed >= 0 && seed <= 4294967295) commitCrowd({ ...crowdDraft, seed });
+                            }}
+                          />
+                        </label>
+                        {crowdDraft.zones[0] && (
+                          <label className="sd-field">
+                            <span>Primary zone occupancy</span>
+                            <input
+                              aria-label="Crowd zone occupancy"
+                              type="number"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              value={crowdDraft.zones[0].occupancy}
+                              onChange={(e) => {
+                                const occupancy = Number(e.target.value);
+                                if (Number.isFinite(occupancy) && occupancy >= 0 && occupancy <= 1) {
+                                  commitCrowd({
+                                    ...crowdDraft,
+                                    zones: crowdDraft.zones.map((zone, index) => index === 0 ? { ...zone, occupancy } : zone),
+                                  });
+                                }
+                              }}
+                            />
+                          </label>
+                        )}
+                        <p className="sd-note" role={crowdResult?.error ? 'alert' : undefined}>
+                          {crowdResult?.error || `${crowdResult?.value?.placed ?? 0} reproducible people · ${crowdDraft.zones.length} zone${crowdDraft.zones.length === 1 ? '' : 's'} · ${crowdDraft.exclusions.length} exclusion${crowdDraft.exclusions.length === 1 ? '' : 's'}`}
+                        </p>
+                        <button
+                          disabled={crowdDraft.exclusions.length >= 32}
+                          onClick={() => {
+                            const bounds = computeVenueBounds(draft).audienceZone;
+                            const halfWidth = Math.min(0.65, (bounds.maxX - bounds.minX) / 10);
+                            const centreX = (bounds.minX + bounds.maxX) / 2;
+                            const suffix = crowdDraft.exclusions.length + 1;
+                            commitCrowd({
+                              ...crowdDraft,
+                              exclusions: [...crowdDraft.exclusions, {
+                                id: `aisle-${suffix}`,
+                                rect: { minX: centreX - halfWidth, minZ: bounds.minZ, maxX: centreX + halfWidth, maxZ: bounds.maxZ },
+                              }],
+                            });
+                          }}
+                        >
+                          Add centre aisle
+                        </button>
+                        {crowdDraft.exclusions.length > 0 && (
+                          <button onClick={() => commitCrowd({ ...crowdDraft, exclusions: crowdDraft.exclusions.slice(0, -1) })}>
+                            Remove last exclusion
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <button onClick={() => addWall()}>Add screen</button>
                   </>
                 )}
@@ -1682,7 +1812,7 @@ export function StageDesigner({ rig, stage, laserState, ildaClip, onChange, onCl
               className="sd-new"
               onClick={() => {
                 const blank = createBlankDesign(draft);
-                commitDraft({ rig: blank, stage: undefined }, true);
+                commitDraft({ rig: blank, stage: undefined, crowd: undefined }, true);
                 choose('select');
                 setSelected(undefined);
                 setView(frameDesign(blank, aspect));

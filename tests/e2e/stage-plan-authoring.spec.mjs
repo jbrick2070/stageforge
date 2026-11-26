@@ -216,3 +216,59 @@ test('undo clears an index selection, and Delete never removes the rig LED wall'
   await expect(designer.locator('.sd-object[data-item="wall"]')).toHaveCount(1);
   await designer.getByRole('button', { name: 'Cancel', exact: true }).click();
 });
+
+test('authored crowd drafts cancel, apply, save offline, and stay isolated through Pitch Viewer', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  await page.goto('/?probe');
+  let designer = await openDesigner(page);
+  await designer.getByLabel('Authored crowd').check();
+  await expect(designer.getByTestId('crowd-editor')).toContainText('reproducible people');
+  await expect(designer.getByTestId('crowd-plan-overlay')).toBeVisible();
+  await designer.getByLabel('Crowd generator seed').fill('123');
+  await designer.getByLabel('Crowd zone occupancy').fill('0.2');
+  await designer.getByRole('button', { name: 'Add centre aisle' }).click();
+  await expect(designer.getByTestId('crowd-editor')).toContainText('1 exclusion');
+  await designer.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(designer.getByTestId('crowd-editor')).toContainText('0 exclusions');
+  await designer.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(await page.evaluate(() => window.stageforgeProbe.crowd().authored)).toBe(false);
+
+  designer = await openDesigner(page);
+  await designer.getByLabel('Authored crowd').check();
+  await designer.getByLabel('Crowd generator seed').fill('123');
+  await designer.getByLabel('Crowd zone occupancy').fill('0.2');
+  await designer.getByRole('button', { name: 'Add centre aisle' }).click();
+  await designer.getByRole('button', { name: 'Apply design' }).click();
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.crowd().authored)).toBe(true);
+  const savedCrowd = await page.evaluate(() => window.stageforgeProbe.crowd());
+  expect(savedCrowd.count).toBeGreaterThan(0);
+
+  await page.getByRole('button', { name: 'Show files', exact: true }).click();
+  let files = page.getByRole('dialog', { name: 'Show files' });
+  const transfer = page.waitForEvent('download');
+  await files.getByRole('button', { name: 'Save show JSON' }).click();
+  const path = info.outputPath('authored-crowd.stageforge.show.json');
+  await (await transfer).saveAs(path);
+  const show = JSON.parse(await readFile(path, 'utf8'));
+  expect(show.version).toBe(10);
+  expect(show.crowd).toMatchObject({ generatorVersion: 1, seed: 123 });
+  expect(show.crowd.exclusions).toHaveLength(1);
+  await files.getByRole('button', { name: 'Close Show files' }).click();
+
+  // Keep a distinct live desk revision; viewer loads the saved revision and Exit must restore this one.
+  designer = await openDesigner(page);
+  await designer.getByLabel('Crowd generator seed').fill('456');
+  await designer.getByRole('button', { name: 'Apply design' }).click();
+  const deskCrowd = await page.evaluate(() => window.stageforgeProbe.crowd());
+  expect(deskCrowd.transforms).not.toEqual(savedCrowd.transforms);
+
+  await page.getByRole('button', { name: 'Show files', exact: true }).click();
+  files = page.getByRole('dialog', { name: 'Show files' });
+  await files.getByLabel('Open show in viewer').setInputFiles(path);
+  await expect(page.getByText('VIEW ONLY', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.crowd().authored)).toBe(true);
+  expect((await page.evaluate(() => window.stageforgeProbe.crowd())).transforms).toEqual(savedCrowd.transforms);
+  await page.getByRole('button', { name: 'Exit viewer' }).click();
+  await expect(page.getByText('VIEW ONLY', { exact: true })).toHaveCount(0);
+  expect((await page.evaluate(() => window.stageforgeProbe.crowd())).transforms).toEqual(deskCrowd.transforms);
+});

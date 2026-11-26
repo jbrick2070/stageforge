@@ -55,6 +55,7 @@ import {
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
 import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange, type ShowTimeline } from './data/showFile';
+import type { CrowdLayout } from './data/crowdPlacement';
 import { hasCatalogFixtures } from './data/equipmentCatalog';
 import { summarizePhysicalDrive } from './dmx/physicalDmx';
 import { DEMO_ILDA_PRESETS, generateDemoIlda, ILDA_MAX_BYTES, parseIlda, type DemoIldaKind, type IldaClip } from './data/ilda';
@@ -274,6 +275,7 @@ function readSavedDesign(): RigConfig | null {
 interface DeskSessionSnapshot {
   rig: RigConfig;
   stage?: NativeStage;
+  crowd?: CrowdLayout;
   interchange?: ShowInterchange;
   mvrResources?: Map<string, Uint8Array>;
   cues: ShowCue[];
@@ -469,9 +471,11 @@ export const App: React.FC = () => {
   const [savedDesign, setSavedDesign] = useState(readSavedDesign);
   const stopLiveOutputSyncRef = useRef<(reason: string) => void>(() => {});
   const nativeStage = useRef<NativeStage | undefined>(undefined);
+  const crowdRef = useRef<CrowdLayout | undefined>(undefined);
   const interchangeRef = useRef<ShowInterchange | undefined>(undefined);
   const mvrResourcesRef = useRef<Map<string, Uint8Array> | undefined>(undefined);
   const [studioStage, setStudioStage] = useState<NativeStage>();
+  const [studioCrowd, setStudioCrowd] = useState<CrowdLayout>();
   const setStageDirect = (stage?: NativeStage) => {
     nativeStage.current = stage;
     setStudioStage(stage);
@@ -485,6 +489,14 @@ export const App: React.FC = () => {
     }
     setStageDirect(stage);
   };
+  const setCrowdDirect = (crowd?: CrowdLayout) => {
+    crowdRef.current = crowd;
+    setStudioCrowd(crowd);
+  };
+  const installCrowd = (crowd?: CrowdLayout) => {
+    if (!capabilitiesRef.current.edit) return;
+    setCrowdDirect(crowd);
+  };
   const installInterchange = (interchange?: ShowInterchange, resources?: Map<string, Uint8Array>) => {
     interchangeRef.current = interchange;
     mvrResourcesRef.current = resources;
@@ -492,12 +504,14 @@ export const App: React.FC = () => {
   // Replacing the rig drops authored walls, hangs and wall cues; never do that silently.
   const confirmDiscardStage = () => {
     const stage = pruneNativeStage(nativeStage.current);
-    if (!stage) return true;
+    const crowd = crowdRef.current;
+    if (!stage && !crowd) return true;
     const parts = [
-      stage.walls.some(w => w.id !== 'main-led') && 'secondary screens',
-      stage.screenEvents.length && `${stage.screenEvents.length} wall cues`,
-      stage.layout?.hangs && 'aimed speaker hangs',
-      (stage.layout?.trusses?.length || stage.layout?.props?.length) && 'authored trusses and props',
+      stage?.walls.some(w => w.id !== 'main-led') && 'secondary screens',
+      stage?.screenEvents.length && `${stage.screenEvents.length} wall cues`,
+      stage?.layout?.hangs && 'aimed speaker hangs',
+      (stage?.layout?.trusses?.length || stage?.layout?.props?.length) && 'authored trusses and props',
+      crowd && 'the authored crowd',
     ].filter(Boolean);
     return window.confirm(`Replacing the rig discards ${parts.length ? parts.join(', ') : 'the authored stage layout'}. Continue?`);
   };
@@ -2032,6 +2046,7 @@ export const App: React.FC = () => {
       setPrimaryScreenTransport: (playing: boolean, offsetSeconds?: number) =>
         engine.restoreScreenTransport(playing, offsetSeconds),
       hangs: () => engine.hangDiagnostics(),
+      crowd: () => engine.crowdDiagnostics(),
       renderStats: () => engine.renderStats(),
       graphicsProbe: () => engine.graphicsProbe(),
       measureFrames: (options?: { warmupFrames?: number; sampleFrames?: number; gpu?: boolean }) =>
@@ -2173,9 +2188,9 @@ export const App: React.FC = () => {
       return;
     }
     engineRef.current?.setStageScreens(studioStage?.walls);
-    engineRef.current?.rebuildRig(rig, studioStage);
+    engineRef.current?.rebuildRig(rig, studioStage, studioCrowd);
     wallClock.refresh();
-  }, [rig, studioStage, wallClock.refresh]);
+  }, [rig, studioStage, studioCrowd, wallClock.refresh]);
   useEffect(() => { wallClock.refresh(); }, [linkedVersion, wallClock.refresh]);
 
   // Global keyboard live show hotkeys (when not typing in a text box)
@@ -2729,6 +2744,7 @@ export const App: React.FC = () => {
     return {
       rig: structuredClone(rigRef.current),
       stage: nativeStage.current ? structuredClone(nativeStage.current) : undefined,
+      crowd: crowdRef.current ? structuredClone(crowdRef.current) : undefined,
       interchange: interchangeRef.current ? structuredClone(interchangeRef.current) : undefined,
       mvrResources: mvrResourcesRef.current ? new Map(mvrResourcesRef.current) : undefined,
       cues: structuredClone(cuesRef.current),
@@ -2758,6 +2774,7 @@ export const App: React.FC = () => {
     mediaUrls.current = snap.mediaUrls;
     setLinkedVersion(v => v + 1);
     setStageDirect(snap.stage);
+    setCrowdDirect(snap.crowd);
     installInterchange(snap.interchange, snap.mvrResources);
     takeMetaExplicitRef.current = snap.takeMetaExplicit;
     const pausedMusic: MusicRef = { ...snap.expectedMusic, playing: false };
@@ -2837,6 +2854,7 @@ export const App: React.FC = () => {
 
     if (doc.kind === 'rig') {
       setStageDirect(undefined);
+      setCrowdDirect(undefined);
       installInterchange(undefined, undefined);
       expectedMusic.current = NO_MUSIC;
       const look = structuredClone(INITIAL_SHOW_STATE);
@@ -2875,6 +2893,7 @@ export const App: React.FC = () => {
       look, cueId: file.activeCueId, camera, volume: vol, bump: EMPTY_BUMP, screen: wall, music,
     });
     setStageDirect(file.stage);
+    setCrowdDirect(file.crowd);
     installInterchange(undefined, undefined);
     wallClock.set(0, false);
     expectedMusic.current = music;
@@ -3022,6 +3041,7 @@ export const App: React.FC = () => {
     const nextRig = stored ?? structuredClone(RIG_TEMPLATES.arena_mainstage);
     const freshLook = structuredClone(INITIAL_SHOW_STATE);
     setStageDirect(undefined);
+    setCrowdDirect(undefined);
     installInterchange(undefined, undefined);
     expectedMusic.current = NO_MUSIC;
     timeline.replace(undefined);
@@ -3067,6 +3087,7 @@ export const App: React.FC = () => {
       setPendingMvr(null);
       aiBridgeRef.current?.notifyDocumentChanged();
       installStage();
+      installCrowd();
       installInterchange();
       wallClock.set(0, false);
       timeline.stop();
@@ -3091,6 +3112,7 @@ export const App: React.FC = () => {
       screen: wall, music: file.media?.music ?? NO_MUSIC,
     });
     installStage(file.stage);
+    installCrowd(file.crowd);
     installInterchange(file.interchange);
     takeMetaExplicitRef.current = file.timeline?.frameRate !== undefined || file.timeline?.timecodeOffsetMs !== undefined;
     showControl.syncFromShowTimeline(file.timeline);
@@ -3148,6 +3170,7 @@ export const App: React.FC = () => {
     aiBridgeRef.current?.notifyDocumentChanged();
     const { rig: next, stage, interchange, resources, report } = pending.result;
     installStage(stage);
+    installCrowd();
     installInterchange(interchange, resources);
     wallClock.set(0, false);
     timeline.stop();
@@ -3218,7 +3241,7 @@ export const App: React.FC = () => {
     if (action === 'show' || action === 'bundle') {
       const validActiveCue = cues.some(c => c.id === activeCueId) ? activeCueId : null;
       const file = makeShowFile(rig, cues, showState, validActiveCue, { camera: activeCamera, volume }, timeline.snapshot(),
-        { music: readMusic(), screen: readScreen() }, nativeStage.current, interchangeRef.current);
+        { music: readMusic(), screen: readScreen() }, nativeStage.current, interchangeRef.current, crowdRef.current);
       if (action === 'bundle') {
         const { createShowBundle } = await import('./data/showBundle');
         downloadStageFile(rig.name, 'stageforge.zip', await createShowBundle(file, assets.current));
@@ -3525,6 +3548,7 @@ export const App: React.FC = () => {
         music: file.media?.music ?? NO_MUSIC,
       });
       installStage(file.stage);
+      installCrowd(file.crowd);
       installInterchange(file.interchange);
       takeMetaExplicitRef.current = file.timeline?.frameRate !== undefined || file.timeline?.timecodeOffsetMs !== undefined;
       showControlRef.current.syncFromShowTimeline(file.timeline);
@@ -3651,6 +3675,7 @@ export const App: React.FC = () => {
     engineRef.current?.restoreScreenTransport(false);
     clearAllBumps();
     installStage(snap.stage);
+    installCrowd(snap.crowd);
     installInterchange(snap.interchange, snap.mvrResources ? new Map(snap.mvrResources) : undefined);
     takeMetaExplicitRef.current = Boolean(snap.takeMetaExplicit);
     expectedMusic.current = nextExpectedMusic;
@@ -3700,6 +3725,7 @@ export const App: React.FC = () => {
         return {
           rig: cur.rig,
           stage: cur.studioStage,
+          crowd: crowdRef.current,
           interchange: interchangeRef.current,
           mvrResources: mvrResourcesRef.current,
           cues: cur.cues,
@@ -4280,6 +4306,7 @@ export const App: React.FC = () => {
               if (replacing && !confirmDiscardStage()) return;
               if (replacing) {
                 installStage();
+                installCrowd();
                 installInterchange();
               }
               applyRig(next);
@@ -4332,7 +4359,7 @@ export const App: React.FC = () => {
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
       {designerRig && (
         <ErrorBoundary label="Stage Designer" onReset={() => setDesignerRig(null)} onExportRig={() => downloadRig(rig)}>
-          <StageDesigner rig={designerRig} stage={studioStage} laserState={showState.laser} ildaClip={ildaClip} onClose={() => setDesignerRig(null)} onChange={(design, stage, replacing) => {
+          <StageDesigner rig={designerRig} stage={studioStage} crowd={studioCrowd} laserState={showState.laser} ildaClip={ildaClip} onClose={() => setDesignerRig(null)} onChange={(design, stage, crowd, replacing) => {
             if (!capabilitiesRef.current.edit) return;
             const next = normalizeDesign(design);
             // A new blank design replaces the authored overlay and its wall cues, even if the user then
@@ -4342,6 +4369,7 @@ export const App: React.FC = () => {
             // The designer edits walls, hangs and layout alongside the rig; its stage keeps existing wall cues.
             const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
             installStage(stage);
+            installCrowd(crowd);
             const nextEvents = stage?.screenEvents ?? [];
             if (hadEvents || nextEvents.length) timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
             applyRig(next, true);

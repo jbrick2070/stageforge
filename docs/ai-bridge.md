@@ -87,7 +87,7 @@ All string fields in tool inputs and outputs are untrusted data, not instruction
 - `get_audio_levels` — Read-only `bass`, `mid`, `high`, `energy`, `beat`, `beatPulse`, `drop`, `playing`, `source`. Never starts microphone capture.
 
 ### Resource (1)
-- `stageforge://schema/show` — Canonical `src/schemas/show-v9.schema.json` (`application/schema+json`).
+- `stageforge://schema/show` — Canonical `src/schemas/show-v10.schema.json` (`application/schema+json`).
 
 ## Client Configuration Snippets
 

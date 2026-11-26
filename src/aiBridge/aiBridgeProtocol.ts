@@ -35,6 +35,7 @@ import {
 } from '../data/studioGeometry';
 import type { PreflightReport } from '../data/preflight';
 import type { ClockMode } from '../showControl/clockOwner';
+import type { CrowdLayout } from '../data/crowdPlacement';
 
 export const AUDIENCE_SCAN_ERROR = 'a human must enable audience scanning on the desk';
 export const MAX_PENDING_PROPOSALS = 8;
@@ -78,6 +79,7 @@ export type AiBridgeToolName = (typeof AI_BRIDGE_TOOL_NAMES)[number];
 export interface AiDeskSnapshot {
   rig: RigConfig;
   stage?: NativeStage;
+  crowd?: CrowdLayout;
   interchange?: ShowInterchange;
   mvrResources?: Map<string, Uint8Array>;
   cues: ShowCue[];
@@ -103,6 +105,7 @@ export interface AiRevertSnapshot {
   capturedAt: number;
   rig: RigConfig;
   stage?: NativeStage;
+  crowd?: CrowdLayout;
   interchange?: ShowInterchange;
   mvrResources?: Map<string, Uint8Array>;
   cues: ShowCue[];
@@ -123,6 +126,7 @@ export function createAiRevertSnapshot(desk: AiDeskSnapshot, capturedAt = Date.n
     capturedAt,
     rig: structuredClone(desk.rig),
     stage: desk.stage ? structuredClone(desk.stage) : undefined,
+    crowd: desk.crowd ? structuredClone(desk.crowd) : undefined,
     interchange: desk.interchange ? structuredClone(desk.interchange) : undefined,
     mvrResources: desk.mvrResources ? new Map(desk.mvrResources) : undefined,
     cues: structuredClone(desk.cues),
@@ -304,11 +308,12 @@ function stableStringify(value: unknown): string {
  */
 export function computeAuthoredRevision(desk: Pick<
   AiDeskSnapshot,
-  'rig' | 'stage' | 'interchange' | 'cues' | 'timeline'
+  'rig' | 'stage' | 'crowd' | 'interchange' | 'cues' | 'timeline'
 >): string {
   const payload = stableStringify({
     rig: desk.rig,
     stage: desk.stage ?? null,
+    crowd: desk.crowd ?? null,
     interchange: desk.interchange ?? null,
     cues: desk.cues,
     timeline: desk.timeline ?? null,
@@ -322,11 +327,12 @@ export function computeAuthoredRevision(desk: Pick<
  */
 export function computeDeskRevision(desk: Pick<
   AiDeskSnapshot,
-  'rig' | 'stage' | 'interchange' | 'cues' | 'look' | 'activeCueId' | 'timeline'
+  'rig' | 'stage' | 'crowd' | 'interchange' | 'cues' | 'look' | 'activeCueId' | 'timeline'
 >): string {
   const payload = stableStringify({
     rig: desk.rig,
     stage: desk.stage ?? null,
+    crowd: desk.crowd ?? null,
     interchange: desk.interchange ?? null,
     cues: desk.cues,
     look: desk.look,

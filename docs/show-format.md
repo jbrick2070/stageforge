@@ -18,6 +18,8 @@ Version 8 is an additive superset that adds optional audio-reactive fixture and 
 
 Version 9 adds optional cue `fadeSeconds` and recorded-take `cueFade` descriptors for deterministic preview intensity fades. The writer selects v9 only when one of those fields is present; files that do not use them retain their prior v1–v8 writer selection. [Version 9 schema](../src/schemas/show-v9.schema.json)
 
+Version 10 adds an optional top-level declarative `crowd` layout: deterministic standing or theatre-seat zones, rectangular exclusions, explicit placements, model weights, generator seed, and generator version. The writer selects v10 only when authored crowd data is present; crowd-free files retain their prior v1–v9 writer selection. Runtime placements are derived and are never serialized. [Version 10 schema](../src/schemas/show-v10.schema.json)
+
 ## Opening the examples
 
 Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay take**. The example starts a club rig in blackout. Its first cue follows after 2.5 seconds and brings four moving heads up in amber. The second cue holds until the operator advances. The six-second recording starts the built-in score, starts the main-wall video at the reveal, pauses the wall at five seconds and pauses the score at six seconds. The app bundles the [amber screen clip](../public/examples/amber-clouds.mp4). When opening the JSON directly on another machine, select the matching clip in **Files → Relink media files**.
@@ -28,7 +30,7 @@ Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay tak
 
 | Field | Meaning |
 | --- | --- |
-| `$schema` | The public schema URL ending in `show-v1.schema.json` through `show-v9.schema.json`, matching the version. |
+| `$schema` | The public schema URL ending in `show-v1.schema.json` through `show-v10.schema.json`, matching the version. |
 | `format`, `version` | The string `"stageforge-show"` and the integer `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8` or `9`. |
 | `stage` | Required in v3, optional in v4–v9. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
 | `interchange` | Required in v4, optional in v5–v9. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |

@@ -8,6 +8,7 @@ import type { PlanPoint, RigConfig, TrussShape, VenueType } from '../types/show'
 import { stageSurfaceHeight } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
 import type { SpeakerHang } from '../data/studioGeometry';
+import { theatreSeatAnchors, type ResolvedCrowdLayout, type TheatreSeatAnchor } from '../data/crowdPlacement';
 import {
   atlasSizeForTier,
   createHardwareMaterials,
@@ -967,12 +968,6 @@ export interface VenueRoom {
   ceilingY: number;
 }
 
-interface SeatSlot {
-  x: number;
-  y: number;
-  z: number;
-}
-
 // Large or off-centre designs expand the room envelope. Keep decorative detail bounded.
 function detailPositions(start: number, end: number, pitch: number, budget: number) {
   const count = Math.min(budget, Math.max(0, Math.floor((end - start) / pitch) + 1));
@@ -1005,7 +1000,7 @@ function buildTheatreHouse(
   stageDepth: number,
   stageHeight: number,
   roofY: number,
-): { room: VenueRoom; seats: SeatSlot[] } {
+): { room: VenueRoom; seats: TheatreSeatAnchor[] } {
   const front = stageDepth / 2;
   const prosZ = front - 1.5; // 1.5 m apron (forestage) in front of the proscenium line
   const openW = Math.max(8, stageWidth - 1.2);
@@ -1082,17 +1077,16 @@ function buildTheatreHouse(
     seatW = 0.52;
   const halfUsable = houseW / 2 - 1.3; // side aisles along the walls
   const aisleX = halfUsable * 0.38;
-  const seatPositions = detailPositions(-halfUsable + seatW / 2, halfUsable - seatW / 2 + 1e-6, seatW, 96);
-  const seats: SeatSlot[] = [];
+  const seats = theatreSeatAnchors({ venue: 'theatre', stageWidth, stageDepth });
   for (let r = 0; r < rows; r++) {
     const y = r * rise,
       z = firstZ + r * pitch;
     if (y > 0) addBox(group, tierMat, 0, y / 2, z, houseW - 0.6, y, pitch);
-    for (const x of seatPositions) {
-      if (Math.abs(Math.abs(x) - aisleX) < 0.6) continue;
+    for (const seat of seats) {
+      if (seat.row !== r) continue;
+      const x = seat.x;
       addBox(group, seatMat, x, y + 0.42, z, seatW - 0.05, 0.1, 0.46);
       addBox(group, seatMat, x, y + 0.72, z + 0.26, seatW - 0.05, 0.6, 0.08);
-      seats.push({ x, y, z: z + 0.05 });
     }
     for (const s of [-1, 1]) addBox(group, houseLamp, s * aisleX, y + 0.06, z - 0.42, 0.06, 0.03, 0.06);
   }
@@ -1227,6 +1221,7 @@ export function buildVenueArchitecture(
   stageWidth = 22,
   stageDepth = 11,
   stageHeight = 1.8,
+  authoredCrowd?: ResolvedCrowdLayout,
 ): {
   group: THREE.Group;
   crowdMesh: THREE.InstancedMesh | null;
@@ -1241,7 +1236,7 @@ export function buildVenueArchitecture(
   const roofY = GRID_HEIGHT[venue];
   const practicals: (THREE.MeshBasicMaterial | THREE.PointsMaterial)[] = [];
   let room: VenueRoom | null = null;
-  let seats: SeatSlot[] | null = null;
+  let seats: TheatreSeatAnchor[] | null = null;
   let standingFloor: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
 
   // Vast dark arena / festival floor with subtle specular bounce for stage lights & lasers!
@@ -1424,7 +1419,10 @@ export function buildVenueArchitecture(
 
   // Instanced crowd: standing on the floor, or seated in a theatre's stalls.
   const density = THREE.MathUtils.clamp(crowdDensity, 0, 1);
-  const maxCrowd = Math.floor((seats ? seats.length : standingFloor ? 300 : 680) * density);
+  const authoredPlacements = authoredCrowd
+    ? [...authoredCrowd.placements].sort((a, b) => Number(b.phone) - Number(a.phone) || a.id.localeCompare(b.id))
+    : null;
+  const maxCrowd = authoredPlacements?.length ?? Math.floor((seats ? seats.length : standingFloor ? 300 : 680) * density);
   let crowdMesh: THREE.InstancedMesh | null = null;
   let phonesMesh: THREE.InstancedMesh | null = null;
   const crowdBaseTransforms: { x: number; y: number; z: number; scaleY: number; phase: number; rotY: number }[] = [];
@@ -1438,7 +1436,7 @@ export function buildVenueArchitecture(
     crowdMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     const dummy = new THREE.Mesh(personGeo, personMat);
     const colors = [0x5c6579, 0x5e5156, 0x87939e, 0x858079, 0x666e62, 0x755d64, 0x688491];
-    const phoneCount = seats ? 0 : Math.floor(maxCrowd * 0.09);
+    const phoneCount = authoredPlacements ? authoredPlacements.filter((person) => person.phone).length : seats ? 0 : Math.floor(maxCrowd * 0.09);
     // A feathered contact patch anchors feet to the floor even without shadow maps.
     const footprint = new THREE.CircleGeometry(1, 10);
     footprint.rotateX(-Math.PI / 2).scale(0.42, 1, 0.32).translate(0, 0.012, 0);
@@ -1464,7 +1462,10 @@ export function buildVenueArchitecture(
       let x: number,
         y = 0,
         z: number;
-      if (seats) {
+      const authored = authoredPlacements?.[i];
+      if (authored) {
+        ({ x, y, z } = authored);
+      } else if (seats) {
         ({ x, y, z } = seats[seatOrder[i]]);
       } else {
         // Scatter into distinct floor spaces. Increasing density fills gaps in the same crowd.
@@ -1481,14 +1482,15 @@ export function buildVenueArchitecture(
         }
       }
       // Seated figures are scaled so heads sit at seated eye height above the cushion.
-      const scaleY = seats ? 0.68 + random() * 0.06 : 0.88 + random() * 0.24;
-      const phase = random() * Math.PI * 2;
-      const rotY = (seats ? Math.atan2(-x * 0.3, -z) : Math.atan2(-x, -z)) + (random() - 0.5) * (seats ? 0.12 : 0.45);
-      const pose = seats ? 0 : random();
-      dummy.morphTargetInfluences![0] = i < phoneCount || (pose > 0.64 && pose < 0.85) ? 1 : 0;
-      dummy.morphTargetInfluences![1] = i >= phoneCount && pose >= 0.85 ? 1 : 0;
+      const scaleY = authored?.scaleY ?? (seats ? 0.68 + random() * 0.06 : 0.88 + random() * 0.24);
+      const phase = authored?.phase ?? random() * Math.PI * 2;
+      const rotY = authored?.rotY ?? ((seats ? Math.atan2(-x * 0.3, -z) : Math.atan2(-x, -z)) + (random() - 0.5) * (seats ? 0.12 : 0.45));
+      const pose = authored?.gesture ?? (seats ? 0 : random());
+      const hasPhone = authored?.phone ?? i < phoneCount;
+      dummy.morphTargetInfluences![0] = hasPhone || (pose > 0.64 && pose < 0.85) ? 1 : 0;
+      dummy.morphTargetInfluences![1] = !hasPhone && pose >= 0.85 ? 1 : 0;
       crowdMesh.setMorphAt(i, dummy);
-      crowdMesh.setColorAt(i, new THREE.Color(colors[Math.floor(random() * colors.length)]));
+      crowdMesh.setColorAt(i, new THREE.Color(colors[authored?.paletteIndex ?? Math.floor(random() * colors.length)]));
 
       crowdBaseTransforms.push({ x, y, z, scaleY, phase, rotY });
       dummy.position.set(x, y, z);
