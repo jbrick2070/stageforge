@@ -78,6 +78,17 @@ test('P1 Patch view and both Measure paths distinguish scoped fixtures and valid
   ]);
   await drawer.getByRole('button', { name: 'Close DMX monitor' }).click();
 
+  const duplicateKeys = [];
+  page.on('console', (message) => {
+    if (/two children with the same key/i.test(message.text())) duplicateKeys.push(message.text());
+  });
+  await page.getByRole('button', { name: 'Design stage', exact: true }).click();
+  const designer = page.getByRole('dialog', { name: 'Stage designer' });
+  await expect(designer.getByTestId('plan-fixture-symbols').locator('.sf-plan-fixture')).toHaveCount(4);
+  await designer.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(designer).toBeHidden();
+  expect(duplicateKeys).toEqual([]);
+
   // Replacing the native layout clears installed fixtures and keeps the authored occupancy visible.
   show.stage = { format: 'stageforge-native-stage', version: 1, walls: [], screenEvents: [], layout: { replace: true } };
   await openShow(page, show);

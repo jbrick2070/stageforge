@@ -1299,7 +1299,7 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
                     const deg = (-unit.yaw * 180) / Math.PI;
                     return (
                       <g
-                        key={`${unit.podId ?? 'floor'}:${unit.group.id}:${unit.index}`}
+                        key={unit.patch.unitId}
                         className={`sf-plan-fixture sf-family-${symbol.family}`}
                         transform={`translate(${unit.position.x} ${unit.position.z}) rotate(${deg})`}
                       >
