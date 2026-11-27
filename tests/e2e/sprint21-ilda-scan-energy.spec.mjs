@@ -1,3 +1,4 @@
+import { playSynthDemo } from '../support/play-synth-demo.mjs';
 import { expect, test } from '@playwright/test';
 
 const waitFrames = (page, count = 3) =>
@@ -10,7 +11,7 @@ const waitFrames = (page, count = 3) =>
 async function bootArenaIlda(page) {
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.getByRole('button', { name: 'Pause', exact: true }).click();
   await page.getByRole('button', { name: 'Lasers', exact: true }).click();

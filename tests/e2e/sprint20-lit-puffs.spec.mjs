@@ -1,3 +1,4 @@
+import { playSynthDemo } from '../support/play-synth-demo.mjs';
 import { expect, test } from '@playwright/test';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -38,7 +39,7 @@ test('Sprint 20: default-off parity, blackout, crossing coloured beams, overlapp
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.getByRole('button', { name: 'Pause', exact: true }).click();
   await waitFrames(page, 4);
@@ -632,7 +633,7 @@ test('Sprint 20: Desktop & 390x844 phone-like warmed A/B benchmarks, low-tier ca
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.measureFrames)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.evaluate(() => {
     const p = window.stageforgeProbe;
@@ -670,7 +671,7 @@ test('Sprint 20: Desktop & 390x844 phone-like warmed A/B benchmarks, low-tier ca
   await page.evaluate(() => localStorage.removeItem('stageforge.render.v1'));
   await page.reload();
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.measureFrames)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.evaluate(() => {
     const p = window.stageforgeProbe;

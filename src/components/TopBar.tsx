@@ -109,9 +109,6 @@ export const TopBar: React.FC<TopBarProps> = ({
   const fileRef = useRef<HTMLInputElement>(null);
   const audioPanelRef = useRef<HTMLDivElement>(null);
   const audioButtonRef = useRef<HTMLButtonElement>(null);
-  const playButtonRef = useRef<HTMLButtonElement>(null);
-  const demoTrackButtonRef = useRef<HTMLButtonElement>(null);
-  const demoTrackFocusedRef = useRef(false);
   const [audioOpen, setAudioOpen] = useState(false);
   useEffect(() => {
     if (!audioOpen) return;
@@ -138,49 +135,23 @@ export const TopBar: React.FC<TopBarProps> = ({
     (audio.demo.sectionIndex > 0 || audio.demo.stepInSection >= 16);
   const canNextSection = demoTrackActive && !!audio.demo &&
     (audio.demo.beforeDownbeat || audio.demo.sectionIndex < demoTrackSectionCount - 1);
-  useEffect(() => {
-    if (demoTrackActive && demoTrackFocusedRef.current) {
-      demoTrackFocusedRef.current = false;
-      playButtonRef.current?.focus();
-    } else if (!demoTrackLoading && !demoTrackActive) {
-      demoTrackFocusedRef.current = false;
-    }
-  }, [demoTrackActive, demoTrackLoading]);
   const playLabel = audio.playing ? 'Pause' : audio.demo?.finished
     ? (demoTrackActive ? 'Replay track' : 'Replay demo') :
     audio.source === 'synth' || (linkedMusic.kind === 'demo' && (linkedMusic.demoStep ?? 0) > 0) ? 'Resume demo' :
     audio.source === 'file' || linkedMusic.kind === 'file' ? 'Play track' : linkedMusic.kind === 'live' ? 'Live input' : 'Play demo';
+  const loadingLabel = demoTrackProgress != null ? `Loading ${Math.round(demoTrackProgress * 100)}%` : 'Loading…';
   const playButton = (
-    <button ref={playButtonRef} type="button" className="transport-btn play-btn" onClick={onTogglePlay}>
-      {audio.playing ? <Pause /> : <Play />} {playLabel}
+    <button type="button" className="transport-btn play-btn" onClick={onTogglePlay}
+      aria-busy={demoTrackLoading || undefined} aria-disabled={demoTrackLoading || undefined}
+      aria-label={demoTrackLoading ? `${loadingLabel} demo track` : undefined}>
+      {audio.playing && !demoTrackLoading ? <Pause /> : <Play />} {demoTrackLoading ? loadingLabel : playLabel}
     </button>
   );
-  const loadingLabel = demoTrackProgress != null ? `Loading ${Math.round(demoTrackProgress * 100)}%` : 'Loading…';
-  const demoTrackButton = availableDemoTrackTitle && onStartDemoTrack && !demoTrackActive ? (
-    <button
-      ref={demoTrackButtonRef}
-      type="button"
-      className="transport-btn demo-track-btn"
-      onClick={() => {
-        demoTrackFocusedRef.current = document.activeElement === demoTrackButtonRef.current;
-        onStartDemoTrack();
-      }}
-      disabled={demoTrackLoading}
-      aria-label={demoTrackLoading ? `${loadingLabel} demo track` : 'Play demo track'}
-      title={`Play demo track · ${availableDemoTrackTitle}`}
-    >
-      <Music2 />
-      <span className="transport-extra-label">
-        {demoTrackLoading ? loadingLabel : 'Play demo track'}
-      </span>
-    </button>
-  ) : null;
 
   if (cinemaMode) {
     return (
       <div className="cinema-tools">
         {playButton}
-        {demoTrackButton}
         <button onClick={onToggleCinemaMode} className="transport-btn" title="Show desk (H)">
           <Eye /> Show desk
         </button>
@@ -206,7 +177,6 @@ export const TopBar: React.FC<TopBarProps> = ({
       </div>
       <div className="transport-playback">
         {playButton}
-        {demoTrackButton}
         <button type="button" className="transport-btn" aria-label="Design stage" title="Design stage" onClick={onDesignStage}>
           <DraftingCompass /><span className="transport-extra-label">Design stage</span>
         </button>
@@ -222,7 +192,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           {audioOpen && (
             <section id="sound-settings" aria-label="Audio settings" className="audio-popover">
               <div className="audio-source">
-                <AudioLines /><strong>{audio.source === 'none' ? linkedMusic.kind === 'file' ? linkedMusic.name : 'Demo synth' : audio.trackName}</strong>
+                <AudioLines /><strong>{audio.source === 'none' ? linkedMusic.kind === 'file' ? linkedMusic.name : 'No audio loaded' : audio.trackName}</strong>
                 <div className="audio-meter" aria-hidden="true">
                   {Array.from({ length: 12 }, (_, i) => (
                     <i key={i} style={{ height: `${Math.max(2, (audio.spectrum[i * 2] || 0) * 22)}px` }} />
@@ -251,26 +221,21 @@ export const TopBar: React.FC<TopBarProps> = ({
                 )}
                 <button className="transport-btn" onClick={() => onSeekTrack(0)}><RotateCcw /> Restart 0:00</button>
               </>}
-              {availableDemoTrackTitle && onStartDemoTrack ? (
-                <div className="audio-options" role="group" aria-label="Demo choices">
-                  <button type="button" className="transport-btn" onClick={() => {
-                    setAudioOpen(false);
-                    onStartDemo();
-                    audioButtonRef.current?.focus();
-                  }}><Play /> {audio.source === 'synth' ? 'Restart demo' : 'Play demo'}</button>
-                  <button type="button" className="transport-btn" disabled={demoTrackLoading} onClick={() => {
-                    setAudioOpen(false);
-                    onStartDemoTrack();
-                    audioButtonRef.current?.focus();
-                  }}><Music2 /> {demoTrackActive ? 'Restart track' : 'Play demo track'}</button>
-                </div>
-              ) : (
-                audio.source !== 'none' && <button className="transport-btn" onClick={() => {
+              <div className="audio-options demo-choices" role="group" aria-label="Demo choices">
+                <button type="button" className="transport-btn" onClick={() => {
                   setAudioOpen(false);
                   onStartDemo();
                   audioButtonRef.current?.focus();
-                }}><Play /> {audio.source === 'synth' ? 'Restart demo' : 'Return to demo'}</button>
-              )}
+                }}><Play /> {audio.source === 'synth' ? 'Restart synth demo' : 'Play synth demo'}</button>
+                {availableDemoTrackTitle && onStartDemoTrack && (
+                  <button type="button" className="transport-btn" disabled={demoTrackLoading}
+                    title={availableDemoTrackTitle} onClick={() => {
+                      setAudioOpen(false);
+                      onStartDemoTrack();
+                      audioButtonRef.current?.focus();
+                    }}><Music2 /> {demoTrackActive ? 'Restart demo track' : 'Play demo track'}</button>
+                )}
+              </div>
               <label className="audio-level"><span>Volume</span><input aria-label="Audio volume" type="range" min={0} max={1} step={0.02} value={volume}
                 onChange={(e) => onVolumeChange(Number(e.target.value))} /><output>{Math.round(volume * 100)}%</output></label>
               <div className="audio-tempo">

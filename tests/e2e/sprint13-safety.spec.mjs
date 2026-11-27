@@ -145,7 +145,7 @@ test('Sprint 10 amendment: failed demo track audio load falls back to built-in s
   });
 
   await page.goto('/?probe');
-  const demoTrackBtn = page.getByRole('button', { name: /Play demo track/i });
+  const demoTrackBtn = page.getByRole('button', { name: 'Play demo', exact: true });
   await expect(demoTrackBtn).toBeVisible({ timeout: 10_000 });
   await demoTrackBtn.click();
 

@@ -1,3 +1,4 @@
+import { playSynthDemo } from '../support/play-synth-demo.mjs';
 // Boots the built desktop app (run `npm run desktop:prepare` first) and drives the real
 // File menu: main process -> IPC -> sandboxed preload -> contextBridge -> renderer.
 import { _electron as electron, expect, test } from '@playwright/test';
@@ -196,8 +197,12 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
   expect(await app.evaluate(({ app }) => app.getPath('userData'))).toBe(path.join(tmp, 'profile'));
   await expect(page).toHaveURL('stageforge://app/');
   await expect(page.getByRole('button', { name: 'Show files', exact: true })).toBeVisible();
-  // Shipped demo/track.json returns 200 with CSP, surfaces "Play demo track", and fetches ZERO MP3 bytes on boot.
+  // The primary action is available on a silent boot while the bundled metadata is discoverable.
+  await expect(page.getByRole('button', { name: 'Play demo', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Audio settings', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Play demo track', exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText('No audio loaded', { exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
   const demoCheck = await page.evaluate(async () => {
     const r = await fetch('stageforge://app/demo/track.json');
     const json = await r.json();
@@ -974,7 +979,7 @@ test('show control boots offline in Master mode, ignores OSC in Master, and trig
     await scPage.getByRole('button', { name: 'Close show control', exact: true }).click();
     await scPage.getByTestId('clock-badge-master').click();
     await expect(scPage.getByTestId('clock-owner-badge')).toHaveCount(0);
-    await scPage.getByRole('button', { name: 'Play demo', exact: true }).click();
+    await playSynthDemo(scPage);
     const liveBpmBtn = scPage.getByTestId('desk-live-bpm');
     await liveBpmBtn.click();
     await scPage.waitForTimeout(400);
@@ -1269,7 +1274,7 @@ test('File → Open in viewer… enters pitch viewer via openViewer IPC, disable
   expectNoProblems();
 });
 
-test('shipped demo track plays from stageforge://app/ under strict CSP and jumps sections cleanly', async () => {
+test('primary Play starts the shipped demo from stageforge://app/ under strict CSP and jumps sections cleanly', async () => {
   const demoTmp = await mkdtemp(path.join(os.tmpdir(), 'stageforge-desktop-demo-'));
   const packaged = process.env.STAGEFORGE_DESKTOP_EXE;
   let demoApp;
@@ -1284,6 +1289,10 @@ test('shipped demo track plays from stageforge://app/ under strict CSP and jumps
       if (/Uncaught|UnhandledPromiseRejection|TypeError|ReferenceError/.test(text)) demoProblems.push('main: ' + text.trim());
     });
     const demoPage = await demoApp.firstWindow();
+    const trackRequests = [];
+    demoPage.on('request', request => {
+      if (request.url() === 'stageforge://app/demo/track.mp3') trackRequests.push(request.url());
+    });
     demoPage.on('pageerror', err => demoProblems.push('pageerror: ' + err.message));
     demoPage.on('console', msg => {
       if (msg.type() === 'error') demoProblems.push('console: ' + msg.text());
@@ -1291,18 +1300,25 @@ test('shipped demo track plays from stageforge://app/ under strict CSP and jumps
     await demoPage.waitForLoadState('domcontentloaded');
     await expect(demoPage).toHaveURL('stageforge://app/');
 
-    // Idle discovery surfaces "Play demo track" from stageforge://app/demo/track.json without fetching track.mp3.
-    const playTrackBtn = demoPage.getByRole('button', { name: 'Play demo track', exact: true });
+    // Idle discovery of the metadata never fetches track.mp3.
+    const playTrackBtn = demoPage.getByRole('button', { name: 'Play demo', exact: true });
     await expect(playTrackBtn).toBeVisible({ timeout: 15_000 });
+    await demoPage.getByRole('button', { name: 'Audio settings', exact: true }).click();
+    await expect(demoPage.getByRole('button', { name: 'Play demo track', exact: true })).toBeVisible();
+    await demoPage.keyboard.press('Escape');
     const preClickMp3 = await demoPage.evaluate(() =>
       performance.getEntriesByType('resource').filter((e) => e.name.endsWith('/demo/track.mp3')).length
     );
     expect(preClickMp3).toBe(0);
+    expect(trackRequests).toHaveLength(0);
 
-    await playTrackBtn.click();
+    await playTrackBtn.press('Enter');
 
     // Playing fetches stageforge://app/demo/track.mp3 -> blob and drives the 158-bar section overlay.
-    await expect(demoPage.getByRole('button', { name: 'Pause', exact: true })).toBeVisible({ timeout: 15_000 });
+    const pause = demoPage.getByRole('button', { name: 'Pause', exact: true });
+    await expect(pause).toBeVisible({ timeout: 15_000 });
+    await expect(pause).toBeFocused();
+    expect(trackRequests).toHaveLength(1);
     const progress = demoPage.locator('.demo-progress');
     await expect(progress).toHaveAttribute('data-section', 'intro');
     await expect(progress).toContainText('/ 158');
@@ -1326,7 +1342,7 @@ test('shipped demo track plays from stageforge://app/ under strict CSP and jumps
   }
 });
 
-test('when renderer/demo is absent, stageforge://app/demo/track.json returns 204, hides Play demo track, and Play demo runs the synth', async () => {
+test('when renderer/demo is absent, stageforge://app/demo/track.json returns 204 and primary Play falls back to synth', async () => {
   const absentTmp = await mkdtemp(path.join(os.tmpdir(), 'stageforge-desktop-nodemo-'));
   let absentApp;
   const absentProblems = [];
@@ -1364,12 +1380,19 @@ test('when renderer/demo is absent, stageforge://app/demo/track.json returns 204
     expect(absentRes.status).toBe(204);
     expect(absentRes.csp).toContain("script-src 'self'");
     expect(absentRes.cacheControl).toBe('no-store');
+    await absentPage.getByRole('button', { name: 'Audio settings', exact: true }).click();
     await expect(absentPage.getByRole('button', { name: 'Play demo track', exact: true })).toHaveCount(0);
+    await expect(absentPage.getByRole('button', { name: 'Play synth demo', exact: true })).toBeVisible();
+    await absentPage.keyboard.press('Escape');
 
     // Built-in 64-bar synth demo still launches cleanly.
     await absentPage.getByRole('button', { name: 'Play demo', exact: true }).click();
     await expect(absentPage.getByRole('button', { name: 'Pause', exact: true })).toBeVisible({ timeout: 10_000 });
     await expect(absentPage.locator('.demo-progress')).toContainText('/ 64');
+    await expect(absentPage.getByText(/Falling back to built-in synth demo/)).toBeVisible();
+    expect(await absentPage.evaluate(() =>
+      performance.getEntriesByType('resource').filter(e => e.name.endsWith('/demo/track.mp3')).length
+    )).toBe(0);
 
     expect(absentProblems, 'desktop absent-demo errors').toEqual([]);
   } finally {
@@ -1575,7 +1598,7 @@ test('AI bridge boots off, blocks live DMX arming, serves MCP tools/proposals/re
 
     // Codex review-04 R4 regression: start built-in demo (enables Auto-LD with no recorded take),
     // then send MCP `stop` -> audio stops AND Auto-LD is disarmed (button aria-pressed === 'false').
-    await aiPage.getByRole('button', { name: 'Play demo', exact: true }).click();
+    await playSynthDemo(aiPage);
     await expect.poll(async () => {
       const st = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 61, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
       return JSON.parse(st.json.result.content[0].text).audio?.playing === true;

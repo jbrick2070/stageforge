@@ -1,3 +1,4 @@
+import { playSynthDemo } from '../support/play-synth-demo.mjs';
 import { expect, test } from '@playwright/test';
 
 const waitFrames = (page, count = 3) =>
@@ -21,7 +22,7 @@ test('Sprint 15: graphics probe, output controls (bloom/FXAA/MSAA), zero-bloom p
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await waitFrames(page, 6);
 
@@ -196,7 +197,7 @@ test('Sprint 15: graphics probe, output controls (bloom/FXAA/MSAA), zero-bloom p
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await waitFrames(page, 6);
 
@@ -269,7 +270,7 @@ test('Sprint 15: post-bloom rendered luminance rolling 1-second flash limiter, p
   await page.setViewportSize({ width: 960, height: 600 });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.stepAndReadLuminance)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await waitFrames(page, 4);
 
@@ -456,7 +457,7 @@ test('Sprint 15: post-bloom rendered luminance rolling 1-second flash limiter, p
   await page.getByTestId('render-falling-co2-checkbox').check();
   await page.reload();
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await waitFrames(page, 3);
   const afterReload = await page.evaluate(() => window.stageforgeProbe.graphicsProbe());
@@ -516,7 +517,7 @@ test('Sprint 15: image vs video sRGB colour equivalence diagnosis and videoSrgbD
   await page.setViewportSize({ width: 960, height: 600 });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.stepAndReadLuminance)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await waitFrames(page, 4);
 
@@ -620,7 +621,7 @@ test('Sprint 24 hardening: WebGL frame readback on multi-frame ramps, group colo
   await page.setViewportSize({ width: 960, height: 600 });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.stepAndReadLuminance)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await waitFrames(page, 4);
 
@@ -758,7 +759,7 @@ test('real WebGL recovery retains video and retires desktop targets across two l
   });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.evaluate(() => window.stageforgeProbe.patchShowState({
     autoDirector: false, audioReactive: false, blackout: false, masterDimmer: 1, bloomStrength: 0.4,

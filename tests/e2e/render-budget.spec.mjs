@@ -1,3 +1,4 @@
+import { playSynthDemo } from '../support/play-synth-demo.mjs';
 import { expect, test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
@@ -21,7 +22,7 @@ async function exportGlb(page) {
 test('repeated rig parts draw as instanced batches: far fewer draw calls, same picture, same exports, no leaks', async ({ page }) => {
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.renderStats)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await expect.poll(async () => (await frameStats(page)).calls).toBeGreaterThan(0);
 
@@ -83,7 +84,7 @@ test('frozen-frame pixel parity: instanced beams match unbatched rendering withi
   await page.clock.install();
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.redrawAndCapture)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
 
   const checkPresetParity = async (presetName) => {
     await page.getByRole('button', { name: new RegExp(presetName) }).first().click();

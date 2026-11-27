@@ -1,8 +1,8 @@
 # Demo Track & Per-Track Section Map
 
-StageForge ships with both a built-in 64-bar procedural synth demo (`Play demo`) and a bundled recorded demo track (`Play demo track`, in `public/demo/`). You can also replace the bundled track with your own recorded track of any length and arrangement by editing `public/demo/track.json` and swapping the audio file, or remove `public/demo/` to hide the demo-track control completely.
+**Play demo** starts the bundled recorded track in `public/demo/`. **Audio** offers **Play synth demo** for the built-in 64-bar procedural score, and **Play demo track** to switch back to the recording. To supply your own bundled recording, update `public/demo/track.json` and its audio file.
 
-When `public/demo/track.json` is present, StageForge checks it once when idle (~1 KB) and makes **zero audio requests** on first page load; the audio file is fetched only when the user clicks **Play demo track**. When `public/demo/track.json` is absent, StageForge renders no extra demo-track controls.
+The editor opens silent. Idle discovery and the first Play share one metadata request. Audio downloads only after an explicit Play. If the bundled map or recording is unavailable, **Play demo** falls back to the synth and explains the reason.
 
 ---
 

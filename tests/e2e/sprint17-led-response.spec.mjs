@@ -1,3 +1,4 @@
+import { playSynthDemo } from '../support/play-synth-demo.mjs';
 import { expect, test } from '@playwright/test';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -35,7 +36,7 @@ test('Sprint 17: default-off parity, front/side/grazing views on curved & flat w
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.getByRole('button', { name: 'Pause', exact: true }).click();
   await waitFrames(page, 4);
@@ -446,7 +447,7 @@ test('Sprint 17: default-off parity, front/side/grazing views on curved & flat w
   });
   await dprPage.goto('/?probe');
   await expect.poll(() => dprPage.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
-  await dprPage.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(dprPage);
   await dprPage.getByRole('button', { name: /Arena Rock/ }).first().click();
   await dprPage.getByRole('button', { name: 'Pause', exact: true }).click();
   await waitFrames(dprPage, 5);
@@ -573,7 +574,7 @@ test('Sprint 17: warmed desktop & 390x844 phone-like probe budgets, side-view fl
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.measureFrames)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await waitFrames(page, 8);
 
@@ -694,7 +695,7 @@ test('Sprint 17: warmed desktop & 390x844 phone-like probe budgets, side-view fl
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.measureFrames)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.getByRole('button', { name: 'Pause', exact: true }).click();
   await waitFrames(page, 4);

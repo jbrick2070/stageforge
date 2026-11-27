@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { playSynthDemo } from '../support/play-synth-demo.mjs';
 
 /**
  * Build a 120 BPM click + tone PCM WAV (16-bit mono, 22050 Hz to keep memory tiny).
@@ -49,13 +50,130 @@ const TEST_TRACK_MAP = {
   ],
 };
 
+const playDemo = page => page.getByRole('button', { name: 'Play demo', exact: true });
+const audioSettings = page => page.getByRole('button', { name: 'Audio settings', exact: true });
+const primaryTransport = page => page.locator('.play-btn');
+
+test('Stop and accepted GO cancel pending Play without losing the operator blackout', async ({ page }) => {
+  let releaseMap, releaseAudio;
+  const mapGate = new Promise(resolve => { releaseMap = resolve; });
+  const audioGate = new Promise(resolve => { releaseAudio = resolve; });
+  let mapRequests = 0;
+  let audioRequests = 0;
+  await page.route('**/demo/track.json', async route => {
+    mapRequests++;
+    await mapGate;
+    await route.fulfill({ json: TEST_TRACK_MAP });
+  });
+  await page.route('**/demo/test-demo.wav', async route => {
+    if (++audioRequests === 1) {
+      await audioGate;
+      await route.fulfill({ status: 503, body: 'A canceled load must not fall back' });
+      return;
+    }
+    await route.fulfill({ contentType: 'audio/wav', body: buildDemoTrackWav() });
+  });
+
+  await page.goto('/?probe');
+  const hold = page.getByRole('button', { name: 'Operator blackout hold', exact: true });
+  await hold.click();
+  await page.getByRole('button', { name: 'Show cues', exact: true }).click();
+  await page.getByRole('button', { name: 'Record take', exact: true }).click();
+  await playDemo(page).click();
+  await expect(primaryTransport(page)).toHaveAttribute('aria-busy', 'true');
+  await page.getByRole('button', { name: 'Stop recording', exact: true }).click();
+  await expect(playDemo(page)).toBeVisible();
+  releaseMap();
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.demoTrackAvailable()?.title)).toBe(TEST_TRACK_MAP.title);
+  expect(audioRequests).toBe(0);
+
+  await playDemo(page).click();
+  await expect.poll(() => audioRequests).toBe(1);
+  await page.getByRole('button', { name: 'GO', exact: true }).press('Enter');
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.activeCueId())).toBe('cue-1');
+  await expect(playDemo(page)).toBeVisible();
+  releaseAudio();
+  await playDemo(page).click();
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.demoPosition()?.totalBars)).toBe(16);
+  await expect(hold).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => window.stageforgeProbe.showStateSummary().operatorBlackout)).toBe(true);
+  expect(await page.evaluate(() => window.stageforgeProbe.fixtureParams().master)).toBe(0);
+  await expect(page.getByText(/Falling back to built-in synth demo/)).toHaveCount(0);
+  expect(mapRequests).toBe(1);
+  expect(audioRequests).toBe(2);
+});
+
+test('an autoplay-blocked recording stays paused and resumes from the primary control without another fetch', async ({ page }) => {
+  let audioRequests = 0;
+  await page.addInitScript(() => {
+    const play = HTMLMediaElement.prototype.play;
+    let rejectOnce = true;
+    HTMLMediaElement.prototype.play = function () {
+      if (rejectOnce && this.src.startsWith('blob:') && !this.muted && !this.loop) {
+        rejectOnce = false;
+        return Promise.reject(new DOMException('Blocked for this test', 'NotAllowedError'));
+      }
+      return play.call(this);
+    };
+  });
+  await page.route('**/demo/track.json', route => route.fulfill({ json: TEST_TRACK_MAP }));
+  await page.route('**/demo/test-demo.wav', route => {
+    audioRequests++;
+    return route.fulfill({ contentType: 'audio/wav', body: buildDemoTrackWav() });
+  });
+  await page.goto('/?probe');
+  await playDemo(page).press('Enter');
+  const resume = page.getByRole('button', { name: 'Play track', exact: true });
+  await expect(resume).toBeFocused();
+  await expect(resume).not.toHaveAttribute('aria-busy', 'true');
+  await expect(page.getByText('Demo track ready — tap Play track to start.')).toBeVisible();
+  expect(await page.evaluate(() => window.stageforgeProbe.audioPlaybackTime())).toBe(0);
+  expect(audioRequests).toBe(1);
+  await resume.press('Enter');
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.audioPlaybackTime())).toBeGreaterThan(0.05);
+  expect(audioRequests).toBe(1);
+});
+
+test('a newer audio upload survives a superseded demo element play promise', async ({ page }) => {
+  await page.addInitScript(() => {
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      if (!window.releaseDemoPlay && this.src.startsWith('blob:') && !this.muted && !this.loop) {
+        return new Promise(resolve => { window.releaseDemoPlay = resolve; });
+      }
+      return play.call(this);
+    };
+  });
+  await page.route('**/demo/track.json', route => route.fulfill({ json: TEST_TRACK_MAP }));
+  await page.route('**/demo/test-demo.wav', route =>
+    route.fulfill({ contentType: 'audio/wav', body: buildDemoTrackWav() }));
+  await page.goto('/?probe');
+  await playDemo(page).click();
+  await expect.poll(() => page.evaluate(() => typeof window.releaseDemoPlay)).toBe('function');
+  await audioSettings(page).click();
+  await page.getByLabel('Load audio file', { exact: true }).setInputFiles({
+    name: 'replacement.wav', mimeType: 'audio/wav', buffer: buildDemoTrackWav(3),
+  });
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.getAudioLevels().trackName)).toBe('replacement');
+  await page.evaluate(() => window.releaseDemoPlay());
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.audioPlaybackTime())).toBeGreaterThan(0.05);
+  await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.stageforgeProbe.getAudioLevels().trackName)).toBe('replacement');
+  await expect(page.getByText(/Falling back to built-in synth demo/)).toHaveCount(0);
+});
+
 test('demo track is lazy-loaded, drives lighting through its section map on seek, pauses/resumes/replays cleanly, and fits 390px phones', async ({ page }) => {
   const wav = buildDemoTrackWav(32, 120);
   let mapRequests = 0;
   let audioRequests = 0;
+  let releaseMap;
+  const mapGate = new Promise(resolve => { releaseMap = resolve; });
+  // Exercise a real Play gesture before idle discovery has run.
+  await page.addInitScript(() => { window.requestIdleCallback = () => 1; });
 
   await page.route('**/demo/track.json', async (route) => {
     mapRequests++;
+    await mapGate;
     await route.fulfill({
       status: 200,
       contentType: 'application/json; charset=utf-8',
@@ -74,16 +192,12 @@ test('demo track is lazy-loaded, drives lighting through its section map on seek
   });
 
   await page.goto('/?probe');
-  // Wait for idle discovery of demo/track.json -> "Play demo track" button appears.
-  const playTrackBtn = page.getByRole('button', { name: 'Play demo track', exact: true });
-  await expect(playTrackBtn).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole('button', { name: 'Play demo', exact: true })).toBeVisible();
-
-  // First load must fetch track.json but MUST NOT fetch the audio file.
-  expect(mapRequests).toBe(1);
+  const playTrackBtn = playDemo(page);
+  await expect(playTrackBtn).toBeVisible();
+  expect(mapRequests).toBe(0);
   expect(audioRequests).toBe(0);
 
-  // Check 390x844 phone viewport keeps zero horizontal overflow and Play demo track sits inside the viewport.
+  // Check 390x844 fits the primary action.
   await page.setViewportSize({ width: 390, height: 844 });
   const phoneOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(phoneOverflow).toBeLessThanOrEqual(1);
@@ -93,10 +207,23 @@ test('demo track is lazy-loaded, drives lighting through its section map on seek
   expect(phoneBtnBox.x + phoneBtnBox.width).toBeLessThanOrEqual(390);
   await page.setViewportSize({ width: 1280, height: 900 });
 
-  // Clicking "Play demo track" fetches the audio once and starts playback.
-  await playTrackBtn.click();
+  // Focused Play uses native Space. A second press while pending must not start another request or toggle blackout.
+  const primary = primaryTransport(page);
+  await playTrackBtn.focus();
+  await page.keyboard.press('Space');
+  await expect(primary).toHaveAttribute('aria-busy', 'true');
+  await expect(primary).toHaveAttribute('aria-disabled', 'true');
+  await expect(primary).toBeFocused();
+  await page.keyboard.press('Space');
+  await expect.poll(() => mapRequests).toBe(1);
+  expect(audioRequests).toBe(0);
+  expect(await page.evaluate(() => window.stageforgeProbe.showStateSummary().operatorBlackout)).toBe(false);
+  releaseMap();
   await expect.poll(() => audioRequests).toBe(1);
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.audioPlaybackTime())).toBeGreaterThan(0.05);
+  await expect(primary).toBeFocused();
+  await expect(primary).not.toHaveAttribute('aria-busy', 'true');
+  expect(mapRequests).toBe(1);
 
   // Authoritative beat grid is populated immediately (120.0 BPM, 0 ms) and tempo controls are locked.
   await page.getByRole('button', { name: 'Audio settings', exact: true }).click();
@@ -194,20 +321,19 @@ test('firstDownbeatMs > 0 holds count-in blackout, and switching to synth mid-fe
   });
 
   await page.goto('/?probe');
-  const playTrackBtn = page.getByRole('button', { name: 'Play demo track', exact: true });
-  await expect(playTrackBtn).toBeVisible({ timeout: 10_000 });
 
-  // Start slow track fetch, then immediately switch to synth ("Play demo") before fetch resolves (M2 regression).
-  await playTrackBtn.click();
+  // Start a slow track fetch, then explicitly switch to synth before the fetch resolves.
+  await playDemo(page).click();
   await expect.poll(() => audioRequests).toBe(1);
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   releaseAudio();
   await page.waitForTimeout(300);
   // Synth must remain active (64-bar default demo) — slow track fetch must NOT hijack it.
   expect(await page.evaluate(() => window.stageforgeProbe.demoPosition()?.totalBars)).toBe(64);
 
-  // Now click "Play demo track" cleanly (audioGate already resolved) -> count-in holds opening blackout before 2000 ms.
-  await playTrackBtn.click();
+  // Explicitly start the recorded track from Audio settings. Its count-in holds the opening blackout.
+  await audioSettings(page).click();
+  await page.getByRole('button', { name: 'Play demo track', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.demoPosition()?.totalBars)).toBe(12);
   await page.evaluate(() => window.stageforgeProbe.seekTrack(0.5));
   await expect.poll(() => page.evaluate(() => {
@@ -226,9 +352,11 @@ test('firstDownbeatMs > 0 holds count-in blackout, and switching to synth mid-fe
   })).toEqual({ beforeDownbeat: false, role: 'groove', lit: true });
 });
 
-test('when no demo track map exists (HTML fallback), Play demo track is absent and no audio is fetched', async ({ page }) => {
+test('when the demo map serves HTML, primary Play falls back to synth without fetching audio', async ({ page }) => {
+  let mapRequests = 0;
   let audioRequests = 0;
   await page.route('**/demo/track.json', async (route) => {
+    mapRequests++;
     await route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><html></html>' });
   });
   await page.route('**/demo/*.{mp3,wav,m4a,ogg}', async (route) => {
@@ -237,11 +365,20 @@ test('when no demo track map exists (HTML fallback), Play demo track is absent a
   });
 
   await page.goto('/?probe');
-  await expect(page.getByRole('button', { name: 'Play demo', exact: true })).toBeVisible();
-  await page.waitForTimeout(600);
+  await expect(playDemo(page)).toBeVisible();
+  await expect.poll(() => mapRequests).toBe(1);
+  await audioSettings(page).click();
   await expect(page.getByRole('button', { name: 'Play demo track', exact: true })).toHaveCount(0);
+  await expect(page.getByText('No audio loaded', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Play synth demo', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
   expect(audioRequests).toBe(0);
   expect(await page.evaluate(() => window.stageforgeProbe.demoTrackAvailable())).toBeNull();
+  await playDemo(page).click();
+  await expect(page.getByRole('status').filter({ hasText: /Falling back to built-in synth demo/ })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.demoPosition()?.totalBars)).toBe(64);
+  expect(audioRequests).toBe(0);
+  expect(mapRequests).toBe(1);
 });
 
 test('shipped public/demo/track.mp3 is lazy-loaded (0 audio requests on boot), fits 390px and 393px phones, and plays through real sections', async ({ page }) => {
@@ -251,11 +388,11 @@ test('shipped public/demo/track.mp3 is lazy-loaded (0 audio requests on boot), f
   });
 
   await page.goto('/?probe');
-  const playTrackBtn = page.getByRole('button', { name: 'Play demo track', exact: true });
+  const playTrackBtn = playDemo(page);
   await expect(playTrackBtn).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole('button', { name: 'Play demo', exact: true })).toBeVisible();
 
   // Verify the real map metadata loaded from public/demo/track.json and ZERO MP3 requests occurred while idle.
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.demoTrackAvailable()?.bpm)).toBe(122);
   const available = await page.evaluate(() => window.stageforgeProbe.demoTrackAvailable());
   expect(available).toMatchObject({
     title: 'StageForge demo track',
@@ -268,7 +405,7 @@ test('shipped public/demo/track.mp3 is lazy-loaded (0 audio requests on boot), f
   await page.waitForTimeout(1500);
   expect(mp3Requests).toHaveLength(0);
 
-  // Verify phone layouts (390x844 and 393x852) have zero horizontal overflow with Play demo track visible.
+  // Verify phone layouts (390x844 and 393x852) have zero horizontal overflow with primary Play visible.
   for (const vp of [{ width: 390, height: 844 }, { width: 393, height: 852 }]) {
     await page.setViewportSize(vp);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
@@ -280,7 +417,7 @@ test('shipped public/demo/track.mp3 is lazy-loaded (0 audio requests on boot), f
   }
   await page.setViewportSize({ width: 1280, height: 900 });
 
-  // Clicking "Play demo track" fetches track.mp3 once, locks the beat grid to 122 BPM / 96 ms, and starts playback.
+  // Primary Play fetches track.mp3 once, locks the beat grid to 122 BPM / 96 ms, and starts playback.
   await playTrackBtn.click();
   await expect.poll(() => mp3Requests.length, { timeout: 15_000 }).toBe(1);
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.audioPlaybackTime()), { timeout: 15_000 }).toBeGreaterThan(0.05);

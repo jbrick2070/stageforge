@@ -51,6 +51,7 @@ import {
   getDemoTrackPosition,
   probeDemoTrack,
   type AvailableDemoTrack,
+  type DemoTrackMap,
 } from './data/demoTrack';
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
@@ -681,41 +682,6 @@ export const App: React.FC = () => {
   const [preflightAcks, setPreflightAcks] = useState<PreflightAcknowledgementState>(EMPTY_PREFLIGHT_ACKS);
   const [liveSafetyViolation, setLiveSafetyViolation] = useState<string | null>(null);
   const CostEstimatorModal = useMemo(() => createLazyCostEstimatorModal(), [costModalRetry]);
-  // Probe once when idle for an optional demo/track.json map (~1 KB); never fetches audio on boot.
-  // Skipped in read-only pitch viewer mode.
-  useEffect(() => {
-    if (viewerMode) return;
-    const abort = new AbortController();
-    let cancelled = false;
-    let idleId: number | null = null;
-    let timerId: number | null = null;
-    const runProbe = () => {
-      if (cancelled) return;
-      void probeDemoTrack(import.meta.env.BASE_URL, document.baseURI, abort.signal).then((found) => {
-        if (!cancelled && found) setAvailableDemoTrack(found);
-      });
-    };
-    const scheduleProbe = () => {
-      if (cancelled) return;
-      if (typeof window.requestIdleCallback === 'function') {
-        idleId = window.requestIdleCallback(runProbe, { timeout: 3000 });
-      } else {
-        timerId = window.setTimeout(runProbe, 1500);
-      }
-    };
-    if (document.readyState === 'complete') {
-      scheduleProbe();
-    } else {
-      window.addEventListener('load', scheduleProbe, { once: true });
-    }
-    return () => {
-      cancelled = true;
-      abort.abort();
-      window.removeEventListener('load', scheduleProbe);
-      if (idleId !== null && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idleId);
-      if (timerId !== null) window.clearTimeout(timerId);
-    };
-  }, [viewerMode]);
   // Notify desktop main process if booted directly in `?view` mode.
   useEffect(() => {
     if (viewerMode) {
@@ -736,21 +702,73 @@ export const App: React.FC = () => {
   const [ildaFps, setIldaFps] = useState(30);
   const [beatGridStatus, setBeatGridStatus] = useState<BeatGridStatus>({ state: 'idle' });
   const [availableDemoTrack, setAvailableDemoTrack] = useState<AvailableDemoTrack | null>(null);
+  // An already discovered bundled map also supports explicitly referenced music in saved takes.
   const availableDemoTrackRef = useRef<AvailableDemoTrack | null>(null);
-  availableDemoTrackRef.current = availableDemoTrack;
+  type DemoTrackProbe = { abort: AbortController; result: Promise<AvailableDemoTrack | null>; available?: AvailableDemoTrack | null };
+  const demoTrackProbeRef = useRef<DemoTrackProbe | null>(null);
+  const discardDemoTrackProbe = useCallback(() => {
+    demoTrackProbeRef.current?.abort.abort();
+    demoTrackProbeRef.current = null;
+  }, []);
+  const getDemoTrack = useCallback(() => {
+    if (demoTrackProbeRef.current) return demoTrackProbeRef.current.result;
+    const abort = new AbortController();
+    const result = probeDemoTrack(import.meta.env.BASE_URL, document.baseURI, abort.signal).then(found => {
+      if (demoTrackProbeRef.current?.abort === abort && capabilitiesRef.current.edit) {
+        demoTrackProbeRef.current.available = found;
+        availableDemoTrackRef.current = found;
+        setAvailableDemoTrack(found);
+      }
+      return found;
+    });
+    demoTrackProbeRef.current = { abort, result };
+    return result;
+  }, []);
+  // Idle discovery shares the editor probe with Play, but never starts an audio fetch.
+  useEffect(() => {
+    if (viewerMode) return;
+    let idleId: number | undefined;
+    let timerId: number | undefined;
+    const runProbe = () => { if (capabilitiesRef.current.edit) void getDemoTrack(); };
+    const scheduleProbe = () => {
+      if (typeof window.requestIdleCallback === 'function') {
+        idleId = window.requestIdleCallback(runProbe, { timeout: 3000 });
+      } else {
+        timerId = window.setTimeout(runProbe, 1500);
+      }
+    };
+    if (document.readyState === 'complete') scheduleProbe();
+    else window.addEventListener('load', scheduleProbe, { once: true });
+    return () => {
+      discardDemoTrackProbe();
+      window.removeEventListener('load', scheduleProbe);
+      if (idleId !== undefined && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idleId);
+      if (timerId !== undefined) window.clearTimeout(timerId);
+    };
+  }, [viewerMode, discardDemoTrackProbe, getDemoTrack]);
   const [demoTrackLoading, setDemoTrackLoading] = useState(false);
   const [demoTrackProgress, setDemoTrackProgress] = useState<number | null>(null);
-  const demoTrackAbortRef = useRef<AbortController | null>(null);
+  type DemoPlayIntent = { abort: AbortController; prepared?: ReturnType<AudioEngine['preparePlaybackGesture']> };
+  const demoPlayRef = useRef<DemoPlayIntent | null>(null);
   const replayDemoAbortRef = useRef<AbortController | null>(null);
-  const demoTrackFilesRef = useRef(new WeakSet<File>());
+  const demoTrackFilesRef = useRef(new WeakMap<File, DemoTrackMap>());
   const cancelDemoTrackLoad = useCallback(() => {
-    demoTrackAbortRef.current?.abort();
-    demoTrackAbortRef.current = null;
-    replayDemoAbortRef.current?.abort();
-    replayDemoAbortRef.current = null;
+    const intent = demoPlayRef.current;
+    if (!intent) return;
+    demoPlayRef.current = null;
+    intent.abort.abort();
+    intent.prepared?.cleanup();
     setDemoTrackLoading(false);
     setDemoTrackProgress(null);
   }, []);
+  const cancelReplayDemoLoad = useCallback(() => {
+    replayDemoAbortRef.current?.abort();
+    replayDemoAbortRef.current = null;
+  }, []);
+  const cancelDemoLoads = useCallback(() => {
+    cancelDemoTrackLoad();
+    cancelReplayDemoLoad();
+  }, [cancelDemoTrackLoad, cancelReplayDemoLoad]);
   const [liveBpmStatus, setLiveBpmStatus] = useState<LiveBpmStatus>({ state: 'off' });
   const [followLiveBpm, setFollowLiveBpm] = useState(false);
   const followLiveBpmRef = useRef(false);
@@ -1387,40 +1405,36 @@ export const App: React.FC = () => {
   const replayScreenOffset = () => (replayScreen.current.offsetSeconds ?? 0) +
     (replayScreen.current.playing ? (performance.now() - replayScreenClock.current) / 1000 : 0);
   const restoreReplayMusic = (ref: MusicRef, lateMs: number) => {
+    const ae = audioEngineRef.current;
+    if (!ae) return;
     const epoch = sessionEpochRef.current;
-    cancelDemoTrackLoad();
+    cancelDemoLoads();
     const available = availableDemoTrackRef.current;
     const cachedFile = assets.current.get('file:' + ref.name)?.file;
     // Only treat a cached file as the mapped demo track if it was actually fetched as the demo track
     // (never hijack a user-uploaded file that happens to share the filename).
-    const cachedIsDemoTrack = !!cachedFile && demoTrackFilesRef.current.has(cachedFile);
     const shouldFetchDemoTrack = !cachedFile && ref.kind === 'file' && !!available && ref.name === available.map.file;
-    const isMappedDemoFile = cachedIsDemoTrack || shouldFetchDemoTrack;
-    const replayAbort = shouldFetchDemoTrack ? new AbortController() : null;
-    if (replayAbort) replayDemoAbortRef.current = replayAbort;
+    const map = cachedFile ? demoTrackFilesRef.current.get(cachedFile) : shouldFetchDemoTrack ? available.map : undefined;
+    const replayAbort = new AbortController();
+    replayDemoAbortRef.current = replayAbort;
+    const isCurrent = () => !replayAbort.signal.aborted && replayDemoAbortRef.current === replayAbort && epoch === sessionEpochRef.current;
     const run = async () => {
-      let file = cachedFile;
-      if (shouldFetchDemoTrack && available) {
-        file = await fetchDemoTrackAudio(available, replayAbort?.signal);
-        if (replayAbort?.signal.aborted || epoch !== sessionEpochRef.current) return;
-        demoTrackFilesRef.current.add(file);
+      const file = shouldFetchDemoTrack ? await fetchDemoTrackAudio(available, replayAbort.signal) : cachedFile;
+      if (!isCurrent()) return;
+      const committed = await ae.restoreTimelineMusic(ref, file, replayLook.current.bpm, lateMs, map, replayAbort.signal);
+      if (!isCurrent()) {
+        if (committed) ae.stopSourceGeneration(committed.generation);
+      } else if (committed && ae.isSourceGenerationActive(committed.generation) && shouldFetchDemoTrack && file && map) {
+        demoTrackFilesRef.current.set(file, map);
         registerAsset('file', file);
       }
-      await audioEngineRef.current?.restoreTimelineMusic(
-        ref,
-        file,
-        replayLook.current.bpm,
-        lateMs,
-        isMappedDemoFile && available ? available.map : undefined,
-      );
-      if (epoch !== sessionEpochRef.current) audioEngineRef.current?.stopAll();
     };
     void run().catch(e => {
-      if (!replayAbort?.signal.aborted && epoch === sessionEpochRef.current && e?.name !== 'AbortError') {
+      if (isCurrent() && e?.name !== 'AbortError') {
         showToast(e instanceof Error ? e.message : 'Audio could not play.');
       }
     }).finally(() => {
-      if (replayAbort && replayDemoAbortRef.current === replayAbort) {
+      if (replayDemoAbortRef.current === replayAbort) {
         replayDemoAbortRef.current = null;
       }
     });
@@ -1475,6 +1489,7 @@ export const App: React.FC = () => {
     },
     (preserveLiveBumps) => {
       cancelCuePreview(false);
+      cancelReplayDemoLoad();
       wallClock.set(wallClock.position(), false);
       replaying.current = false; directorArmed.current = false;
       const music = readMusic();
@@ -1544,6 +1559,7 @@ export const App: React.FC = () => {
       return;
     }
     if (!automatic) {
+      cancelDemoTrackLoad();
       previewRig();
       engineRef.current?.releaseDirector(false);
       autoDirRef.current = false;
@@ -1579,7 +1595,7 @@ export const App: React.FC = () => {
     engineRef.current?.setShowState(target);
     if (descriptor && descriptor.durationMs > 0) installCuePreview(descriptor, 0, true);
     else clearCuePreview();
-  }, [clearCuePreview, currentCuePreviewLevels, installCuePreview, previewRig]);
+  }, [cancelDemoTrackLoad, clearCuePreview, currentCuePreviewLevels, installCuePreview, previewRig]);
   const currentIndex = cues.findIndex(c => c.id === activeCueId);
   const followingCue = cues[currentIndex + 1];
   const nextCue = followingCue ?? cues[0];
@@ -1720,6 +1736,7 @@ export const App: React.FC = () => {
     setReplaying: (running) => { replaying.current = running; },
     clearFollow: () => setFollow(null),
     prepareSeek: () => {
+      cancelDemoTrackLoad();
       replayLook.current = showState;
       engineRef.current?.releaseDirector(false);
       previewRig();
@@ -1740,7 +1757,10 @@ export const App: React.FC = () => {
     isAudioPlaying: () => Boolean(audioEngineRef.current?.getStatus().playing),
     pauseAudio: () => { audioEngineRef.current?.pausePlayback(); },
     resumeAudio: () => { audioEngineRef.current?.togglePlayPause(); },
-    stopAudio: () => { audioEngineRef.current?.stopAll(); },
+    stopAudio: () => {
+      cancelDemoLoads();
+      audioEngineRef.current?.stopAll();
+    },
     isScreenVideoPlaying: () => {
       const s = readScreen();
       return s.kind === 'video' && s.playing;
@@ -1752,6 +1772,7 @@ export const App: React.FC = () => {
   });
 
   const stopDeskPlayback = () => {
+    cancelDemoLoads();
     setFollow(null);
     followInitiatedByAiRef.current = false;
     // Disarm Auto-LD unconditionally even when no recorded take is running so stopping demo
@@ -1776,6 +1797,7 @@ export const App: React.FC = () => {
     getTakePlayheadMs: () => timeline.playhead(),
     isTakePlaying: () => timeline.mode === 'playing',
     onModeReset: (nextMode) => {
+      cancelDemoLoads();
       cancelCuePreview();
       clockModeRef.current = nextMode;
       chaseHeldMediaRef.current = { audio: false, screen: false };
@@ -2063,7 +2085,7 @@ export const App: React.FC = () => {
       cuePreview: () => engine.getCuePreviewLevels(),
       audioPlaybackTime: () => (audioEngineRef.current?.getPlaybackMs() ?? 0) / 1000,
       demoPosition: () => live.audio.get().demo ?? null,
-      demoTrackAvailable: () => availableDemoTrackRef.current?.map ?? null,
+      demoTrackAvailable: () => demoTrackProbeRef.current?.available?.map ?? null,
       seekTrack: (seconds: number) => handleSeekTrackRef.current(seconds),
       jumpDemoSection: (delta: -1 | 1) => handleJumpDemoSectionRef.current(delta),
       screens: () => engine.screenDiagnostics(),
@@ -2179,8 +2201,11 @@ export const App: React.FC = () => {
 
     return () => {
       webXrRequestGenerationRef.current++;
-      demoTrackAbortRef.current?.abort();
-      replayDemoAbortRef.current?.abort();
+      const intent = demoPlayRef.current;
+      demoPlayRef.current = null;
+      intent?.abort.abort();
+      intent?.prepared?.cleanup();
+      cancelReplayDemoLoad();
       if (probe) delete (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe;
       engine.dispose();
       audio.dispose();
@@ -2318,14 +2343,15 @@ export const App: React.FC = () => {
     if (!capabilitiesRef.current.edit) return;
     const ae = audioEngineRef.current;
     if (!ae) return;
-    cancelDemoTrackLoad();
+    cancelDemoLoads();
     beatGridAbortRef.current?.abort();
     beatGridAbortRef.current = null;
     setBeatGridStatus({ state: 'idle' });
     directorArmed.current = true; expectedMusic.current = NO_MUSIC; setFollow(null);
-    ae.startDemoSynth(showState.bpm);
+    const look = showStateRef.current;
+    ae.startDemoSynth(look.bpm);
     const demo = getDemoPosition(0);
-    const opening = applyDemoLighting({ ...showState, autoDirector: true }, demo);
+    const opening = applyDemoLighting({ ...look, autoDirector: true }, demo);
     engineRef.current?.beginDemo(opening, demo.openingStep);
     autoDirRef.current = true;
     clearAllBumps();
@@ -2344,38 +2370,42 @@ export const App: React.FC = () => {
     setToast(null);
   };
 
-  const startDemoTrack = async () => {
-    if (!capabilitiesRef.current.edit) return;
+  const startDemoTrack = async (primary: boolean) => {
     const ae = audioEngineRef.current;
-    const available = availableDemoTrackRef.current;
-    if (!ae || !available) return;
+    if (!ae || !capabilitiesRef.current.edit || demoPlayRef.current) return;
     const epoch = sessionEpochRef.current;
-    // Unlock audio element synchronously inside the user gesture via a CSP-safe silent blob: WAV.
-    const prepared = ae.preparePlaybackGesture();
-    cancelDemoTrackLoad();
     const abort = new AbortController();
-    demoTrackAbortRef.current = abort;
+    const intent: DemoPlayIntent = { abort };
+    demoPlayRef.current = intent;
+    const isCurrent = () => demoPlayRef.current === intent && !abort.signal.aborted &&
+      epoch === sessionEpochRef.current && capabilitiesRef.current.edit;
     setDemoTrackLoading(true);
     setDemoTrackProgress(null);
     try {
+      // Reserve and prepare in the user gesture even if the idle metadata probe has not started.
+      intent.prepared = ae.preparePlaybackGesture();
+      cancelReplayDemoLoad();
+      const pending = getDemoTrack();
+      const discovered = demoTrackProbeRef.current?.available;
+      const available = discovered === undefined ? await pending : discovered;
+      if (!isCurrent()) return;
+      if (!available) throw new Error('The bundled demo recording is unavailable.');
       const cachedCandidate = assets.current.get('file:' + available.map.file)?.file;
-      const cached = cachedCandidate && demoTrackFilesRef.current.has(cachedCandidate) ? cachedCandidate : undefined;
+      const cached = cachedCandidate && demoTrackFilesRef.current.get(cachedCandidate)?.file === available.map.file
+        ? cachedCandidate : undefined;
       const file = cached ?? await fetchDemoTrackAudio(available, abort.signal, (loaded, total) => {
-        if (demoTrackAbortRef.current === abort) {
+        if (isCurrent()) {
           setDemoTrackProgress(total ? Math.min(1, loaded / total) : null);
         }
       });
-      if (abort.signal.aborted || demoTrackAbortRef.current !== abort || epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) {
-        prepared.cleanup();
+      if (!isCurrent()) return;
+      const loadResult = await ae.loadDemoTrack(file, available.map, intent.prepared, abort.signal);
+      if (!isCurrent() || !ae.isSourceGenerationActive(loadResult.generation)) {
+        ae.stopSourceGeneration(loadResult.generation);
         return;
       }
-      demoTrackFilesRef.current.add(file);
-      registerAsset('file', file);
-      const loadResult = await ae.loadDemoTrack(file, available.map, prepared);
-      if (abort.signal.aborted || demoTrackAbortRef.current !== abort || epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) {
-        ae.stopAll();
-        return;
-      }
+      demoTrackFilesRef.current.set(file, available.map);
+      if (!cached) registerAsset('file', file);
       // Abort any prior upload's beat-grid analysis only once the demo track has taken over.
       beatGridAbortRef.current?.abort();
       beatGridAbortRef.current = null;
@@ -2406,15 +2436,16 @@ export const App: React.FC = () => {
       });
       setToast(loadResult.autoplayBlocked ? 'Demo track ready — tap Play track to start.' : null);
     } catch (error) {
-      prepared.cleanup();
-      if (abort.signal.aborted || demoTrackAbortRef.current !== abort || epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit || (error instanceof DOMException && error.name === 'AbortError')) return;
+      if (!isCurrent() || (error instanceof DOMException && error.name === 'AbortError')) return;
       const reason = error instanceof Error ? error.message : 'Could not load demo track.';
-      // Codex Sprint 10 amendment: fall back to the built-in synth demo with a toast when fetch or decode fails.
-      startDemo();
-      showToast(`${reason} Falling back to built-in synth demo.`);
+      if (primary) {
+        startDemo();
+        showToast(`${reason} Falling back to built-in synth demo.`);
+      } else showToast(reason);
     } finally {
-      if (demoTrackAbortRef.current === abort) {
-        demoTrackAbortRef.current = null;
+      intent.prepared?.cleanup();
+      if (demoPlayRef.current === intent) {
+        demoPlayRef.current = null;
         setDemoTrackLoading(false);
         setDemoTrackProgress(null);
       }
@@ -2477,7 +2508,7 @@ export const App: React.FC = () => {
 
   const handleTogglePlay = () => {
     const ae = audioEngineRef.current;
-    if (!ae) return;
+    if (!ae || demoPlayRef.current) return;
     const status = ae.getStatus();
     if (status.source === 'none' && expectedMusic.current.kind === 'demo') {
       if (!viewerModeRef.current) directorArmed.current = true;
@@ -2499,17 +2530,22 @@ export const App: React.FC = () => {
         else setFilesOpen(true);
         return;
       }
-      const mappedDemo = demoTrackFilesRef.current.has(file) ? availableDemoTrackRef.current?.map : undefined;
+      const mappedDemo = demoTrackFilesRef.current.get(file);
       void ae.restoreTimelineMusic({ ...ref, playing: true }, file, showState.bpm, 0, mappedDemo)
         .catch(e => showToast(e instanceof Error ? e.message : 'Could not play linked music.'));
       return;
     }
-    if (status.source === 'none' || status.demoFinished) {
+    if (status.source === 'none') {
       if (viewerModeRef.current) {
         showToast('No audio track or recorded take in this show.');
         return;
       }
-      startDemo();
+      void startDemoTrack(true);
+      return;
+    }
+    if (status.demoFinished) {
+      if (!viewerModeRef.current) startDemo();
+      else showToast('No audio track or recorded take in this show.');
       return;
     }
     if (status.demoTrackFinished) {
@@ -2586,18 +2622,18 @@ export const App: React.FC = () => {
     const ae = audioEngineRef.current;
     if (!ae) return;
     const epoch = sessionEpochRef.current;
-    demoTrackAbortRef.current?.abort();
-    demoTrackAbortRef.current = null;
-    setDemoTrackLoading(false);
-    setDemoTrackProgress(null);
+    cancelDemoLoads();
     beatGridAbortRef.current?.abort();
     beatGridAbortRef.current = null;
     try {
-      const name = await ae.loadAudioFile(file);
+      const loaded = await ae.loadFileSource(file);
       if (epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) {
-        ae.stopAll();
+        ae.stopSourceGeneration(loaded.generation);
         return;
       }
+      if (!ae.isSourceGenerationActive(loaded.generation)) return;
+      cancelDemoLoads();
+      const name = loaded.trackName;
       registerAsset('file', file);
       expectedMusic.current = { kind: 'file', name: file.name, playing: true };
       previewRig();
@@ -2638,8 +2674,12 @@ export const App: React.FC = () => {
     if (!capabilitiesRef.current.edit) return;
     const ae = audioEngineRef.current;
     if (!ae) return;
-    cancelDemoTrackLoad();
-    if (live.audio.get().source === 'mic') {
+    if (ae.getStatus().source !== 'mic' && !navigator.mediaDevices?.getUserMedia) {
+      showToast('Microphone input is unavailable.');
+      return;
+    }
+    cancelDemoLoads();
+    if (ae.getStatus().source === 'mic') {
       ae.stopAll();
       expectedMusic.current = NO_MUSIC;
       showToast('Live Mic Stopped');
@@ -2647,11 +2687,13 @@ export const App: React.FC = () => {
     }
     const epoch = sessionEpochRef.current;
     try {
-      await ae.startMicInput();
+      const generation = await ae.startMicInput();
       if (epoch !== sessionEpochRef.current || !capabilitiesRef.current.edit) {
-        ae.stopAll();
+        ae.stopSourceGeneration(generation);
         return;
       }
+      if (!ae.isSourceGenerationActive(generation)) return;
+      cancelDemoLoads();
       previewRig();
       showToast('Live Mic / Room Audio Sync Active');
     } catch (error) {
@@ -2732,6 +2774,7 @@ export const App: React.FC = () => {
   };
   const applyRig = useCallback((next: RigConfig, saveNow = false) => {
     if (!capabilitiesRef.current.edit) return;
+    cancelDemoTrackLoad();
     stopLiveOutputBeforeStructuralChange('Rig or patch changed while live output was active — re-run pre-flight.');
     // Loading a preset leaves storage alone, but the first edit to one becomes the saved design,
     // as long as that doesn't replace a design already saved in the single slot.
@@ -2743,7 +2786,7 @@ export const App: React.FC = () => {
     window.clearTimeout(saveTimer.current);
     if (saveNow) flushDesign();
     else saveTimer.current = window.setTimeout(flushDesign, 250);
-  }, [savedDesign, flushDesign, stopLiveOutputBeforeStructuralChange]);
+  }, [savedDesign, flushDesign, cancelDemoTrackLoad, stopLiveOutputBeforeStructuralChange]);
 
   // Always-fresh ref mirror for snapshot fields so async viewer entry never captures stale render-closure state (H1).
   const deskLiveStateRef = useRef({
@@ -2861,12 +2904,9 @@ export const App: React.FC = () => {
   };
 
   const applyViewerDocument = (doc: ParsedViewerDocument) => {
+    cancelDemoLoads();
     timeline.stop();
     audioEngineRef.current?.stopAll();
-    demoTrackAbortRef.current?.abort();
-    demoTrackAbortRef.current = null;
-    setDemoTrackLoading(false);
-    setDemoTrackProgress(null);
     beatGridAbortRef.current?.abort();
     beatGridAbortRef.current = null;
     setBeatGridStatus({ state: 'idle' });
@@ -2983,15 +3023,14 @@ export const App: React.FC = () => {
         return;
       }
 
+      cancelDemoLoads();
+      discardDemoTrackProbe();
+      setAvailableDemoTrack(null);
       // Flush any pending legitimate desk edit before viewer disables autosave.
       flushDesign();
       const deskTimeline = timelineRef.current.snapshot();
       timelineRef.current.stop();
       audioEngineRef.current?.stopAll();
-      demoTrackAbortRef.current?.abort();
-      demoTrackAbortRef.current = null;
-      setDemoTrackLoading(false);
-      setDemoTrackProgress(null);
       beatGridAbortRef.current?.abort();
       beatGridAbortRef.current = null;
       audioEngineRef.current?.setLiveBpmAnalysis(false);
@@ -3031,6 +3070,7 @@ export const App: React.FC = () => {
 
   const exitViewer = () => {
     if (!viewerModeRef.current) return;
+    cancelDemoLoads();
     sessionEpochRef.current++;
     openRequestRef.current++;
     timeline.stop();
@@ -3115,6 +3155,7 @@ export const App: React.FC = () => {
     try { object = JSON.parse(json); } catch { throw new Error('Choose a valid StageForge JSON file.'); }
     if (!object || typeof object !== 'object' || !('format' in object)) {
       const next = normalizeDesign(parseRigJson(json));
+      cancelDemoLoads();
       stopLiveOutputBeforeStructuralChange('Opened a new rig while live output was active — re-run pre-flight.');
       setPendingMvr(null);
       aiBridgeRef.current?.notifyDocumentChanged();
@@ -3132,6 +3173,7 @@ export const App: React.FC = () => {
     const referenced = referencedFiles(file.media, file.cues, file.timeline, file.stage);
     const wall = file.media?.screen ?? NO_SCREEN;
 
+    cancelDemoLoads();
     stopLiveOutputBeforeStructuralChange('Opened a show file while live output was active — re-run pre-flight.');
     setPendingMvr(null);
     aiBridgeRef.current?.notifyDocumentChanged();
@@ -3148,10 +3190,6 @@ export const App: React.FC = () => {
     installInterchange(file.interchange);
     takeMetaExplicitRef.current = file.timeline?.frameRate !== undefined || file.timeline?.timecodeOffsetMs !== undefined;
     showControl.syncFromShowTimeline(file.timeline);
-    demoTrackAbortRef.current?.abort();
-    demoTrackAbortRef.current = null;
-    setDemoTrackLoading(false);
-    setDemoTrackProgress(null);
     beatGridAbortRef.current?.abort();
     setBeatGridStatus({ state: 'idle' });
     wallClock.set(0, false);
@@ -3196,6 +3234,7 @@ export const App: React.FC = () => {
       showToast('This MVR import was superseded by a newer file open.');
       return;
     }
+    cancelDemoLoads();
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     stopLiveOutputBeforeStructuralChange('Imported an MVR scene while live output was active — re-run pre-flight.');
     setPendingMvr(null);
@@ -3484,11 +3523,12 @@ export const App: React.FC = () => {
       showToast(`Replay is disabled in ${clockModeRef.current} mode.`);
       return;
     }
+    if (!hasTake || timeline.mode !== 'idle') return;
     if (missing.length) showToast(viewerModeRef.current
       ? `Playing with missing media (${missing.join(', ')}) · use Relink.`
       : `Playing with missing media. Relink ${missing.join(', ')} in Files.`);
     cancelCuePreview(false);
-    cancelDemoTrackLoad();
+    cancelDemoLoads();
     const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
     setFollow(null); replaying.current = true; replayLook.current = showState; replayScreen.current = NO_SCREEN; replayMusicClock.current = 0;
     engineRef.current?.releaseDirector(false); previewRig(); timeline.play(false);
@@ -3499,8 +3539,9 @@ export const App: React.FC = () => {
       showToast(`Replay is disabled in ${clockModeRef.current} mode.`);
       return;
     }
+    if (!hasTake || timeline.mode !== 'idle') return;
     cancelCuePreview(false);
-    cancelDemoTrackLoad();
+    cancelDemoLoads();
     if (missing.length) showToast(viewerModeRef.current
       ? `Playing with missing media (${missing.join(', ')}) · use Relink.`
       : `Playing with missing media. Relink ${missing.join(', ')} in Files.`);
@@ -3510,6 +3551,7 @@ export const App: React.FC = () => {
     wallClock.set(timeline.playhead(), true, endMs);
   };
   const pauseTake = () => {
+    if (timeline.mode === 'playing') cancelDemoLoads();
     cancelCuePreview(false);
     timeline.pause();
     replaying.current = false;
@@ -3517,6 +3559,7 @@ export const App: React.FC = () => {
     wallClock.set(timeline.playhead(), false, endMs);
   };
   const seekTake = (ms: number) => {
+    if (hasTake && timeline.mode !== 'recording') cancelDemoLoads();
     const endMs = Math.max(timeline.timeline?.durationMs ?? 0, nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0);
     const clamped = Math.max(0, Math.min(endMs, Math.round(ms)));
     const keepPlaying = timeline.mode === 'playing' && clamped < endMs;
@@ -3527,6 +3570,7 @@ export const App: React.FC = () => {
     wallClock.set(clamped, keepPlaying, endMs);
   };
   const stopTake = () => {
+    if (timeline.mode !== 'idle') cancelDemoLoads();
     cancelCuePreview(false);
     timeline.stop();
     replaying.current = false;
@@ -3570,6 +3614,7 @@ export const App: React.FC = () => {
     if (candidate.kind === 'propose_show' && candidate.show) {
       const file = candidate.show;
       const nextRig = normalizeDesign(file.rig);
+      cancelDemoLoads();
       const wall = file.media?.screen ?? NO_SCREEN;
       // Preserve existing asset blob URLs so Revert AI changes can restore media intact.
       const look = wallLook(file.look, wall);
@@ -3655,6 +3700,7 @@ export const App: React.FC = () => {
       return true;
     }
     if (candidate.kind === 'propose_take' && candidate.timeline) {
+      cancelDemoLoads();
       const nextTake = structuredClone(candidate.timeline);
       const cur = aiDeskRefs.current;
       timelineRef.current.replace(nextTake, {
@@ -3674,6 +3720,7 @@ export const App: React.FC = () => {
       installStage(nextStage);
       const nextEvents = nextStage.screenEvents ?? [];
       if (candidate.timeline) {
+        cancelDemoLoads();
         const cur = aiDeskRefs.current;
         timelineRef.current.replace(structuredClone(candidate.timeline), {
           look: cur.showState,
@@ -3692,11 +3739,12 @@ export const App: React.FC = () => {
       return true;
     }
     return false;
-  }, [applyRig, clearAllBumps, installInterchange, installStage, previewRig, takeDesk, wallClock]);
+  }, [applyRig, cancelDemoLoads, clearAllBumps, installInterchange, installStage, previewRig, takeDesk, wallClock]);
 
   const restoreAiRevertSnapshot = useCallback((snap: AiRevertSnapshot) => {
     if (!capabilitiesRef.current.edit) return;
     const nextRig = normalizeDesign(snap.rig);
+    cancelDemoLoads();
     const nextScreen = snap.screen ? structuredClone(snap.screen) : NO_SCREEN;
     const nextMusic = snap.music ? structuredClone(snap.music) : NO_MUSIC;
     const nextExpectedMusic = snap.expectedMusic ? structuredClone(snap.expectedMusic) : nextMusic;
@@ -3751,7 +3799,7 @@ export const App: React.FC = () => {
       activeCamera: snap.camera,
       volume: snap.volume,
     };
-  }, [applyRig, clearAllBumps, installInterchange, installStage, previewRig, wallClock]);
+  }, [applyRig, cancelDemoLoads, clearAllBumps, installInterchange, installStage, previewRig, wallClock]);
 
   const aiBridge = useAiBridge(
     {
@@ -4025,7 +4073,7 @@ export const App: React.FC = () => {
         demoTrackProgress={demoTrackProgress}
         onTogglePlay={handleTogglePlay}
         onStartDemo={startDemo}
-        onStartDemoTrack={() => void startDemoTrack()}
+        onStartDemoTrack={() => void startDemoTrack(false)}
         onJumpDemoSection={handleJumpDemoSection}
         onDesignStage={() => setDesignerRig(rig)}
         onShowFiles={() => setFilesOpen(true)}
@@ -4566,6 +4614,7 @@ export const App: React.FC = () => {
             record: () => {
               if (!capabilitiesRef.current.edit) return;
               if (!timeline.timeline?.events.length || window.confirm('Replace the recorded take in this session?')) {
+                cancelDemoLoads();
                 cancelCuePreview(false);
                 const stampMeta = takeMetaExplicitRef.current || showControl.clockMode === 'chase';
                 timeline.record(stampMeta ? {

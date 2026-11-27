@@ -42,6 +42,7 @@ function seekLoop(element: HTMLMediaElement, offset: number) {
 function fileMetadata(file: FileSource) {
   const { element, abort } = file;
   return new Promise<void>((resolve, reject) => {
+    if (abort.signal.aborted) return reject(new DOMException('Source changed', 'AbortError'));
     if (element.readyState >= 1) return resolve();
     const clean = () => {
       element.removeEventListener('loadedmetadata', ready);
@@ -70,9 +71,13 @@ export interface PreparedPlaybackElement {
   cleanup: () => void;
 }
 
-export interface DemoTrackLoadResult {
+interface AudioFileLoadResult {
   trackName: string;
   playing: boolean;
+  generation: number;
+}
+
+export interface DemoTrackLoadResult extends AudioFileLoadResult {
   autoplayBlocked: boolean;
 }
 const SCHEDULE_AHEAD = 0.15; // Audio seconds; covers main-thread rendering jitter.
@@ -89,6 +94,7 @@ export class AudioEngine {
   private micStream: MediaStream | null = null;
   private micSrc: MediaStreamAudioSourceNode | null = null;
   private sourceGeneration = 0;
+  private activeSourceGeneration: number | null = null;
 
   private score: DemoScore | null = null;
   private synthTimer: number | null = null;
@@ -291,6 +297,14 @@ export class AudioEngine {
     this.releaseActiveSource();
   }
 
+  public isSourceGenerationActive(generation: number) {
+    return this.activeSourceGeneration === generation;
+  }
+
+  public stopSourceGeneration(generation: number) {
+    if (this.isSourceGenerationActive(generation)) this.releaseActiveSource();
+  }
+
   private cancelPendingSource() {
     if (this.pendingFile) releaseFile(this.pendingFile);
     this.pendingFile = null;
@@ -299,6 +313,7 @@ export class AudioEngine {
 
   private releaseActiveSource() {
     this.detachLiveBpm();
+    this.activeSourceGeneration = null;
     this.playing = false;
     this.source = 'none';
     this.trackName = 'No Audio Loaded';
@@ -422,31 +437,31 @@ export class AudioEngine {
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
+      if (element.src === silentUrl) {
+        element.pause();
+        element.removeAttribute('src');
+        element.load();
+        element.muted = false;
+      }
       URL.revokeObjectURL(silentUrl);
     };
     element.src = silentUrl;
     try {
       const p = element.play();
       if (p && typeof p.then === 'function') {
-        void p.then(() => {
-          if (element.src === silentUrl) {
-            element.pause();
-            element.muted = false;
-          }
-          cleanup();
-        }).catch(() => {
-          if (element.src === silentUrl) element.muted = false;
-          cleanup();
-        });
+        void p.then(cleanup, cleanup);
       }
     } catch {
-      element.muted = false;
       cleanup();
     }
     return { element, cleanup };
   }
 
   public async loadAudioFile(file: File): Promise<string> {
+    return (await this.loadFileSource(file)).trackName;
+  }
+
+  public loadFileSource(file: File): Promise<AudioFileLoadResult> {
     return this.openAudioFile(file, true);
   }
 
@@ -454,26 +469,16 @@ export class AudioEngine {
     file: File,
     demoTrack: DemoTrackMap,
     prepared?: PreparedPlaybackElement,
+    signal?: AbortSignal,
   ): Promise<DemoTrackLoadResult> {
-    if (prepared) {
-      prepared.element.muted = false;
-      prepared.cleanup();
-    }
-    try {
-      const trackName = await this.openAudioFile(file, true, undefined, {
-        demoTrack,
-        element: prepared?.element,
-        allowAutoplayFallback: true,
-      });
-      return {
-        trackName,
-        playing: this.playing,
-        autoplayBlocked: !this.playing,
-      };
-    } catch (error) {
-      prepared?.cleanup();
-      throw error;
-    }
+    prepared?.cleanup();
+    const result = await this.openAudioFile(file, true, undefined, {
+      demoTrack,
+      element: prepared?.element,
+      allowAutoplayFallback: true,
+      signal,
+    });
+    return { ...result, autoplayBlocked: !result.playing };
   }
 
   public isDemoTrackActive(): boolean {
@@ -488,8 +493,10 @@ export class AudioEngine {
     file: File,
     playing: boolean,
     position?: () => number,
-    options?: { demoTrack?: DemoTrackMap; element?: HTMLAudioElement; allowAutoplayFallback?: boolean },
-  ): Promise<string> {
+    options?: { demoTrack?: DemoTrackMap; element?: HTMLAudioElement; allowAutoplayFallback?: boolean; signal?: AbortSignal },
+  ): Promise<AudioFileLoadResult> {
+    const signal = options?.signal;
+    if (signal?.aborted) throw new DOMException('Source changed', 'AbortError');
     const generation = this.cancelPendingSource();
     const ctx = this.ensureContext(playing && (this.source !== 'synth' || this.playing));
     const demoTrack = options?.demoTrack;
@@ -515,13 +522,18 @@ export class AudioEngine {
       }, { signal: candidate.abort.signal });
     }
     this.pendingFile = candidate;
+    const stillPending = () => this.pendingFile === candidate && generation === this.sourceGeneration && !signal?.aborted;
+    const cancelCandidate = () => {
+      if (this.pendingFile === candidate) this.cancelPendingSource();
+    };
+    signal?.addEventListener('abort', cancelCandidate, { once: true });
     let actuallyPlaying = playing;
     try {
       // The disconnected source stays silent until the browser accepts the file.
       element.src = candidate.url;
       if (position) {
         await fileMetadata(candidate);
-        if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+        if (!stillPending()) throw new DOMException('Source changed', 'AbortError');
         seekLoop(element, position());
       }
       if (playing) {
@@ -535,24 +547,30 @@ export class AudioEngine {
           ) {
             // Keep the decoded track loaded in paused state so a single tap plays immediately without re-fetching.
             await fileMetadata(candidate);
-            if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+            if (!stillPending()) throw new DOMException('Source changed', 'AbortError');
             actuallyPlaying = false;
           } else {
             throw playErr;
           }
         }
       }
-      if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+      if (!stillPending()) throw new DOMException('Source changed', 'AbortError');
       if (position) seekLoop(element, position());
+      if (!stillPending()) throw new DOMException('Source changed', 'AbortError');
       node.connect(this.masterGain!);
+      if (!stillPending()) throw new DOMException('Source changed', 'AbortError');
     } catch (error) {
-      if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
-      this.cancelPendingSource();
+      const current = stillPending();
+      cancelCandidate();
+      if (!current) throw new DOMException('Source changed', 'AbortError');
       throw error;
+    } finally {
+      signal?.removeEventListener('abort', cancelCandidate);
     }
     this.pendingFile = null;
     this.releaseActiveSource();
     this.activeFile = candidate;
+    this.activeSourceGeneration = generation;
     this.source = 'file';
     this.trackName = demoTrack ? demoTrack.title : file.name.replace(/\.[^/.]+$/, '');
     this.playing = actuallyPlaying;
@@ -562,7 +580,7 @@ export class AudioEngine {
     }
     if (actuallyPlaying) this.ensureContext();
     if (this.liveBpmEnabled) void this.attachLiveBpm();
-    return this.trackName;
+    return { trackName: this.trackName, playing: actuallyPlaying, generation };
   }
 
   public setBeatGrid(grid: BeatGrid | null) {
@@ -666,7 +684,9 @@ export class AudioEngine {
     bpm: number,
     lateMs: number,
     demoTrack?: DemoTrackMap,
+    signal?: AbortSignal,
   ) {
+    if (signal?.aborted) throw new DOMException('Source changed', 'AbortError');
     this.setBpm(bpm);
     const late = Number.isFinite(lateMs) ? Math.max(0, lateMs) / 1000 : 0;
     if (ref.kind === 'live' || ref.kind === 'none') {
@@ -693,10 +713,10 @@ export class AudioEngine {
     const position = () => (ref.offsetSeconds ?? 0) + (ref.playing ? late + (performance.now() - started) / 1000 : 0);
     if (active?.file !== selected || active?.demoTrack !== demoTrack) {
       this.stopAll();
-      await this.openAudioFile(selected, ref.playing, position, demoTrack ? { demoTrack } : undefined);
-      return;
+      return this.openAudioFile(selected, ref.playing, position, { demoTrack, signal });
     }
     const generation = this.cancelPendingSource();
+    this.activeSourceGeneration = generation;
     const element = active.element;
     seekLoop(element, position());
     this.playing = ref.playing;
@@ -714,6 +734,7 @@ export class AudioEngine {
         }
       }
     }
+    return { trackName: this.trackName, playing: this.playing, generation };
   }
 
   public togglePlayPause(): boolean {
@@ -796,7 +817,7 @@ export class AudioEngine {
     }
   }
 
-  public async startMicInput(): Promise<void> {
+  public async startMicInput(): Promise<number> {
     const generation = this.cancelPendingSource();
     const ctx = this.ensureContext(this.source !== 'synth' || this.playing);
     let stream: MediaStream | undefined;
@@ -822,6 +843,7 @@ export class AudioEngine {
       throw error;
     }
     this.releaseActiveSource();
+    this.activeSourceGeneration = generation;
     this.micStream = stream;
     this.micSrc = node;
     for (const track of stream.getAudioTracks()) {
@@ -834,6 +856,7 @@ export class AudioEngine {
     this.playing = true;
     this.ensureContext();
     if (this.liveBpmEnabled) void this.attachLiveBpm();
+    return generation;
   }
 
   public getStatus() {

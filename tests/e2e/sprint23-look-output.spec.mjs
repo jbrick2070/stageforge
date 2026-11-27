@@ -1,3 +1,4 @@
+import { playSynthDemo } from '../support/play-synth-demo.mjs';
 import { expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -60,7 +61,7 @@ test('Sprint 23A: restrained bloom, accessibility policy, export parity, localiz
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto('/?probe');
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.getByRole('button', { name: 'Pause', exact: true }).click();
   await page.evaluate(() => {
@@ -321,7 +322,7 @@ test('Sprint 23A: restrained bloom, accessibility policy, export parity, localiz
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.evaluate(() => {
     window.stageforgeProbe.patchShowState({

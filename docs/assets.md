@@ -76,7 +76,7 @@ StageForge selects a `RenderTier` (`'high'` vs `'low'`) once at `StageEngine` in
 
 ## Demo Track Provenance
 
-StageForge bundles a recorded demo track in `public/demo/track.mp3` with its section map `public/demo/track.json` (see [`docs/demo-track.md`](demo-track.md)). The audio file is loaded lazily only when the user clicks **Play demo track** (zero audio network requests on initial page load).
+StageForge bundles a recorded demo track in `public/demo/track.mp3` with its section map `public/demo/track.json` (see [`docs/demo-track.md`](demo-track.md)). The audio file downloads after an explicit **Play demo** or **Play demo track** action.
 
 > **Licence boundary:** `public/demo/track.mp3` is **not** covered by this repository's MIT licence. Licence terms for the audio file are **pending owner decision** (the repository source code and `public/demo/track.json` stay MIT).
 

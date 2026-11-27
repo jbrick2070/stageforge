@@ -1,3 +1,4 @@
+import { playSynthDemo } from '../support/play-synth-demo.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { installFakeWebXr } from '../support/fake-webxr.mjs';
@@ -28,8 +29,11 @@ async function exit(page) {
 }
 
 test('native Demo controller defers the opening clear to the dedicated XR framebuffer', async ({ page }, info) => {
+  await page.route('**/demo/track.json', route => route.fulfill({ status: 204 }));
+  const absentRecording = page.waitForResponse(response => response.url().endsWith('/demo/track.json') && response.status() === 204);
   await boot(page, { directEyeCapture: true, dedicatedXrFramebuffer: true });
-  // The saved fixture has no audio or take, so this is the actual first startDemo()/beginDemo() path.
+  await absentRecording;
+  // With no bundled recording, the actual Demo control takes the synth fallback from a lit, empty desk.
   const fixture = await stereoLandmarkFixture(page, 'arena');
   await openStereoLandmarkShow(page, fixture);
   await enter(page, true);
@@ -105,7 +109,7 @@ test('warning-gated stereo entry restores one loop owner and every renderer leas
     if (/webXrAudience/i.test(request.url())) xrChunkRequests.push(request.url());
   });
   await boot(page);
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.getByRole('button', { name: 'Pause', exact: true }).click();
 
@@ -384,7 +388,7 @@ test('dispose stays fail-closed when the headset session rejects termination', a
 
 test('audience viewpoints, comfort menu, preview workflows and emulator budgets stay isolated', async ({ page }) => {
   await boot(page);
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await enter(page, true);
   await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
@@ -516,7 +520,7 @@ test('the expanded original crowd renders in both stereo profiles and preserves 
     }
   });
   await boot(page);
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.getByRole('button', { name: 'Pause', exact: true }).click();
 
@@ -579,7 +583,7 @@ test('the equal-density original and 1928 cast crowds render within both Arena s
     }
   });
   await boot(page);
-  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await playSynthDemo(page);
   await page.getByRole('button', { name: /Arena Rock/ }).first().click();
   await page.getByRole('button', { name: 'Pause', exact: true }).click();
 
