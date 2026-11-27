@@ -175,7 +175,14 @@ test('the Club venue rejection preserves the Steamboat Willie desk, saved rig an
   expect(replaced.crowd).toBeUndefined();
   expect(replaced.stage).toBeUndefined();
   expect(replaced.interchange).toBeUndefined();
-  expect(replaced.cues).toEqual(before.cues);
+  const formerPodTargets = Object.keys(before.cues[0].state.motors.podTargets).sort();
+  expect(formerPodTargets).toEqual(['pod-back', 'pod-front', 'pod-mid', 'pod-wing-l', 'pod-wing-r']);
+  expect(replaced.rig.trussPods.some(pod => formerPodTargets.includes(pod.id))).toBe(false);
+  // Show export keeps each cue and omits motor targets for pods absent from the replacement rig.
+  expect(replaced.cues).toEqual(before.cues.map(cue => ({
+    ...cue,
+    state: { ...cue.state, motors: { ...cue.state.motors, podTargets: {} } },
+  })));
   expect(errors).toEqual([]);
 });
 
