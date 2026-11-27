@@ -6,6 +6,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeOriginalFoxGeometry, makeOriginalHumanGeometry, makeOriginalMothGeometry, makeOriginalTicketTakerGeometry } from './originalCrowdGeometry';
 import { packCrowdGeometry, setPackedCrowdMaterial } from './packedCrowdGeometry';
+import { isSteamboatModelId } from '../data/crowdFilmCast';
+import { steamboatCrowdGeometry } from './steamboatCrowdGeometry';
 import type { PlanPoint, RigConfig, TrussShape, VenueType } from '../types/show';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
@@ -983,6 +985,7 @@ function originalCrowdGeometry(modelId: CrowdModelId) {
   if (modelId === 'stageforge-fox-v1') return makeOriginalFoxGeometry();
   if (modelId === 'stageforge-moth-v1') return makeOriginalMothGeometry();
   if (modelId === 'stageforge-ticket-taker-v1') return makeOriginalTicketTakerGeometry();
+  if (isSteamboatModelId(modelId)) return steamboatCrowdGeometry(modelId);
 
   const pieces: THREE.BufferGeometry[] = [];
   const part = (geometry: THREE.BufferGeometry, color: number) => {

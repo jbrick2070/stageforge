@@ -185,7 +185,7 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
   expect(existsSync(path.join(appDir, 'dmx-packets.cjs'))).toBe(true);
   expect(existsSync(path.join(appDir, 'dmx-sender.cjs'))).toBe(true);
   expect(existsSync(path.join(appDir, 'dmx-ipc.cjs'))).toBe(true);
-  for (const v of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
+  for (const v of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
     expect(existsSync(path.join(appDir, 'renderer', 'schemas', `show-v${v}.schema.json`))).toBe(true);
   }
   const demoMapPath = path.join(appDir, 'renderer', 'demo', 'track.json');
@@ -1445,8 +1445,8 @@ test('AI bridge boots off, blocks live DMX arming, serves MCP tools/proposals/re
       jsonrpc: '2.0', id: 21, method: 'tools/call', params: { name: 'get_schema', arguments: {} },
     }, sid);
     const packagedSchema = JSON.parse(schemaRes.json.result.content[0].text);
-    expect(packagedSchema.$id).toBe('https://jbrick2070.github.io/stageforge/schemas/show-v13.schema.json');
-    expect(packagedSchema.properties.version.const).toBe(13);
+    expect(packagedSchema.$id).toBe('https://jbrick2070.github.io/stageforge/schemas/show-v14.schema.json');
+    expect(packagedSchema.properties.version.const).toBe(14);
 
     const stateBefore = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
     const beforeObj = JSON.parse(stateBefore.json.result.content[0].text);

@@ -38,11 +38,18 @@ import {
   CROWD_MODEL_PRESETS,
   crowdModelMix,
   makeDefaultCrowd,
+  pickCrowdTheatreSeat,
+  planCrowdPlacement,
   resolveCrowdLayout,
+  theatreSeatAnchors,
   withCrowdModelMix,
   type CrowdLayout,
   type CrowdModelMix,
+  type CrowdPlacementRequest,
+  type CrowdV1UpgradePreview,
 } from '../data/crowdPlacement';
+import { STEAMBOAT_MODEL_IDS } from '../data/crowdFilmCast';
+import { CROWD_MODEL_REGISTRY, crowdModel, type CrowdModelId, type CrowdPose } from '../data/crowdModels';
 import { GRID_HEIGHT } from '../data/stageEquipment';
 import { placeFixtures } from '../data/fixturePlacement';
 import { computeReachMap, computeVenueBounds, evaluateLaserZones } from '../data/measure';
@@ -91,7 +98,7 @@ import {
 } from '../data/stagePlan';
 import './StageDesigner.css';
 
-type Tool = 'select' | 'platform' | 'path' | 'wall' | 'hang' | 'span' | 'prop' | 'pan';
+type Tool = 'select' | 'platform' | 'path' | 'wall' | 'hang' | 'span' | 'prop' | 'pan' | 'crowd';
 type Kind = 'platform' | 'truss' | PlanItemKind;
 type Selection = { kind: Kind; id: string; node?: number };
 type View = { x: number; z: number; width: number };
@@ -250,6 +257,7 @@ function Field({
   max,
   integer = false,
   unit = 'm',
+  exact = false,
 }: {
   label: string;
   value: number;
@@ -258,8 +266,9 @@ function Field({
   max?: number;
   integer?: boolean;
   unit?: string;
+  exact?: boolean;
 }) {
-  const formatted = String(rounded(value));
+  const formatted = String(exact ? value : rounded(value));
   const [text, setText] = useState(formatted);
   const [invalid, setInvalid] = useState(false);
   const displayedRef = useRef(formatted);
@@ -365,6 +374,31 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
   const draft = history.now.rig;
   const stageDraft = history.now.stage;
   const crowdDraft = history.now.crowd;
+  const [crowdCharacter, setCrowdCharacter] = useState<CrowdModelId>('stageforge-steamboat-1928-mickey-capped');
+  const [crowdPose, setCrowdPose] = useState<CrowdPose>(() => draft.venue === 'theatre' ? 'seated' : 'standing');
+  const [crowdPoint, setCrowdPoint] = useState({ x: '0', z: String(rounded(draft.stageDepth / 2 + 1)) });
+  const [crowdSeatId, setCrowdSeatId] = useState('');
+  const [crowdYaw, setCrowdYaw] = useState('');
+  const [pendingCrowdUpgrade, setPendingCrowdUpgrade] = useState<{
+    rig: RigConfig;
+    draft: CrowdLayout;
+    request: CrowdPlacementRequest;
+    preview: CrowdV1UpgradePreview;
+  }>();
+  const placementPose = draft.venue === 'theatre' ? crowdPose : 'standing';
+  const theatreSeats = useMemo(() => theatreSeatAnchors(draft), [draft]);
+  const seatRows = useMemo(() => {
+    const rows = new Map<number, typeof theatreSeats>();
+    for (const seat of theatreSeats) {
+      const row = rows.get(seat.row);
+      if (row) row.push(seat);
+      else rows.set(seat.row, [seat]);
+    }
+    return [...rows];
+  }, [theatreSeats]);
+  const activeSeat = theatreSeats.find(seat => seat.id === crowdSeatId) ?? theatreSeats[0];
+  const placementFilm = crowdModel(crowdCharacter).filmReference;
+  const crowdUpgrade = pendingCrowdUpgrade && pendingCrowdUpgrade.draft === crowdDraft && pendingCrowdUpgrade.rig === draft ? pendingCrowdUpgrade : undefined;
   const [tool, setTool] = useState<Tool>('select');
   const [selected, setSelected] = useState<Selection>();
   const [points, setPoints] = useState<PlanPoint[]>([]);
@@ -484,6 +518,49 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
   const commit = (next: RigConfig, replacing = false) => commitDraft({ ...history.now, rig: next }, replacing);
   const commitStage = (next: NativeStage | undefined) => commitDraft({ ...history.now, stage: next });
   const commitCrowd = (next: CrowdLayout | undefined) => commitDraft({ ...history.now, crowd: next });
+  const requestCrowdPlacement = (request: CrowdPlacementRequest) => {
+    if (!crowdDraft) {
+      setMessage('Enable the authored crowd before placing a character.');
+      return;
+    }
+    const result = planCrowdPlacement(draft, crowdDraft, request);
+    if (result.status === 'needs-v1-approval') {
+      setPendingCrowdUpgrade({ rig: draft, draft: crowdDraft, request, preview: result.preview });
+      setMessage(result.message);
+      return;
+    }
+    setPendingCrowdUpgrade(undefined);
+    if (result.status === 'added') {
+      commitCrowd(result.layout);
+      setMessage(request.kind === 'cast'
+        ? `Placed ${result.addedIds.length} cast members.`
+        : `Placed ${crowdModel(request.modelId).label}.`);
+    } else {
+      setMessage(result.message);
+    }
+  };
+  const placeCrowdCharacter = (point?: PlanPoint, seatId?: string) => {
+    const yaw = crowdYaw.trim() ? Number(crowdYaw) : undefined;
+    if (placementPose === 'seated') {
+      const id = seatId ?? activeSeat?.id;
+      if (!id) return setMessage('Choose a theatre seat.');
+      requestCrowdPlacement({ kind: 'single', modelId: crowdCharacter, target: { pose: 'seated', seatId: id }, yaw });
+      return;
+    }
+    const floor = point ?? editedCrowdPoint();
+    if (!floor) return setMessage('Enter finite floor X and Z coordinates.');
+    requestCrowdPlacement({ kind: 'single', modelId: crowdCharacter, target: { pose: 'standing', ...floor }, yaw });
+  };
+  const editedCrowdPoint = (): PlanPoint | undefined => {
+    if (!crowdPoint.x.trim() || !crowdPoint.z.trim()) return undefined;
+    const x = Number(crowdPoint.x), z = Number(crowdPoint.z);
+    return Number.isFinite(x) && Number.isFinite(z) ? { x, z } : undefined;
+  };
+  const placeFullCast = () => {
+    const anchor = placementPose === 'seated' ? activeSeat : editedCrowdPoint();
+    if (!anchor) return setMessage(placementPose === 'seated' ? 'Choose a theatre seat.' : 'Enter finite floor X and Z coordinates.');
+    requestCrowdPlacement({ kind: 'cast', pose: placementPose, anchor });
+  };
   const resetGesture = () => {
     setDrag(undefined);
     setPoints([]);
@@ -492,6 +569,7 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
   };
   const choose = (next: Tool) => {
     resetGesture();
+    setPendingCrowdUpgrade(undefined);
     setTool(next);
   };
   // Hangs, layout trusses and props are selected by list index, which can point at another item
@@ -666,7 +744,7 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
   const convertSpan = () => {
     const converted = convertLayoutTruss(draft, stageDraft, index);
     if (!converted) return;
-    commitDraft(converted);
+    commitDraft({ ...history.now, ...converted });
     const pod = converted.rig.trussPods[converted.rig.trussPods.length - 1];
     setSelected({ kind: 'truss', id: pod.id });
     setMessage(`${pod.name} is now a rig truss. Hang fixtures on it in the Rig builder.`);
@@ -685,6 +763,18 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
       const raw = world(e, false);
       e.currentTarget.setPointerCapture(e.pointerId);
       setDrag({ origin: raw, at: raw, pan: view, pointer: e.pointerId });
+      return;
+    }
+    if (tool === 'crowd') {
+      if (!crowdDraft) return choose('select');
+      if (placementPose === 'seated') {
+        const seat = pickCrowdTheatreSeat(draft, world(e, false));
+        if (!seat) return setMessage('Click a marked theatre seat.');
+        setCrowdSeatId(seat.id);
+        placeCrowdCharacter(undefined, seat.id);
+      } else {
+        placeCrowdCharacter(at);
+      }
       return;
     }
     if (tool === 'path') {
@@ -777,7 +867,7 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();
       if (tool === 'path' || tool === 'span') setPoints(points.slice(0, -1));
-      else remove();
+      else if (tool !== 'crowd') remove();
       return;
     }
     if (e.key === 'Enter' && e.target === svg.current && tool === 'path') {
@@ -852,6 +942,7 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
     span: points.length ? 'Click the other end of the truss.' : 'Click the two ends of a layout truss.',
     prop: 'Click to place a layout prop.',
     pan: 'Drag the plan to pan.',
+    crowd: placementPose === 'seated' ? 'Click a marked theatre seat.' : 'Click the audience floor to place the character.',
   };
   const context = toolHints[tool] ?? (selectedKey
     ? wall || hang
@@ -1106,6 +1197,9 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
               <path d={`M${left} 0h${view.width} M0 ${top}v${height}`} className="sd-axis" />
               {shownCrowd && (
                 <g data-testid="crowd-plan-overlay" pointerEvents="none" aria-hidden="true">
+                  {tool === 'crowd' && placementPose === 'seated' && theatreSeats.map(seat => (
+                    <circle key={seat.id} cx={seat.x} cy={seat.z} r={0.13} fill="rgba(153, 211, 255, 0.75)" />
+                  ))}
                   {shownCrowd.zones.map((zone) => (
                     <rect
                       key={`zone:${zone.id}`}
@@ -1466,7 +1560,7 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
           <aside className="sd-inspector">
             <h3>
               {tool === 'path' ? 'Draw truss path' : tool === 'platform' ? 'Draw platform' : tool === 'span' ? 'Draw layout truss'
-                : tool === 'wall' ? 'Place screen' : tool === 'hang' ? 'Place speaker hang' : tool === 'prop' ? 'Place layout prop' : 'Selection'}
+                : tool === 'wall' ? 'Place screen' : tool === 'hang' ? 'Place speaker hang' : tool === 'prop' ? 'Place layout prop' : tool === 'crowd' ? 'Place crowd characters' : 'Selection'}
             </h3>
             {inspectedElevation !== undefined && <p>
               {draft.venue === 'club' ? 'Ceiling' : 'Rigging grid'} {gridHeight} m
@@ -1740,27 +1834,17 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
                         type="checkbox"
                         aria-label="Authored crowd"
                         checked={!!crowdDraft}
-                        onChange={(e) => commitCrowd(e.target.checked ? makeDefaultCrowd(draft) : undefined)}
+                        onChange={(e) => {
+                          if (!e.target.checked && tool === 'crowd') choose('select');
+                          commitCrowd(e.target.checked ? makeDefaultCrowd(draft) : undefined);
+                        }}
                       />
                       <span>Authored crowd</span>
                     </label>
                     {crowdDraft && (
                       <div data-testid="crowd-editor">
-                        <label className="sd-field">
-                          <span>Generator seed</span>
-                          <input
-                            aria-label="Crowd generator seed"
-                            type="number"
-                            min={0}
-                            max={4294967295}
-                            step={1}
-                            value={crowdDraft.seed}
-                            onChange={(e) => {
-                              const seed = Number(e.target.value);
-                              if (Number.isSafeInteger(seed) && seed >= 0 && seed <= 4294967295) commitCrowd({ ...crowdDraft, seed });
-                            }}
-                          />
-                        </label>
+                        <Field label="Crowd generator seed" value={crowdDraft.seed} min={0} max={4294967295}
+                          unit="" integer onChange={seed => commitCrowd({ ...crowdDraft, seed })} />
                         <label className="sd-field">
                           <span>Crowd model mix</span>
                           <select
@@ -1779,26 +1863,90 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
                           </select>
                         </label>
                         {crowdDraft.zones[0] && (
+                          <Field label="Crowd zone occupancy" unit="" exact min={0} max={1} value={crowdDraft.zones[0].occupancy}
+                            onChange={occupancy => commitCrowd({
+                              ...crowdDraft,
+                              zones: crowdDraft.zones.map((zone, index) => index === 0 ? { ...zone, occupancy } : zone),
+                            })} />
+                        )}
+                        <label className="sd-field">
+                          <span>Crowd character</span>
+                          <select aria-label="Crowd character" value={crowdCharacter}
+                            onChange={e => setCrowdCharacter(e.target.value as CrowdModelId)}>
+                            <optgroup label="StageForge originals">
+                              {Object.values(CROWD_MODEL_REGISTRY).filter(model => !model.filmReference).map(model => (
+                                <option key={model.id} value={model.id}>{model.label}</option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Steamboat Willie (1928)">
+                              {STEAMBOAT_MODEL_IDS.map(id => <option key={id} value={id}>{crowdModel(id).label}</option>)}
+                            </optgroup>
+                          </select>
+                        </label>
+                        {placementFilm && (
+                          <p className="sd-note">
+                            {placementFilm.appearance} · {placementFilm.scene}. <a href={placementFilm.sourceUrl} target="_blank" rel="noreferrer">1928 film reference</a>
+                          </p>
+                        )}
+                        {draft.venue === 'theatre' && (
                           <label className="sd-field">
-                            <span>Primary zone occupancy</span>
-                            <input
-                              aria-label="Crowd zone occupancy"
-                              type="number"
-                              min={0}
-                              max={1}
-                              step="any"
-                              value={crowdDraft.zones[0].occupancy}
-                              onChange={(e) => {
-                                const occupancy = Number(e.target.value);
-                                if (Number.isFinite(occupancy) && occupancy >= 0 && occupancy <= 1) {
-                                  commitCrowd({
-                                    ...crowdDraft,
-                                    zones: crowdDraft.zones.map((zone, index) => index === 0 ? { ...zone, occupancy } : zone),
-                                  });
-                                }
-                              }}
-                            />
+                            <span>Placement</span>
+                            <select aria-label="Crowd placement pose" value={placementPose}
+                              onChange={e => setCrowdPose(e.target.value as CrowdPose)}>
+                              <option value="seated">Theatre seat</option>
+                              <option value="standing">Audience floor</option>
+                            </select>
                           </label>
+                        )}
+                        {placementPose === 'seated' ? (
+                          <label className="sd-field">
+                            <span>Theatre seat</span>
+                            <select aria-label="Crowd theatre seat" value={activeSeat?.id ?? ''}
+                              onChange={e => setCrowdSeatId(e.target.value)}>
+                              {seatRows.map(([row, seats]) => (
+                                <optgroup key={row} label={`Row ${row + 1}`}>
+                                  {seats.map(seat => <option key={seat.id} value={seat.id}>{`Row ${row + 1}, seat ${seat.column + 1}`}</option>)}
+                                </optgroup>
+                              ))}
+                            </select>
+                          </label>
+                        ) : (
+                          <>
+                            <label className="sd-field">
+                              <span>Floor X (m)</span>
+                              <input inputMode="decimal" aria-label="Crowd floor X" value={crowdPoint.x}
+                                onChange={e => setCrowdPoint({ ...crowdPoint, x: e.target.value })} />
+                            </label>
+                            <label className="sd-field">
+                              <span>Floor Z (m)</span>
+                              <input inputMode="decimal" aria-label="Crowd floor Z" value={crowdPoint.z}
+                                onChange={e => setCrowdPoint({ ...crowdPoint, z: e.target.value })} />
+                            </label>
+                          </>
+                        )}
+                        <label className="sd-field">
+                          <span>Yaw (°)</span>
+                          <input inputMode="decimal" placeholder="Face stage" aria-label="Crowd placement yaw"
+                            value={crowdYaw} onChange={e => setCrowdYaw(e.target.value)} />
+                        </label>
+                        <button aria-pressed={tool === 'crowd'} onClick={() => {
+                          setSelected(undefined);
+                          choose(tool === 'crowd' ? 'select' : 'crowd');
+                        }}>Place characters on plan</button>
+                        <button onClick={() => placeCrowdCharacter()}>Place character</button>
+                        <button onClick={placeFullCast}>Place full Steamboat Willie cast</button>
+                        {crowdUpgrade && (
+                          <div role="group" aria-label="Crowd generator upgrade">
+                            <p className="sd-note">
+                              Existing crowd after upgrade: {crowdUpgrade.preview.peopleAfter} people.
+                              {crowdUpgrade.preview.generatedChangedInPlace} moved, {crowdUpgrade.preview.generatedRemoved} removed, {crowdUpgrade.preview.generatedAdded} added by the generator.
+                            </p>
+                            <button onClick={() => requestCrowdPlacement({ ...crowdUpgrade.request, approveV1Upgrade: true })}>Upgrade and place</button>
+                            <button onClick={() => {
+                              setPendingCrowdUpgrade(undefined);
+                              setMessage('Crowd placement cancelled.');
+                            }}>Keep current crowd</button>
+                          </div>
                         )}
                         <p className="sd-note" role={crowdResult?.error ? 'alert' : undefined}>
                           {crowdResult?.error || `${crowdResult?.value?.placed ?? 0} reproducible people · ${crowdDraft.zones.length} zone${crowdDraft.zones.length === 1 ? '' : 's'} · ${crowdDraft.exclusions.length} exclusion${crowdDraft.exclusions.length === 1 ? '' : 's'}`}

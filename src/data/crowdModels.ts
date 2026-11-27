@@ -1,7 +1,9 @@
+import { isSteamboatModelId, STEAMBOAT_APPEARANCES, STEAMBOAT_FILM, STEAMBOAT_MODEL_IDS, type SteamboatModelId } from './crowdFilmCast';
+
 export type CrowdPose = 'standing' | 'seated';
 export type CrowdRenderTier = 'high' | 'low' | 'xr';
 export type CrowdModelFamily = 'human' | 'robot' | 'alien' | 'animal' | 'cartoon';
-export type CrowdGeometryKey = 'legacy-human-v1' | 'original-robot-v1' | 'original-alien-v1' | 'original-human-v2' | 'original-fox-v1' | 'original-moth-v1' | 'original-ticket-taker-v1';
+export type CrowdGeometryKey = 'legacy-human-v1' | 'original-robot-v1' | 'original-alien-v1' | 'original-human-v2' | 'original-fox-v1' | 'original-moth-v1' | 'original-ticket-taker-v1' | SteamboatModelId;
 
 export const CROWD_MODEL_IDS_V11 = [
   'stageforge-human-v1',
@@ -13,11 +15,12 @@ export const CROWD_MODEL_IDS_V12 = [
   'stageforge-human-v2',
   'stageforge-fox-v1',
 ] as const;
-export const CROWD_MODEL_IDS = [
+export const CROWD_MODEL_IDS_V13 = [
   ...CROWD_MODEL_IDS_V12,
   'stageforge-moth-v1',
   'stageforge-ticket-taker-v1',
 ] as const;
+export const CROWD_MODEL_IDS = [...CROWD_MODEL_IDS_V13, ...STEAMBOAT_MODEL_IDS] as const;
 export type CrowdModelId = (typeof CROWD_MODEL_IDS)[number];
 
 export interface CrowdHandsetSocket {
@@ -43,6 +46,7 @@ export interface CrowdModelSpec {
   family: CrowdModelFamily;
   label: string;
   geometryKey: CrowdGeometryKey;
+  filmReference?: typeof STEAMBOAT_FILM & { role: string; appearance: string; scene: string };
   /** Measured highest local-space vertex across the base geometry and all morph targets. */
   geometryHeightM: number;
   /** Measured largest local-space XZ radius across the base geometry and all morph targets. */
@@ -279,9 +283,54 @@ export const STAGEFORGE_TICKET_TAKER_V1: CrowdModelSpec = Object.freeze({
   legacyCompatible: false,
 } as CrowdModelSpec);
 
+// Indexed triangles, highest vertex and largest XZ radius. Measured on the Mac mini.
+const steamboatShapes = {
+  'stageforge-steamboat-1928-mickey-capped': [264, 1.430000, 0.259383],
+  'stageforge-steamboat-1928-mickey-bare': [222, 1.357942, 0.259383],
+  'stageforge-steamboat-1928-minnie-with-ukulele': [262, 1.479601, 0.248301],
+  'stageforge-steamboat-1928-minnie': [234, 1.479601, 0.221415],
+  'stageforge-steamboat-1928-pete': [262, 1.711647, 0.401463],
+  'stageforge-steamboat-1928-parrot': [216, 0.938000, 0.342401],
+  'stageforge-steamboat-1928-cow-thin': [248, 1.326730, 0.445253],
+  'stageforge-steamboat-1928-cow-round': [248, 1.326730, 0.445309],
+  'stageforge-steamboat-1928-goat': [256, 1.473267, 0.442888],
+  'stageforge-steamboat-1928-galley-cat': [248, 0.843406, 0.409648],
+  'stageforge-steamboat-1928-waterfowl': [178, 0.909250, 0.365652],
+  'stageforge-steamboat-1928-sow': [264, 0.669500, 0.436965],
+  'stageforge-steamboat-1928-piglet-light': [234, 0.318000, 0.275412],
+  'stageforge-steamboat-1928-piglet-dark': [234, 0.318000, 0.275412],
+  'stageforge-steamboat-1928-dock-bird-upright': [204, 1.662303, 0.389850],
+  'stageforge-steamboat-1928-dock-bird-leaning': [204, 1.539198, 0.438061],
+} as const satisfies Record<SteamboatModelId, readonly [number, number, number]>;
+
+const steamboatModels = STEAMBOAT_MODEL_IDS.map<CrowdModelSpec>((id) => {
+  const { family, role, appearance, scene } = STEAMBOAT_APPEARANCES[id];
+  const [trianglesPerInstance, geometryHeightM, geometryRadiusM] = steamboatShapes[id];
+  const budget: CrowdModelBudget = {
+    trianglesPerInstance, materialSlots: 1, materialTextures: 0, morphTextures: 0, figureBatches: 1,
+  };
+  const submitted = { submittedHeightM: geometryHeightM, submittedRadiusM: geometryRadiusM, pivot: [0, 0, 0] as const, handset: null };
+  return Object.freeze({
+    id, family, label: `${role} · ${appearance}`, geometryKey: id, geometryHeightM, geometryRadiusM,
+    provenance: { creator: 'StageForge', source: 'StageForge mesh based on the 1928 film', license: 'StageForge original' as const },
+    filmReference: { ...STEAMBOAT_FILM, role, appearance, scene },
+    poses: {
+      standing: {
+        ...submitted,
+        maxHeightM: CROWD_PLACEMENT_ENVELOPE.standing.maxHeightM,
+        clearanceRadiusM: Math.min(CROWD_PLACEMENT_ENVELOPE.standing.clearanceRadiusM, geometryRadiusM + 0.04),
+      },
+      seated: { ...submitted, ...CROWD_PLACEMENT_ENVELOPE.seated },
+    },
+    budgets: { high: budget, low: budget, xr: budget },
+    legacyCompatible: false,
+    packing: 'required' as const,
+  });
+});
+
 const SAFE_MODEL_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const CROWD_POSE_MAX_SCALE = Object.freeze({ standing: 1.12, seated: 0.74 });
-const EXPECTED_MODEL_KIND: Readonly<Record<CrowdModelId, readonly [CrowdModelFamily, CrowdGeometryKey]>> = Object.freeze({
+const EXPECTED_MODEL_KIND: Readonly<Record<(typeof CROWD_MODEL_IDS_V13)[number], readonly [CrowdModelFamily, CrowdGeometryKey]>> = Object.freeze({
   'stageforge-human-v1': ['human', 'legacy-human-v1'],
   'stageforge-robot-v1': ['robot', 'original-robot-v1'],
   'stageforge-alien-v1': ['alien', 'original-alien-v1'],
@@ -302,9 +351,20 @@ export function validateCrowdModelSpec(spec: CrowdModelSpec): void {
   if (!SAFE_MODEL_ID.test(spec.id) || !CROWD_MODEL_IDS.includes(spec.id)) {
     throw new Error(`crowd model id "${spec.id}" is not a registered safe ID.`);
   }
-  const expectedKind = EXPECTED_MODEL_KIND[spec.id];
+  const expectedKind: readonly [CrowdModelFamily, CrowdGeometryKey] = isSteamboatModelId(spec.id)
+    ? [STEAMBOAT_APPEARANCES[spec.id].family, spec.id]
+    : EXPECTED_MODEL_KIND[spec.id];
   if (spec.family !== expectedKind[0] || spec.geometryKey !== expectedKind[1]) {
     throw new Error(`crowd model ${spec.id} has an invalid family or geometry key.`);
+  }
+  if (isSteamboatModelId(spec.id)) {
+    const reference = spec.filmReference;
+    const appearance = STEAMBOAT_APPEARANCES[spec.id];
+    if (!reference || reference.title !== STEAMBOAT_FILM.title || reference.year !== STEAMBOAT_FILM.year
+      || reference.sourceUrl !== STEAMBOAT_FILM.sourceUrl || reference.continuityUrl !== STEAMBOAT_FILM.continuityUrl
+      || reference.role !== appearance.role || reference.appearance !== appearance.appearance || reference.scene !== appearance.scene) {
+      throw new Error(`crowd model ${spec.id} has an invalid film reference.`);
+    }
   }
   if (!Number.isFinite(spec.geometryHeightM) || spec.geometryHeightM <= 0) {
     throw new Error(`crowd model ${spec.id} geometry height must be positive and finite.`);
@@ -369,6 +429,7 @@ export function validateCrowdModelSpec(spec: CrowdModelSpec): void {
 const registeredModels = [
   STAGEFORGE_HUMAN_V1, STAGEFORGE_ROBOT_V1, STAGEFORGE_ALIEN_V1,
   STAGEFORGE_HUMAN_V2, STAGEFORGE_FOX_V1, STAGEFORGE_MOTH_V1, STAGEFORGE_TICKET_TAKER_V1,
+  ...steamboatModels,
 ]
   .sort((a, b) => a.id.localeCompare(b.id));
 registeredModels.forEach(validateCrowdModelSpec);

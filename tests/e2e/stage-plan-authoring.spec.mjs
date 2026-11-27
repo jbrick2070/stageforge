@@ -278,3 +278,59 @@ test('authored crowd drafts cancel, apply, save offline, and stay isolated throu
   await expect(page.getByText('VIEW ONLY', { exact: true })).toHaveCount(0);
   expect((await page.evaluate(() => window.stageforgeProbe.crowd())).transforms).toEqual(deskCrowd.transforms);
 });
+
+
+test('individual film characters and the complete cast stay editable and reopen offline', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  await page.goto('/?probe');
+  const designer = await openDesigner(page);
+  await designer.getByLabel('Authored crowd').check();
+  const occupancy = designer.getByLabel('Crowd zone occupancy');
+  await occupancy.fill('0');
+  await occupancy.press('Tab');
+  const picker = designer.getByLabel('Crowd character', { exact: true });
+  await picker.selectOption('stageforge-steamboat-1928-minnie');
+  await expect(designer.getByRole('link', { name: '1928 film reference' })).toBeVisible();
+  await designer.getByRole('button', { name: 'Place character', exact: true }).click();
+  await expect(designer.getByRole('status')).toContainText('Placed Minnie Mouse');
+  await designer.getByRole('button', { name: 'Place full Steamboat Willie cast', exact: true }).click();
+  await expect(designer.getByRole('status')).toContainText('Placed 14 cast members');
+  await expect(designer.getByTestId('crowd-editor')).toContainText('15 reproducible people');
+  await designer.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(designer.getByTestId('crowd-editor')).toContainText('1 reproducible people');
+  await designer.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(designer.getByTestId('crowd-editor')).toContainText('15 reproducible people');
+  await designer.getByRole('button', { name: 'Apply design', exact: true }).click();
+  await expect(designer).toBeHidden();
+
+  const readCrowd = () => page.evaluate(() => window.stageforgeProbe.crowd());
+  await expect.poll(async () => (await readCrowd()).count).toBe(15);
+  const original = await readCrowd();
+  expect(original.batches).toHaveLength(1);
+  expect(original.batches[0].packed).toBe(true);
+  expect(original.resourceAdmission.packedVertexTextures).toBe(1);
+  await page.getByRole('button', { name: 'Show files', exact: true }).click();
+  const files = page.getByRole('dialog', { name: 'Show files' });
+  const transfer = page.waitForEvent('download');
+  await files.getByRole('button', { name: 'Save show JSON' }).click();
+  const path = info.outputPath('film-cast.stageforge.show.json');
+  await (await transfer).saveAs(path);
+  const saved = JSON.parse(await readFile(path, 'utf8'));
+  expect(saved.version).toBe(14);
+  expect(saved.crowd.placements).toHaveLength(15);
+
+  // The browser fetches its deferred viewer module from the app origin on first use.
+  await files.getByLabel('Open show in viewer').setInputFiles(path);
+  await expect(page.getByText('VIEW ONLY', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Exit viewer', exact: true }).click();
+  await page.getByRole('button', { name: 'Show files', exact: true }).click();
+
+  await page.context().setOffline(true);
+  try {
+    await files.getByLabel('Open show in viewer').setInputFiles(path);
+    await expect(page.getByText('VIEW ONLY', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await readCrowd()).placementBindings).toEqual(original.placementBindings);
+  } finally {
+    await page.context().setOffline(false);
+  }
+});

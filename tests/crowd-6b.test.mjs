@@ -131,7 +131,8 @@ test('v10 is additive, round-trips crowd data, and leaves crowd-free legacy writ
 
 test('the validated built-in model contract is measurable and preserves legacy pivots and budgets', () => {
   const human = models.STAGEFORGE_HUMAN_V1;
-  assert.deepEqual(Object.keys(models.CROWD_MODEL_REGISTRY), [
+  assert.deepEqual(Object.keys(models.CROWD_MODEL_REGISTRY), [...models.CROWD_MODEL_IDS].sort());
+  assert.deepEqual([...models.CROWD_MODEL_IDS_V13].sort(), [
     'stageforge-alien-v1', 'stageforge-fox-v1', 'stageforge-human-v1', 'stageforge-human-v2',
     'stageforge-moth-v1', 'stageforge-robot-v1', 'stageforge-ticket-taker-v1',
   ]);
@@ -535,5 +536,76 @@ test('packed monochrome models retain individual IDs, exact padded admission and
   assert.equal(disposals, 0, 'lighting variants do not own the geometry texture');
   packed.mesh.dispose();
   assert.equal(disposals, 1, 'the packed mesh owns the geometry texture');
+  geometry.disposeSharedMaterials(mats);
+});
+
+
+test('the 1928 cast places atomically, preserves existing people, and uses measured film models', async () => {
+  const film = await compiler.ssrLoadModule('/src/data/crowdFilmCast.ts');
+  const layout = crowd.makeDefaultCrowd(arena);
+  layout.zones[0].occupancy = 0.04;
+  const request = { kind: 'cast', pose: 'standing', anchor: { x: 0, z: arena.stageDepth / 2 + 4 } };
+  const preview = crowd.planCrowdPlacement(arena, layout, request);
+  assert.equal(preview.status, 'needs-v1-approval', preview.message);
+  assert.ok(preview.preview.generatedBefore > 0);
+  assert.equal(layout.generatorVersion, 1);
+  assert.equal(layout.placements.length, 0);
+
+  const upgraded = { ...layout, generatorVersion: 2 };
+  const before = crowd.resolveCrowdLayout(arena, upgraded);
+  const result = crowd.planCrowdPlacement(arena, layout, { ...request, approveV1Upgrade: true });
+  assert.equal(result.status, 'added', result.message);
+  assert.equal(result.upgradedFromV1, true);
+  assert.deepEqual(result.layout.placements.map(person => person.modelId), film.STEAMBOAT_DEFAULT_PLACEMENT_MODEL_IDS);
+  const resolved = crowd.resolveCrowdLayout(arena, result.layout);
+  assert.deepEqual(resolved.placements.filter(person => person.source === 'generated'), before.placements);
+  assert.deepEqual(crowd.planCrowdPlacement(arena, result.layout, { ...request, anchor: { x: 2, z: request.anchor.z } }).status, 'unchanged');
+  assert.deepEqual(crowd.planCrowdPlacement(arena, layout, { ...request, approveV1Upgrade: true }), result,
+    'identical inputs produce identical IDs, coordinates and assignments');
+
+  const filled = structuredClone(upgraded);
+  filled.zones[0].occupancy = 0;
+  filled.placements = before.placements.slice(0, 51).map(({ x, z }, index) => ({
+    id: `already-placed-${index}`, modelId: 'stageforge-human-v1', pose: 'standing', position: { x, y: 0, z }, yaw: 180,
+  }));
+  const atLimit = structuredClone(filled);
+  assert.equal(crowd.planCrowdPlacement(arena, filled, request).reason, 'explicit-capacity');
+  assert.deepEqual(filled, atLimit, 'a rejected cast leaves the authored layout untouched');
+
+  const seatedLayout = crowd.makeDefaultCrowd(theatre);
+  seatedLayout.zones[0].occupancy = 0;
+  const seat = crowd.theatreSeatAnchors(theatre).find(anchor => anchor.row === 3);
+  const pick = crowd.pickCrowdTheatreSeat(theatre, { x: seat.x, z: seat.z });
+  assert.equal(pick.id, seat.id);
+  const duck = 'stageforge-steamboat-1928-waterfowl';
+  const single = { kind: 'single', modelId: duck, target: { pose: 'seated', seatId: seat.id } };
+  const seating = crowd.planCrowdPlacement(theatre, seatedLayout, single);
+  assert.equal(seating.status, 'added', seating.message);
+  const reopened = showFiles.parseShowFile(JSON.stringify(write(theatre, seating.layout)));
+  assert.equal(reopened.version, 14);
+  const actor = crowd.resolveCrowdLayout(theatre, reopened.crowd).placements[0];
+  assert.equal(actor.y, seat.y);
+  assert.equal(actor.modelId, duck);
+  assert.equal(crowd.planCrowdPlacement(theatre, reopened.crowd, single).reason, 'spot-unavailable');
+
+  const casts = structuredClone(result.layout);
+  const fixedIds = new Set(casts.placements.map(person => person.modelId));
+  for (const modelId of film.STEAMBOAT_MODEL_IDS.filter(id => !fixedIds.has(id))) {
+    const addition = before.placements.pop();
+    casts.placements.push({
+      id: `extra-${modelId}`, modelId, pose: 'standing', position: { x: addition.x, y: 0, z: addition.z }, yaw: 180,
+    });
+  }
+  casts.zones[0].occupancy = 0;
+  const mats = geometry.createSharedMaterials({ tier: 'high' });
+  const packedScene = geometry.buildVenueArchitecture('arena', 0, mats, arena.stageWidth, arena.stageDepth, arena.stageHeight,
+    crowd.resolveCrowdLayout(arena, casts));
+  const packed = packedScene.crowdBatches.find(batch => batch.packed);
+  assert.deepEqual(packed.modelIds, [...film.STEAMBOAT_MODEL_IDS].sort());
+  assert.equal(packed.mesh.geometry.getIndex().count / 3, 264);
+  assert.equal(packedScene.resourceAdmission.packedVertexTextures, 1);
+  assert.equal(packed.phonesMesh, null);
+  for (const id of packed.modelIds) assert.equal(models.crowdModel(id).filmReference.year, 1928);
+  packed.mesh.dispose();
   geometry.disposeSharedMaterials(mats);
 });

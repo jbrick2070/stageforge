@@ -8,7 +8,7 @@ const CLOTHING_COLOR = 2;
 type ColorRegion = typeof FIXED_COLOR | typeof SKIN_COLOR | typeof CLOTHING_COLOR;
 type AddPart = (geometry: THREE.BufferGeometry, color: number, region?: ColorRegion) => void;
 
-function makeFigure(addParts: (add: AddPart) => void): THREE.BufferGeometry {
+export function makeFigure(addParts: (add: AddPart) => void): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const add: AddPart = (geometry, color, region = FIXED_COLOR) => {
     parts.push(geometry);

@@ -11,14 +11,14 @@ const compiler = await createServer({
   appType: 'custom', optimizeDeps: { noDiscovery: true },
 });
 after(() => compiler.close());
-const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL, V6_SCHEMA_URL, V7_SCHEMA_URL, V8_SCHEMA_URL, V9_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
+const { parseShowFile, makeShowFile, SHOW_SCHEMA_URL, V4_SCHEMA_URL, V5_SCHEMA_URL, V6_SCHEMA_URL, V7_SCHEMA_URL, V8_SCHEMA_URL, V9_SCHEMA_URL, V13_SCHEMA_URL, V14_SCHEMA_URL } = await compiler.ssrLoadModule('/src/data/showFile.ts');
 const { RIG_TEMPLATES, INITIAL_SHOW_STATE, SHOW_CUES } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { cueLook, differsFromCue } = await compiler.ssrLoadModule('/src/data/cueLook.ts');
 const { frameDelta } = await compiler.ssrLoadModule('/src/input/useShowTimeline.ts');
 const { laserProjectors } = await compiler.ssrLoadModule('/src/data/laserProjectors.ts');
 const example = JSON.parse(await readFile(new URL('../public/examples/amber-walk-on.stageforge.show.json', import.meta.url), 'utf8'));
 const parse = value => parseShowFile(JSON.stringify(value));
-const write = show => makeShowFile(show.rig, show.cues, show.look, show.activeCueId, show.controls, show.timeline, show.media, show.stage, show.interchange);
+const write = show => makeShowFile(show.rig, show.cues, show.look, show.activeCueId, show.controls, show.timeline, show.media, show.stage, show.interchange, show.crowd);
 
 test('v1 remains writable and a v2 cue or take preserves independently focused and colored groups', () => {
   const authored = parse(example);
@@ -208,7 +208,55 @@ test('malformed nested rig, cue, media and timeline data produce a readable Erro
   assert.equal(parseShowFile('\uFEFF' + JSON.stringify(example)).version, 1);
 });
 
-test('legacy fixtures load cleanly and published v1-v12 schema hashes stay pinned', async () => {
+test('v14 round-trips new model IDs in zone weights and explicit-only crowds', async () => {
+  const loadSchema = async (version) => JSON.parse(await readFile(
+    new URL(`../src/schemas/show-v${version}.schema.json`, import.meta.url), 'utf8',
+  ));
+  const [prior, current] = await Promise.all([loadSchema(13), loadSchema(14)]);
+  const weightIds = schema => schema.$defs.crowdModelWeight.properties.modelId.enum;
+  const newIds = weightIds(current).filter(id => !weightIds(prior).includes(id));
+  assert.ok(newIds.length > 0);
+  const rig = RIG_TEMPLATES.arena_mainstage;
+  const { makeDefaultCrowd } = await compiler.ssrLoadModule('/src/data/crowdPlacement.ts');
+  const zone = makeDefaultCrowd(rig).zones[0];
+  const position = {
+    x: (zone.rect.minX + zone.rect.maxX) / 2, y: 0, z: (zone.rect.minZ + zone.rect.maxZ) / 2,
+  };
+  const desk = { rig, cues: [], look: INITIAL_SHOW_STATE, activeCueId: null };
+
+  for (const modelId of newIds) {
+    const weighted = {
+      generatorVersion: 2, seed: 7, exclusions: [], placements: [],
+      zones: [{ ...zone, occupancy: 0, modelWeights: [{ modelId, weight: 1 }] }],
+    };
+    const explicit = {
+      generatorVersion: 2, seed: 7, exclusions: [], zones: [],
+      placements: [{ id: 'spectator', modelId, pose: 'standing', position, yaw: 0 }],
+    };
+    for (const crowd of [weighted, explicit]) {
+      const file = write({ ...desk, crowd });
+      assert.equal(file.version, 14, modelId);
+      assert.equal(file.$schema, V14_SCHEMA_URL, modelId);
+      assert.deepEqual(parse(file).crowd, crowd);
+      assert.deepEqual(write(parse(file)), file);
+      assert.throws(() => parse({ ...file, version: 13, $schema: V13_SCHEMA_URL }), /modelId/i);
+    }
+  }
+
+  const oldCrowd = {
+    generatorVersion: 2, seed: 7, exclusions: [], zones: [],
+    placements: [{ id: 'spectator', modelId: 'stageforge-moth-v1', pose: 'standing', position, yaw: 0 }],
+  };
+  const oldFile = write({ ...desk, crowd: oldCrowd });
+  assert.equal(oldFile.version, 13);
+  const unknown = {
+    ...oldCrowd,
+    placements: [{ ...oldCrowd.placements[0], modelId: 'unregistered-film-character' }],
+  };
+  assert.throws(() => parse({ ...oldFile, version: 14, $schema: V14_SCHEMA_URL, crowd: unknown }), /modelId/i);
+});
+
+test('legacy fixtures load cleanly and published v1-v13 schema hashes stay pinned', async () => {
   const v1 = parseShowFile(await readFile(new URL('./fixtures/legacy-v1.stageforge.show.json', import.meta.url), 'utf8'));
   const v2 = parseShowFile(await readFile(new URL('./fixtures/legacy-v2.stageforge.show.json', import.meta.url), 'utf8'));
   const v3 = parseShowFile(await readFile(new URL('./fixtures/native-authoring-v3.stageforge.show.json', import.meta.url), 'utf8'));
@@ -234,6 +282,7 @@ test('legacy fixtures load cleanly and published v1-v12 schema hashes stay pinne
     10: 'a1e8ba9cbf05ceeca2f1f2467240bfff1c736c301ea45f6957b1d3faf5a8cf07',
     11: '3a628624280cbebd5c6e003d6b05558e3a8261545ea4b692223a13657f5d920d',
     12: '1b590eed165d55ba87193cb053b04d62db64694ea85278857332d10ed008160d',
+    13: 'c4bbd9a0e0ed3c8cb6975d83125894102f4fe9f2951b8e24541acf9b6fc385aa',
   };
   for (const [ver, hash] of Object.entries(expectedHashes)) {
     const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));

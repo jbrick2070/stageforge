@@ -11,6 +11,7 @@ import schemaV10 from '../schemas/show-v10.schema.json';
 import schemaV11 from '../schemas/show-v11.schema.json';
 import schemaV12 from '../schemas/show-v12.schema.json';
 import schemaV13 from '../schemas/show-v13.schema.json';
+import schemaV14 from '../schemas/show-v14.schema.json';
 import type { BumpState, CameraPreset, MusicRef, RigConfig, ScreenRef, ShowCue, ShowState } from '../types/show';
 import type { CueFadeDescriptor } from './cueFade';
 import { parseRigJson } from './rigImport';
@@ -41,6 +42,7 @@ export const V10_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/s
 export const V11_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v11.schema.json';
 export const V12_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v12.schema.json';
 export const V13_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v13.schema.json';
+export const V14_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v14.schema.json';
 
 export type SmpteFrameRate = 24 | 25 | 29.97 | 30;
 
@@ -122,9 +124,9 @@ export function referencedFiles(media: ShowMedia | undefined, cues: ShowCue[], t
 }
 
 export interface StageForgeShowFile {
-  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL | typeof V4_SCHEMA_URL | typeof V5_SCHEMA_URL | typeof V6_SCHEMA_URL | typeof V7_SCHEMA_URL | typeof V8_SCHEMA_URL | typeof V9_SCHEMA_URL | typeof V10_SCHEMA_URL | typeof V11_SCHEMA_URL | typeof V12_SCHEMA_URL | typeof V13_SCHEMA_URL;
+  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL | typeof V4_SCHEMA_URL | typeof V5_SCHEMA_URL | typeof V6_SCHEMA_URL | typeof V7_SCHEMA_URL | typeof V8_SCHEMA_URL | typeof V9_SCHEMA_URL | typeof V10_SCHEMA_URL | typeof V11_SCHEMA_URL | typeof V12_SCHEMA_URL | typeof V13_SCHEMA_URL | typeof V14_SCHEMA_URL;
   format: 'stageforge-show';
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
   rig: RigConfig;
   cues: ShowCue[];
   look: ShowState;
@@ -178,6 +180,7 @@ const versions = {
   11: schemaV11 as ShowSchema,
   12: schemaV12 as ShowSchema,
   13: schemaV13 as ShowSchema,
+  14: schemaV14 as ShowSchema,
 };
 const compiledPatterns = new Map<string, RegExp>();
 
@@ -476,7 +479,7 @@ export function pruneInterchangeFixtureSpecs(
 
 function decode(value: unknown, writing: boolean): StageForgeShowFile {
   const version = value && typeof value === 'object' && 'version' in value ? value.version : undefined;
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13) invalid('show.version', 'has an unsupported value');
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14) invalid('show.version', 'has an unsupported value');
   const schema = versions[version];
   const show = read(value, schema, 'show', writing, schema) as StageForgeShowFile;
   // Share ID, geometry, patch count and motor-range checks with the legacy rig reader.
@@ -621,21 +624,21 @@ export function parseShowFile(source: string): StageForgeShowFile {
  * so unknown keys, out-of-range numbers, and invalid references are rejected rather than stripped.
  */
 export function validateLookFragmentForRig(value: unknown, rig: RigConfig, path = 'patch'): Partial<ShowState> {
-  const schema = versions[13];
+  const schema = versions[14];
   const parsed = read(value, schema.$defs.cueState, path, false, schema) as Partial<ShowState>;
   checkLook(parsed, rigReferences(rig), path);
   return parsed;
 }
 
 export function validateFullLookForRig(value: unknown, rig: RigConfig, path = 'look'): ShowState {
-  const schema = versions[13];
+  const schema = versions[14];
   const parsed = read(value, schema.$defs.look, path, false, schema) as ShowState;
   checkLook(parsed, rigReferences(rig), path);
   return parsed;
 }
 
 export function validateCueListForRig(value: unknown, rig: RigConfig, path = 'cues'): ShowCue[] {
-  const schema = versions[13];
+  const schema = versions[14];
   const parsed = read(value, { type: 'array', maxItems: 500, items: { $ref: '#/$defs/cue' } }, path, false, schema) as ShowCue[];
   const refs = rigReferences(rig);
   const ids = new Set<string>();
@@ -653,7 +656,7 @@ export function validateTimelineForRig(
   stage?: NativeStage,
   path = 'timeline',
 ): ShowTimeline {
-  const schema = versions[13];
+  const schema = versions[14];
   const parsed = read(value, schema.$defs.timeline, path, false, schema) as ShowTimeline;
   const refs = rigReferences(rig);
   let last = 0;
@@ -675,7 +678,7 @@ export function validateAudioMapForRig(
   rig: RigConfig,
   path = 'audioMap',
 ): NonNullable<ShowState['audioMap']> {
-  const schema = versions[13];
+  const schema = versions[14];
   const parsed = read(value, schema.$defs.audioMap, path, false, schema) as NonNullable<ShowState['audioMap']>;
   checkLook({ audioMap: parsed }, rigReferences(rig), path);
   return parsed;
@@ -686,7 +689,7 @@ export function validateSecondaryScreenEventForStage(
   stage: NativeStage | undefined,
   path = 'event',
 ) {
-  const schema = versions[13];
+  const schema = versions[14];
   const parsed = read(value, schema.$defs.secondaryScreenEvent, path, false, schema) as NativeStage['screenEvents'][number];
   const walls = new Set((stage?.walls ?? []).map((w) => w.id));
   if (!walls.has(parsed.target) || parsed.target === 'main-led') {

@@ -1,15 +1,18 @@
 import type { RigConfig } from '../types/show';
 import { computeVenueBounds } from './venueBounds';
+import { STEAMBOAT_DEFAULT_PLACEMENT_MODEL_IDS } from './crowdFilmCast';
 import {
   CROWD_MAX_AUTHORED_OCCUPANTS,
   CROWD_HUMAN_CLOTHING_COLORS,
   CROWD_HUMAN_SKIN_TONES,
   CROWD_MODEL_IDS_V11,
   CROWD_MODEL_IDS_V12,
+  CROWD_MODEL_IDS_V13,
   CROWD_MODEL_REGISTRY,
   CROWD_PLACEMENT_ENVELOPE,
   STAGEFORGE_HUMAN_V1,
   crowdModel,
+  crowdResourceAdmission,
   type CrowdModelId,
   type CrowdPose,
 } from './crowdModels';
@@ -204,7 +207,7 @@ function placementHeight(layout: CrowdLayout, modelId: CrowdModelId, pose: Crowd
     : crowdModel(modelId).poses[pose].maxHeightM;
 }
 
-function collides(layout: CrowdLayout, a: ResolvedCrowdPlacement, b: ResolvedCrowdPlacement) {
+function collides(layout: CrowdLayout, a: CrowdFootprint, b: CrowdFootprint) {
   const ar = placementRadius(layout, a.modelId, a.pose);
   const br = placementRadius(layout, b.modelId, b.pose);
   return Math.hypot(a.x - b.x, a.z - b.z) < ar + br - 1e-6;
@@ -447,6 +450,255 @@ export function resolveCrowdLayout(rig: Pick<RigConfig, 'venue' | 'stageWidth' |
   };
 }
 
+type CrowdPlannerRig = Pick<RigConfig, 'venue' | 'stageWidth' | 'stageDepth'>;
+type CrowdPlanPoint = { x: number; z: number };
+type CrowdFootprint = Pick<ResolvedCrowdPlacement, 'x' | 'z' | 'modelId' | 'pose'>;
+type CrowdPlacementTarget = ({ pose: 'standing' } & CrowdPlanPoint) | { pose: 'seated'; seatId: string };
+type PlannedCastMember = { id: string; modelId: CrowdModelId };
+type CrowdSpot = { x: number; y: number; z: number; seatId?: string };
+
+export type CrowdPlacementRequest = (
+  | { kind: 'single'; modelId: CrowdModelId; target: CrowdPlacementTarget }
+  | { kind: 'cast'; pose: CrowdPose; anchor: CrowdPlanPoint }
+) & { yaw?: number; approveV1Upgrade?: boolean };
+
+export interface CrowdV1UpgradePreview {
+  peopleBefore: number;
+  peopleAfter: number;
+  generatedBefore: number;
+  generatedAfter: number;
+  generatedRemoved: number;
+  generatedAdded: number;
+  generatedChangedInPlace: number;
+}
+
+export type CrowdPlacementBlock =
+  | 'invalid-layout' | 'invalid-target' | 'explicit-capacity' | 'total-capacity'
+  | 'spot-unavailable' | 'area-exhausted' | 'search-limit' | 'would-displace' | 'render-budget';
+
+export type CrowdPlacementPlan =
+  | { status: 'added'; layout: CrowdLayout; addedIds: string[]; upgradedFromV1: boolean }
+  | { status: 'unchanged'; message: string }
+  | { status: 'needs-v1-approval'; message: string; preview: CrowdV1UpgradePreview }
+  | { status: 'blocked'; reason: CrowdPlacementBlock; message: string };
+
+const CAST_SCAN_LIMIT = 8192;
+const CAST_FLOOR_PITCH_M = 1;
+const SEAT_PICK_RADIUS_M = 0.26;
+
+function placementBlocked(reason: CrowdPlacementBlock, message: string): CrowdPlacementPlan {
+  return { status: 'blocked', reason, message };
+}
+
+/** Input is an unsnapped plan point. An occupied picked seat is reported by the planner. */
+export function pickCrowdTheatreSeat(rig: CrowdPlannerRig, point: CrowdPlanPoint): TheatreSeatAnchor | undefined {
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.z)) return undefined;
+  let best: TheatreSeatAnchor | undefined;
+  let bestDistance = Infinity;
+  // The source enumerates real seats in row/column order, which breaks equal-distance ties.
+  for (const seat of theatreSeatAnchors(rig)) {
+    const distance = Math.hypot(point.x - seat.x, point.z - seat.z);
+    if (distance <= SEAT_PICK_RADIUS_M + 1e-9 && distance < bestDistance - 1e-9) {
+      best = seat;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function availableCrowdId(base: string, usedIds: Set<string>): string {
+  let id = base;
+  for (let suffix = 2; usedIds.has(id); suffix++) id = base + '-' + suffix;
+  usedIds.add(id);
+  return id;
+}
+
+function missingCastMembers(layout: CrowdLayout, usedIds: Set<string>): PlannedCastMember[] {
+  const missing: PlannedCastMember[] = [];
+  // Released slot order is an identity contract. Separate ordinal slots retain both light piglets.
+  for (const [index, modelId] of STEAMBOAT_DEFAULT_PLACEMENT_MODEL_IDS.entries()) {
+    const base = 'sw1928-cast-' + String(index + 1).padStart(2, '0');
+    const slotPattern = new RegExp('^' + base + '(?:-(?:[2-9]|[1-9][0-9]+))?$');
+    if (layout.placements.some(person => person.modelId === modelId && slotPattern.test(person.id))) continue;
+    missing.push({ id: availableCrowdId(base, usedIds), modelId });
+  }
+  return missing;
+}
+
+function personStayedInPlace(a: ResolvedCrowdPlacement, b?: ResolvedCrowdPlacement): boolean {
+  return !!b && a.id === b.id && a.source === b.source && a.modelId === b.modelId && a.pose === b.pose
+    && a.x === b.x && a.y === b.y && a.z === b.z && a.rotY === b.rotY;
+}
+
+function crowdUpgradePreview(before: ResolvedCrowdLayout, after: ResolvedCrowdLayout): CrowdV1UpgradePreview {
+  const old = before.placements.filter(person => person.source === 'generated');
+  const next = after.placements.filter(person => person.source === 'generated');
+  const byId = new Map(next.map(person => [person.id, person]));
+  let generatedRemoved = 0;
+  let generatedChangedInPlace = 0;
+  for (const person of old) {
+    const replacement = byId.get(person.id);
+    if (!replacement) generatedRemoved++;
+    else if (!personStayedInPlace(person, replacement)) generatedChangedInPlace++;
+  }
+  return {
+    peopleBefore: before.placed, peopleAfter: after.placed, generatedBefore: old.length, generatedAfter: next.length,
+    generatedRemoved, generatedAdded: next.length - (old.length - generatedRemoved), generatedChangedInPlace,
+  };
+}
+
+type CrowdSpotSearch = { count: number; spots: Iterable<CrowdSpot> };
+
+function standingCastSpots(rect: CrowdRect, radius: number, anchor: CrowdPlanPoint): CrowdSpotSearch {
+  const left = rect.minX + radius, right = rect.maxX - radius;
+  const front = rect.minZ + radius, back = rect.maxZ - radius;
+  if (left > right || front > back) return { count: 0, spots: [] };
+  const x0 = Math.max(left, Math.min(right, anchor.x));
+  const z0 = Math.max(front, Math.min(back, anchor.z));
+  const minI = Math.ceil((left - x0) / CAST_FLOOR_PITCH_M), maxI = Math.floor((right - x0) / CAST_FLOOR_PITCH_M);
+  const minJ = Math.ceil((front - z0) / CAST_FLOOR_PITCH_M), maxJ = Math.floor((back - z0) / CAST_FLOOR_PITCH_M);
+  const count = (maxI - minI + 1) * (maxJ - minJ + 1);
+  type Cell = { i: number; j: number; dist2: number };
+
+  function* spots(): Generator<CrowdSpot> {
+    // Each row starts at x0 and expands in both directions. Each grid cell has one parent.
+    // Keep the nearest candidate at the end, with Z then X breaking distance ties.
+    const queue: Cell[] = [{ i: 0, j: 0, dist2: 0 }];
+    function offer(i: number, j: number) {
+      if (i < minI || i > maxI || j < minJ || j > maxJ) return;
+      const dist2 = i * i + j * j;
+      let low = 0, high = queue.length;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        const other = queue[mid];
+        const order = other.dist2 - dist2 || other.j - j || other.i - i;
+        if (order > 0) low = mid + 1;
+        else high = mid;
+      }
+      queue.splice(low, 0, { i, j, dist2 });
+    }
+    while (queue.length) {
+      const { i, j } = queue.pop()!;
+      yield { x: x0 + i * CAST_FLOOR_PITCH_M, y: 0, z: z0 + j * CAST_FLOOR_PITCH_M };
+      if (i === 0 && j >= 0) offer(0, j + 1);
+      if (i === 0 && j <= 0) offer(0, j - 1);
+      if (i >= 0) offer(i + 1, j);
+      if (i <= 0) offer(i - 1, j);
+    }
+  }
+  return { count, spots: spots() };
+}
+
+function searchCastSeats(seats: readonly TheatreSeatAnchor[], anchor: CrowdPlanPoint): CrowdSpotSearch {
+  const distance = (seat: TheatreSeatAnchor) => (seat.x - anchor.x) ** 2 + (seat.z - anchor.z) ** 2;
+  const ordered = [...seats].sort((a, b) => distance(a) - distance(b) || a.row - b.row || a.column - b.column);
+  return { count: ordered.length, spots: ordered.map(seat => ({ x: seat.x, y: seat.y, z: seat.z, seatId: seat.id })) };
+}
+
+/** Compute an entire edit without changing the input, its arrays, or editor history. */
+export function planCrowdPlacement(rig: CrowdPlannerRig, layout: CrowdLayout, request: CrowdPlacementRequest): CrowdPlacementPlan {
+  try {
+    const pose = request.kind === 'single' ? request.target.pose : request.pose;
+    if (request.yaw !== undefined && (!Number.isFinite(request.yaw) || Math.abs(request.yaw) > 360)) {
+      return placementBlocked('invalid-target', 'Enter a finite yaw between -360 and 360 degrees.');
+    }
+    if (pose !== 'standing' && pose !== 'seated') return placementBlocked('invalid-target', 'Choose standing or seated placement.');
+    if (pose === 'seated' && rig.venue !== 'theatre') return placementBlocked('invalid-target', 'A seated placement needs a theatre seat.');
+    const before = resolveCrowdLayout(rig, layout);
+    const usedIds = new Set([...layout.zones, ...layout.exclusions, ...layout.placements].map(item => item.id));
+    const missing = request.kind === 'cast' ? missingCastMembers(layout, usedIds)
+      : [{ id: availableCrowdId('crowd-person', usedIds), modelId: request.modelId }];
+    if (!missing.length) return { status: 'unchanged', message: 'All cast slots are already placed.' };
+    for (const member of missing) crowdModel(member.modelId);
+    const freeExplicit = CROWD_MAX_EXPLICIT - layout.placements.length;
+    if (missing.length > freeExplicit) {
+      return placementBlocked('explicit-capacity', 'This edit needs ' + missing.length + ' deliberate slots. ' + freeExplicit + ' of ' + CROWD_MAX_EXPLICIT + ' are available.');
+    }
+
+    const upgrade = layout.generatorVersion === CROWD_GENERATOR_VERSION_1 && missing.some(member => member.modelId !== STAGEFORGE_HUMAN_V1.id);
+    const working: CrowdLayout = upgrade ? { ...layout, generatorVersion: CROWD_GENERATOR_VERSION_2 } : layout;
+    const baseline = upgrade ? resolveCrowdLayout(rig, working) : before;
+    const freePeople = CROWD_MAX_AUTHORED_OCCUPANTS - baseline.placed;
+    if (missing.length > freePeople) {
+      return placementBlocked('total-capacity', 'This edit adds ' + missing.length + ' people. ' + freePeople + ' of ' + CROWD_MAX_AUTHORED_OCCUPANTS + ' places are available.');
+    }
+
+    const bounds = computeVenueBounds(rig);
+    const seats = pose === 'seated' ? theatreSeatAnchors(rig) : [];
+    let search: CrowdSpotSearch;
+    if (request.kind === 'cast') {
+      const { anchor } = request;
+      if (!Number.isFinite(anchor.x) || !Number.isFinite(anchor.z) || !pointInRect(anchor.x, anchor.z, bounds.audienceZone)) {
+        return placementBlocked('invalid-target', 'Choose a cast anchor inside the venue audience area.');
+      }
+      search = pose === 'seated' ? searchCastSeats(seats, anchor)
+        : standingCastSpots(bounds.audienceZone, placementRadius(working, missing[0].modelId, pose), anchor);
+    } else if (request.target.pose === 'seated') {
+      const { seatId } = request.target;
+      const seat = seats.find(item => item.id === seatId);
+      if (!seat) return placementBlocked('invalid-target', 'Choose an existing theatre seat.');
+      search = { count: 1, spots: [{ x: seat.x, y: seat.y, z: seat.z, seatId }] };
+    } else {
+      const { x, z } = request.target;
+      if (!Number.isFinite(x) || !Number.isFinite(z)) return placementBlocked('invalid-target', 'Enter finite floor coordinates.');
+      search = { count: 1, spots: [{ x, y: 0, z }] };
+    }
+
+    const occupied: CrowdFootprint[] = [...baseline.placements];
+    const additions: CrowdExplicitPlacement[] = [];
+    let examined = 0;
+    for (const spot of search.spots) {
+      const { id, modelId } = missing[additions.length];
+      const footprint: CrowdFootprint = { x: spot.x, z: spot.z, modelId, pose };
+      const radius = placementRadius(working, modelId, pose);
+      let conflict: string | undefined;
+      if (!pointInRect(spot.x, spot.z, bounds.audienceZone, radius)) conflict = 'The character extends outside the venue audience area.';
+      else if (bounds.ceilingY !== null && spot.y + placementHeight(working, modelId, pose) > bounds.ceilingY + 1e-6) conflict = 'The character exceeds the venue ceiling.';
+      else if (working.exclusions.some(item => circleHitsRect(spot.x, spot.z, radius, item.rect))) conflict = 'The position intersects a crowd exclusion.';
+      else if (occupied.some(other => collides(working, footprint, other))) conflict = 'The position is occupied or lacks clearance from another person.';
+      examined++;
+      if (!conflict) {
+        const yaw = request.yaw ?? Math.atan2(-spot.x, -spot.z) * 180 / Math.PI;
+        additions.push(spot.seatId !== undefined
+          ? { id, modelId, yaw, pose: 'seated', seatId: spot.seatId }
+          : { id, modelId, yaw, pose: 'standing', position: { x: spot.x, y: 0, z: spot.z } });
+        occupied.push(footprint);
+        if (additions.length === missing.length) break;
+      } else if (request.kind === 'single') {
+        return placementBlocked('spot-unavailable', conflict);
+      }
+      if (examined === CAST_SCAN_LIMIT) break;
+    }
+
+    if (additions.length !== missing.length) {
+      const summary = 'Found ' + additions.length + ' of ' + missing.length + ' needed locations. No characters were added.';
+      if (examined < search.count) return placementBlocked('search-limit', 'Checked the nearest ' + examined + ' positions. ' + summary + ' Choose a different cast anchor.');
+      const area = pose === 'seated' ? 'Checked all real theatre seats. ' : 'Checked the full 1 m placement grid for this anchor. ';
+      return placementBlocked('area-exhausted', area + summary);
+    }
+    const next = { ...working, placements: [...working.placements, ...additions] };
+    const final = resolveCrowdLayout(rig, next);
+    const byId = new Map(final.placements.map(person => [person.id, person]));
+    if (final.placed !== baseline.placed + additions.length ||
+        baseline.placements.some(person => !personStayedInPlace(person, byId.get(person.id)))) {
+      return placementBlocked('would-displace', 'The edit would move or replace existing crowd members. Choose another location.');
+    }
+    if (!crowdResourceAdmission(final.placements, 'xr').admitted) {
+      return placementBlocked('render-budget', 'This model combination exceeds the stereo crowd rendering budget. No characters were added.');
+    }
+    if (upgrade && before.placed > 0 && !request.approveV1Upgrade) {
+      return {
+        status: 'needs-v1-approval',
+        preview: crowdUpgradePreview(before, baseline),
+        message: 'These characters require crowd generator 2. Review its effect on the existing crowd and its animation before adding them.',
+      };
+    }
+    return { status: 'added', layout: next, addedIds: additions.map(person => person.id), upgradedFromV1: upgrade };
+  } catch (error) {
+    return placementBlocked('invalid-layout', error instanceof Error ? error.message : 'The crowd layout could not be resolved.');
+  }
+}
+
 export function makeDefaultCrowd(rig: Pick<RigConfig, 'venue' | 'stageWidth' | 'stageDepth'>): CrowdLayout {
   const bounds = computeVenueBounds(rig).audienceZone;
   const marginX = Math.min(1.5, Math.max(0.5, (bounds.maxX - bounds.minX) * 0.08));
@@ -541,11 +793,12 @@ export function withCrowdModelMix(layout: CrowdLayout, mix: CrowdModelMix): Crow
   };
 }
 
-export function crowdShowVersion(layout: CrowdLayout): 10 | 11 | 12 | 13 {
+export function crowdShowVersion(layout: CrowdLayout): 10 | 11 | 12 | 13 | 14 {
   const modelIds = [
     ...layout.zones.flatMap(zone => zone.modelWeights.map(item => item.modelId)),
     ...layout.placements.map(placement => placement.modelId),
   ];
+  if (modelIds.some(modelId => !CROWD_MODEL_IDS_V13.some(known => known === modelId))) return 14;
   if (modelIds.some(modelId => !CROWD_MODEL_IDS_V12.some(known => known === modelId))) return 13;
   if (modelIds.some(modelId => !CROWD_MODEL_IDS_V11.some(known => known === modelId))) return 12;
   if (layout.generatorVersion === CROWD_GENERATOR_VERSION_2
