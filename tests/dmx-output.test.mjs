@@ -336,8 +336,9 @@ test('Enttec DMX USB Pro framing and Web Serial transport send blackout on disab
   await transport.enable({ universe: 1, rateHz: 30 });
   assert.ok(disconnectCb);
   disconnectCb();
-  await waitFor(() => !transport.isRunning(), 500);
+  assert.equal(transport.isRunning(), false, 'disconnect stops output immediately');
   assert.match(transport.getStatus().error || '', /disconnected/i);
+  await waitFor(() => closed, 500);
   assert.equal(closed, true);
 });
 
