@@ -1281,6 +1281,8 @@ test('shipped demo track plays from stageforge://app/ under strict CSP and jumps
     // Open Audio settings and step across sections to prove seeking works on the real MP3 under strict CSP.
     await demoPage.getByRole('button', { name: 'Audio settings', exact: true }).click();
     await expect(demoPage.getByText('122.0 BPM · 96 ms')).toBeVisible();
+    // During the count-in, Next starts the intro. Let the time source reach the first section.
+    await expect(progress).toContainText('Walk-on');
     await demoPage.getByRole('button', { name: 'Next section', exact: true }).click();
     await expect(progress).toHaveAttribute('data-section', 'build');
     await expect(progress).toContainText('Rising');
