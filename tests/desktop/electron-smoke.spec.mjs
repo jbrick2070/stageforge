@@ -1504,7 +1504,7 @@ test('AI bridge boots off, blocks live DMX arming, serves MCP tools/proposals/re
     }, sid);
     const packagedSchema = JSON.parse(schemaRes.json.result.content[0].text);
     expect(packagedSchema.$id).toBe('https://jbrick2070.github.io/stageforge/schemas/show-v15.schema.json');
-    expect(packagedSchema.properties.version.const).toBe(14);
+    expect(packagedSchema.properties.version.const).toBe(15);
 
     const stateBefore = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);
     const beforeObj = JSON.parse(stateBefore.json.result.content[0].text);
