@@ -465,7 +465,9 @@ test('the expanded original crowd renders in both stereo profiles and preserves 
   await designer.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect(mix).toHaveValue('original-library');
   // This Arena floor has 1,785 slots. 38% keeps the test near the 680-person authored cap.
-  await designer.getByLabel('Crowd zone occupancy').fill('0.38');
+  const occupancy = designer.getByLabel('Crowd zone occupancy');
+  expect(await occupancy.evaluate(input => input.validity.valid)).toBe(true);
+  await occupancy.fill('0.38');
   await designer.getByRole('button', { name: 'Apply design' }).click();
   await expect(designer).toBeHidden();
 

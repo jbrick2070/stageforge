@@ -1786,7 +1786,7 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
                               type="number"
                               min={0}
                               max={1}
-                              step={0.05}
+                              step="any"
                               value={crowdDraft.zones[0].occupancy}
                               onChange={(e) => {
                                 const occupancy = Number(e.target.value);
