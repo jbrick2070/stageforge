@@ -197,7 +197,7 @@ test('pre-flight checks zoom-only cues and resolves cue aim using desk precedenc
   assert.equal(clearance(cue({ manualTilt: 1, beamZoom: 1 }), focusedLook), false, 'an inherited deck focus stays clear');
   assert.equal(clearance(cue({ focusMarkId: null, manualTilt: 1, beamZoom: 1 }), focusedLook), true, 'explicit null releases focus');
 
-  const addressedLook = { ...look, movingGroups: { wash: { manualTilt: 0 } } };
+  const addressedLook = { ...look, movingGroups: { wash: { manualTilt: -1 } } };
   assert.equal(clearance(cue({ beamZoom: 1 }), addressedLook), false, 'unwritten trim keeps its addressed value');
   assert.equal(clearance(cue({ manualTilt: 1, beamZoom: 1 }), addressedLook), true, 'global cue trim takes over the addressed value');
 });
