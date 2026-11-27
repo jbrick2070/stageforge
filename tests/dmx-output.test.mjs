@@ -622,7 +622,7 @@ test('DMX controller enforces hard 44 Hz inter-frame ceiling and validates confi
   }
 });
 
-function createMockDgram({ bindDelayMs = 0, stallSendOnIndex = -1, failFirstSends = 0 } = {}) {
+function createMockDgram({ bindDelayMs = 0, manualBindOn = [], stallSendOnIndex = -1, failFirstSends = 0 } = {}) {
   const sockets = [];
   return {
     sockets,
@@ -649,8 +649,9 @@ function createMockDgram({ bindDelayMs = 0, stallSendOnIndex = -1, failFirstSend
         },
         off(ev, fn) { listeners.get(ev)?.delete(fn); },
         bind(_opts) {
-          setTimeout(() => emit('listening'), bindDelayMs);
+          if (!manualBindOn.includes(idx)) setTimeout(sock.finishBind, bindDelayMs);
         },
+        finishBind() { emit('listening'); },
         setMulticastTTL() {},
         setMulticastInterface() {},
         setBroadcast() {},
@@ -791,9 +792,15 @@ test('QA regressions: mid-bind shutdown (H1), concurrent enable (H2), blackout t
 });
 
 test('P2 authenticated Arm and Go bind the current window, configuration and eligibility generation before UDP sends', async (t) => {
-  const mockDgram = createMockDgram({ bindDelayMs: 30 });
+  const mockDgram = createMockDgram({ manualBindOn: [1, 3] });
   const statuses = [];
-  const controller = sender.createDmxController({ dgramModule: mockDgram, onStatus: status => statuses.push(status) });
+  const controller = sender.createDmxController({
+    dgramModule: mockDgram, discoverDurationMs: 2, testPorts: { artnetDiscovery: 0 },
+    onStatus(status, owner) {
+      statuses.push(status);
+      if (status.state === 'idle' && status.lastStopReason && status.authority) interlock.invalidateDmxEligibility(owner, status.authority);
+    },
+  });
   t.after(() => controller.shutdown('test-end'));
   const interlock = createOutputInterlock({ requireDmxAuthority: true, isDmxActive: () => controller.active });
   const { onControl, onEligibility, onFrame, onHeartbeat } = createDmxIpcHandlers(() => controller, { interlock, requireArmedClaim: true });
@@ -821,28 +828,47 @@ test('P2 authenticated Arm and Go bind the current window, configuration and eli
   await assert.rejects(go(win, a), /current pre-flight revision/);
   assert.equal((await arm(win, a)).ok, true);
   await assert.rejects(go(other, a), /current pre-flight revision/);
+  const scanA = onControl(win, { type: 'discover', iface: '127.0.0.1' });
   const pending = go(win, a);
   assert.equal(controller.ownerId, 4);
-  assert.equal(mockDgram.sockets[0].sent.length, 0);
+  await scanA;
+  assert.equal(statuses.at(-1).state, 'starting', 'the first Art-Net scan can complete while Go is still binding');
+  assert.deepEqual(statuses.at(-1).authority, a);
+  assert.equal(interlock.isCurrentDmxAuthority(4, a), true);
+  assert.equal(mockDgram.sockets[1].sent.length, 0);
   const fence = authority(2);
   assert.equal(eligible(win, fence, false), true);
   assert.equal(eligible(win, fence, true), false, 'same-revision restoration must advance generation');
   assert.equal(eligible(win, a, true), false, 'old affirmative update cannot undo revocation');
+  assert.equal(statuses.at(-1).state, 'idle');
+  assert.equal(statuses.at(-1).lastStopReason, 'eligibility-changed');
+  mockDgram.sockets[1].finishBind();
   await assert.rejects(pending, /cancelled|changed/);
-  assert.equal(mockDgram.sockets[0].sent.length, 0);
-  assert.equal(mockDgram.sockets[0].closed, true);
+  assert.equal(mockDgram.sockets[1].sent.length, 0);
+  assert.equal(mockDgram.sockets[1].closed, true);
 
   const b = authority(3);
   assert.equal(eligible(win, b, true), true);
   assert.equal((await arm(win, b)).ok, true);
   await release(a);
+  const scanB = onControl(win, { type: 'discover', iface: '127.0.0.1' });
   const startingB = go(win, b);
   await release(b); // Go consumed the arm. This UI release cannot cancel the accepted lease.
+  await scanB;
+  const binding = await onControl(win, { type: 'getStatus' });
+  assert.equal(statuses.at(-1).state, 'starting', 'a fresh attempt also survives discovery after the previous stop');
+  assert.equal(binding.state, 'starting');
+  assert.equal(binding.lastStopReason, null);
+  assert.equal(binding.lastStopOwnerId, null);
+  assert.deepEqual(binding.authority, b);
+  assert.equal(interlock.isCurrentDmxAuthority(4, b), true);
+  assert.equal(mockDgram.sockets[3].sent.length, 0);
+  mockDgram.sockets[3].finishBind();
   const running = await startingB;
   assert.deepEqual(running.authority, b);
   assert.ok(statuses.some(status => status.state === 'running' && status.authority.generation === b.generation));
   assert.equal(controller.isRunning(), true);
-  assert.ok(mockDgram.sockets[1].sent.length > 0, 'logical U1 mapped to wire U3 starts the normal mock sender');
+  assert.ok(mockDgram.sockets[3].sent.length > 0, 'logical U1 mapped to wire U3 starts the normal mock sender');
   const slots = new Uint8Array(512).fill(128);
   assert.equal(onFrame(win, 1, slots, a), false);
   assert.equal(onHeartbeat(win, a), false);

@@ -307,7 +307,7 @@ function createDmxController({
     return {
       enabled: state === 'running',
       ...(authority || lastStopAuthority ? { authority: authority ?? lastStopAuthority } : {}),
-      state: state === 'starting' ? 'idle' : state,
+      state,
       protocol: activeConfig ? activeConfig.protocol : null,
       iface: activeConfig ? activeConfig.iface : null,
       rateHz: activeConfig ? activeConfig.rateHz : 0,
@@ -315,8 +315,8 @@ function createDmxController({
       packetsSent,
       degraded,
       lastError,
-      lastStopReason,
-      lastStopOwnerId,
+      lastStopReason: state === 'starting' ? null : lastStopReason,
+      lastStopOwnerId: state === 'starting' ? null : lastStopOwnerId,
       stopEventId,
       cid: cid.uuid,
       universes: activeConfig

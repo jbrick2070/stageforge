@@ -29,7 +29,7 @@ interface DmxAuthorityBridge {
 interface DmxStatusBridge {
   enabled: boolean;
   authority?: DmxAuthorityBridge;
-  state: 'idle' | 'running' | 'stopping';
+  state: 'idle' | 'starting' | 'running' | 'stopping';
   protocol: 'sacn' | 'artnet' | null;
   iface: string | null;
   rateHz: number;

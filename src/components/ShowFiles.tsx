@@ -66,7 +66,7 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, las
   onExample: (name: ShowExample) => Promise<void>;
   onRelink: (files: File[]) => string; onError?: (message: string) => void; onClose: () => void;
   rigExportIssue?: string;
-  localDesign?: { notice?: string; restore?: () => void; previous?: () => void; adopt?: () => void; retry?: () => void };
+  localDesign?: { notice?: string; restore?: () => boolean; previous?: () => boolean; adopt?: () => void; retry?: () => void };
 }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -111,8 +111,8 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, las
       <h3>Local design</h3>
       {localDesign.notice && <p role="status">{localDesign.notice}</p>}
       <div className="file-actions">
-        {localDesign.restore && <button disabled={busy} onClick={() => void job(async () => { localDesign.restore?.(); onClose(); })}>Restore saved design</button>}
-        {localDesign.previous && <button disabled={busy} onClick={() => void job(async () => { localDesign.previous?.(); onClose(); })}>Restore previous design</button>}
+        {localDesign.restore && <button disabled={busy} onClick={() => void job(async () => { if (localDesign.restore?.()) onClose(); })}>Restore saved design</button>}
+        {localDesign.previous && <button disabled={busy} onClick={() => void job(async () => { if (localDesign.previous?.()) onClose(); })}>Restore previous design</button>}
         {localDesign.adopt && <button disabled={busy} onClick={localDesign.adopt}>Save as local design</button>}
         {localDesign.retry && <button disabled={busy} onClick={localDesign.retry}>Retry local design save</button>}
       </div>

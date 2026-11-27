@@ -177,7 +177,8 @@ test('a blocking MVR opens preflight, Cancel leaves rig and saved design byte-id
   await expect(preflight).toBeVisible();
   await expect(preflight).toContainText('Blocking issues');
   await expect(preflight).toContainText('unit-suspect');
-  await expect(preflight).toContainText('universe-repatched');
+  await expect(preflight).toContainText('gdtf-generic-reserve');
+  await expect(preflight).not.toContainText('universe-repatched');
   await expect(preflight).toContainText('break-dropped');
   await expect(preflight).toContainText('fixture-number-lost');
 
@@ -249,6 +250,9 @@ test('a blocking MVR opens preflight, Cancel leaves rig and saved design byte-id
   const priorDesign = JSON.parse(JSON.parse(beforeStorage)['stageforge.design.v1']).current;
   expect(importedDesign.current.rig.name).toBe('Feet Block Rig');
   expect(importedDesign.previous).toEqual(priorDesign);
+  const patch = await page.evaluate(() => window.stageforgeProbe.patchOccupancy('resolved').units
+    .map(unit => [unit.universe, unit.start, unit.effectiveStart]).sort((a, b) => a[1] - b[1]));
+  expect(patch).toEqual([[3, 1, 1], [3, 17, 17], [3, 33, 33], [3, 49, 49]]);
 
   const filesAfter = await files(page);
   await filesAfter.getByRole('button', { name: /Last MVR import report.*feet-block\.mvr/ }).click();

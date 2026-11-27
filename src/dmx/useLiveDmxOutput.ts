@@ -245,6 +245,11 @@ export function useLiveDmxOutput(
 
   const receiveDesktopStatus = useCallback((status: DmxStatusBridge) => {
     const current = networkAuthorityRef.current;
+    if (status.state === 'starting') {
+      if (!current || !sameAuthority(status.authority, current) || !isAuthorityCurrent(current)) return false;
+      // A scan can finish during bind. Keep the current authority and any newer running status.
+      if (desktopLiveRef.current) return true;
+    }
     if (status.enabled) {
       if (status.state !== 'running' || !current || !sameAuthority(status.authority, current) || !isAuthorityCurrent(current)) return false;
       desktopLiveRef.current = true;
@@ -252,7 +257,7 @@ export function useLiveDmxOutput(
       if (current && status.authority && !sameAuthority(status.authority, current)) return false;
       if (current && !status.authority) return false;
       desktopLiveRef.current = false;
-      if (current && status.state === 'idle') {
+      if (current && status.state === 'idle' && status.lastStopReason) {
         networkAuthorityRef.current = null;
         if (sameAuthority(authorityRef.current, current)) revokeAuthority();
       }
@@ -318,10 +323,10 @@ export function useLiveDmxOutput(
     const authority = authorityRef.current;
     if (!authority) return;
     engine.setDmxFrameListener((u1, u2, u1Changed, u2Changed, serialU1, serialU2) => {
-      if (!isAuthorityCurrent(authority)) return;
+      if (!sameAuthority(authorityRef.current, authority)) return;
       // Reject frames synchronously if pre-flight revision became stale/blocked before React effects run (qa-03 R3).
-      const liveCheck = canArmCheckRef.current?.();
-      if (liveCheck && !liveCheck.allowed) {
+      const liveCheck = getEligibility();
+      if (!liveCheck.allowed || liveCheck.revision !== authority.revision) {
         void emergencyStopRef.current(
           `Output stopped: ${liveCheck.reason ?? 'Pre-flight safety check became stale or blocked.'}`,
         );
@@ -348,7 +353,7 @@ export function useLiveDmxOutput(
     return () => {
       engine.setDmxFrameListener(undefined);
     };
-  }, [engineRef, rigRef, enabled, isLive, desktopLive, serialLive, isAuthorityCurrent]);
+  }, [engineRef, rigRef, enabled, isLive, desktopLive, serialLive, getEligibility]);
 
   const discoverArtNet = useCallback(async () => {
     if (!enabledRef.current) return;

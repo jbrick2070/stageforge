@@ -3273,10 +3273,14 @@ export const App: React.FC = () => {
     openDocument(JSON.stringify(bundle.show), bundle.files);
   };
   const restoreLocalDesign = (which: 'current' | 'previous') => {
-    if (!capabilitiesRef.current.edit || designerOpenRef.current) return;
+    if (!capabilitiesRef.current.edit || designerOpenRef.current) return false;
     const saved = savedDesignRef.current;
     const content = saved.status === 'ready' ? saved.record[which] : undefined;
-    if (!content) return;
+    if (!content) return false;
+    const pendingWarning = pendingDesign.current ? '\n\nThe unsaved local design waiting to be saved will be discarded.' : '';
+    if (!window.confirm(
+      `Restore "${content.rig.name}"? This replaces the current rig, stage and crowd and clears the current cue list, take and show media assignments. Media used by the restored design may need relinking.${pendingWarning}`,
+    )) return false;
     const json = JSON.stringify(makeDesignRecoveryShow(content));
     pendingDesign.current = null;
     setDesignSaveFailed(false);
@@ -3285,6 +3289,7 @@ export const App: React.FC = () => {
     if (which === 'previous') queueDesign(rigRef.current, true, true);
     else localDesignMode.current = 'attached';
     showToast(`Restored ${content.rig.name}. Linked media can be relinked in Show files.`);
+    return true;
   };
 
   const rigExportIssue = standaloneRigExportIssue(rig);

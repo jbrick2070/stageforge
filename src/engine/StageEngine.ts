@@ -5558,7 +5558,6 @@ export class StageEngine {
     ap.atmo.co2 = effCo2;
 
     this.refreshMeasureOverlayAndSnapshot(performance.now());
-    if (blackoutActive || darkOpening) this.clearExtendedSimDmx();
     return previewMaster > 0;
   }
 

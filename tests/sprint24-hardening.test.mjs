@@ -851,6 +851,9 @@ test('Sprint 24 (Codex SF-M1): live TOCTOU pre-flight staleness and runtime haza
   );
 
   const liveHookSrc = await fs.readFile(path.join(repoRoot, 'src/dmx/useLiveDmxOutput.ts'), 'utf8');
+  const frameBody = liveHookSrc.split('engine.setDmxFrameListener((u1, u2, u1Changed, u2Changed, serialU1, serialU2) => {')[1]?.split('bridge.sendDmxFrame')[0];
+  assert.match(frameBody, /if\s*\(!sameAuthority\(authorityRef\.current, authority\)\) return/);
+  assert.match(frameBody, /if\s*\(!liveCheck\.allowed \|\| liveCheck\.revision !== authority\.revision\)\s*\{\s*void emergencyStopRef\.current/);
   const disableAction = liveHookSrc.split('const disable = useCallback(async')[1]?.split('const enable = useCallback')[0];
   assert.match(disableAction, /await\s+stopCurrentOutput\(\)/, 'the public Stop action calls the common drain');
   const stopBody = liveHookSrc.split('const stopCurrentOutput = useCallback(async () => {')[1]?.split('stopCurrentOutputRef.current =')[0];

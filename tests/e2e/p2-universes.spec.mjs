@@ -9,6 +9,12 @@ const monitor = page => page.getByRole('complementary', { name: 'DMX monitor', e
 const showPayload = show => ({ name: 'p2.stageforge.show.json', buffer: Buffer.from(JSON.stringify(show)), mimeType: 'application/json' });
 const savedRaw = page => page.evaluate(storageKey => localStorage.getItem(storageKey), key);
 
+async function exportOpenShow(page) {
+  const downloading = page.waitForEvent('download');
+  await button(files(page), 'Save show JSON').press('Enter');
+  return JSON.parse(await readFile(await (await downloading).path(), 'utf8'));
+}
+
 async function openShow(page, show, viewer = false) {
   await button(page, 'Show files').press('Enter');
   await files(page).getByLabel(viewer ? 'Open show in viewer' : 'Open show file').setInputFiles(showPayload(show));
@@ -62,10 +68,18 @@ test('P2 opens and saves three equal addresses, monitors extended SIM and clears
   const immediate = await page.evaluate(() => {
     document.body.focus();
     document.body.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true }));
-    return window.stageforgeProbe.simulatedDmxSnapshot();
+    const p = window.stageforgeProbe;
+    return { u1: p.dmxSnapshot().u1, extended: p.simulatedDmxSnapshot() };
   });
-  expect(immediate[3].some(Boolean)).toBe(false);
-  expect(immediate[16].some(Boolean)).toBe(false);
+  expect(immediate.u1.some(Boolean)).toBe(false);
+  expect(immediate.extended[3].some(Boolean)).toBe(false);
+  expect(immediate.extended[16].some(Boolean)).toBe(false);
+  const heldTick = await page.evaluate(() => {
+    const p = window.stageforgeProbe;
+    p.stepAndReadLuminance(16);
+    return [p.dmxSnapshot().u1, p.simulatedDmxSnapshot()[3]].map(bytes => bytes.slice(0, 3).map(Boolean));
+  });
+  expect(heldTick).toEqual([[true, true, false], [true, true, false]]);
   await page.keyboard.press('Space');
   await expect.poll(async () => (await readBuffers()).extended[3][2]).toBeGreaterThan(5);
 
@@ -82,9 +96,7 @@ test('P2 opens and saves three equal addresses, monitors extended SIM and clears
   await button(page, 'Show files').press('Enter');
   await expect(button(files(page), 'Rig only JSON')).toBeDisabled();
   await expect(files(page).getByText(/This design uses U3–U16/)).toBeVisible();
-  const downloading = page.waitForEvent('download');
-  await button(files(page), 'Save show JSON').press('Enter');
-  const exported = JSON.parse(await readFile(await (await downloading).path(), 'utf8'));
+  const exported = await exportOpenShow(page);
   expect(exported.version).toBe(15);
   expect(exported.rig.trussPods[0].fixtures.map(item => [item.dmxUniverse, item.dmxStartChannel])).toEqual([[1, 1], [2, 1], [3, 1]]);
   await button(files(page), 'Close Show files').press('Enter');
@@ -114,7 +126,8 @@ test('P2 adopts fixture edits after a protected Show open and atomically recover
   const authored = JSON.parse(await readFile(new URL('../fixtures/native-authoring-v3.stageforge.show.json', import.meta.url), 'utf8'));
   show.rig.name = 'Edited local draft';
   show.stage = authored.stage;
-  show.timeline = { durationMs: 16000, events: [] };
+  show.timeline = { durationMs: 16000, events: [{ ...authored.timeline.events[0], cueId: 'steady', look: show.look }] };
+  show.media = authored.media;
   await openShow(page, show);
   expect(await savedRaw(page)).toBe(before);
   const builder = await openRigBuilder(page);
@@ -131,6 +144,21 @@ test('P2 adopts fixture edits after a protected Show open and atomically recover
   await button(builder, 'Close Rig Builder').press('Enter');
   await button(page, 'Show files').press('Enter');
   await expect(files(page).getByText(/previous save remains intact/)).toBeVisible();
+  const beforeDecline = await exportOpenShow(page);
+  expect(beforeDecline.cues).toHaveLength(1);
+  expect(beforeDecline.timeline.events).toHaveLength(1);
+  expect(beforeDecline.media.music.name).toBe('Arena Anthem');
+  const confirmation = page.waitForEvent('dialog');
+  const attemptingRestore = button(files(page), 'Restore saved design').press('Enter');
+  const dialog = await confirmation;
+  const declinedMessage = dialog.message();
+  await dialog.dismiss();
+  await attemptingRestore;
+  expect(declinedMessage).toContain('clears the current cue list, take and show media assignments');
+  expect(declinedMessage).toContain('The unsaved local design waiting to be saved will be discarded.');
+  await expect(button(files(page), 'Retry local design save')).toBeEnabled();
+  expect(await savedRaw(page)).toBe(before);
+  expect(await exportOpenShow(page)).toEqual(beforeDecline);
   await page.evaluate(() => { window.failP2Write = false; });
   await button(files(page), 'Retry local design save').press('Enter');
   const record = JSON.parse(await savedRaw(page));
@@ -143,7 +171,9 @@ test('P2 adopts fixture edits after a protected Show open and atomically recover
   await expect(files(page).getByText('Edited local draft', { exact: true })).toBeVisible();
   await expect(files(page).getByText(/Files to relink:.*blue-raster\.mp4/)).toBeVisible();
   await expect(files(page).getByText(/Recorded actions.*5 events/)).toBeVisible();
+  page.once('dialog', dialog => dialog.accept());
   await button(files(page), 'Restore previous design').press('Enter');
+  await expect(files(page)).toBeHidden();
   const restored = JSON.parse(await savedRaw(page));
   expect(restored.current.rig.name).toBe(legacy.name);
   expect(restored.previous.rig.name).toBe('Edited local draft');
@@ -154,6 +184,7 @@ async function installMockDmx(page, order) {
     let listener;
     let running;
     let resolveGo;
+    let resolveScan;
     const idle = { state: 'idle', enabled: false, protocol: 'sacn', iface: '127.0.0.1', rateHz: 40, measuredHz: 0,
       packetsSent: 0, degraded: false, lastError: null, universes: [3, 4], nodes: [] };
     const audit = { actions: [], frames: 0 };
@@ -161,6 +192,11 @@ async function installMockDmx(page, order) {
       audit,
       publish: () => listener?.(running),
       reply: () => resolveGo?.(running),
+      publishStarting: () => listener?.({ ...idle, state: 'starting', authority: running.authority }),
+      finishScan: () => {
+        listener?.({ ...idle, state: 'starting', authority: running.authority });
+        resolveScan?.({ nodes: [], warning: null });
+      },
     };
     window.stageforgeDesktop = {
       onRigCommand: () => () => {},
@@ -174,6 +210,7 @@ async function installMockDmx(page, order) {
         if (type === 'getStatus') return idle;
         audit.actions.push({ type, authority });
         if (type === 'disable') return { ...idle, authority: running?.authority };
+        if (type === 'discover') return new Promise(resolve => { resolveScan = resolve; });
         running = { ...idle, state: 'running', enabled: true, authority };
         if (order === 'reply-first') return running;
         return new Promise(resolve => { resolveGo = resolve; });
@@ -211,9 +248,13 @@ for (const order of ['push-first', 'reply-first', 'pending-revocation']) {
     await installMockDmx(page, order);
     await page.goto('/?probe');
     await openShow(page, legacyShow());
-    const panel = await openPreflight(page);
+    const panel = await openPreflight(page, order === 'push-first' ? 'artnet' : 'sacn');
     await expect(panel.getByTestId('preflight-eligibility')).toContainText('Eligible to arm');
     await button(panel, 'Done').press('Enter');
+    if (order === 'push-first') {
+      await button(monitor(page), 'Scan').press('Enter');
+      await expect(button(monitor(page), 'Scanning…')).toBeVisible();
+    }
     await page.getByTestId('dmx-output-arm').press('Enter');
     await page.getByTestId('dmx-output-go-live').press('Enter');
     const audit = () => page.evaluate(() => window.p2Output.audit);
@@ -230,7 +271,12 @@ for (const order of ['push-first', 'reply-first', 'pending-revocation']) {
       return;
     }
     if (order === 'push-first') {
+      await page.evaluate(() => window.p2Output.finishScan());
+      await expect(button(monitor(page), 'Scan')).toBeVisible();
+      await expect(page.getByTestId('live-dmx-badge')).toHaveCount(0);
       await page.evaluate(() => window.p2Output.publish());
+      await expect(page.getByTestId('live-dmx-badge')).toBeVisible();
+      await page.evaluate(() => window.p2Output.publishStarting());
       await expect(page.getByTestId('live-dmx-badge')).toBeVisible();
       await page.evaluate(() => window.p2Output.reply());
     } else {
