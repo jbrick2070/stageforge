@@ -303,6 +303,37 @@ describe('Sprint 20: crossing coloured beams, top-K cap (2 low / 4 high), cryo v
   });
 });
 
+it('lit smoke and CO₂ use the cached calibrated radius, slope, length and dark zero-flux behavior', () => {
+  const frame = makeFrameCtx();
+  const smoke = { active: true, cx: 0.85, cy: 5, cz: 0, radius: 0.3 };
+  const cryo = { ...smoke };
+  const candidates = new litPuffsMod.LitCandidateSet(8);
+  const frustum = { nearRadius: 0.102336, length: 6, slope: 0.02 };
+  const beam = makeBeam({ frustum, lastZoomScale: 0.42 });
+  const puff = new litPuffsMod.LitPuffPoolState(1);
+  const light = (isCryo, y = 5) => litPuffsMod.evaluateSinglePuffLighting(0, 0.85, y, 0, 0.26, isCryo, 0, 2, candidates, frame, puff);
+  assert.equal(candidates.select([beam], frame, smoke, cryo, [], []), 1);
+  const narrowScore = candidates.score[0];
+  assert.equal(light(false), false);
+  assert.equal(light(true), false);
+
+  frustum.slope = 0.32;
+  candidates.clear();
+  assert.equal(candidates.select([beam], frame, smoke, cryo, [], []), 1);
+  assert.ok(candidates.score[0] > narrowScore);
+  assert.ok(Math.abs(candidates.rNear[0] - frustum.nearRadius) < 1e-6);
+  assert.ok(Math.abs(candidates.slope[0] - frustum.slope) < 1e-6);
+  assert.equal(candidates.length[0], 6);
+  assert.equal(light(false), true);
+  assert.equal(light(true), true);
+  assert.equal(light(false, 2), false);
+
+  const zero = { ...beam, optics: { ...beam.optics, fluxRatio: 0 } };
+  assert.equal(candidates.select([zero], frame, smoke, cryo, [], []), 0);
+  assert.equal(candidates.select([{ ...zero, frustum: undefined }], frame, smoke, cryo, [], []), 1);
+  assert.equal(candidates.power[0], 1, 'generic fallback remains active');
+});
+
 describe('Sprint 20: rotated billboard UV lobe inverse, stereo viewMatrix, near-camera fade & soft-knee clamp', () => {
   it('maps world beam offsets onto exact rotated quad UVs across stereo eye poses, fades near camera, and preserves hue under clamp', () => {
     const leftEyeCam = new THREE.PerspectiveCamera(50, 1.5, 0.18, 200);

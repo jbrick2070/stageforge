@@ -588,6 +588,15 @@ export interface MovingModelParts {
   glassGeo: THREE.BufferGeometry;
 }
 
+/** Lens face on the compact cell heads and the barrel or tapered moving heads. */
+export function movingZoomLens(spec: ModelSpec) {
+  const { kind, len, dia } = spec.head;
+  const r = dia / 2;
+  if (kind === 'stub-cells') return { offsetY: len * 0.46, radius: r * 0.86 };
+  const frontR = kind === 'taper' ? r * 0.90 : r * 0.96;
+  return { offsetY: len * 0.47, radius: frontR * 0.82 };
+}
+
 export function buildMovingModelParts(
   spec: ModelSpec,
   isFloor: boolean,
@@ -736,8 +745,9 @@ export function buildMovingModelParts(
     headParts.push(cylPart(r * 0.95, r * 0.95, 0.018, radialSegs, HardwareAtlasBand.HazardAndCells, 0, dir * hl * 0.43, 0, 0, 0, 0, 0.52, 0.98));
     // Glossy outer optic trim ring
     glassParts.push(cylPart(r * 1.02, r * 1.00, 0.022, radialSegs, HardwareAtlasBand.AnodizedMetal, 0, dir * hl * 0.44, 0));
-    lensOffsetY = hl * 0.46;
-    lensShape = { kind: 'circle', radius: r * 0.86 };
+    const lens = movingZoomLens(spec);
+    lensOffsetY = lens.offsetY;
+    lensShape = { kind: 'circle', radius: lens.radius };
   } else if (spec.head.kind === 'snout') {
     // Profile / Followspot head: rear lamp house + tapered optical snout + shutter barrel
     const rearLen = hl * 0.54;
@@ -788,8 +798,9 @@ export function buildMovingModelParts(
     }
     // Prominent front collimator bezel
     glassParts.push(cylPart(frontR * 0.96, frontR * 0.98, 0.026, radialSegs, HardwareAtlasBand.AnodizedMetal, 0, dir * hl * 0.45, 0));
-    lensOffsetY = hl * 0.47;
-    lensShape = { kind: 'circle', radius: frontR * 0.82 };
+    const lens = movingZoomLens(spec);
+    lensOffsetY = lens.offsetY;
+    lensShape = { kind: 'circle', radius: lens.radius };
   }
 
   return {

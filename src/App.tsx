@@ -2027,12 +2027,15 @@ export const App: React.FC = () => {
     const probe = new URLSearchParams(window.location.search).has('probe');
     if (probe) (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe = {
       beamAxes: () => engine.beamAxes(),
+      beamFrusta: () => engine.beamFrustaForTest(),
+      poolFrusta: () => engine.poolFrustaForTest(),
       measureSnapshot: () => engine.getMeasureSnapshot(false),
       preflightReport: () => preflightRef.current,
       audioModulation: () => engine.getAudioModulationSnapshot(),
       fixtureParams: (group?: AudioTargetGroup) => engine.getFixtureParams(group),
       dmxSnapshot: () => ({ u1: Array.from(engine.dmxUniverse1), u2: Array.from(engine.dmxUniverse2) }),
       physicalDmxSnapshot: () => ({ u1: Array.from(engine.physicalDmxU1), u2: Array.from(engine.physicalDmxU2) }),
+      ...(import.meta.env.DEV && { serialDmxSnapshot: () => ({ u1: Array.from(engine.serialPhysicalDmxU1), u2: Array.from(engine.serialPhysicalDmxU2) }) }),
       cuePreview: () => engine.getCuePreviewLevels(),
       audioPlaybackTime: () => (audioEngineRef.current?.getPlaybackMs() ?? 0) / 1000,
       demoPosition: () => live.audio.get().demo ?? null,

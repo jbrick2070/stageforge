@@ -22,6 +22,7 @@ function formatLux(lux: number | null): string {
 
 function formatFootprint(u: FixtureMeasurement): string {
   if (!u.footprint) return '—';
+  if (u.footprint.clipped) return 'Clipped by beam length';
   if (u.footprint.grazing || u.footprint.majorDiameterM === null || u.footprint.minorDiameterM === null) {
     return `Grazing (normal ${u.footprint.normalDiameterM.toFixed(2)} m)`;
   }
@@ -100,7 +101,7 @@ export const MeasureOverlayHud: React.FC<MeasureOverlayHudProps> = ({
             <span className="font-bold">#{u.fixtureNumber}</span>{' '}
             {u.throwM !== null ? `${u.throwM.toFixed(1)}m` : '—'}
             {u.incidenceDeg !== null ? ` · ${Math.round(u.incidenceDeg)}°` : ''}
-            {u.footprint ? ` · ${u.footprint.normalDiameterM.toFixed(1)}m` : ''}
+            {u.footprint?.clipped ? ' · Clipped' : u.footprint ? ` · ${u.footprint.normalDiameterM.toFixed(1)}m` : ''}
           </button>
         );
       })}
@@ -277,6 +278,14 @@ export const MeasureOverlayHud: React.FC<MeasureOverlayHudProps> = ({
                       {formatLux(selected.luxLiveEst ?? selected.luxFullEst)}
                     </dd>
                   </div>
+                  {selected.calibratedOptics && (
+                    <div>
+                      <dt className="text-zinc-400">Nominal preview flux</dt>
+                      <dd className="text-white">
+                        {selected.calibratedOptics.nominalPreviewLumens.toLocaleString()} lm ({selected.calibratedOptics.fluxSource})
+                      </dd>
+                    </div>
+                  )}
                 </dl>
 
                 {selected.warnings.length > 0 && (

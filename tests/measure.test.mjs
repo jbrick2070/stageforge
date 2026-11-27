@@ -10,10 +10,13 @@ const laserSafetyMod = await vite.ssrLoadModule('/src/data/laserSafety.ts');
 const focusAimMod = await vite.ssrLoadModule('/src/engine/focusAim.ts');
 const opticsMod = await vite.ssrLoadModule('/src/data/fixtureOptics.ts');
 const presetsMod = await vite.ssrLoadModule('/src/data/presets.ts');
+const { BeamPools } = await vite.ssrLoadModule('/src/engine/beamPools.ts');
+const THREE = await import('three');
 
 const {
   computeLaserNohd,
   computeBeamFootprint,
+  computeCalibratedBeamFootprint,
   estimateIlluminanceLux,
   measureFixtureUnit,
   evaluateLaserZones,
@@ -60,6 +63,92 @@ test('beam footprint: normal 10 m / 10° pin (~1.75 m), oblique conic ellipse, a
   const grazing = computeBeamFootprint(10, 10, 86);
   assert.equal(grazing.grazing, true);
   assert.equal(grazing.majorDiameterM, null);
+});
+
+test('calibrated finite lens gives an exact complete ellipse and distinguishes partial, distant and grazing receivers', () => {
+  const slope = Math.tan(10.5 * Math.PI / 180);
+  const frustum = { length: 30, nearRadius: 0.102336, slope };
+  const normal = computeCalibratedBeamFootprint(10, 0, frustum);
+  assert.equal(normal.normalDiameterM, 2 * (frustum.nearRadius + 10 * slope));
+  assert.equal(normal.minorDiameterM, normal.normalDiameterM);
+  assert.equal(normal.majorDiameterM, normal.normalDiameterM);
+  const oblique = computeCalibratedBeamFootprint(10, 45, frustum);
+  assert.ok(Math.abs(oblique.majorDiameterM - normal.normalDiameterM * Math.SQRT2 / (1 - slope ** 2)) < 1e-12);
+  const partial = computeCalibratedBeamFootprint(25, 45, frustum);
+  const distant = computeCalibratedBeamFootprint(31, 0, frustum);
+  const rear = computeCalibratedBeamFootprint(0.02, 45, frustum);
+  for (const clipped of [partial, distant, rear]) {
+    assert.equal(clipped.clipped, true);
+    assert.equal(clipped.grazing, false);
+    assert.equal(clipped.majorDiameterM, null);
+    assert.equal(clipped.minorDiameterM, null);
+  }
+  const grazing = computeCalibratedBeamFootprint(10, 80, frustum);
+  assert.equal(grazing.grazing, true);
+  assert.equal(grazing.clipped, undefined);
+
+  // Put the same cone over a horizontal receiver. A clipped overlap still creates an
+  // instance, while the receiver beyond the finite cone has no illuminated patch.
+  const pool = new BeamPools(1, 100, 100, 0, []);
+  const beam = new THREE.Object3D();
+  const optics = fixtureOptics('beam');
+  beam.userData.lensOffsetY = 0;
+  const color = new THREE.Color('#ffffff');
+  const receive = (throwM, incidence) => {
+    beam.position.set(0, throwM * Math.cos(incidence) + 0.003, 0);
+    beam.rotation.x = incidence;
+    pool.begin();
+    pool.add(beam, 'beam', false, color, 1, optics, 0, 0, frustum);
+    pool.finish();
+    return pool.frustaForTest();
+  };
+  const [fullPatch] = receive(10, Math.PI / 4);
+  const [partialPatch] = receive(25, Math.PI / 4);
+  assert.ok(fullPatch.bounds[2] > fullPatch.bounds[0]);
+  assert.ok(partialPatch.bounds[2] > partialPatch.bounds[0]);
+  assert.ok(Math.abs(partialPatch.optics[0] - frustum.nearRadius) < 1e-6);
+  assert.ok(Math.abs(partialPatch.optics[1] - slope) < 1e-6);
+  assert.equal(partialPatch.optics[2], 30);
+  assert.deepEqual(receive(31, 0), []);
+  pool.dispose();
+
+  const rig = { ...RIG_TEMPLATES.arena_mainstage, venue: 'festival' };
+  const origin = { x: 0, y: 40, z: 0 };
+  const unit = measureFixtureUnit({
+    unitId: 'test:robe:0', fixtureNumber: 1, groupId: 'robe', podId: 'test', positionName: 'Test',
+    label: 'Test MegaPointe', modelName: 'MegaPointe', type: 'beam', motion: 'pan-tilt', isFloor: false,
+    mountPosition: origin, lensOrigin: origin, direction: { x: 0, y: -1, z: 0 }, panRad: 0, tiltRad: 0,
+    zoomScale: 1, optics, frustum: { ...frustum, beamAngleDeg: 21, nominalLumens: 20375 }, configuredLumens: 20375,
+    appliedDimmer: 1, emittedVisible: true,
+  }, rig, buildSceneRaySurfaces(rig));
+  assert.equal(unit.hitKind, 'deck');
+  assert.equal(unit.throwM, 40 - rig.stageHeight);
+  assert.equal(unit.footprint.clipped, true);
+  assert.equal(unit.luxFullEst, null);
+});
+
+test('pre-flight checks a zoom-only cue at the lowest motor trim', () => {
+  const rig = structuredClone(RIG_TEMPLATES.arena_mainstage);
+  rig.venue = 'festival';
+  rig.ledWall.enabled = false;
+  rig.floorFx = [];
+  rig.trussPods = [{
+    ...rig.trussPods[0], x: 0, z: 0, rotationY: 0, baseY: 21, motorized: true, motorMinY: 13.5, motorMaxY: 21,
+    fixtures: [{ id: 'trim-wash', modelName: 'Rogue R1 BeamWash', type: 'wash', catalogId: 'chauvet-rogue-r1-beamwash',
+      dmxMode: '19-Ch', dmxChannels: 19, count: 1, dmxUniverse: 1, dmxStartChannel: 1 }],
+  }];
+  const look = { ...INITIAL_SHOW_STATE, movementMode: 'manual', manualPan: 0, manualTilt: 1, focusMarkId: null, beamZoom: 0 };
+  const wide = { ...look, beamZoom: 1 };
+  const low = structuredClone(rig);
+  low.trussPods[0].baseY = low.trussPods[0].motorMinY;
+  assert.equal(evaluateStaticHeadMeasures(rig, wide)[0].entersAudienceBelowThreshold, false);
+  assert.equal(evaluateStaticHeadMeasures(low, look)[0].entersAudienceBelowThreshold, false);
+  assert.equal(evaluateStaticHeadMeasures(low, wide)[0].entersAudienceBelowThreshold, true);
+
+  const clearance = (cues) => evaluatePreflight({ rig, cues, showState: look, acks: EMPTY_PREFLIGHT_ACKS })
+    .rows.find((row) => row.groupId === 'trim-wash').findings.some((finding) => finding.code === 'beam_audience_clearance');
+  assert.equal(clearance([]), false);
+  assert.equal(clearance([{ id: 'wide-only', name: 'Wide only', tag: 'ZOOM', accent: '#ffffff', state: { beamZoom: 1 } }]), true);
 });
 
 test('ray intersections hit stage deck, venue floor, LED walls, indoor ceiling, and report none on open-air festival sky', () => {

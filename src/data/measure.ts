@@ -3,10 +3,12 @@ import type { IldaClip } from './ilda';
 import { getCatalogEntry, isFieldUnverified, type CatalogLaserSpec } from './equipmentCatalog';
 import {
   beamZoomScale,
+  createCalibratedFrustum,
   effectiveBeamAngleDeg,
+  evaluateCalibratedZoom,
   fixtureOptics,
-  resolvedPhotometricLumens,
-  resolveOptics,
+  resolveMovingFixtureOptics,
+  type CalibratedFrustum,
 } from './fixtureOptics';
 import { placeFixtures } from './fixturePlacement';
 import {
@@ -47,7 +49,7 @@ import {
   PAN_LIMIT,
   TILT_LIMIT,
 } from '../engine/focusAim';
-import { resolveModelSpec, type FixtureMotion } from '../engine/fixtureModels';
+import { movingZoomLens, resolveModelSpec, type FixtureMotion } from '../engine/fixtureModels';
 import { headLook } from './movingGroups';
 
 /** Visible-light 0.25 s aversion-response MPE (400–700 nm, IEC 60825-1 / ANSI Z136.1). */
@@ -239,14 +241,16 @@ export function computeLaserNohd(input: LaserNohdInput): LaserNohdResult {
 }
 
 export interface BeamFootprint {
-  /** Circular diameter at normal incidence (`2 * d * tan(theta / 2)`), in metres. */
+  /** Circular diameter at normal incidence, including the aperture for a calibrated head. */
   readonly normalDiameterM: number;
-  /** Minor ellipse diameter on the hit surface (m), or `null` when grazing. */
+  /** Minor ellipse diameter on the hit surface (m), or `null` when clipped or grazing. */
   readonly minorDiameterM: number | null;
-  /** Stretched major ellipse diameter on an oblique surface (m), or `null` when grazing (`alpha + beta >= 90°`). */
+  /** Stretched major ellipse diameter on an oblique surface (m), or `null` when clipped or grazing. */
   readonly majorDiameterM: number | null;
   /** True when the cone edge is parallel/past the hit plane (`alpha + beta >= 90°`) or near-grazing blow-up. */
   readonly grazing: boolean;
+  /** True when a calibrated ellipse extends beyond the lens or the finite end plane. */
+  readonly clipped?: boolean;
 }
 
 const MAX_OBLIQUE_ELONGATION_RATIO = 50;
@@ -264,9 +268,11 @@ export function computeBeamFootprint(
   const d = Number.isFinite(throwM) && throwM > 0 ? throwM : 0;
   const halfRad = Math.max(1e-4, Math.min((89.5 * Math.PI) / 180, (beamAngleDeg * DEG_TO_RAD) / 2));
   const k = Math.tan(halfRad);
-  const normalDiameterM = 2 * d * k;
+  return coneSection(2 * d * k, k, incidenceDeg);
+}
 
-  const alphaRad = Math.max(0, Math.min(Math.PI / 2, (Number.isFinite(incidenceDeg) ? incidenceDeg : 0) * DEG_TO_RAD));
+function coneSection(normalDiameterM: number, k: number, incidenceDeg: number): BeamFootprint {
+  const alphaRad = incidenceRadians(incidenceDeg);
   const c = Math.cos(alphaRad);
   const q = c * c - k * k * (1 - c * c);
   if (q <= 1e-3 || c < 0.05) {
@@ -278,8 +284,8 @@ export function computeBeamFootprint(
     };
   }
 
-  const minorDiameterM = (2 * d * k * c) / Math.sqrt(q);
-  const majorDiameterM = (2 * d * k * c) / q;
+  const minorDiameterM = (normalDiameterM * c) / Math.sqrt(q);
+  const majorDiameterM = (normalDiameterM * c) / q;
   if (
     !Number.isFinite(majorDiameterM) ||
     !Number.isFinite(minorDiameterM) ||
@@ -299,6 +305,30 @@ export function computeBeamFootprint(
     majorDiameterM,
     grazing: false,
   };
+}
+
+function incidenceRadians(degrees: number): number {
+  return Math.max(0, Math.min(Math.PI / 2, (Number.isFinite(degrees) ? degrees : 0) * DEG_TO_RAD));
+}
+
+export function computeCalibratedBeamFootprint(
+  throwM: number,
+  incidenceDeg: number,
+  frustum: Pick<CalibratedFrustum, 'length' | 'nearRadius' | 'slope'>,
+): BeamFootprint {
+  const { nearRadius, slope, length } = frustum;
+  const throwFromLens = Number.isFinite(throwM) ? Math.max(0, throwM) : 0;
+  // The equivalent apex is nearRadius / slope behind the lens. Use that shift
+  // only in the section geometry, while throw and lux are measured from the lens.
+  const section = coneSection(2 * (nearRadius + throwFromLens * slope), slope, incidenceDeg);
+  if (section.grazing) return section;
+  const t = Math.tan(incidenceRadians(incidenceDeg));
+  const start = (throwFromLens - nearRadius * t) / (1 + slope * t);
+  const end = (throwFromLens + nearRadius * t) / (1 - slope * t);
+  if (start < -1e-9 || end > length + 1e-9) {
+    return { ...section, minorDiameterM: null, majorDiameterM: null, clipped: true };
+  }
+  return section;
 }
 
 /**
@@ -366,6 +396,8 @@ export interface EngineHeadSample {
   readonly tiltRad: number;
   readonly zoomScale: number;
   readonly optics: Pick<ReturnType<typeof fixtureOptics>, 'length' | 'nearRadius' | 'farRadius'>;
+  readonly frustum?: CalibratedFrustum;
+  readonly hasAuthoredLumens?: boolean;
   /** Explicitly configured/verified lumens, or `null` when photometric data is unavailable. */
   readonly configuredLumens: number | null;
   /** Live applied dimmer in `[0, 1]` (post-master/blackout, without render gain). */
@@ -406,6 +438,13 @@ export interface FixtureMeasurement {
   readonly throwM: number | null;
   readonly incidenceDeg: number | null;
   readonly footprint: BeamFootprint | null;
+  readonly calibratedOptics?: {
+    readonly apertureRadiusM: number;
+    readonly maxThrowM: number;
+    readonly nominalPreviewLumens: number;
+    readonly photometricLumens: number | null;
+    readonly fluxSource: 'authored' | 'catalogue' | 'preview fallback';
+  };
   /** Estimated illuminance (lux) at full fixture output, or `null` (`n/a`) when no photometric data exists. */
   readonly luxFullEst: number | null;
   /** Estimated illuminance (lux) at live applied dimmer, or `null` (`n/a`) when no photometric data exists. */
@@ -461,10 +500,11 @@ export function measureFixtureUnit(
   const tiltDeg = sample.tiltRad * RAD_TO_DEG;
   const panDmx = axisDmx(sample.panRad, PAN_LIMIT);
   const tiltDmx = axisDmx(sample.tiltRad, TILT_LIMIT);
-  const beamAngleDeg = effectiveBeamAngleDeg(sample.optics, sample.zoomScale);
+  const frustum = sample.frustum;
+  const beamAngleDeg = frustum?.beamAngleDeg ?? effectiveBeamAngleDeg(sample.optics, sample.zoomScale);
 
   const hit = castRayToScene(sample.lensOrigin, sample.direction, surfaces);
-  const maxAudienceT = hit.distanceM !== null ? hit.distanceM : Infinity;
+  const maxAudienceT = Math.min(hit.distanceM ?? Infinity, frustum?.length ?? Infinity);
   const axisAudience = intersectRayAudienceZone(
     sample.lensOrigin,
     sample.direction,
@@ -473,13 +513,32 @@ export function measureFixtureUnit(
   );
 
   // Also check lower cone-edge ray (vertical plane) so wide washes cannot hide crowd spill behind a high center axis.
-  const lowerDir = lowerConeEdgeDirection(sample.direction, (beamAngleDeg * DEG_TO_RAD) / 2);
+  const axis = sample.direction;
+  const horizontal = frustum ? Math.hypot(axis.x, axis.z) : 0;
+  let edgeOrigin = sample.lensOrigin;
+  let lowerDir: Vec3Tuple | null;
+  let edgeLength = Infinity;
+  if (frustum && horizontal >= 1e-6) {
+    const downX = axis.x * axis.y / horizontal;
+    const downZ = axis.z * axis.y / horizontal;
+    edgeOrigin = {
+      x: edgeOrigin.x + frustum.nearRadius * downX,
+      y: edgeOrigin.y - frustum.nearRadius * horizontal,
+      z: edgeOrigin.z + frustum.nearRadius * downZ,
+    };
+    const k = frustum.slope;
+    const norm = Math.hypot(1, k);
+    lowerDir = { x: (axis.x + k * downX) / norm, y: (axis.y - k * horizontal) / norm, z: (axis.z + k * downZ) / norm };
+    edgeLength = frustum.length * norm;
+  } else {
+    lowerDir = lowerConeEdgeDirection(axis, (beamAngleDeg * DEG_TO_RAD) / 2);
+  }
   let edgeAudience: ReturnType<typeof intersectRayAudienceZone> | null = null;
   if (lowerDir) {
-    const edgeHit = castRayToScene(sample.lensOrigin, lowerDir, surfaces);
-    const maxEdgeT = edgeHit.distanceM !== null ? edgeHit.distanceM : Infinity;
+    const edgeHit = castRayToScene(edgeOrigin, lowerDir, surfaces);
+    const maxEdgeT = Math.min(edgeHit.distanceM ?? Infinity, edgeLength);
     edgeAudience = intersectRayAudienceZone(
-      sample.lensOrigin,
+      edgeOrigin,
       lowerDir,
       surfaces.bounds.audienceZone,
       maxEdgeT,
@@ -497,15 +556,17 @@ export function measureFixtureUnit(
 
   const footprint =
     hit.distanceM !== null && hit.incidenceDeg !== null
-      ? computeBeamFootprint(hit.distanceM, beamAngleDeg, hit.incidenceDeg)
+      ? frustum
+        ? computeCalibratedBeamFootprint(hit.distanceM, hit.incidenceDeg, frustum)
+        : computeBeamFootprint(hit.distanceM, beamAngleDeg, hit.incidenceDeg)
       : null;
 
   const luxFullEst =
-    hit.distanceM !== null && hit.incidenceDeg !== null
+    hit.distanceM !== null && hit.incidenceDeg !== null && hit.distanceM <= (frustum?.length ?? Infinity)
       ? estimateIlluminanceLux(sample.configuredLumens, beamAngleDeg, hit.distanceM, hit.incidenceDeg, 1)
       : null;
   const luxLiveEst =
-    hit.distanceM !== null && hit.incidenceDeg !== null
+    hit.distanceM !== null && hit.incidenceDeg !== null && hit.distanceM <= (frustum?.length ?? Infinity)
       ? estimateIlluminanceLux(
           sample.configuredLumens,
           beamAngleDeg,
@@ -519,6 +580,13 @@ export function measureFixtureUnit(
   const nearTiltLimit = sample.motion !== 'fixed' && Math.abs(tiltDeg) >= TILT_LIMIT_DEG - AIM_LIMIT_WARNING_DEG - 1e-6;
   const entersAudienceBelowThreshold =
     audienceEnters || (minAudienceClearanceM !== null && minAudienceClearanceM < MIN_AUDIENCE_CLEARANCE_M - 1e-6);
+  const calibratedOptics: FixtureMeasurement['calibratedOptics'] = frustum ? {
+    apertureRadiusM: frustum.nearRadius,
+    maxThrowM: frustum.length,
+    nominalPreviewLumens: frustum.nominalLumens,
+    photometricLumens: sample.configuredLumens,
+    fluxSource: sample.hasAuthoredLumens ? 'authored' : sample.configuredLumens !== null ? 'catalogue' : 'preview fallback',
+  } : undefined;
 
   const warnings: FixtureMeasureWarning[] = [];
   let severityRank: 0 | 1 | 2 = 0;
@@ -589,6 +657,7 @@ export function measureFixtureUnit(
     throwM: hit.distanceM,
     incidenceDeg: hit.incidenceDeg,
     footprint,
+    ...(calibratedOptics && { calibratedOptics }),
     luxFullEst,
     luxLiveEst,
     entersAudienceBelowThreshold,
@@ -1046,7 +1115,9 @@ export function evaluateStaticHeadMeasures(
     const target = focusPoint(marks, look.focusMarkId, look.manualPan, look.manualTilt);
     const spec = resolveModelSpec(unit.group.type, unit.group.catalogId);
     const pivotY = unit.group.catalogId ? spec.pivotY : HEAD_PIVOT;
-    const lensOffsetY = spec.head.len / 2;
+    const { optics, calibration, configuredLumens, hasAuthoredLumens } = resolveMovingFixtureOptics(unit.group);
+    const lens = calibration ? movingZoomLens(spec) : undefined;
+    const lensOffsetY = lens?.offsetY ?? spec.head.len / 2;
     const dir = unit.floor ? 1 : -1;
 
     let panRad = 0;
@@ -1113,8 +1184,10 @@ export function evaluateStaticHeadMeasures(
       z: pivotWorld.z + dirVec.z * lensOffsetY,
     };
 
-    const optics = fixtureOptics(headType, resolveOptics(unit.group));
-    const zoomScale = beamZoomScale(headType, showState.beamZoom);
+    const frustum = calibration && lens
+      ? evaluateCalibratedZoom(calibration, optics, showState.beamZoom, createCalibratedFrustum(optics, lens.radius))
+      : undefined;
+    const zoomScale = frustum ? 1 : beamZoomScale(headType, showState.beamZoom);
     const baseInt = headType === 'wash' ? showState.washIntensity : showState.beamIntensity;
     const appliedDimmer = showState.blackout ? 0 : Math.max(0, Math.min(1, baseInt * showState.masterDimmer));
 
@@ -1136,9 +1209,11 @@ export function evaluateStaticHeadMeasures(
       tiltRad,
       zoomScale,
       optics,
-      configuredLumens: resolvedPhotometricLumens(unit.group),
+      configuredLumens,
+      hasAuthoredLumens,
+      frustum,
       appliedDimmer,
-      emittedVisible: appliedDimmer > 0.01,
+      emittedVisible: frustum ? appliedDimmer * frustum.gain > 0.001 : appliedDimmer > 0.01,
     };
     out.push(measureFixtureUnit(sample, rig, raySurfaces));
   }

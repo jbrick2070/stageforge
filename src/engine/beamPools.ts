@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import type { fixtureOptics } from '../data/fixtureOptics';
+import type { CalibratedFrustum, fixtureOptics } from '../data/fixtureOptics';
 import type { RenderTier } from './hardwareMaterials';
 import {
   canAdmitPrismBuffers,
@@ -473,6 +473,7 @@ export class BeamPools {
     optics: ReturnType<typeof fixtureOptics>,
     prismMix: number | boolean = 0,
     prismPhaseRad = 0,
+    frustum?: CalibratedFrustum,
   ) {
     if (!Number.isFinite(intensity) || intensity <= 0.001) return;
     const sign: 1 | -1 = isFloor ? 1 : -1;
@@ -514,10 +515,10 @@ export class BeamPools {
       this.direction.set(ax * inv, ay * inv, az * inv);
     }
 
-    const throwLength = optics.length;
+    const throwLength = frustum?.length ?? optics.length;
     const zoom = Number.isFinite(beam.scale.x) && beam.scale.x > 0 ? beam.scale.x : 1;
-    const nearRadius = optics.nearRadius * zoom;
-    const slope = (optics.farRadius * zoom - nearRadius) / throwLength;
+    const nearRadius = frustum?.nearRadius ?? optics.nearRadius * zoom;
+    const slope = frustum?.slope ?? (optics.farRadius * zoom - nearRadius) / throwLength;
 
     for (const receiver of this.receivers) {
       if (receiver.count >= this.capacity) continue;
@@ -581,6 +582,20 @@ export class BeamPools {
       extraBufferBytes: this.extraBufferBytes,
       uploadBytes: this.lastUploadBytes,
     };
+  }
+
+  /** Active GPU instance inputs for the latest tick or restoration refill. */
+  frustaForTest() {
+    return this.receivers.flatMap(({ mesh, surfaceY }) => {
+      const { lens, axis, optics, bounds } = mesh.geometry.attributes;
+      return Array.from({ length: mesh.geometry.instanceCount }, (_, i) => ({
+        surfaceY,
+        lens: [lens.getX(i), lens.getY(i), lens.getZ(i)],
+        axis: [axis.getX(i), axis.getY(i), axis.getZ(i)],
+        optics: [optics.getX(i), optics.getY(i), optics.getZ(i)],
+        bounds: [bounds.getX(i), bounds.getY(i), bounds.getZ(i), bounds.getW(i)],
+      }));
+    });
   }
 
   dispose() {

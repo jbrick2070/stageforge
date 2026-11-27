@@ -3,6 +3,64 @@ import { getCatalogEntry, isFieldUnverified } from './equipmentCatalog';
 
 export type MovingHeadKind = 'beam' | 'wash';
 
+type OpticsGroup = { type: FixtureType | FloorFxType; catalogId?: string; optics?: FixtureOptics };
+
+interface CalibratedZoom {
+  readonly narrowDeg: number;
+  readonly wideDeg: number;
+  readonly wideSlope: number;
+}
+
+/** Lens-to-end geometry evaluated into a reusable record on each rendered head. */
+export interface CalibratedFrustum {
+  readonly length: number;
+  readonly nearRadius: number;
+  readonly nominalLumens: number;
+  beamAngleDeg: number;
+  slope: number;
+  endRadiusDelta: number;
+  gain: number;
+}
+
+function calibratedZoom(narrowDeg: number, wideDeg: number): CalibratedZoom {
+  return Object.freeze({ narrowDeg, wideDeg, wideSlope: Math.tan(wideDeg * Math.PI / 360) });
+}
+
+// Robe MegaPointe beam mode (the spot mode has a different range).
+const MEGAPOINTE_BEAM_ZOOM = calibratedZoom(1.8, 21);
+// CHAUVET Rogue R1 BeamWash beam angles (the field and cutoff angles differ).
+const ROGUE_WASH_ZOOM = calibratedZoom(4, 37.8);
+
+/** Read raw group optics before catalogue resolution supplies a default profile. */
+export function resolveCalibratedZoom(group: OpticsGroup): CalibratedZoom | undefined {
+  if (group.optics?.beamAngle !== undefined || group.optics?.profile !== undefined) return;
+  if (group.catalogId === 'robe-megapointe' && (group.type === 'beam' || group.type === 'floor_beam')) {
+    return MEGAPOINTE_BEAM_ZOOM;
+  }
+  if (group.catalogId === 'chauvet-rogue-r1-beamwash' && group.type === 'wash') return ROGUE_WASH_ZOOM;
+}
+
+export function createCalibratedFrustum(optics: ReturnType<typeof fixtureOptics>, nearRadius: number): CalibratedFrustum {
+  return { length: optics.length, nearRadius, nominalLumens: optics.lumens, beamAngleDeg: 0, slope: 0, endRadiusDelta: 0, gain: 0 };
+}
+
+export function evaluateCalibratedZoom(
+  calibration: CalibratedZoom,
+  optics: ReturnType<typeof fixtureOptics>,
+  effZoom: number,
+  out: CalibratedFrustum,
+): CalibratedFrustum {
+  const z = clampZoom(effZoom);
+  const beamAngleDeg = calibration.narrowDeg + z * (calibration.wideDeg - calibration.narrowDeg);
+  if (out.beamAngleDeg === beamAngleDeg) return out;
+  out.beamAngleDeg = beamAngleDeg;
+  out.slope = Math.tan(out.beamAngleDeg * Math.PI / 360);
+  out.endRadiusDelta = out.length * (calibration.wideSlope - out.slope);
+  // Flux is independent of zoom. Only the cone's solid angle changes aerial exposure.
+  out.gain = aerialGain(optics, out.slope / optics.zoomSlope);
+  return out;
+}
+
 export const MAX_LUMENS = 10_000_000;
 export const MIN_ANGLE = 0.1;
 export const MAX_ANGLE = 179;
@@ -74,11 +132,7 @@ export function catalogOptics(catalogId: string | undefined, kind: MovingHeadKin
  * Resolve effective FixtureOptics for a fixture or floor-FX group.
  * Groups without `catalogId` return `group.optics` untouched so legacy rendering stays byte-identical.
  */
-export function resolveOptics(group: {
-  type: FixtureType | FloorFxType;
-  catalogId?: string;
-  optics?: FixtureOptics;
-}): FixtureOptics | undefined {
+export function resolveOptics(group: OpticsGroup): FixtureOptics | undefined {
   if (!group.catalogId) return group.optics;
   if (group.type !== 'beam' && group.type !== 'wash' && group.type !== 'floor_beam') return undefined;
   const kind: MovingHeadKind = group.type === 'wash' ? 'wash' : 'beam';
@@ -89,6 +143,17 @@ export function resolveOptics(group: {
     profile: group.optics?.profile ?? base.profile,
     ...(group.optics?.lumens !== undefined ? { lumens: group.optics.lumens } : {}),
     ...(group.optics?.beamAngle !== undefined ? { beamAngle: group.optics.beamAngle } : {}),
+  };
+}
+
+export function resolveMovingFixtureOptics(group: OpticsGroup) {
+  const calibration = resolveCalibratedZoom(group);
+  const resolved = resolveOptics(group);
+  return {
+    optics: fixtureOptics(group.type === 'wash' ? 'wash' : 'beam', resolved),
+    calibration,
+    configuredLumens: photometricLumens(resolved),
+    hasAuthoredLumens: group.optics?.lumens !== undefined,
   };
 }
 
@@ -141,8 +206,12 @@ export function aerialGain(optics: ReturnType<typeof fixtureOptics>, zoom: numbe
  * so reported beam angles always match the rendered volumetric cone.
  */
 export function beamZoomScale(kind: MovingHeadKind, effZoom: number): number {
-  const z = Number.isFinite(effZoom) ? Math.max(0, Math.min(1, effZoom)) : 0;
+  const z = clampZoom(effZoom);
   return kind === 'wash' ? 0.75 + z * 0.85 : 0.42 + z * 1.35;
+}
+
+function clampZoom(zoom: number): number {
+  return Number.isFinite(zoom) ? Math.max(0, Math.min(1, zoom)) : 0;
 }
 
 /**
@@ -162,12 +231,11 @@ export function effectiveBeamAngleDeg(
  * Return explicitly configured or verified catalogue luminous flux (lumens), or `null` when
  * photometric data is absent (never falls back to the 10,000 lm legacy preview default).
  */
-export function resolvedPhotometricLumens(group: {
-  type: FixtureType | FloorFxType;
-  catalogId?: string;
-  optics?: FixtureOptics;
-}): number | null {
-  const resolved = resolveOptics(group);
+export function resolvedPhotometricLumens(group: OpticsGroup): number | null {
+  return photometricLumens(resolveOptics(group));
+}
+
+function photometricLumens(resolved?: FixtureOptics): number | null {
   const raw = resolved?.lumens ?? resolved?.profile?.lumens;
   if (raw === undefined || !Number.isFinite(raw) || raw <= 0) return null;
   return Math.min(MAX_LUMENS, raw);

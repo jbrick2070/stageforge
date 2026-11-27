@@ -41,8 +41,11 @@ export const VOLUMETRIC_BEAM_VERT = /* glsl */ `
 #ifdef INSTANCED_BEAM
   attribute vec3 instColor;
   attribute vec4 instParams;
+  attribute float instEndRadiusDelta;
   flat varying vec3 vInstColor;
   flat varying vec4 vInstParams;
+#else
+  uniform float uEndRadiusDelta;
 #endif
   varying vec2 vUv;
   varying vec3 vWorld;
@@ -56,10 +59,14 @@ export const VOLUMETRIC_BEAM_VERT = /* glsl */ `
     mat4 m = modelMatrix * instanceMatrix;
     vInstColor = instColor;
     vInstParams = instParams;
+    float endRadiusDelta = instEndRadiusDelta;
 #else
     mat4 m = modelMatrix;
+    float endRadiusDelta = uEndRadiusDelta;
 #endif
-    vec4 world = m * vec4(position, 1.0);
+    vec3 local = position;
+    local.xz -= normalize(normal.xz) * ((1.0 - uv.y) * endRadiusDelta);
+    vec4 world = m * vec4(local, 1.0);
     vWorld = world.xyz;
     vRadial = normalize(mat3(m) * vec3(normal.x, 0.0, normal.z));
     vAxis = normalize(mat3(m) * vec3(0.0, sign(position.y), 0.0));

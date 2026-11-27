@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { CalibratedFrustum } from '../data/fixtureOptics';
 import type { RenderTier } from './hardwareMaterials';
 
 /**
@@ -181,6 +182,7 @@ export interface LitBeamSource {
   lastZoomScale: number;
   lensOffsetY: number;
   optics: LitBeamOpticsSample;
+  frustum?: CalibratedFrustum;
   lastWorldX: number;
   lastWorldY: number;
   lastWorldZ: number;
@@ -415,6 +417,7 @@ export class LitCandidateSet {
     for (let i = 0; i < beams.length; i++) {
       const fx = beams[i];
       if (!Number.isFinite(fx.lastPreviewIntensity) || fx.lastPreviewIntensity <= 0.002) continue;
+      if (fx.frustum && fx.optics.fluxRatio === 0) continue;
       const cr = clamp01(fx.lastPreviewR);
       const cg = clamp01(fx.lastPreviewG);
       const cb = clamp01(fx.lastPreviewB);
@@ -439,10 +442,9 @@ export class LitCandidateSet {
       const oz = wz + az * lensOff;
 
       const zoom = Number.isFinite(fx.lastZoomScale) && fx.lastZoomScale > 0 ? fx.lastZoomScale : 1;
-      const len = Number.isFinite(fx.optics.length) && fx.optics.length > 0.2 ? fx.optics.length : 24;
-      const rNear = Math.max(0.03, (Number.isFinite(fx.optics.nearRadius) ? fx.optics.nearRadius : 0.12) * zoom);
-      const rFar = Math.max(rNear, (Number.isFinite(fx.optics.farRadius) ? fx.optics.farRadius : 1.75) * zoom);
-      const slope = (rFar - rNear) / len;
+      const len = fx.frustum?.length ?? (Number.isFinite(fx.optics.length) && fx.optics.length > 0.2 ? fx.optics.length : 24);
+      const rNear = fx.frustum?.nearRadius ?? Math.max(0.03, (Number.isFinite(fx.optics.nearRadius) ? fx.optics.nearRadius : 0.12) * zoom);
+      const slope = fx.frustum?.slope ?? (Math.max(rNear, (Number.isFinite(fx.optics.farRadius) ? fx.optics.farRadius : 1.75) * zoom) - rNear) / len;
       const flux = Number.isFinite(fx.optics.fluxRatio) && fx.optics.fluxRatio > 0
         ? Math.min(2.5, fx.optics.fluxRatio)
         : 1.0;

@@ -495,10 +495,32 @@ test('volumetricBeamProxy batches moving-head beam shaders, tracks uniforms, and
 
   const colorAttr = batch.geometry.getAttribute('instColor');
   const paramsAttr = batch.geometry.getAttribute('instParams');
+  const endRadiusDeltaAttr = batch.geometry.getAttribute('instEndRadiusDelta');
   assert.deepEqual(Array.from(colorAttr.array.slice(3, 6)), [1, 0.25, 0.5]);
   assert.deepEqual(Array.from(paramsAttr.array.slice(4, 8)), [1.25, 1, Math.fround(2.4), Math.fround(1.462)]);
   assert.equal(batch.material.uniforms.uHaze.value, 0.92);
   assert.equal(batch.material.uniforms.uTime.value, 7.5);
+
+  assert.deepEqual(Array.from(endRadiusDeltaAttr.array), [0, 0], 'existing beam materials default to zero deformation');
+  b0.material.uniforms.uEndRadiusDelta = { value: 1.25 };
+  b1.material.uniforms.uEndRadiusDelta = { value: 0.5 };
+  b0.rotation.set(0.5, -1, 0.25);
+  b1.rotation.set(-0.4, 0.75, -0.2);
+  scene.updateMatrixWorld();
+  batcher.sync();
+  assert.deepEqual(Array.from(endRadiusDeltaAttr.array), [1.25, 0.5]);
+  assert.equal(batcher.stats().proxied, 2, 'different live zoom values share the same shape and batch');
+  assert.equal(batcher.stats().released, 0);
+  assert.ok(sameMatrix(instanceMatrix(batch, 0), b0.matrixWorld));
+  assert.ok(sameMatrix(instanceMatrix(batch, 1), b1.matrixWorld));
+  const vertex = new THREE.Vector3();
+  for (const beam of [b0, b1]) {
+    const positions = beam.geometry.getAttribute('position');
+    for (let i = 0; i < positions.count; i++) {
+      vertex.fromBufferAttribute(positions, i).applyMatrix4(beam.matrixWorld);
+      assert.ok(batch.boundingSphere.center.distanceTo(vertex) <= batch.boundingSphere.radius + 1e-5);
+    }
+  }
 
   // Changing uLensOffset releases that beam from the batch.
   b0.material.uniforms.uLensOffset.value = 0.5;

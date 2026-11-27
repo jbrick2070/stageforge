@@ -18,7 +18,6 @@ import {
   LaserPattern,
   LedVisualMode,
   RigConfig,
-  FixtureOptics,
   ShowState,
   TrussPodConfig,
 } from '../types/show';
@@ -96,7 +95,10 @@ import { flickerIntensityMultiplier, laserRefreshHz } from '../data/laserScan';
 import { DEFAULT_LASER_COLORS, DEFAULT_LASER_RESOLUTION, laserProjectorKey } from '../data/laserProjectors';
 import { BeamPools, type BeamPoolsStats } from './beamPools';
 import { prismPhase } from './prismPattern';
-import { aerialGain, beamZoomScale, fixtureOptics, resolvedPhotometricLumens, resolveOptics } from '../data/fixtureOptics';
+import {
+  aerialGain, beamZoomScale, createCalibratedFrustum, evaluateCalibratedZoom, resolveMovingFixtureOptics,
+  type CalibratedFrustum,
+} from '../data/fixtureOptics';
 import {
   buildMeasureSnapshot,
   buildSceneRaySurfaces,
@@ -205,8 +207,9 @@ interface MovingFixtureInstance {
   label: string;
   modelName: string;
   type: 'beam' | 'wash';
-  optics: ReturnType<typeof fixtureOptics>;
-  configuredLumens: number | null;
+  opticalSetup: ReturnType<typeof resolveMovingFixtureOptics>;
+  optics: ReturnType<typeof resolveMovingFixtureOptics>['optics'];
+  frustum?: CalibratedFrustum;
   lensOffsetY: number;
   appliedDimmer: number;
   lastZoomScale: number;
@@ -1152,6 +1155,7 @@ export class StageEngine {
           fx.optics,
           prismMix,
           phase,
+          fx.frustum,
         );
       }
       this.beamPools.finish();
@@ -2278,7 +2282,9 @@ export class StageEngine {
         tiltRad: fx.currentTilt,
         zoomScale: fx.lastZoomScale,
         optics: fx.optics,
-        configuredLumens: fx.configuredLumens,
+        configuredLumens: fx.opticalSetup.configuredLumens,
+        hasAuthoredLumens: fx.opticalSetup.hasAuthoredLumens,
+        frustum: fx.frustum,
         appliedDimmer: fx.appliedDimmer,
         emittedVisible: fx.beamMesh.visible,
         screenX,
@@ -2377,6 +2383,26 @@ export class StageEngine {
         optics: { lumens: fx.optics.lumens, farRadius: fx.optics.farRadius,
           emitted: fx.beamMat.uniforms.uIntensity.value, dimmer: fx.dmxStart ? buffer[fx.dmxStart + 1] : 0 } };
     });
+  }
+
+  public beamFrustaForTest() {
+    return this.movingFixtures.flatMap((fx) => {
+      if (!fx.frustum) return [];
+      const { attributes, boundingSphere } = fx.beamMesh.geometry;
+      return [{
+        unitId: fx.unitId,
+        frustum: { ...fx.frustum },
+        localPositions: Array.from(attributes.position.array),
+        localUvs: Array.from(attributes.uv.array),
+        scale: fx.beamMesh.scale.toArray(),
+        endRadiusDelta: Number(fx.beamMat.uniforms.uEndRadiusDelta.value),
+        bounds: boundingSphere && { center: boundingSphere.center.toArray(), radius: boundingSphere.radius },
+      }];
+    });
+  }
+
+  public poolFrustaForTest() {
+    return this.beamPools?.frustaForTest() ?? [];
   }
 
   public releaseDirector(crossfade: boolean) {
@@ -3235,6 +3261,9 @@ export class StageEngine {
 
       // Interleave fixture families across the same bar and preserve their DMX order.
       // Uses the same hungUnits + mountSlotIndex helpers as fixturePlacement (CAD and MVR exports).
+      const movingOptics = new Map(pod.fixtures
+        .filter((group) => group.type === 'beam' || group.type === 'wash')
+        .map((group) => [group, resolveMovingFixtureOptics(group)] as const));
       const hung = hungUnits(pod.fixtures);
       hung.forEach(({ group: fg, index: i }, position) => {
         const slotIdx = mountSlotIndex(position, hung.length, built.mountSlots.length);
@@ -3258,7 +3287,7 @@ export class StageEngine {
             start,
             width,
             physicalClass,
-            resolveOptics(fg),
+            movingOptics.get(fg)!,
             fg.catalogId,
             {
               unitId: `${pod.id}:${fg.id}:${i}`,
@@ -3268,7 +3297,6 @@ export class StageEngine {
               positionName: pod.name,
               label: `${pod.name} · ${fg.modelName} #${i + 1}`,
               modelName: fg.modelName,
-              configuredLumens: resolvedPhotometricLumens(fg),
             },
           );
           inst.root.position.copy(slot.pos);
@@ -3327,6 +3355,7 @@ export class StageEngine {
     const co2Emitters: THREE.Vector3[] = [];
 
     for (const fx of rig.floorFx) {
+      const movingOptics = fx.type === 'floor_beam' ? resolveMovingFixtureOptics(fx) : undefined;
       for (let i = 0; i < fx.count; i++) {
         const px = floorUnitX(fx, i);
         const pz = fx.z;
@@ -3385,7 +3414,7 @@ export class StageEngine {
             start,
             width,
             physicalClass,
-            resolveOptics(fx),
+            movingOptics!,
             fx.catalogId,
             {
               unitId: `floor:${fx.id}:${i}`,
@@ -3395,7 +3424,6 @@ export class StageEngine {
               positionName: 'Stage floor',
               label: `Floor · ${fx.modelName} #${i + 1}`,
               modelName: fx.modelName,
-              configuredLumens: resolvedPhotometricLumens(fx),
             },
           );
           fb.root.position.set(px, py, pz);
@@ -3532,7 +3560,7 @@ export class StageEngine {
     dmxStart: number,
     dmxWidth: number,
     physicalClass: PhysicalGroupClassification,
-    profile?: FixtureOptics,
+    opticalSetup: ReturnType<typeof resolveMovingFixtureOptics>,
     catalogId?: string,
     meta?: {
       unitId: string;
@@ -3542,7 +3570,6 @@ export class StageEngine {
       positionName: string;
       label: string;
       modelName: string;
-      configuredLumens: number | null;
     },
   ): MovingFixtureInstance {
     const root = new THREE.Group();
@@ -3592,8 +3619,13 @@ export class StageEngine {
     head.add(lens);
 
     // Volumetric Light Cone (origin right at lens face, extending along `dir * Y`)
-    const optics = fixtureOptics(type, profile);
-    const { length: beamLen, nearRadius: topR, farRadius: botR } = optics;
+    const { optics, calibration } = opticalSetup;
+    const beamLen = optics.length;
+    const frustum = calibration && parts.lensShape.kind === 'circle'
+      ? evaluateCalibratedZoom(calibration, optics, 0, createCalibratedFrustum(optics, parts.lensShape.radius))
+      : undefined;
+    const topR = frustum?.nearRadius ?? optics.nearRadius;
+    const botR = frustum && calibration ? topR + beamLen * calibration.wideSlope : optics.farRadius;
     const beamGeo = new THREE.CylinderGeometry(
       isFloor ? botR : topR,
       isFloor ? topR : botR,
@@ -3604,6 +3636,13 @@ export class StageEngine {
     );
     // Shift so aperture sits on the lens face and beam shoots along `dir * Y`
     beamGeo.translate(0, dir * (beamLen / 2 + parts.lensOffsetY), 0);
+    if (frustum) {
+      // RenderBatcher copies this local envelope before either shader narrows the cone.
+      beamGeo.boundingSphere = new THREE.Sphere(
+        new THREE.Vector3(0, dir * (beamLen / 2 + parts.lensOffsetY), 0),
+        Math.hypot(beamLen / 2, botR) + 1e-5, // Include float32 ring rounding.
+      );
+    }
     if (isFloor) {
       // Flip uv.y so uv.y = 1 is ALWAYS at lens aperture for shader consistency!
       const uv = beamGeo.attributes.uv;
@@ -3621,6 +3660,7 @@ export class StageEngine {
       side: THREE.DoubleSide,
       uniforms: {
         uLensOffset: { value: parts.lensOffsetY },
+        uEndRadiusDelta: { value: frustum?.endRadiusDelta ?? 0 },
         uColor: { value: new THREE.Color(0x00f0ff) },
         uIntensity: { value: 0.8 },
         uHaze: { value: 0.78 },
@@ -3647,8 +3687,9 @@ export class StageEngine {
       label: meta?.label ?? `${type} #${index + 1}`,
       modelName: meta?.modelName ?? type,
       type,
+      opticalSetup,
       optics,
-      configuredLumens: meta?.configuredLumens ?? null,
+      frustum,
       lensOffsetY: parts.lensOffsetY,
       appliedDimmer: 0,
       lastZoomScale: 1,
@@ -4729,17 +4770,21 @@ export class StageEngine {
       );
 
       fx.beamMat.uniforms.uColor.value.copy(previewTempCol);
-      const zoomScale = beamZoomScale(fx.type, effZoom);
+      const { calibration } = fx.opticalSetup;
+      const frustum = fx.frustum;
+      if (calibration && frustum) evaluateCalibratedZoom(calibration, fx.optics, effZoom, frustum);
+      const zoomScale = frustum ? 1 : beamZoomScale(fx.type, effZoom);
       fx.lastZoomScale = zoomScale;
       const clampedFinalInt = THREE.MathUtils.clamp(finalInt, 0, 1);
       fx.appliedDimmer = clampedFinalInt;
-      const emitted = previewFinalInt * aerialGain(fx.optics, zoomScale);
+      const emitted = previewFinalInt * (frustum?.gain ?? aerialGain(fx.optics, zoomScale));
       const previewPrismMix = fx.type === 'beam' ? previewFlash.prismMix : 0;
       const fxSeed = Number(fx.beamMat.uniforms.uSeed.value);
       fx.beamMat.uniforms.uIntensity.value = emitted;
       fx.beamMat.uniforms.uHaze.value = effHaze;
       fx.beamMat.uniforms.uTime.value = t;
       fx.beamMat.uniforms.uPrism.value = previewPrismMix;
+      fx.beamMat.uniforms.uEndRadiusDelta.value = frustum?.endRadiusDelta ?? 0;
 
       // Live Beam Zoom (narrow razor beam vs wide flood)
       fx.beamMesh.scale.set(zoomScale, 1, zoomScale);
@@ -4756,6 +4801,7 @@ export class StageEngine {
         fx.optics,
         previewPrismMix,
         previewPrismMix > 0.001 ? prismPhase(t, fxSeed) : 0,
+        frustum,
       );
       fx.lastPreviewIntensity = previewFinalInt;
       fx.lastPreviewR = previewTempCol.r;

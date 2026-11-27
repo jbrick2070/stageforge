@@ -400,6 +400,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       cs.focusMarkId !== undefined ||
       cs.manualPan !== undefined ||
       cs.manualTilt !== undefined ||
+      cs.beamZoom !== undefined ||
       cs.movingGroups !== undefined ||
       cs.movementMode === 'manual' ||
       cs.movementMode === 'crowd_scan'

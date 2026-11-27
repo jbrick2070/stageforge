@@ -65,6 +65,13 @@ export const volumetricBeamProxy: ShaderProxy = {
   },
   attributes: [
     {
+      name: 'instEndRadiusDelta',
+      itemSize: 1,
+      write(material, out, offset) {
+        out[offset] = Number((material as THREE.ShaderMaterial).uniforms.uEndRadiusDelta?.value ?? 0);
+      },
+    },
+    {
       name: 'instColor',
       itemSize: 3,
       write(material, out, offset) {
