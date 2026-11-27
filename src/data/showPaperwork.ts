@@ -10,7 +10,7 @@ import type {
 } from '../types/show';
 import { formatSmpte, msToSmpte } from '../showControl/timecode';
 import { formatCsv, type CsvValue } from './csv';
-import { buildDmxPatch, formatDmxLabel } from './dmxPatch';
+import { buildDmxPatch, fixtureGroupKey, fixtureScope, FLOOR_FIXTURE_SCOPE, formatDmxLabel, type FixturePatchUnit } from './dmxPatch';
 import { getCatalogEntry, isFieldUnverified } from './equipmentCatalog';
 import { dxfBlockName } from './equipmentSymbols';
 import { resolveOptics } from './fixtureOptics';
@@ -49,6 +49,7 @@ export interface PaperworkUnit {
   positionName: string;
   floor: boolean;
   groupId: string;
+  patch: FixturePatchUnit;
   modelName: string;
   manufacturer: string;
   type: FixtureType | FloorFxType;
@@ -106,6 +107,7 @@ export interface UnplacedUnit {
   positionId: string;
   positionName: string;
   groupId: string;
+  patch: FixturePatchUnit;
   modelName: string;
   /** 0-based unit index within its group that was not placed by `placeFixtures()`. */
   index: number;
@@ -234,21 +236,6 @@ function formatDmxRange(universe: 1 | 2, address: number, footprint: number): st
   if (footprint <= 1) return start;
   const end = address + footprint - 1;
   return `${start}–${String(end).padStart(3, '0')}`;
-}
-
-function statusForUnit(
-  universe: 1 | 2,
-  address: number,
-  footprint: number,
-  claimed: { 1: Uint16Array; 2: Uint16Array },
-): PaperworkUnitStatus {
-  const end = address + footprint - 1;
-  if (address < 1 || end > 512) return 'overflow';
-  const slots = claimed[universe];
-  for (let ch = address; ch <= end; ch++) {
-    if (slots[ch] > 1) return 'conflict';
-  }
-  return 'ok';
 }
 
 function formatCueLighting(cue: ShowCue): string {
@@ -394,7 +381,7 @@ export function buildShowPaperwork(
   const lookupCircuit = unitCircuitIndex(power);
   const patch = buildDmxPatch(rig);
 
-  // Index every resolved group by object reference -> position key and display metadata.
+  // Join scoped patch groups to the existing positional power-circuit owner and display metadata.
   interface GroupMeta {
     posKey: string;
     positionId: string;
@@ -402,12 +389,12 @@ export function buildShowPaperwork(
     positionRank: number;
     group: AnyGroup;
   }
-  const groupMeta = new Map<AnyGroup, GroupMeta>();
+  const groupMeta = new Map<string, GroupMeta>();
   const podById = new Map<string, { name: string; trussProfileName: string; trimHeightM: number; rank: number }>();
-  const allGroups: GroupMeta[] = [];
-  let totalExpectedUnits = 0;
+  const totalExpectedUnits = patch.units.length;
 
   rig.trussPods.forEach((pod, podIdx) => {
+    const scope = fixtureScope(pod.id);
     podById.set(pod.id, {
       name: pod.name,
       trussProfileName: trussDisplayName(getTrussProfile(pod.trussProfileId) ?? LEGACY_TRUSS_PROFILE),
@@ -422,9 +409,7 @@ export function buildShowPaperwork(
         positionRank: podIdx,
         group: fg,
       };
-      groupMeta.set(fg, meta);
-      allGroups.push(meta);
-      totalExpectedUnits += Math.max(0, fg.count);
+      groupMeta.set(fixtureGroupKey(scope, fg.id), meta);
     });
   });
 
@@ -437,18 +422,16 @@ export function buildShowPaperwork(
       positionRank: floorRank,
       group: fx,
     };
-    groupMeta.set(fx, meta);
-    allGroups.push(meta);
-    totalExpectedUnits += Math.max(0, fx.count);
+    groupMeta.set(fixtureGroupKey(FLOOR_FIXTURE_SCOPE, fx.id), meta);
   });
 
-  const placements = placeFixtures(rig);
+  const placements = placeFixtures(rig, patch);
   const mountCounter = new Map<string, number>();
   const placedUnitKeys = new Set<string>();
   const unitRankByFixture = new Map<number, number>();
 
   const units: PaperworkUnit[] = placements.map((p, n) => {
-    const meta = groupMeta.get(p.group);
+    const meta = groupMeta.get(p.patch.groupKey);
     const positionId = p.floor ? 'floor' : (p.podId ?? meta?.positionId ?? 'unknown');
     const positionName = p.floor ? 'Stage floor' : (podById.get(positionId)?.name ?? meta?.positionName ?? positionId);
     const mountKey = p.floor ? FLOOR_KEY : podKey(positionId);
@@ -456,7 +439,7 @@ export function buildShowPaperwork(
     mountCounter.set(mountKey, mountOrder);
 
     if (meta) {
-      placedUnitKeys.add(`${meta.posKey}:${p.index}`);
+      placedUnitKeys.add(p.patch.unitId);
       unitRankByFixture.set(n + 1, meta.positionRank);
     } else {
       unitRankByFixture.set(n + 1, floorRank + 1);
@@ -464,8 +447,8 @@ export function buildShowPaperwork(
 
     const specs = unitSpecs(p.group);
     const circuit = meta ? lookupCircuit(meta.posKey, p.index) : undefined;
-    const dmxEnd = p.address + p.footprint - 1;
-    const status = statusForUnit(p.universe, p.address, p.footprint, patch.claimed);
+    const dmxEnd = p.patch.end;
+    const status: PaperworkUnitStatus = p.patch.overflow ? 'overflow' : p.patch.conflict ? 'conflict' : 'ok';
     const absoluteAddress = p.patched ? (p.universe - 1) * 512 + p.address : null;
 
     return {
@@ -476,6 +459,7 @@ export function buildShowPaperwork(
       positionName,
       floor: p.floor,
       groupId: p.group.id,
+      patch: p.patch,
       modelName: p.group.modelName,
       manufacturer: specs.manufacturer,
       type: p.group.type,
@@ -506,19 +490,17 @@ export function buildShowPaperwork(
 
   // Detect any unit counted in rig groups that placeFixtures() could not mount.
   const unplaced: UnplacedUnit[] = [];
-  for (const meta of allGroups) {
-    const count = Math.max(0, meta.group.count);
-    for (let i = 0; i < count; i++) {
-      if (!placedUnitKeys.has(`${meta.posKey}:${i}`)) {
-        unplaced.push({
-          positionId: meta.positionId,
-          positionName: meta.positionName,
-          groupId: meta.group.id,
-          modelName: meta.group.modelName,
-          index: i,
-        });
-      }
-    }
+  for (const unit of patch.units) {
+    if (placedUnitKeys.has(unit.unitId)) continue;
+    const meta = groupMeta.get(unit.groupKey)!;
+    unplaced.push({
+      positionId: meta.positionId,
+      positionName: meta.positionName,
+      groupId: unit.groupId,
+      patch: unit,
+      modelName: meta.group.modelName,
+      index: unit.ordinal,
+    });
   }
 
   // Patch Sheet sort: Universe -> Start Address -> Fixture #.

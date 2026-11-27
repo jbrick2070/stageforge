@@ -1,5 +1,5 @@
 import type { FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show';
-import { buildDmxPatch } from './dmxPatch';
+import { buildDmxPatch, fixtureScope, FLOOR_FIXTURE_SCOPE, type DmxPatch, type FixturePatchUnit, type FixtureScope } from './dmxPatch';
 import { getTrussProfile, trussMountY } from './rigCatalog';
 import { podWorldPoint, stageSurfaceHeight } from './stageDesign';
 import { trussMounts } from './trussMounts';
@@ -23,6 +23,8 @@ export interface FixturePlacement {
   footprint: number;
   /** False when the unit's channels fall outside the universe or collide with another group. */
   patched: boolean;
+  /** Scoped patch record from the same resolved rig. */
+  patch: FixturePatchUnit;
 }
 
 /**
@@ -52,20 +54,21 @@ export function floorUnitX(group: Pick<FloorFxUnit, 'x' | 'spread' | 'count'>, i
  * CAD export use: hung units interleave across a pod's mount slots in DMX order; floor units
  * spread evenly across their row on the deck surface.
  */
-export function placeFixtures(rig: RigConfig): FixturePlacement[] {
-  const patch = buildDmxPatch(rig);
-  const width = new Map(patch.rows.map((row) => [row.group, row.width]));
+export function placeFixtures(rig: RigConfig, patch = buildDmxPatch(rig)): FixturePlacement[] {
+  if (patch.rig !== rig) throw new Error('Fixture placement needs the patch for the same resolved rig.');
   const out: FixturePlacement[] = [];
-  const unit = (group: FixturePlacement['group'], index: number) => {
-    const footprint = width.get(group)!;
+  const unit = (group: FixturePlacement['group'], index: number, scope: FixtureScope) => {
+    const record = patch.unitFor(group, index, scope)!;
     return {
-      universe: group.dmxUniverse,
-      address: group.dmxStartChannel + index * footprint,
-      footprint,
-      patched: patch.unitStart(group, index) !== 0,
+      universe: record.universe,
+      address: record.start,
+      footprint: record.width,
+      patched: record.effectiveStart !== 0,
+      patch: record,
     };
   };
   for (const pod of rig.trussPods) {
+    const scope = fixtureScope(pod.id);
     const hung = hungUnits(pod.fixtures);
     const mountY = getTrussProfile(pod.trussProfileId)
       ? trussMountY(pod.trussProfileId, pod.shape, pod.width)
@@ -81,7 +84,7 @@ export function placeFixtures(rig: RigConfig): FixturePlacement[] {
         group, index, podId: pod.id, floor: false,
         position: { x: at.x, y: pod.baseY + mount.y, z: at.z },
         yaw: frontFacing ? 0 : pod.rotationY + mount.rotY,
-        ...unit(group, index),
+        ...unit(group, index, scope),
       });
     });
   }
@@ -92,9 +95,14 @@ export function placeFixtures(rig: RigConfig): FixturePlacement[] {
         group, index: i, floor: true,
         position: { x, y: stageSurfaceHeight(rig, x, group.z), z: group.z },
         yaw: 0,
-        ...unit(group, i),
+        ...unit(group, i, FLOOR_FIXTURE_SCOPE),
       });
     }
   }
   return out;
+}
+
+export function resolvedPatchSnapshot(patch: DmxPatch) {
+  const placed = new Set(placeFixtures(patch.rig, patch).map(({ patch: unit }) => unit.unitId));
+  return patch.units.map((unit) => ({ ...unit, scope: [...unit.scope], placed: placed.has(unit.unitId) }));
 }

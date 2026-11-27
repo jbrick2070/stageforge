@@ -6,6 +6,36 @@ type Hardware = FixtureType | FloorFxType;
 type Universe = 1 | 2;
 export type FootprintTarget = Hardware | { type: Hardware; dmxChannels?: number };
 
+export type FixtureScope = readonly ['pod', string] | readonly ['floor'];
+export const FLOOR_FIXTURE_SCOPE: FixtureScope = ['floor'];
+
+export function fixtureScope(podId?: string | null): FixtureScope {
+  return podId == null ? FLOOR_FIXTURE_SCOPE : ['pod', podId];
+}
+
+export function fixtureGroupKey(scope: FixtureScope, groupId: string): string {
+  return JSON.stringify([...scope, groupId]);
+}
+
+export function fixtureUnitKey(scope: FixtureScope, groupId: string, ordinal: number): string {
+  return JSON.stringify([...scope, groupId, ordinal]);
+}
+
+export interface FixturePatchUnit {
+  readonly scope: FixtureScope;
+  readonly groupId: string;
+  readonly groupKey: string;
+  readonly unitId: string;
+  readonly ordinal: number;
+  readonly universe: Universe;
+  readonly start: number;
+  readonly width: number;
+  readonly end: number;
+  readonly conflict: boolean;
+  readonly overflow: boolean;
+  readonly effectiveStart: number;
+}
+
 const equipment = { ...FIXTURE_CATALOG, ...FLOOR_FX_CATALOG };
 const moving = ['Pan', 'Tilt', 'Dimmer', 'Red', 'Green', 'Blue', 'Zoom', 'Strobe rate'];
 const laser = [
@@ -63,32 +93,43 @@ function sameGroupSignature(a: Group, b: Group): boolean {
     a.dmxUniverse === b.dmxUniverse &&
     a.dmxStartChannel === b.dmxStartChannel &&
     a.count === b.count &&
+    groupFootprint(a) === groupFootprint(b) &&
     ('spread' in a) === ('spread' in b)
   );
 }
 
-export function buildDmxPatch(rig: RigConfig, exclude?: Group) {
+export function buildDmxPatch(rig: RigConfig, exclude?: Group, excludeScope?: FixtureScope) {
   const all = [
-    ...rig.trussPods.flatMap((p) => p.fixtures.map((g) => ({ group: g as Group, location: p.name }))),
-    ...rig.floorFx.map((g) => ({ group: g as Group, location: 'Stage floor' })),
+    ...rig.trussPods.flatMap((p) => {
+      const scope = fixtureScope(p.id);
+      return p.fixtures.map((g) => ({ group: g as Group, location: p.name, scope }));
+    }),
+    ...rig.floorFx.map((g) => ({ group: g as Group, location: 'Stage floor', scope: FLOOR_FIXTURE_SCOPE })),
   ];
-  const hasExactExclude = exclude !== undefined && all.some(({ group }) => group === exclude);
-  let excludedClone = false;
+  let excluded: (typeof all)[number] | undefined;
+  let exclusionIssue: string | undefined;
+  if (exclude) {
+    const candidates = excludeScope
+      ? all.filter(({ scope }) => scope[0] === excludeScope[0] && scope[1] === excludeScope[1])
+      : all;
+    const exact = candidates.filter(({ group }) => group === exclude);
+    // A known reference in a different scope is a caller error, not a request to exclude a clone.
+    const knownOutsideScope = excludeScope && exact.length === 0 && all.some(({ group }) => group === exclude);
+    const matches = exact.length || knownOutsideScope
+      ? exact
+      : candidates.filter(({ group }) => sameGroupSignature(group, exclude));
+    if (matches.length === 1) excluded = matches[0];
+    else if (matches.length > 1) exclusionIssue = 'Patch edit is ambiguous. Select the fixture group by truss or Stage floor.';
+    else if (excludeScope) exclusionIssue = 'Fixture group not found in the selected patch scope.';
+  }
   const groups = all
-    .filter(({ group }) => {
-      if (!exclude) return true;
-      if (hasExactExclude) return group !== exclude;
-      if (!excludedClone && sameGroupSignature(group, exclude)) {
-        excludedClone = true;
-        return false;
-      }
-      return true;
-    })
-    .map(({ group, location }) => {
+    .filter((entry) => entry !== excluded)
+    .map(({ group, location, scope }) => {
       const width = groupFootprint(group);
       return {
         group,
         location,
+        scope,
         width,
         start: group.dmxStartChannel,
         end: group.dmxStartChannel + width * group.count - 1,
@@ -97,24 +138,72 @@ export function buildDmxPatch(rig: RigConfig, exclude?: Group) {
   const claimed = { 1: new Uint16Array(513), 2: new Uint16Array(513) };
   for (const row of groups) {
     const slots = claimed[row.group.dmxUniverse];
-    for (let n = row.start; n <= Math.min(512, row.end); n++) slots[n]++;
+    for (let n = Math.max(1, Math.ceil(row.start)); n <= Math.min(512, row.end); n++) slots[n]++;
   }
-  const rows = groups.map((row) => {
+  const makeRows = () => groups.map((row) => {
     const slots = claimed[row.group.dmxUniverse];
     const conflicts: number[] = [];
-    for (let n = row.start; n <= Math.min(512, row.end); n++) if (slots[n] > 1) conflicts.push(n);
-    return { ...row, conflicts };
+    for (let n = Math.max(1, Math.ceil(row.start)); n <= Math.min(512, row.end); n++) if (slots[n] > 1) conflicts.push(n);
+    return { ...row, groupKey: fixtureGroupKey(row.scope, row.group.id), conflicts };
   });
-  function unitStart(group: Group, index: number) {
-    const width = groupFootprint(group);
-    const start = group.dmxStartChannel + index * width;
-    const slots = claimed[group.dmxUniverse];
-    if (start < 1 || start + width - 1 > 512) return 0;
-    for (let n = start; n < start + width; n++) if (slots[n] !== 1) return 0;
-    return start;
+  let rows: ReturnType<typeof makeRows> | undefined;
+
+  function occupancy(universe: Universe, start: number, end: number) {
+    const overflow = !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end > 512 || end < start;
+    const slots = claimed[universe];
+    let conflict = false;
+    let unclaimed = false;
+    for (let n = Math.max(1, Math.ceil(start)); n <= Math.min(512, end); n++) {
+      if (slots[n] > 1) conflict = true;
+      if (slots[n] === 0) unclaimed = true;
+    }
+    return { conflict, overflow, effectiveStart: overflow || conflict || unclaimed ? 0 : start };
   }
-  return { rows, claimed, unitStart };
+
+  type UnitsByScope = Map<string | null, FixturePatchUnit[]>;
+  let records: { units: FixturePatchUnit[]; byGroup: Map<Group, UnitsByScope> } | undefined;
+  function resolvedRecords() {
+    if (records) return records;
+    const units: FixturePatchUnit[] = [];
+    const byGroup = new Map<Group, UnitsByScope>();
+    const groupRows = rows ??= makeRows();
+    for (const { group, scope, width, groupKey } of groupRows) {
+      const members: FixturePatchUnit[] = [];
+      let byScope = byGroup.get(group);
+      if (!byScope) byGroup.set(group, byScope = new Map());
+      byScope.set(scope[1] ?? null, members);
+      for (let ordinal = 0; ordinal < group.count; ordinal++) {
+        const start = group.dmxStartChannel + ordinal * width;
+        const end = start + width - 1;
+        const unit = {
+          scope, groupKey, groupId: group.id, unitId: fixtureUnitKey(scope, group.id, ordinal), ordinal,
+          universe: group.dmxUniverse, start, end, width, ...occupancy(group.dmxUniverse, start, end),
+        };
+        units.push(unit);
+        members.push(unit);
+      }
+    }
+    return records = { units, byGroup };
+  }
+
+  return {
+    rig, claimed, exclusionIssue,
+    get rows() { return rows ??= makeRows(); },
+    get units(): readonly FixturePatchUnit[] { return resolvedRecords().units; },
+    unitFor(group: Group, ordinal: number, scope?: FixtureScope): FixturePatchUnit | undefined {
+      const byScope = resolvedRecords().byGroup.get(group);
+      if (scope) return byScope?.get(scope[1] ?? null)?.[ordinal];
+      return byScope?.size === 1 ? byScope.values().next().value?.[ordinal] : undefined;
+    },
+    unitStart(group: Group, ordinal: number): number {
+      const width = groupFootprint(group);
+      const start = group.dmxStartChannel + ordinal * width;
+      return occupancy(group.dmxUniverse, start, start + width - 1).effectiveStart;
+    },
+  };
 }
+
+export type DmxPatch = ReturnType<typeof buildDmxPatch>;
 
 export function allocateDmx(
   rig: RigConfig,
@@ -123,6 +212,7 @@ export function allocateDmx(
   preferred: Universe,
   extend?: Group,
   exclude?: Group,
+  excludeScope?: FixtureScope,
 ) {
   if (!Number.isSafeInteger(count) || count <= 0) return;
   const type = typeof target === 'string' ? target : target.type;
@@ -130,7 +220,8 @@ export function allocateDmx(
   if (!Number.isSafeInteger(width) || width < 1 || width > 512) return;
   const needed = count * width;
   if (needed > 512) return;
-  const { claimed } = buildDmxPatch(rig, exclude);
+  const { claimed, exclusionIssue } = buildDmxPatch(rig, exclude, excludeScope);
+  if (exclusionIssue) return;
   const canExtend =
     extend &&
     extend !== exclude &&
@@ -141,6 +232,10 @@ export function allocateDmx(
   if (next && next >= 1 && next + needed <= 513 && !claimed[preferred].subarray(next, next + needed).some(Boolean)) {
     return { dmxUniverse: preferred, dmxStartChannel: next, extendsGroup: true };
   }
+  return firstFreePatch(claimed, preferred, needed);
+}
+
+function firstFreePatch(claimed: DmxPatch['claimed'], preferred: Universe, needed: number) {
   const order: Universe[] = [preferred, preferred === 1 ? 2 : 1];
   for (const dmxUniverse of order) {
     let consecutive = 0;
@@ -232,6 +327,7 @@ export function repatchGroup<G extends Group>(
   rig: RigConfig,
   group: G,
   update: GroupModelUpdate,
+  scope?: FixtureScope,
 ): RepatchResult<G> {
   const width = groupFootprint({ type: group.type, dmxChannels: update.dmxChannels });
   if (!Number.isSafeInteger(width) || width < 1 || width > 512) {
@@ -241,13 +337,14 @@ export function repatchGroup<G extends Group>(
   if (needed > 512) {
     return { ok: false, reason: `Not enough free channels in U1–U2 (${width} ch × ${group.count} exceeds 512).` };
   }
-  const { claimed } = buildDmxPatch(rig, group);
+  const { claimed, exclusionIssue } = buildDmxPatch(rig, group, scope);
+  if (exclusionIssue) return { ok: false, reason: exclusionIssue };
   const start = group.dmxStartChannel;
   const end = start + needed - 1;
   if (start >= 1 && end <= 512 && !claimed[group.dmxUniverse].subarray(start, end + 1).some(Boolean)) {
     return { ok: true, moved: false, group: withModelUpdate(group, update), width };
   }
-  const relocated = allocateDmx(rig, { type: group.type, dmxChannels: update.dmxChannels }, group.count, group.dmxUniverse, undefined, group);
+  const relocated = firstFreePatch(claimed, group.dmxUniverse, needed);
   if (!relocated) {
     return { ok: false, reason: 'Not enough free channels in U1–U2.' };
   }

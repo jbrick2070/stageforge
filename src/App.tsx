@@ -69,6 +69,7 @@ import type { MvrImport } from './interchange/mvr/importMvr';
 import { useShowTimeline } from './input/useShowTimeline';
 import { useWallClock } from './input/useWallClock';
 import { patchCsv } from './data/patchCsv';
+import { buildDmxPatch } from './data/dmxPatch';
 import { BottomConsole } from './components/BottomConsole';
 import { EMPTY_AUDIO_MOD_TELEMETRY, type AudioModulationTelemetry } from './components/AudioMappingSection';
 import { allowsNegativeAmount } from './engine/audioModulation';
@@ -2036,6 +2037,12 @@ export const App: React.FC = () => {
       audioModulation: () => engine.getAudioModulationSnapshot(),
       fixtureParams: (group?: AudioTargetGroup) => engine.getFixtureParams(group),
       dmxSnapshot: () => ({ u1: Array.from(engine.dmxUniverse1), u2: Array.from(engine.dmxUniverse2) }),
+      patchOccupancy: (context: 'authored' | 'resolved' = 'authored') => ({
+        context,
+        units: context === 'resolved'
+          ? engine.resolvedPatchForTest()
+          : buildDmxPatch(rigRef.current).units.map((unit) => ({ ...unit, scope: [...unit.scope] })),
+      }),
       physicalDmxSnapshot: () => ({ u1: Array.from(engine.physicalDmxU1), u2: Array.from(engine.physicalDmxU2) }),
       ...(import.meta.env.DEV && { serialDmxSnapshot: () => ({ u1: Array.from(engine.serialPhysicalDmxU1), u2: Array.from(engine.serialPhysicalDmxU2) }) }),
       cuePreview: () => engine.getCuePreviewLevels(),

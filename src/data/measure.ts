@@ -10,7 +10,8 @@ import {
   resolveMovingFixtureOptics,
   type CalibratedFrustum,
 } from './fixtureOptics';
-import { placeFixtures } from './fixturePlacement';
+import { fixtureGroupKey, fixtureScope } from './dmxPatch';
+import { placeFixtures, type FixturePlacement } from './fixturePlacement';
 import {
   LASER_APERTURE_Z_M,
   laserFanHalfAngles,
@@ -380,6 +381,7 @@ export interface FixtureMeasureWarning {
 /** Live per-head input supplied directly by `StageEngine` (never recomputes placement or aim). */
 export interface EngineHeadSample {
   readonly unitId: string;
+  readonly groupKey?: string;
   readonly fixtureNumber: number;
   readonly groupId: string;
   readonly podId: string | null;
@@ -412,6 +414,7 @@ export interface EngineHeadSample {
 
 export interface FixtureMeasurement {
   readonly unitId: string;
+  readonly groupKey: string;
   readonly fixtureNumber: number;
   readonly groupId: string;
   readonly podId: string | null;
@@ -653,6 +656,7 @@ export function measureFixtureUnit(
 
   return {
     unitId: sample.unitId,
+    groupKey: sample.groupKey ?? fixtureGroupKey(fixtureScope(sample.podId), sample.groupId),
     fixtureNumber: sample.fixtureNumber,
     groupId: sample.groupId,
     podId: sample.podId,
@@ -924,7 +928,7 @@ export function computeReachMap(sourceRig: RigConfig, stage?: NativeStage): Reac
     const pivotY = unit.group.catalogId ? spec.pivotY : HEAD_PIVOT;
     const dir = unit.floor ? 1 : -1;
     const pivotWorldY = unit.position.y + dir * pivotY;
-    const unitId = `${unit.podId ?? 'floor'}:${unit.group.id}:${unit.index}`;
+    const unitId = unit.patch.unitId;
     const label = `${unit.group.modelName} #${unit.index + 1}`;
 
     if (spec.motion === 'fixed') {
@@ -1027,6 +1031,7 @@ export function computeReachMap(sourceRig: RigConfig, stage?: NativeStage): Reac
 
 export interface GroupAimReachability {
   readonly groupId: string;
+  readonly podId: string | null;
   readonly unreachableCount: number;
   readonly reasons: readonly string[];
 }
@@ -1039,17 +1044,18 @@ export function checkRigAimReachability(
   sourceRig: RigConfig,
   showState: Pick<ShowState, 'focusMarkId' | 'manualPan' | 'manualTilt' | 'movementMode' | 'movingGroups'>,
   stage?: NativeStage,
+  installed?: readonly FixturePlacement[],
 ): Map<string, GroupAimReachability> {
   const { rig } = resolveStudioGeometry(sourceRig, stage?.layout);
   const marks = focusMarks(rig);
-  const placements = placeFixtures(rig);
-  const byGroup = new Map<string, { unreachableCount: number; reasons: Set<string> }>();
+  const placements = installed ?? placeFixtures(rig);
+  const byGroup = new Map<string, { groupId: string; podId: string | null; unreachableCount: number; reasons: Set<string> }>();
 
-  const ensure = (groupId: string) => {
-    let rec = byGroup.get(groupId);
+  const ensure = ({ patch, podId }: FixturePlacement) => {
+    let rec = byGroup.get(patch.groupKey);
     if (!rec) {
-      rec = { unreachableCount: 0, reasons: new Set<string>() };
-      byGroup.set(groupId, rec);
+      rec = { groupId: patch.groupId, podId: podId ?? null, unreachableCount: 0, reasons: new Set<string>() };
+      byGroup.set(patch.groupKey, rec);
     }
     return rec;
   };
@@ -1063,7 +1069,7 @@ export function checkRigAimReachability(
     const pivotY = unit.group.catalogId ? spec.pivotY : HEAD_PIVOT;
 
     if (look.focusMarkId && !target) {
-      const rec = ensure(unit.group.id);
+      const rec = ensure(unit);
       rec.unreachableCount++;
       rec.reasons.add(`Focus mark "${look.focusMarkId}" does not exist on this stage.`);
       continue;
@@ -1083,7 +1089,7 @@ export function checkRigAimReachability(
       };
       const check = evaluateAimReachability(local, unit.floor, spec.motion, pivotY);
       if (!check.reachable) {
-        const rec = ensure(unit.group.id);
+        const rec = ensure(unit);
         rec.unreachableCount++;
         if (check.clampedTilt) {
           rec.reasons.add(
@@ -1097,8 +1103,8 @@ export function checkRigAimReachability(
   }
 
   const out = new Map<string, GroupAimReachability>();
-  for (const [groupId, rec] of byGroup) {
-    out.set(groupId, { groupId, unreachableCount: rec.unreachableCount, reasons: Array.from(rec.reasons) });
+  for (const [key, rec] of byGroup) {
+    out.set(key, { ...rec, reasons: Array.from(rec.reasons) });
   }
   return out;
 }
@@ -1116,11 +1122,12 @@ export function evaluateStaticHeadMeasures(
   >,
   stage?: NativeStage,
   surfaces?: SceneRaySurfaces,
+  installed?: readonly FixturePlacement[],
 ): FixtureMeasurement[] {
   const { rig } = resolveStudioGeometry(sourceRig, stage?.layout);
   const raySurfaces = surfaces ?? buildSceneRaySurfaces(sourceRig, stage);
   const marks = focusMarks(rig);
-  const placements = placeFixtures(rig);
+  const placements = installed ?? placeFixtures(rig);
   const podNames = new Map<string, string>();
   for (const pod of rig.trussPods) podNames.set(pod.id, pod.name);
 
@@ -1212,7 +1219,8 @@ export function evaluateStaticHeadMeasures(
     const appliedDimmer = showState.blackout ? 0 : Math.max(0, Math.min(1, baseInt * showState.masterDimmer));
 
     const sample: EngineHeadSample = {
-      unitId: `${unit.podId ?? 'floor'}:${unit.group.id}:${unit.index}`,
+      unitId: unit.patch.unitId,
+      groupKey: unit.patch.groupKey,
       fixtureNumber: movingHeadNumber,
       groupId: unit.group.id,
       podId: unit.podId ?? null,

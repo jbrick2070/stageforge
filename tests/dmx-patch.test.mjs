@@ -10,7 +10,8 @@ const compiler = await createServer({
 });
 after(() => compiler.close());
 
-const { buildDmxPatch, allocateDmx, addPatchedUnits, DMX_CHANNELS } = await compiler.ssrLoadModule('/src/data/dmxPatch.ts');
+const { buildDmxPatch, allocateDmx, addPatchedUnits, fixtureScope, repatchGroup, DMX_CHANNELS } = await compiler.ssrLoadModule('/src/data/dmxPatch.ts');
+const { placeFixtures, resolvedPatchSnapshot } = await compiler.ssrLoadModule('/src/data/fixturePlacement.ts');
 const { patchCsv } = await compiler.ssrLoadModule('/src/data/patchCsv.ts');
 const { FIXTURE_CATALOG, FLOOR_FX_CATALOG } = await compiler.ssrLoadModule('/src/data/presets.ts');
 const { createBlankDesign } = await compiler.ssrLoadModule('/src/data/stageDesign.ts');
@@ -44,6 +45,87 @@ test('buildDmxPatch and unitStart detect exact 512/513 overflow and cross-group 
   const rowA = patch.rows.find((r) => r.group === gA);
   const rowB = patch.rows.find((r) => r.group === gB);
   assert.ok(rowA.conflicts.length > 0 && rowB.conflicts.length > 0);
+});
+
+test('resolved units keep separate parent identities and both conflict and overflow status', () => {
+  const hung = { id: 'x:y', type: 'beam', modelName: 'Hung', count: 2, dmxUniverse: 1, dmxStartChannel: 101 };
+  const other = { ...hung, id: 'y', count: 1, dmxStartChannel: 117 };
+  const at512 = { id: 'last', type: 'blinder', modelName: 'Last slot', count: 1, dmxUniverse: 2, dmxStartChannel: 512 };
+  const floor = { ...hung, type: 'floor_beam', modelName: 'Floor', dmxStartChannel: 488, dmxUniverse: 2, x: 0, z: 0, spread: 2 };
+  const rig = rigWith([hung], [floor]);
+  rig.trussPods[0].id = 'floor';
+  rig.trussPods.push({ ...rig.trussPods[0], id: 'floor:x', fixtures: [other, at512] });
+  const patch = buildDmxPatch(rig);
+  assert.strictEqual(patch.units, patch.units, 'the resolved records are cached');
+  assert.deepEqual(patch.units.map(({ unitId }) => JSON.parse(unitId)), [
+    ['pod', 'floor', 'x:y', 0], ['pod', 'floor', 'x:y', 1], ['pod', 'floor:x', 'y', 0],
+    ['pod', 'floor:x', 'last', 0], ['floor', 'x:y', 0], ['floor', 'x:y', 1],
+  ]);
+  assert.deepEqual(patch.units.map(({ start, conflict, overflow, effectiveStart }) => [start, conflict, overflow, effectiveStart]), [
+    [101, false, false, 101], [117, true, false, 0], [117, true, false, 0],
+    [512, true, false, 0], [488, false, false, 488], [504, true, true, 0],
+  ]);
+  assert.equal(patch.claimed[2][511], 1);
+  assert.equal(patch.claimed[2][512], 2);
+  assert.equal(patch.claimed[2][0], 0);
+  assert.equal(patch.unitStart(floor, 0), 488);
+  assert.equal(patch.unitFor({ ...floor }, 0, fixtureScope()), undefined);
+  assert.throws(() => placeFixtures({ ...rig }, patch), /same resolved rig/);
+
+  const invalid = { ...at512, dmxStartChannel: -10000, dmxChannels: 10002 };
+  const bounded = buildDmxPatch(rigWith([invalid]));
+  assert.equal(bounded.claimed[2][0], 0);
+  assert.equal(bounded.claimed[2][1], 1);
+  assert.equal(bounded.claimed[2][2], 0);
+  assert.equal(bounded.units[0].effectiveStart, 0);
+});
+
+test('same-reference mounts survive JSON cloning and repatching excludes only an explicit owner', () => {
+  const group = { id: 'same', type: 'beam', modelName: 'Beam', dmxUniverse: 1, dmxStartChannel: 101, count: 1 };
+  const rig = rigWith([group]);
+  rig.trussPods.push({ ...rig.trussPods[0], id: 'p:2', name: 'Other truss', x: 3, fixtures: [group] });
+  const before = buildDmxPatch(rig);
+  const copied = JSON.parse(JSON.stringify(rig));
+  const after = buildDmxPatch(copied);
+  const both = [fixtureScope('p1'), fixtureScope('p:2')];
+  assert.equal(before.unitFor(group, 0), undefined, 'ambiguous borrowed object needs its actual parent');
+  assert.notEqual(before.unitFor(group, 0, both[0]).unitId, before.unitFor(group, 0, both[1]).unitId);
+  assert.deepEqual(resolvedPatchSnapshot(before), resolvedPatchSnapshot(after));
+  assert.deepEqual(placeFixtures(rig, before).map(({ patch, position }) => [patch.unitId, position]),
+    placeFixtures(copied, after).map(({ patch, position }) => [patch.unitId, position]));
+  copied.trussPods[1].name = 'Renamed truss';
+  copied.trussPods[1].fixtures[0].modelName = 'Renamed fixture';
+  assert.deepEqual(buildDmxPatch(copied).units.map(({ unitId }) => unitId), before.units.map(({ unitId }) => unitId));
+
+  const update = { modelName: 'Relabelled' };
+  assert.match(repatchGroup(rig, group, update).reason, /ambiguous/i);
+  assert.match(repatchGroup(copied, { ...group }, update).reason, /ambiguous/i);
+  assert.equal(allocateDmx(copied, 'beam', 1, 1, undefined, { ...group }), undefined);
+  const exact = copied.trussPods[0].fixtures[0];
+  assert.match(repatchGroup(copied, exact, update, both[1]).reason, /selected patch scope/);
+  for (const result of [repatchGroup(copied, exact, update), repatchGroup(copied, { ...group }, update, both[0])]) {
+    assert.ok(result.ok && result.moved);
+    assert.equal(result.group.dmxStartChannel, 1, 'other owner still holds its original span');
+  }
+  const changedFootprint = { ...copied.trussPods[1].fixtures[0], dmxChannels: 8 };
+  copied.trussPods[1].fixtures[0] = changedFootprint;
+  assert.equal(repatchGroup(copied, { ...group }, update).ok, true, 'different footprint is not an interchangeable clone');
+});
+
+test('allocation-only lookups do not materialize fixture identities', () => {
+  let idReads = 0;
+  const group = { get id() { idReads++; return 'beam'; }, type: 'beam', modelName: 'Beam',
+    count: 2, dmxUniverse: 1, dmxStartChannel: 1 };
+  const rig = rigWith([group]);
+  assert.equal(allocateDmx(rig, 'beam', 1, 1).dmxStartChannel, 33);
+  const patch = buildDmxPatch(rig);
+  assert.equal(patch.unitStart(group, 1), 17);
+  assert.equal(idReads, 0);
+  assert.equal(patch.units.length, 2);
+  const materializedReads = idReads;
+  assert.ok(materializedReads > 0);
+  assert.equal(patch.unitFor(group, 0).groupId, 'beam');
+  assert.equal(idReads, materializedReads);
 });
 
 test('allocateDmx and addPatchedUnits never extend across mismatched fixture types and handle full universes', () => {

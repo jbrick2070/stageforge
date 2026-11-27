@@ -23,6 +23,7 @@ const {
   evaluateLaserZones,
   evaluateStaticHeadMeasures,
   computeReachMap,
+  checkRigAimReachability,
   buildSceneRaySurfaces,
   castRayToScene,
   computeVenueBounds,
@@ -212,6 +213,43 @@ test('pre-flight checks zoom-only cues and resolves cue aim using desk precedenc
   const addressedLook = { ...look, movingGroups: { wash: { manualTilt: -1 } } };
   assert.equal(clearance(cue({ beamZoom: 1 }), addressedLook), false, 'unwritten trim keeps its addressed value');
   assert.equal(clearance(cue({ manualTilt: 1, beamZoom: 1 }), addressedLook), true, 'global cue trim takes over the addressed value');
+});
+
+test('cold and repeated live measurements isolate scoped fixture warnings and acknowledgements', () => {
+  const rig = structuredClone(RIG_TEMPLATES.arena_mainstage);
+  rig.venue = 'festival';
+  rig.ledWall.enabled = false;
+  const group = { id: 'x:y', type: 'beam', modelName: 'Crowd beam', count: 1, dmxUniverse: 1, dmxStartChannel: 1 };
+  const pod = { ...rig.trussPods[0], id: 'floor', name: 'Crowd truss', z: 12, baseY: 8,
+    motorized: true, motorMinY: 4, motorMaxY: 8, fixtures: [group] };
+  rig.trussPods = [pod, { ...pod, id: 'floor:x', name: 'Deck truss', z: 0, motorized: false,
+    fixtures: [{ ...group, id: 'y', modelName: 'Deck beam', dmxStartChannel: 33 }] }];
+  rig.floorFx = [{ ...group, type: 'floor_beam', modelName: 'Deck floor beam', dmxUniverse: 2, x: 0, z: 0, spread: 0 }];
+  const look = { ...INITIAL_SHOW_STATE, movementMode: 'manual', manualPan: 0, manualTilt: 0, focusMarkId: null };
+  const key = (scope, id) => JSON.stringify([...scope, id]);
+  const scopeKeys = [key(['pod', 'floor'], 'x:y'), key(['pod', 'floor:x'], 'y'), key(['floor'], 'x:y')];
+  const cold = evaluateStaticHeadMeasures(rig, look);
+  assert.deepEqual(cold.map(({ groupKey }) => groupKey), scopeKeys);
+  assert.equal(new Set(cold.map(({ unitId }) => unitId)).size, 3);
+  assert.deepEqual(computeReachMap(rig).areas.map(({ unitId }) => unitId), cold.map(({ unitId }) => unitId));
+  assert.deepEqual(cold.map(({ entersAudienceBelowThreshold }) => entersAudienceBelowThreshold), [true, false, false]);
+  const unreachable = checkRigAimReachability(rig, { ...look, focusMarkId: 'unknown-mark' });
+  assert.deepEqual(scopeKeys.map((groupKey) => unreachable.get(groupKey)?.unreachableCount), [1, 1, 1]);
+
+  const cues = [{ id: 'widen', name: 'Widen', tag: 'FX', accent: '#ffffff', state: { beamZoom: 0.9 } }];
+  const liveMeasurements = [...cold, ...cold, ...cold];
+  const run = (acks = EMPTY_PREFLIGHT_ACKS) => evaluatePreflight({ rig, cues, showState: look, liveMeasurements, acks });
+  const initial = run();
+  const [warned, deckTruss, floor] = scopeKeys.map((groupKey) => initial.rows.find((row) => row.groupKey === groupKey));
+  assert.equal(new Set([warned.id, deckTruss.id, floor.id]).size, 3);
+  assert.match(warned.findings.find(({ code }) => code === 'beam_audience_clearance').message, /^1 beam/);
+  for (const row of [deckTruss, floor]) assert.ok(!row.findings.some(({ code }) => code === 'beam_audience_clearance'));
+
+  const acks = { ...EMPTY_PREFLIGHT_ACKS, checked: true, checkedRevision: initial.configRevision,
+    acknowledgedRows: { [warned.id]: warned.rowFingerprint } };
+  const checked = run(acks);
+  assert.equal(commissioningActionLabel(checked.rows.find(({ id }) => id === warned.id), checked, acks), 'Acknowledged');
+  assert.equal(commissioningActionLabel(checked.rows.find(({ id }) => id === floor.id), checked, acks), 'Pending acknowledgement');
 });
 
 test('ray intersections hit stage deck, venue floor, LED walls, indoor ceiling, and report none on open-air festival sky', () => {

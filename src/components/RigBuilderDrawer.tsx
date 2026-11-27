@@ -7,7 +7,7 @@ import { SpeakerHangsEditor } from './SpeakerHangsEditor';
 import { ScreenWallsEditor } from './ScreenWallsEditor';
 import type { NativeStage } from '../data/showFile';
 import { isCustomMainWall } from '../data/studioGeometry';
-import { addPatchedUnits, allocateDmx, repatchGroup, type GroupModelUpdate } from '../data/dmxPatch';
+import { addPatchedUnits, allocateDmx, fixtureScope, FLOOR_FIXTURE_SCOPE, repatchGroup, type GroupModelUpdate } from '../data/dmxPatch';
 import { checkCatalogChannelDrift } from '../data/equipmentCatalog';
 import { hoistPoints } from '../data/hoistPoints';
 import {
@@ -342,7 +342,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
     const pod = rig.trussPods.find(p => p.id === podId);
     const group = pod?.fixtures.find(f => f.id === groupId);
     if (!pod || !group) return 'Fixture group not found.';
-    const res = repatchGroup(rig, group, update);
+    const res = repatchGroup(rig, group, update, fixtureScope(podId));
     if (!res.ok) return res.reason;
     const nextRig: RigConfig = {
       ...rig,
@@ -395,7 +395,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   const changeFloorFxModel = (groupId: string, update: GroupModelUpdate): string | undefined => {
     const group = rig.floorFx.find(f => f.id === groupId);
     if (!group) return 'Floor FX group not found.';
-    const res = repatchGroup(rig, group, update);
+    const res = repatchGroup(rig, group, update, FLOOR_FIXTURE_SCOPE);
     if (!res.ok) return res.reason;
     const nextRig: RigConfig = {
       ...rig,

@@ -320,6 +320,12 @@ test('Unplaced fixture invariant holds even when a degenerate path truss produce
     pw.unplaced.map((u) => u.index),
     [0, 1, 2],
   );
+  assert.deepEqual(pw.unplaced.map(({ patch }) => [JSON.parse(patch.unitId), patch.start, patch.effectiveStart]), [
+    [['pod', 'empty-path', 'orphan-beams', 0], 1, 1],
+    [['pod', 'empty-path', 'orphan-beams', 1], 17, 17],
+    [['pod', 'empty-path', 'orphan-beams', 2], 33, 33],
+  ]);
+  assert.ok(pw.unplaced.every((unit) => !('x' in unit) && !('y' in unit) && !('z' in unit)));
 });
 
 test('Cue Sheet timecode handles SMPTE offsets, 29.97 drop-frame, missing events, first-event-wins duplicates, and crowd-scan warning', () => {

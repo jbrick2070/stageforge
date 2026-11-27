@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { X, Radio } from 'lucide-react';
-import { buildDmxPatch, DMX_CHANNELS } from '../data/dmxPatch';
+import { buildDmxPatch, DMX_CHANNELS, type FixturePatchUnit } from '../data/dmxPatch';
 import { getCatalogEntry, getCatalogMode, hasCatalogFixtures, type LaserChannelRole } from '../data/equipmentCatalog';
 import { classifyPhysicalGroup } from '../dmx/physicalDmx';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
@@ -73,6 +73,16 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
 
   const patch = useMemo(() => (open ? buildDmxPatch(rig) : null), [open, rig.trussPods, rig.floorFx]);
   const rows = useMemo(() => (patch ? patch.rows.filter(row => row.group.dmxUniverse === universe) : []), [patch, universe]);
+  const unitsByGroup = useMemo(() => {
+    const groups = new Map<string, FixturePatchUnit[]>();
+    for (const unit of patch?.units ?? []) {
+      if (unit.universe !== universe) continue;
+      const group = groups.get(unit.groupKey);
+      if (group) group.push(unit);
+      else groups.set(unit.groupKey, [unit]);
+    }
+    return groups;
+  }, [patch, universe]);
   const channelNames = useMemo(() => {
     if (!patch) return [];
     const names = Array.from({ length: 512 }, () => [] as string[]);
@@ -101,7 +111,8 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
               ? 'Unmapped (safe 0)'
               : DMX_CHANNELS[row.group.type][offset] ?? 'Reserved';
         }
-        const disabled = patch.unitStart(row.group, index) ? '' : ' · output disabled';
+        const unit = patch.unitFor(row.group, index, row.scope);
+        const disabled = unit?.effectiveStart ? '' : ' · output disabled';
         names[address - 1].push(`${row.group.modelName} #${index + 1} · ${channel}${disabled}`);
       }
     }
@@ -263,8 +274,8 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
           </div>
         ) : (
           <div className="space-y-1.5 font-mono-tech text-[10px]">
-            {rows.map(({ group, location, width, start, end, conflicts }, index) => (
-              <details key={index} className="bg-black/45 border border-white/10 rounded px-2 py-1.5">
+            {rows.map(({ group, groupKey, location, width, start, end, conflicts }) => (
+              <details key={groupKey} className="bg-black/45 border border-white/10 rounded px-2 py-1.5">
                 <summary className="cursor-pointer">
                   <span className="font-semibold text-white">{group.modelName} ×{group.count}</span>
                   <span className="ml-2 text-cyan-300">U{universe}.{String(start).padStart(3, '0')}–{String(end).padStart(3, '0')}</span>
@@ -274,6 +285,16 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
                   {conflicts.length > 0 && <span className="block text-amber-300">Overlapping channels {formatRanges(conflicts)}</span>}
                   {end > 512 && <span className="block text-amber-300">Outside universe from channel {Math.max(513, start)}</span>}
                 </summary>
+                <ul className="pt-1 space-y-0.5" aria-label={`${group.modelName} patch units`}>
+                  {unitsByGroup.get(groupKey)?.map((unit) => (
+                    <li key={unit.unitId} data-testid="dmx-patch-unit"
+                      className={unit.effectiveStart ? 'text-zinc-300' : 'text-amber-300'}>
+                      #{unit.ordinal + 1} · U{unit.universe}.{String(unit.start).padStart(3, '0')}–{String(unit.end).padStart(3, '0')}
+                      {unit.conflict && ' · Conflict'}{unit.overflow && ' · Overflow'}
+                      {unit.effectiveStart ? ' · Patch valid' : ' · Output disabled'}
+                    </li>
+                  ))}
+                </ul>
                 <p className="pt-1 text-zinc-300">
                   {DMX_CHANNELS[group.type].slice(0, width).map((name, i) => `${i + 1} ${name}`).join(' · ')}
                   {width > DMX_CHANNELS[group.type].length &&

@@ -2,7 +2,7 @@ import type { RigConfig, ShowCue, ShowState } from '../types/show';
 import type { IldaClip } from './ilda';
 import type { NativeStage } from './showFile';
 import { formatCsv, type CsvValue } from './csv';
-import { buildDmxPatch } from './dmxPatch';
+import { buildDmxPatch, fixtureGroupKey, fixtureScope } from './dmxPatch';
 import { getCatalogEntry } from './equipmentCatalog';
 import { cueLook } from './cueLook';
 import {
@@ -22,6 +22,7 @@ import {
 } from './laserSafety';
 import {
   AIM_CALIBRATION_NOTE,
+  buildSceneRaySurfaces,
   checkRigAimReachability,
   evaluateLaserZones,
   evaluateStaticHeadMeasures,
@@ -51,6 +52,8 @@ export interface PreflightRow {
   readonly label: string;
   readonly location: string;
   readonly groupId?: string;
+  readonly groupKey?: string;
+  readonly podId?: string | null;
   readonly projectorKey?: string;
   readonly outcome: PreflightOutcome;
   /** True for hard failures that block arming and cannot be acknowledged away. */
@@ -274,12 +277,12 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
   const patch = buildDmxPatch(rig);
   const loads = input.loads ?? evaluateRigLoads(input.rig, input.stage, { applyD8Derate });
   const power = input.power ?? computePowerReport(input.rig, input.stage);
-  const placements = placeFixtures(rig);
+  const placements = placeFixtures(rig, patch);
 
   // Count placed units per (podId, groupId) to detect unplaced units (empty mount slots).
   const placedCounts = new Map<string, number>();
   for (const unit of placements) {
-    const key = `${unit.podId ?? 'floor'}:${unit.group.id}`;
+    const key = unit.patch.groupKey;
     placedCounts.set(key, (placedCounts.get(key) ?? 0) + 1);
   }
 
@@ -385,16 +388,25 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
   const cueWithAudienceScan = input.cues.find((c) => c.state.laser?.audienceScan === true);
   const activeAudienceScan = input.showState.laser.audienceScan === true;
 
-  const aimReachByGroup = checkRigAimReachability(input.rig, input.showState, input.stage);
+  const aimReachByGroup = checkRigAimReachability(input.rig, input.showState, input.stage, placements);
+  const nominalSurfaces = buildSceneRaySurfaces(input.rig, input.stage);
+  const atLowestTrim = lowestTrimRig ? {
+    sourceRig: lowestTrimRig,
+    placements: placeFixtures(resolveStudioGeometry(lowestTrimRig, input.stage?.layout).rig),
+    surfaces: buildSceneRaySurfaces(lowestTrimRig, input.stage),
+  } : null;
+
+  const measureLook = (state: ShowState) => {
+    const measured = evaluateStaticHeadMeasures(input.rig, state, input.stage, nominalSurfaces, placements);
+    if (atLowestTrim) measured.push(...evaluateStaticHeadMeasures(
+      atLowestTrim.sourceRig, state, input.stage, atLowestTrim.surfaces, atLowestTrim.placements,
+    ));
+    return measured;
+  };
 
   // Always evaluate static moving-head aim & audience clearance (axis + lower cone edge)
   // across current showState, lowest motorized trim, and cue-authored head aims regardless of overlay visibility.
-  const combinedHeadMeasures: FixtureMeasurement[] = [
-    ...evaluateStaticHeadMeasures(input.rig, input.showState, input.stage),
-  ];
-  if (lowestTrimRig) {
-    combinedHeadMeasures.push(...evaluateStaticHeadMeasures(lowestTrimRig, input.showState, input.stage));
-  }
+  const combinedHeadMeasures = measureLook(input.showState);
   for (const cue of input.cues) {
     const cs = cue.state;
     if (
@@ -406,30 +418,26 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       cs.movementMode === 'manual' ||
       cs.movementMode === 'crowd_scan'
     ) {
-      const cueHeadLook = cueLook(input.showState, cue);
-      combinedHeadMeasures.push(...evaluateStaticHeadMeasures(input.rig, cueHeadLook, input.stage));
-      if (lowestTrimRig) {
-        combinedHeadMeasures.push(...evaluateStaticHeadMeasures(lowestTrimRig, cueHeadLook, input.stage));
-      }
+      combinedHeadMeasures.push(...measureLook(cueLook(input.showState, cue)));
     }
   }
   if (input.liveMeasurements && input.liveMeasurements.length > 0) {
     combinedHeadMeasures.push(...input.liveMeasurements);
   }
 
-  const liveByGroup = new Map<string, { audienceBreach: number; limitWarn: number; noHit: number; worstClearanceM: number | null; seenBreachUnits: Set<string>; seenLimitUnits: Set<string> }>();
+  const liveByGroup = new Map<string, { audienceBreach: number; limitWarn: number; worstClearanceM: number | null; seenBreachUnits: Set<string>; seenLimitUnits: Set<string> }>();
   for (const m of combinedHeadMeasures) {
-    let rec = liveByGroup.get(m.groupId);
+    const groupKey = m.groupKey ?? fixtureGroupKey(fixtureScope(m.podId), m.groupId);
+    let rec = liveByGroup.get(groupKey);
     if (!rec) {
       rec = {
         audienceBreach: 0,
         limitWarn: 0,
-        noHit: 0,
         worstClearanceM: null,
         seenBreachUnits: new Set(),
         seenLimitUnits: new Set(),
       };
-      liveByGroup.set(m.groupId, rec);
+      liveByGroup.set(groupKey, rec);
     }
     if (m.entersAudienceBelowThreshold) {
       if (!rec.seenBreachUnits.has(m.unitId)) {
@@ -447,24 +455,16 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       rec.seenLimitUnits.add(m.unitId);
       rec.limitWarn++;
     }
-    if (m.hitKind === 'none') rec.noHit++;
   }
 
   const rows: PreflightRow[] = [];
 
-  // Map each group object reference back to its podId (or null for floorFx).
-  const podIdByGroup = new WeakMap<object, string | null>();
-  for (const pod of rig.trussPods) {
-    for (const fg of pod.fixtures) podIdByGroup.set(fg, pod.id);
-  }
-  for (const fx of rig.floorFx) podIdByGroup.set(fx, null);
-
   // 1. Per-fixture-group rows (non-laser groups; lasers get dedicated per-projector rows below)
   for (const row of patch.rows) {
     const isLaserGroup = row.group.type === 'laser' || row.group.type === 'floor_laser';
-    const podId = podIdByGroup.get(row.group) ?? null;
-    const placeKey = `${podId ?? 'floor'}:${row.group.id}`;
-    const placedCount = placedCounts.get(placeKey) ?? 0;
+    const podId = row.scope[1] ?? null;
+    const groupKey = row.groupKey;
+    const placedCount = placedCounts.get(groupKey) ?? 0;
     const unplacedCount = Math.max(0, row.group.count - placedCount);
     const phys = classifyPhysicalGroup(row.group);
 
@@ -500,13 +500,15 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
           });
           outcome = worstOutcome(outcome, 'warn');
         }
-        const rowId = `group-patch:${placeKey}`;
+        const rowId = `group-patch:${groupKey}`;
         rows.push({
           id: rowId,
           kind: 'fixture',
           label: `${row.group.modelName} ×${row.group.count} (DMX patch)`,
           location: row.location,
           groupId: row.group.id,
+          groupKey,
+          podId,
           outcome,
           hardBlock,
           canAcknowledge: outcome === 'warn' && !hardBlock,
@@ -584,7 +586,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
     }
 
     // Static aim reachability
-    const reach = aimReachByGroup.get(row.group.id);
+    const reach = aimReachByGroup.get(groupKey);
     if (reach && reach.unreachableCount > 0) {
       findings.push({
         code: 'aim_unreachable',
@@ -595,7 +597,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
     }
 
     // Live runtime aim / audience clearance warnings (when live measurements supplied)
-    const liveRec = liveByGroup.get(row.group.id);
+    const liveRec = liveByGroup.get(groupKey);
     if (liveRec) {
       if (liveRec.audienceBreach > 0) {
         const clr = liveRec.worstClearanceM !== null ? `${liveRec.worstClearanceM.toFixed(1)} m` : `< ${MIN_AUDIENCE_CLEARANCE_M.toFixed(1)} m`;
@@ -616,7 +618,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       }
     }
 
-    const rowId = `fixture:${placeKey}`;
+    const rowId = `fixture:${groupKey}`;
     const summary =
       findings.length === 0
         ? `U${row.group.dmxUniverse}.${String(row.start).padStart(3, '0')}–${String(row.end).padStart(3, '0')} · Implemented personality · Checks passed`
@@ -628,6 +630,8 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       label: `${row.group.modelName} ×${row.group.count}`,
       location: row.location,
       groupId: row.group.id,
+      groupKey,
+      podId,
       outcome,
       hardBlock,
       canAcknowledge: outcome === 'warn' && !hardBlock,
@@ -761,7 +765,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
     }
 
     // Physical DMX status for this laser group
-    const groupRow = patch.rows.find((r) => (podIdByGroup.get(r.group) ?? null) === zone.podId && r.group.id === zone.groupId);
+    const groupRow = patch.rows.find((r) => (r.scope[1] ?? null) === zone.podId && r.group.id === zone.groupId);
     if (groupRow) {
       const phys = classifyPhysicalGroup(groupRow.group);
       if (phys.status === 'simulation-only') {

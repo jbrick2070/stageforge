@@ -69,14 +69,14 @@ import { FixtureModelCache, type FixtureMotion } from './fixtureModels';
 import { detectRenderTier, maxPixelRatioForTier, type RenderTier } from './hardwareMaterials';
 import { FocusMark, PAN_LIMIT, TILT_LIMIT, aimAngles, aimTiltOnly, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
 import { headLook } from '../data/movingGroups';
-import { buildDmxPatch, groupFootprint, writeDmxChannels } from '../data/dmxPatch';
+import { buildDmxPatch, fixtureScope, FLOOR_FIXTURE_SCOPE, writeDmxChannels, type DmxPatch } from '../data/dmxPatch';
 import {
   classifyPhysicalGroup,
   writePhysicalUnitBytes,
   type PhysicalGroupClassification,
   type PhysicalUnitState,
 } from '../dmx/physicalDmx';
-import { floorUnitX, hungUnits, mountSlotIndex } from '../data/fixturePlacement';
+import { floorUnitX, hungUnits, mountSlotIndex, resolvedPatchSnapshot } from '../data/fixturePlacement';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import type { NativeStage } from '../data/showFile';
 import { resolveCrowdLayout, type CrowdLayout } from '../data/crowdPlacement';
@@ -201,6 +201,7 @@ class ScaledBloomPass extends UnrealBloomPass {
 
 interface MovingFixtureInstance {
   unitId: string;
+  groupKey: string;
   fixtureNumber: number;
   groupId: string;
   podId: string | null;
@@ -421,6 +422,7 @@ export class StageEngine {
   private environmentTarget: THREE.WebGLRenderTarget | null = null;
   private wetDeckEnvironmentStats!: Omit<WetDeckEnvironmentStats, 'sceneOwnsTargetTexture'>;
   private currentRig?: RigConfig;
+  private resolvedDmxPatch?: DmxPatch;
   private lastRebuildSource?: RigConfig;
   private lastRebuildStage?: NativeStage;
   private lastRebuildCrowd?: CrowdLayout;
@@ -2272,6 +2274,7 @@ export class StageEngine {
       }
       out[i] = {
         unitId: fx.unitId,
+        groupKey: fx.groupKey,
         fixtureNumber: fx.fixtureNumber,
         groupId: fx.groupId,
         podId: fx.podId,
@@ -2409,6 +2412,10 @@ export class StageEngine {
 
   public poolFrustaForTest() {
     return this.beamPools?.frustaForTest() ?? [];
+  }
+
+  public resolvedPatchForTest() {
+    return this.resolvedDmxPatch ? resolvedPatchSnapshot(this.resolvedDmxPatch) : [];
   }
 
   public beamPrismsForTest() {
@@ -2962,7 +2969,7 @@ export class StageEngine {
     this.strobes = [];
     this.blinders = [];
     this.atmosphereDmx = [];
-    const patch = buildDmxPatch(rig);
+    const patch = this.resolvedDmxPatch = buildDmxPatch(rig);
     this.ledWallMats = [];
     this.allLedMaterials = [];
     this.djStripMat = null;
@@ -3292,15 +3299,15 @@ export class StageEngine {
         .filter((group) => group.type === 'beam' || group.type === 'wash')
         .map((group) => [group, resolveMovingFixtureOptics(group)] as const));
       const hung = hungUnits(pod.fixtures);
+      const scope = fixtureScope(pod.id);
       hung.forEach(({ group: fg, index: i }, position) => {
         const slotIdx = mountSlotIndex(position, hung.length, built.mountSlots.length);
         const slot = built.mountSlots[slotIdx];
         if (!slot) return;
 
-        const start = patch.unitStart(fg, i);
-        const width = groupFootprint(fg);
-        const buffer = fg.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
-        const physBuffer = fg.dmxUniverse === 1 ? this.physicalDmxU1 : this.physicalDmxU2;
+        const { effectiveStart: start, width, universe, unitId, groupKey } = patch.unitFor(fg, i, scope)!;
+        const buffer = universe === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
+        const physBuffer = universe === 1 ? this.physicalDmxU1 : this.physicalDmxU2;
         const physicalClass = classifyPhysicalGroup(fg);
         if (fg.type === 'beam' || fg.type === 'wash') {
           const lateral = slot.pos.x * Math.cos(pod.rotationY) + slot.pos.z * Math.sin(pod.rotationY);
@@ -3310,14 +3317,15 @@ export class StageEngine {
             false,
             globalMovingIndex++,
             lateral / Math.max(2, pod.width / 2),
-            fg.dmxUniverse,
+            universe,
             start,
             width,
             physicalClass,
             movingOptics.get(fg)!,
             fg.catalogId,
             {
-              unitId: `${pod.id}:${fg.id}:${i}`,
+              unitId,
+              groupKey,
               fixtureNumber: globalMovingIndex,
               groupId: fg.id,
               podId: pod.id,
@@ -3335,7 +3343,7 @@ export class StageEngine {
           const laser = this.createLaserProjector(
             laserProjectorKey(pod.id, fg.id, i + 1), globalLaserIndex++,
             false,
-            fg.dmxUniverse,
+            universe,
             start,
             width,
             physicalClass,
@@ -3388,16 +3396,15 @@ export class StageEngine {
         const pz = fx.z;
         const py = stageSurfaceHeight(rig, px, pz);
 
-        const start = patch.unitStart(fx, i);
-        const width = groupFootprint(fx);
+        const { effectiveStart: start, width, universe, unitId, groupKey } = patch.unitFor(fx, i, FLOOR_FIXTURE_SCOPE)!;
         const physicalClass = classifyPhysicalGroup(fx);
         if (start && (fx.type === 'co2' || fx.type === 'smoke' || fx.type === 'hazer')) {
           this.atmosphereDmx.push({
             type: fx.type,
             start,
             width,
-            buffer: fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2,
-            physBuffer: fx.dmxUniverse === 1 ? this.physicalDmxU1 : this.physicalDmxU2,
+            buffer: universe === 1 ? this.dmxUniverse1 : this.dmxUniverse2,
+            physBuffer: universe === 1 ? this.physicalDmxU1 : this.physicalDmxU2,
             physicalClass,
           });
         }
@@ -3419,7 +3426,7 @@ export class StageEngine {
           const fl = this.createLaserProjector(
             laserProjectorKey(null, fx.id, i + 1), globalLaserIndex++,
             true,
-            fx.dmxUniverse,
+            universe,
             start,
             width,
             physicalClass,
@@ -3437,14 +3444,15 @@ export class StageEngine {
             true,
             globalMovingIndex++,
             px / Math.max(2, rig.stageWidth / 2),
-            fx.dmxUniverse,
+            universe,
             start,
             width,
             physicalClass,
             movingOptics!,
             fx.catalogId,
             {
-              unitId: `floor:${fx.id}:${i}`,
+              unitId,
+              groupKey,
               fixtureNumber: globalMovingIndex,
               groupId: fx.id,
               podId: null,
@@ -3591,6 +3599,7 @@ export class StageEngine {
     catalogId?: string,
     meta?: {
       unitId: string;
+      groupKey: string;
       fixtureNumber: number;
       groupId: string;
       podId: string | null;
@@ -3709,6 +3718,7 @@ export class StageEngine {
     const unitId = meta?.unitId ?? `head:${index}`;
     return {
       unitId,
+      groupKey: meta?.groupKey ?? unitId,
       fixtureNumber: meta?.fixtureNumber ?? index + 1,
       groupId: meta?.groupId ?? `group:${index}`,
       podId: meta?.podId ?? null,
