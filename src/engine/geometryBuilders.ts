@@ -1633,6 +1633,7 @@ export function buildVenueArchitecture(
   const density = THREE.MathUtils.clamp(crowdDensity, 0, 1);
   const authoredPlacements = authoredCrowd ? [...authoredCrowd.placements] : null;
   const authoredGeneratorVersion = authoredCrowd?.generatorVersion ?? 1;
+  const footprintRadiusM = 0.42;
   const maxCrowd = authoredPlacements?.length ?? Math.floor((seats ? seats.length : standingFloor ? 300 : 680) * density);
   let crowdMesh: THREE.InstancedMesh | null = null;
   let phonesMesh: THREE.InstancedMesh | null = null;
@@ -1656,7 +1657,7 @@ export function buildVenueArchitecture(
     if ((footprint.getIndex()?.count ?? 0) / 3 !== CROWD_FOOTPRINT_TRIANGLES) {
       throw new Error('crowd footprint geometry no longer matches resource admission.');
     }
-    footprint.rotateX(-Math.PI / 2).scale(0.42, 1, 0.32).translate(0, 0.012, 0);
+    footprint.rotateX(-Math.PI / 2).scale(footprintRadiusM, 1, 0.32).translate(0, 0.012, 0);
     const opacity = new Float32Array(footprint.attributes.position.count * 4);
     opacity[3] = 0.68;
     footprint.setAttribute('color', new THREE.BufferAttribute(opacity, 4));
@@ -1746,7 +1747,7 @@ export function buildVenueArchitecture(
     if ((footprint.getIndex()?.count ?? 0) / 3 !== CROWD_FOOTPRINT_TRIANGLES) {
       throw new Error('crowd footprint geometry no longer matches resource admission.');
     }
-    footprint.rotateX(-Math.PI / 2).scale(0.42, 1, 0.32).translate(0, 0.012, 0);
+    footprint.rotateX(-Math.PI / 2).scale(footprintRadiusM, 1, 0.32).translate(0, 0.012, 0);
     const opacity = new Float32Array(footprint.attributes.position.count * 4);
     opacity[3] = 0.68;
     footprint.setAttribute('color', new THREE.BufferAttribute(opacity, 4));
@@ -1761,6 +1762,15 @@ export function buildVenueArchitecture(
         generatorVersion: authoredGeneratorVersion,
       };
       setCrowdObjectMatrix(footprintDummy, transform);
+      if (authoredGeneratorVersion === 2) {
+        // Keep this static patch centred on its seat or floor anchor even when the
+        // figure has a nonzero pivot or the patch is wider than the figure.
+        const clearanceM = crowdModel(person.modelId).poses[person.pose].clearanceRadiusM;
+        const scaleXZ = Math.min(footprintDummy.scale.x, clearanceM / footprintRadiusM);
+        footprintDummy.position.set(person.x, person.y, person.z);
+        footprintDummy.scale.set(scaleXZ, footprintDummy.scale.y, scaleXZ);
+        footprintDummy.updateMatrix();
+      }
       footprints.setMatrixAt(index, footprintDummy.matrix);
     }
     footprints.instanceMatrix.needsUpdate = true;

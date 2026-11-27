@@ -344,3 +344,36 @@ test('the current venue builder renders authored placements with the existing fi
 
   geometry.disposeSharedMaterials(mats);
 });
+
+test('v2 seated contact patches fit the model clearance at their saved anchors', () => {
+  const layout = crowd.makeDefaultCrowd(theatre);
+  const seats = crowd.theatreSeatAnchors(theatre).filter((seat) => seat.row === 5).slice(5, 8);
+  layout.generatorVersion = 2;
+  layout.zones = [];
+  layout.placements = ['stageforge-robot-v1', 'stageforge-alien-v1', 'stageforge-human-v1']
+    .map((modelId, index) => ({
+      id: 'contact-' + index, modelId, pose: 'seated', seatId: seats[index].id, yaw: index * 37,
+    }));
+
+  const resolved = crowd.resolveCrowdLayout(theatre, layout);
+  const mats = geometry.createSharedMaterials({ tier: 'high' });
+  const venue = geometry.buildVenueArchitecture('theatre', 0, mats, theatre.stageWidth, theatre.stageDepth, theatre.stageHeight, resolved);
+  const footprints = venue.group.children.find((child) => child.isInstancedMesh && child.geometry.type === 'CircleGeometry');
+  assert.ok(footprints, 'the authored crowd has a shared contact-patch mesh');
+  assert.equal(footprints.count, 3);
+
+  const matrix = new THREE.Matrix4();
+  const point = new THREE.Vector3();
+  const positions = footprints.geometry.getAttribute('position');
+  const placements = [...resolved.placements].sort((a, b) => a.id.localeCompare(b.id));
+  for (const [index, person] of placements.entries()) {
+    footprints.getMatrixAt(index, matrix);
+    const radius = models.crowdModel(person.modelId).poses.seated.clearanceRadiusM;
+    for (let vertex = 0; vertex < positions.count; vertex++) {
+      point.fromBufferAttribute(positions, vertex).applyMatrix4(matrix);
+      assert.ok(Math.hypot(point.x - person.x, point.z - person.z) <= radius + 1e-6,
+        person.modelId + ' contact patch must stay inside its seated radius');
+    }
+  }
+  geometry.disposeSharedMaterials(mats);
+});
