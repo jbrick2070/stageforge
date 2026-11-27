@@ -45,7 +45,7 @@ test('L1: startup loads zero deferred editor panel chunks until a panel is opene
 
   // Opening DMX Monitor loads its chunk on demand and shows Simulated / Wire preview toggle.
   await page.getByRole('button', { name: /DMX/i }).click();
-  await expect(page.getByLabel('DMX monitor')).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'DMX monitor', exact: true })).toBeVisible();
   await expect(page.getByTestId('dmx-monitor-mode-sim')).toBeVisible();
   await expect(page.getByTestId('dmx-monitor-mode-phys')).toBeVisible();
   await page.getByTestId('dmx-advanced-summary').click();

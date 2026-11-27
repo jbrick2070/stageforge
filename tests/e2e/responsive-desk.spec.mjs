@@ -187,37 +187,40 @@ async function startMockOutput(page) {
   await button(page, 'Close DMX monitor').click();
 }
 
-async function assertAbovePanel(action, panel, width, height) {
+async function checkPanelReachability(action, panel, width, height) {
   await expect(panel).toBeVisible();
   const box = await assertContained(action, width, height);
   const panelBox = await panel.boundingBox();
   const x = box.x + box.width / 2;
   const y = box.y + box.height / 2;
-  expect(x > panelBox.x && x < panelBox.x + panelBox.width && y > panelBox.y && y < panelBox.y + panelBox.height,
-    `panel covers the action's coordinates at ${width} px`).toBe(true);
   expect(await hitsCenter(action), `safety action has pointer priority at ${width} px`).toBe(true);
+  return x > panelBox.x && x < panelBox.x + panelBox.width && y > panelBox.y && y < panelBox.y + panelBox.height;
 }
 
 async function checkSafetyActionWithPanels(page, action) {
+  const drawerOverlap = [];
+  const audioOverlap = [];
   for (const [width, height] of [[390, 844], [540, 800], [720, 800]]) {
     await page.setViewportSize({ width, height });
     await button(page, 'Rig builder').click();
     const rig = page.locator('aside[aria-label="Rig Builder"]');
-    await assertAbovePanel(action, rig, width, height);
+    drawerOverlap.push(await checkPanelReachability(action, rig, width, height));
     await button(rig, 'Close Rig Builder').click();
     await button(page, 'Show control').click();
     const showControl = page.getByTestId('show-control-drawer');
-    await assertAbovePanel(action, showControl, width, height);
+    drawerOverlap.push(await checkPanelReachability(action, showControl, width, height));
     await button(showControl, 'Close show control').click();
   }
   for (const [width, height] of [[960, 800], [1280, 800], [1599, 900]]) {
     await page.setViewportSize({ width, height });
     await button(page, 'Audio settings').click();
     const audio = page.getByRole('region', { name: 'Audio settings', exact: true });
-    await assertAbovePanel(action, audio, width, height);
+    audioOverlap.push(await checkPanelReachability(action, audio, width, height));
     await page.keyboard.press('Escape');
     await expect(audio).toBeHidden();
   }
+  expect(drawerOverlap, 'a narrow drawer overlaps the safety action in the test matrix').toContain(true);
+  expect(audioOverlap, 'the Audio popover overlaps the safety action in the test matrix').toContain(true);
 }
 
 test('Measure and mock live or stopped output stay below the actual desk header', async ({ page }) => {
@@ -257,7 +260,7 @@ test('Measure and mock live or stopped output stay below the actual desk header'
   await page.setViewportSize({ width: 540, height: 800 });
   await button(page, 'Show control').click();
   const showControl = page.getByTestId('show-control-drawer');
-  await assertAbovePanel(stop, showControl, 540, 800);
+  await checkPanelReachability(stop, showControl, 540, 800);
   const beforeStop = await page.evaluate(() => window.mockDmxDisableCount);
   await stop.click();
   await expect.poll(() => page.evaluate(() => window.mockDmxDisableCount)).toBe(beforeStop + 1);
@@ -277,7 +280,7 @@ test('Measure and mock live or stopped output stay below the actual desk header'
   const dismiss = page.getByTestId('live-dmx-stopped-dismiss');
   await checkSafetyActionWithPanels(page, dismiss);
   await button(page, 'Audio settings').click();
-  await assertAbovePanel(dismiss, page.getByRole('region', { name: 'Audio settings', exact: true }), 1599, 900);
+  await checkPanelReachability(dismiss, page.getByRole('region', { name: 'Audio settings', exact: true }), 1599, 900);
   await dismiss.click();
   await expect(stopped).toHaveCount(0);
 });
