@@ -392,10 +392,10 @@ export class WebXrAudienceScene {
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = '#99aab7';
     ctx.font = '20px sans-serif';
-    ctx.fillText('No smooth locomotion · select/squeeze activates one highlighted control per input edge', 32, 716);
-    ctx.fillText('Quality applies on next entry; detected renderer tier owns scenery/particle/laser caps.', 32, 752);
-    ctx.fillText('Simulation view only — not real-headset safety, comfort, legibility, or performance evidence.', 32, 800);
-    ctx.fillText('Mezzanine/balcony labels may be virtual preview elevations when a venue has no authored tier.', 32, 836);
+    ctx.fillText('Fixed viewpoints · trigger or grip selects a highlighted control', 32, 699, CANVAS_SIZE - 64);
+    ctx.fillText('Quality applies on next entry · device caps scenery, particles and lasers', 32, 722, CANVAS_SIZE - 64);
+    ctx.fillText('Simulation preview only · headset safety, comfort and performance require hardware checks', 32, 832, CANVAS_SIZE - 64);
+    ctx.fillText('Mezzanine and balcony may use virtual viewpoints depending on the venue', 32, 856, CANVAS_SIZE - 64);
     this.texture.needsUpdate = true;
     this.dirty = false;
     this.lastStatusDraw = performance.now();

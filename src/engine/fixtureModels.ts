@@ -1150,25 +1150,25 @@ export class FixtureModelCache {
     return geo;
   }
 
-  public dispose() {
+  public forEachGeometry(visit: (geometry: THREE.BufferGeometry) => void): void {
     for (const entry of this.moving.values()) {
-      entry.baseGeo.dispose();
-      entry.mountGeo.dispose();
-      entry.yokeGeo.dispose();
-      entry.headGeo.dispose();
-      entry.glassGeo.dispose();
+      visit(entry.baseGeo);
+      visit(entry.mountGeo);
+      visit(entry.yokeGeo);
+      visit(entry.headGeo);
+      visit(entry.glassGeo);
     }
-    this.moving.clear();
-
     for (const entry of this.staticModels.values()) {
-      entry.bodyGeo.dispose();
-      entry.glassGeo?.dispose();
+      visit(entry.bodyGeo);
+      if (entry.glassGeo) visit(entry.glassGeo);
     }
-    this.staticModels.clear();
+    this.cabinetBacks.forEach(visit);
+  }
 
-    for (const geo of this.cabinetBacks.values()) {
-      geo.dispose();
-    }
+  public dispose() {
+    this.forEachGeometry(geometry => geometry.dispose());
+    this.moving.clear();
+    this.staticModels.clear();
     this.cabinetBacks.clear();
     this.activeCabinetKeys = null;
   }

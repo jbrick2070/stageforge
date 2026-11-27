@@ -749,3 +749,73 @@ test('Sprint 24 hardening: WebGL frame readback on multi-frame ramps, group colo
   await expect(page.getByTestId('webgl-context-lost-banner')).toHaveCount(0);
   expect(await page.evaluate(() => window.stageforgeProbe.controlLoopHealth().contextLost)).toBe(false);
 });
+
+test('real WebGL recovery retains video and retires desktop targets across two losses', async ({ page }) => {
+  test.setTimeout(60_000);
+  const errors = [];
+  page.on('console', message => {
+    if (/WebGL:.*INVALID_OPERATION|getError.*INVALID_OPERATION/i.test(message.text())) errors.push(message.text());
+  });
+  await page.goto('/?probe');
+  await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.graphicsProbe)).toBe('function');
+  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await page.getByRole('button', { name: /Arena Rock/ }).first().click();
+  await page.evaluate(() => window.stageforgeProbe.patchShowState({
+    autoDirector: false, audioReactive: false, blackout: false, masterDimmer: 1, bloomStrength: 0.4,
+    led: { enabled: true, brightness: 1, visualMode: 'custom', customMediaUrl: '/examples/amber-clouds.mp4', customMediaType: 'video' },
+  }));
+
+  for (const index of [0, 1]) {
+    await page.evaluate(() => {
+      const p = window.stageforgeProbe;
+      p.setRenderSettings({ aa: 'fxaa', bloom: 'full' });
+      p.setPrimaryScreenTransport(false, 0.4);
+    });
+    await expect.poll(() => page.evaluate(() => window.stageforgeProbe.graphicsProbe().activePasses))
+      .toContain('UnrealBloomPass');
+    await expect.poll(() => page.evaluate(() => window.stageforgeProbe.primaryScreen().offsetSeconds))
+      .toBeCloseTo(0.4, 1);
+    await waitFrames(page, 3);
+    const loss = await page.evaluate(() => {
+      const canvas = document.querySelector('canvas');
+      const gl = canvas.getContext('webgl2');
+      const ext = gl.getExtension('WEBGL_lose_context');
+      if (!ext) return false;
+      window.__recoveryLoss = ext;
+      canvas.addEventListener('webglcontextrestored', () => {
+        window.__recoveryError = gl.getError();
+      }, { once: true });
+      ext.loseContext();
+      return true;
+    });
+    expect(loss).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.stageforgeProbe.graphicsProbe().contextLost)).toBe(true);
+    await page.evaluate(() => window.__recoveryLoss.restoreContext());
+    await expect.poll(() => page.evaluate(() => window.stageforgeProbe.graphicsProbe().contextLost)).toBe(false);
+    expect(await page.evaluate(() => window.__recoveryError), 'restore callback').toBe(0);
+    await expect.poll(() => page.evaluate(() => window.stageforgeProbe.primaryScreen()))
+      .toEqual({ playing: false, offsetSeconds: expect.closeTo(0.4, 1) });
+
+    await page.evaluate(() => window.stageforgeProbe.setPrimaryScreenTransport(true));
+    await expect.poll(() => page.evaluate(() => window.stageforgeProbe.primaryScreen().offsetSeconds))
+      .toBeGreaterThan(0.52);
+    const afterChange = await page.evaluate(index => {
+      const p = window.stageforgeProbe;
+      const gl = document.querySelector('canvas').getContext('webgl2');
+      const before = gl.getError();
+      p.setRenderSettings({ aa: 'msaa', bloom: 'off' });
+      p.rebuildRig();
+      if (index === 1) p.patchShowState({ led: { customMediaUrl: '', visualMode: 'cybergrid' } });
+      p.redrawAndCapture();
+      return { before, after: gl.getError(), passes: p.graphicsProbe().activePasses };
+    }, index);
+    expect([afterChange.before, afterChange.after], 'render settings, rig and media ownership').toEqual([0, 0]);
+    expect(afterChange.passes).not.toContain('UnrealBloomPass');
+  }
+  await page.evaluate(() => {
+    delete window.__recoveryLoss;
+    delete window.__recoveryError;
+    window.stageforgeProbe.disposeWebXrEngineForTest();
+  });
+  expect(errors).toEqual([]);
+});

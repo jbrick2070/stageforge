@@ -186,6 +186,12 @@ export class WallPlayer {
       videoSrgbDecode: (this.material?.uniforms.uCustomTexDecode?.value ?? 0) > 0.5 };
   }
 
+  public forEachTexture(visit: (texture: THREE.Texture) => void): void {
+    visit(this.fallbackTex);
+    if (this.texture) visit(this.texture);
+    if (this.missingTex) visit(this.missingTex);
+  }
+
   private releaseMedia() {
     this.generation++;
     this.playRequest = undefined;

@@ -4,6 +4,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 
@@ -2093,7 +2094,8 @@ export class StageEngine {
     this.manualFadeStart = undefined;
     this.directedStep = initialOpeningStep;
     this.setShowState(opening);
-    this.clearStage();
+    // The XR frame clears the layer once Three binds its target for that frame.
+    if (!this.webXrLease) this.clearStage();
   }
 
   private clearStage(preserveTarget = false) {
@@ -4039,17 +4041,54 @@ export class StageEngine {
   private releaseLostContextBindings(): void {
     this.clearStageEnvironment();
     // Three recreates its GL managers on restore. Notify the old managers while their context is lost.
-    const geometries = new Set<THREE.BufferGeometry>();
+    const geometries = new Set<THREE.BufferGeometry>(this.laserShapeGeometries);
+    const materials = new Set<THREE.Material>(Object.values(this.mats));
+    const textures = new Set<THREE.Texture>();
+    const addTexture = (value: unknown) => {
+      if (value instanceof THREE.Texture && !value.isRenderTargetTexture && !(value instanceof THREE.ExternalTexture)) {
+        textures.add(value);
+      }
+    };
+    this.modelCache.forEachGeometry(geometry => geometries.add(geometry));
     this.scene.traverse((object) => {
-      const geometry = (object as THREE.Mesh).geometry;
+      const { geometry, material } = object as THREE.Mesh;
       if (geometry) geometries.add(geometry);
+      if (material) {
+        if (Array.isArray(material)) material.forEach(entry => materials.add(entry));
+        else materials.add(material);
+      }
       if (object instanceof THREE.InstancedMesh) {
         // Keep the CPU instance and morph data available for upload on the next render.
         object.dispatchEvent({ type: 'dispose' });
-        object.morphTexture?.dispose();
+        addTexture(object.morphTexture);
+      }
+    });
+    addTexture(this.textTex);
+    addTexture(this.customTex);
+    addTexture(this.missingScreenTex);
+    this.secondaryPlayers.forEach(player => player.forEachTexture(addTexture));
+    materials.forEach(material => {
+      Object.values(material).forEach(addTexture);
+      if (material instanceof THREE.ShaderMaterial) {
+        Object.values(material.uniforms).forEach(({ value }) => {
+          if (Array.isArray(value)) value.forEach(addTexture);
+          else addTexture(value);
+        });
       }
     });
     geometries.forEach(geometry => geometry.dispose());
+    // Release renderer bindings without stopping the video frame callbacks or replacing media.
+    textures.forEach(texture => texture.dispatchEvent({ type: 'dispose' }));
+
+    this.composer.renderTarget1.dispose();
+    this.composer.renderTarget2.dispose();
+    if (this.bloomPass) {
+      this.bloomPass.renderTargetBright.dispose();
+      this.bloomPass.renderTargetsHorizontal.forEach(target => target.dispose());
+      this.bloomPass.renderTargetsVertical.forEach(target => target.dispose());
+    }
+    // Three's fullscreen passes share this geometry. Leave pass state and the XR layer intact.
+    new FullScreenQuad().dispose();
   }
 
   private clearStageEnvironment(): void {

@@ -27,6 +27,70 @@ async function exit(page) {
   await expect.poll(async () => (await xrState(page)).phase).toBe('ready');
 }
 
+test('native Demo controller defers the opening clear to the dedicated XR framebuffer', async ({ page }, info) => {
+  await boot(page, { directEyeCapture: true, dedicatedXrFramebuffer: true });
+  // The saved fixture has no audio or take, so this is the actual first startDemo()/beginDemo() path.
+  const fixture = await stereoLandmarkFixture(page, 'arena');
+  await openStereoLandmarkShow(page, fixture);
+  await enter(page, true);
+  try {
+    const initial = await xrState(page);
+    expect(initial.audience.menuOpen).toBe(true);
+    expect(initial.audience.status.demoPlaying).toBe(false);
+    expect(await page.evaluate(() => window.stageforgeProbe.demoPosition())).toBe(null);
+
+    const receipt = await page.evaluate(async () => {
+      const fake = window.__fakeWebXr, probe = window.stageforgeProbe;
+      const summary = pair => {
+        const {left, right, ...frame} = pair;
+        const eye = ({viewport, pixels, nonOpaqueBlackPixels, litPixels}) => ({viewport, pixels, nonOpaqueBlackPixels, litPixels});
+        return {...frame, left:eye(left), right:eye(right)};
+      };
+      const before = await fake.captureNextEyePair({timeoutMs: 6000});
+      const beforeFrame = probe.webXr().frames;
+      const live = fake.layerIsLive(fake.state.activeSession);
+      fake.aimControllerAtMenu(probe.webXr().audience.menuPose, 791, 420, 0);
+      // Arm before firing the edge. The fake callback observes the real next frame's clear;
+      // synchronous provider input returns before that callback can run.
+      const next = fake.captureNextEyePair({expectedSubmission: 'blackout-clear', timeoutMs: 6000});
+      const input = fake.observeControllerPress(0);
+      const afterInputFrame = probe.webXr().frames;
+      const demo = probe.demoPosition();
+      const events = fake.snapshot().inputEvents.slice(-2);
+      try {
+        return {live, before:summary(before), beforeFrame, input, afterInputFrame, demo, events, next:summary(await next)};
+      } catch (error) {
+        return {live, before:summary(before), beforeFrame, input, afterInputFrame, demo, events, error:String(error)};
+      }
+    });
+    await persistStereoLightingReceipt(info, 'native-demo-dedicated-fbo', 'application/json', JSON.stringify(receipt, null, 2));
+    expect(receipt.live).toBe(true);
+    expect(receipt.events).toEqual([{type:'selectstart', index:0}, {type:'selectend', index:0}]);
+    expect(receipt.demo?.openingStep, 'Controller must start the fresh synth intro').toBe(0);
+    expect(receipt.afterInputFrame).toBe(receipt.beforeFrame);
+    expect(receipt.input, 'The input edge must leave the bound XR FBO alone and defer its clear').toEqual({
+      before:true, after:true, clears:[],
+    });
+    expect(receipt.error).toBeUndefined();
+    expect(receipt.before.framebufferKind).toBe('emulated-single-sample-fbo');
+    expect(receipt.next.framebufferKind).toBe(receipt.before.framebufferKind);
+    expect(receipt.next.session).toBe(receipt.before.session);
+    expect(receipt.next.frame).toBe(receipt.beforeFrame + 1);
+    expect(receipt.next.lastLayerTargetPreserved).toBe(true);
+    expect(receipt.next.witnessedBlackClears).toBeGreaterThan(0);
+    expect([receipt.next.counters.views, receipt.next.counters.calls, receipt.next.counters.triangles]).toEqual([2,0,0]);
+    for (const eye of ['left', 'right']) {
+      expect(receipt.before[eye].litPixels, eye + ' must start from a real visible scene').toBeGreaterThan(100);
+      expect(receipt.next[eye].pixels).toBe(512*512);
+      expect(receipt.next[eye].nonOpaqueBlackPixels).toBe(0);
+    }
+    await expect.poll(async () => (await xrState(page)).audience.status.demoPlaying).toBe(true);
+  } finally {
+    await exit(page);
+  }
+  expect(await page.evaluate(() => window.__fakeWebXr.layerIsLive(window.__fakeWebXr.state.sessions.at(-1)))).toBe(false);
+});
+
 test('unsupported immersive-vr stays hidden even when the device-local renderer flag is on', async ({ page }) => {
   await boot(page, { supported: false });
   await expect(page.getByTestId('webxr-enter')).toHaveCount(0);

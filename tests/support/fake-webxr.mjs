@@ -45,7 +45,55 @@ export async function installFakeWebXr(page, options = {}) {
 
     // Opt-in readback of Three's actual emulated XR base layer. Never render an extra frame.
     const directEyes = initial.directEyeCapture === true;
+    const dedicatedLayer = directEyes && initial.dedicatedXrFramebuffer === true;
     const layerContexts = new WeakMap();
+    const layerReleases = new WeakMap();
+
+    // Single-sample emulator-owned color/depth storage. Keep Three's cached bindings valid by
+    // restoring the separate read/draw bindings and renderbuffer before returning its XR layer.
+    function allocateLayerFramebuffer(session, gl, width, height, init) {
+      const draw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
+      const read = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+      const oldRenderbuffer = gl.getParameter(gl.RENDERBUFFER_BINDING);
+      const framebuffer = gl.createFramebuffer();
+      if (!framebuffer) throw new Error('Cannot allocate the emulated XR framebuffer.');
+      const storage = [];
+      const release = () => {
+        if (!gl.isContextLost()) {
+          gl.deleteFramebuffer(framebuffer);
+          for (const buffer of storage) gl.deleteRenderbuffer(buffer);
+        }
+      };
+      function attach(format, attachment) {
+        const buffer = gl.createRenderbuffer();
+        if (!buffer) throw new Error('Cannot allocate emulated XR attachment.');
+        storage.push(buffer);
+        gl.bindRenderbuffer(gl.RENDERBUFFER, buffer);
+        gl.renderbufferStorage(gl.RENDERBUFFER, format, width, height);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, attachment, gl.RENDERBUFFER, buffer);
+      }
+      try {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        attach(gl.RGBA8, gl.COLOR_ATTACHMENT0);
+        if (init.depth && init.stencil) attach(gl.DEPTH24_STENCIL8, gl.DEPTH_STENCIL_ATTACHMENT);
+        else if (init.depth) attach(gl.DEPTH_COMPONENT16, gl.DEPTH_ATTACHMENT);
+        else if (init.stencil) attach(gl.STENCIL_INDEX8, gl.STENCIL_ATTACHMENT);
+        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+          throw new Error('Incomplete emulated XR framebuffer.');
+        }
+        const releases = layerReleases.get(session) ?? [];
+        releases.push(release);
+        layerReleases.set(session, releases);
+        return framebuffer;
+      } catch (error) {
+        release();
+        throw error;
+      } finally {
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, draw);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, read);
+        gl.bindRenderbuffer(gl.RENDERBUFFER, oldRenderbuffer);
+      }
+    }
     let pendingEyes = null;
     let collectingEyes = null;
 
@@ -168,10 +216,11 @@ export async function installFakeWebXr(page, options = {}) {
       const w = layer.framebufferWidth, h = layer.framebufferHeight;
       const isViewport = (v, x) => v.x === x && v.y === 0 && v.width === w / 2 && v.height === h;
       if (!isViewport(left.rect, 0) || !isViewport(right.rect, w / 2) ||
-          w !== gl.drawingBufferWidth || h !== gl.drawingBufferHeight || layer.framebuffer !== null ||
+          (dedicatedLayer ? !gl.isFramebuffer(layer.framebuffer)
+            : layer.framebuffer !== null || w !== gl.drawingBufferWidth || h !== gl.drawingBufferHeight) ||
           gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) !== layer.framebuffer ||
           gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) !== layer.framebuffer ||
-          gl.getParameter(gl.READ_BUFFER) !== gl.BACK ||
+          gl.getParameter(gl.READ_BUFFER) !== (dedicatedLayer ? gl.COLOR_ATTACHMENT0 : gl.BACK) ||
           gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
         throw new Error('The eye viewports do not map to the live emulated XR back buffer.');
       }
@@ -189,12 +238,15 @@ export async function installFakeWebXr(page, options = {}) {
         const error = gl.getError();
         if (error !== gl.NO_ERROR || gl.isContextLost()) throw new Error('Failed to read ' + view.eye + ' eye: ' + error);
         const pose = copyTransform(view.transform);
-        let nonOpaqueBlackPixels = 0;
-        if (blackout) for (let i = 0; i < bytes.length; i += 4) {
-          if (bytes[i] !== 0 || bytes[i+1] !== 0 || bytes[i+2] !== 0 || bytes[i+3] !== 255) nonOpaqueBlackPixels++;
+        let nonOpaqueBlackPixels = 0, litPixels = 0;
+        if (blackout || dedicatedLayer) for (let i = 0; i < bytes.length; i += 4) {
+          const rgbIsLit = bytes[i] !== 0 || bytes[i+1] !== 0 || bytes[i+2] !== 0;
+          if (rgbIsLit || bytes[i+3] !== 255) nonOpaqueBlackPixels++;
+          if (dedicatedLayer && rgbIsLit) litPixels++;
         }
         return { bytes, result: { eye: view.eye, viewport: rect, position: pose.position, orientation: pose.orientation,
-          ...(blackout ? { nonOpaqueBlackPixels, pixels: bytes.length / 4 } : {}),
+          ...(blackout || dedicatedLayer ? { nonOpaqueBlackPixels, pixels: bytes.length / 4 } : {}),
+          ...(dedicatedLayer ? { litPixels } : {}),
           viewToReferenceMatrix: pose.matrix, projectionMatrix: Array.from(view.projectionMatrix) } };
       };
       // Complete both synchronous reads before returning to window RAF / browser compositing.
@@ -203,6 +255,7 @@ export async function installFakeWebXr(page, options = {}) {
       const result = {
         frame: xr.frames, session: state.sessions.indexOf(session) + 1, timeMs: time,
         submission: request.expectedSubmission, lastLayerTargetPreserved: xr.lastLayerTargetPreserved,
+        ...(dedicatedLayer ? { framebufferKind: 'emulated-single-sample-fbo' } : {}),
         ...(blackout ? { witnessedBlackClears: frame.blackClears } : {}),
         atlas: { width: w, height: h, viewportOrigin: 'bottom-left', pngOrigin: 'top-left' },
         profile: xr.audience.currentQuality, viewpoint: xr.audience.currentViewpoint, eyeMode: xr.audience.eyeMode,
@@ -412,8 +465,14 @@ export async function installFakeWebXr(page, options = {}) {
         this.ending = false;
         for (const id of this.rafIds) window.cancelAnimationFrame(id);
         this.rafIds.clear();
-        this.dispatchEvent(new Event('end'));
-        if (state.activeSession === this) state.activeSession = null;
+        // Let Three restore the desktop target before releasing the fake layer's attachments.
+        try {
+          this.dispatchEvent(new Event('end'));
+        } finally {
+          for (const release of layerReleases.get(this) ?? []) release();
+          layerReleases.delete(this);
+          if (state.activeSession === this) state.activeSession = null;
+        }
       }
       end() {
         if (this.ended) return Promise.resolve();
@@ -477,12 +536,14 @@ export async function installFakeWebXr(page, options = {}) {
     }
 
     class FakeWebGLLayer {
-      constructor(_session, gl, init = {}) {
+      constructor(session, gl, init = {}) {
         const dimension = directEyes ? Math.round(512 * (init.framebufferScaleFactor ?? 1)) : 512;
         if (directEyes) layerContexts.set(this, gl);
         this.framebufferWidth = dimension * 2;
         this.framebufferHeight = dimension;
-        this.framebuffer = null;
+        this.framebuffer = dedicatedLayer
+          ? allocateLayerFramebuffer(session, gl, this.framebufferWidth, this.framebufferHeight, init)
+          : null;
         this.ignoreDepthValues = false;
         this.fixedFoveation = 0;
         state.scaleFactor = init.framebufferScaleFactor ?? 1;
@@ -542,6 +603,38 @@ export async function installFakeWebXr(page, options = {}) {
     globalThis.__fakeWebXr = {
       state,
       ...(directEyes ? { captureNextEyePair } : {}),
+      ...(dedicatedLayer ? {
+        layerIsLive(session) {
+          const layer = session?.renderState.baseLayer;
+          return Boolean(layer && layerContexts.get(layer)?.isFramebuffer(layer.framebuffer));
+        },
+        observeControllerPress(index = 0) {
+          // The Playwright caller dispatches this input between XR callbacks. Observe actual GL
+          // calls made during the input; never bind a target, inject a clear, or imitate a frame.
+          const session = state.activeSession;
+          const layer = session.renderState.baseLayer;
+          const gl = layerContexts.get(layer);
+          const boundToLayer = () => gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === layer.framebuffer;
+          const before = boundToLayer();
+          const clears = [];
+          const original = gl.clear, descriptor = Object.getOwnPropertyDescriptor(gl, 'clear');
+          Object.defineProperty(gl, 'clear', {configurable: true, writable: true, value(mask) {
+            if (this === gl && (mask & gl.COLOR_BUFFER_BIT)) {
+              const target = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
+              clears.push(target === layer.framebuffer ? 'xr-layer' : target === null ? 'desktop' : 'other');
+            }
+            return Reflect.apply(original, this, arguments);
+          }});
+          try {
+            session.dispatchInput('selectstart', index);
+            session.dispatchInput('selectend', index);
+            return { before, after: boundToLayer(), clears };
+          } finally {
+            if (descriptor) Object.defineProperty(gl, 'clear', descriptor);
+            else delete gl.clear;
+          }
+        },
+      } : {}),
       denyNext() { state.denyNext = true; },
       deferNext() { state.deferNext = true; },
       resolvePending() {
