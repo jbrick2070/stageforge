@@ -1,12 +1,17 @@
 export type CrowdPose = 'standing' | 'seated';
 export type CrowdRenderTier = 'high' | 'low' | 'xr';
-export type CrowdModelFamily = 'human' | 'robot' | 'alien';
-export type CrowdGeometryKey = 'legacy-human-v1' | 'original-robot-v1' | 'original-alien-v1';
+export type CrowdModelFamily = 'human' | 'robot' | 'alien' | 'animal';
+export type CrowdGeometryKey = 'legacy-human-v1' | 'original-robot-v1' | 'original-alien-v1' | 'original-human-v2' | 'original-fox-v1';
 
-export const CROWD_MODEL_IDS = [
+export const CROWD_MODEL_IDS_V11 = [
   'stageforge-human-v1',
   'stageforge-robot-v1',
   'stageforge-alien-v1',
+] as const;
+export const CROWD_MODEL_IDS = [
+  ...CROWD_MODEL_IDS_V11,
+  'stageforge-human-v2',
+  'stageforge-fox-v1',
 ] as const;
 export type CrowdModelId = (typeof CROWD_MODEL_IDS)[number];
 
@@ -156,12 +161,71 @@ export const STAGEFORGE_ALIEN_V1: CrowdModelSpec = Object.freeze({
   legacyCompatible: false,
 } as CrowdModelSpec);
 
+export const CROWD_HUMAN_SKIN_TONES = [
+  0x6c4033, 0x8b523d, 0xaf7151, 0xc99168, 0xd0a58b, 0xe5b99d, 0xf0c9b3,
+] as const;
+export const CROWD_HUMAN_CLOTHING_COLORS = [
+  0x8ba4c8, 0xc28570, 0xb1b68e, 0xa18fb9, 0xbfaa83, 0x7e929a, 0xcbcac3,
+] as const;
+
+const originalHumanBudget: CrowdModelBudget = {
+  trianglesPerInstance: 260, materialSlots: 1, materialTextures: 0, morphTextures: 0, figureBatches: 1,
+};
+const foxBudget: CrowdModelBudget = {
+  trianglesPerInstance: 262, materialSlots: 1, materialTextures: 0, morphTextures: 0, figureBatches: 1,
+};
+
+const originalHumanBounds = { geometryHeightM: 1.773623, geometryRadiusM: 0.282096 };
+const foxBounds = { geometryHeightM: 1.792152, geometryRadiusM: 0.369852 };
+
+export const STAGEFORGE_HUMAN_V2: CrowdModelSpec = Object.freeze({
+  id: 'stageforge-human-v2', family: 'human', label: 'StageForge human variant', geometryKey: 'original-human-v2',
+  ...originalHumanBounds,
+  provenance: {
+    creator: 'StageForge', source: 'Original procedural audience figure with skin and garment tints', license: 'StageForge original',
+  },
+  poses: {
+    standing: {
+      maxHeightM: 2.02, clearanceRadiusM: 0.34, pivot: [0, 0, 0],
+      submittedHeightM: originalHumanBounds.geometryHeightM, submittedRadiusM: originalHumanBounds.geometryRadiusM, handset: null,
+    },
+    seated: {
+      maxHeightM: 1.34, clearanceRadiusM: 0.24, pivot: [0, 0, 0],
+      submittedHeightM: originalHumanBounds.geometryHeightM, submittedRadiusM: originalHumanBounds.geometryRadiusM, handset: null,
+    },
+  },
+  budgets: { high: originalHumanBudget, low: originalHumanBudget, xr: originalHumanBudget },
+  legacyCompatible: false,
+} as CrowdModelSpec);
+
+export const STAGEFORGE_FOX_V1: CrowdModelSpec = Object.freeze({
+  id: 'stageforge-fox-v1', family: 'animal', label: 'StageForge fox', geometryKey: 'original-fox-v1',
+  ...foxBounds,
+  provenance: {
+    creator: 'StageForge', source: 'Original procedural foxlike audience figure', license: 'StageForge original',
+  },
+  poses: {
+    standing: {
+      maxHeightM: 2.04, clearanceRadiusM: 0.41, pivot: [0, 0, 0],
+      submittedHeightM: foxBounds.geometryHeightM, submittedRadiusM: foxBounds.geometryRadiusM, handset: null,
+    },
+    seated: {
+      maxHeightM: 1.36, clearanceRadiusM: 0.25, pivot: [0, 0, 0],
+      submittedHeightM: foxBounds.geometryHeightM, submittedRadiusM: foxBounds.geometryRadiusM, handset: null,
+    },
+  },
+  budgets: { high: foxBudget, low: foxBudget, xr: foxBudget },
+  legacyCompatible: false,
+} as CrowdModelSpec);
+
 const SAFE_MODEL_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const CROWD_POSE_MAX_SCALE = Object.freeze({ standing: 1.12, seated: 0.74 });
 const EXPECTED_MODEL_KIND: Readonly<Record<CrowdModelId, readonly [CrowdModelFamily, CrowdGeometryKey]>> = Object.freeze({
   'stageforge-human-v1': ['human', 'legacy-human-v1'],
   'stageforge-robot-v1': ['robot', 'original-robot-v1'],
   'stageforge-alien-v1': ['alien', 'original-alien-v1'],
+  'stageforge-human-v2': ['human', 'original-human-v2'],
+  'stageforge-fox-v1': ['animal', 'original-fox-v1'],
 });
 
 function finiteTuple(value: readonly number[], path: string): void {
@@ -235,7 +299,7 @@ export function validateCrowdModelSpec(spec: CrowdModelSpec): void {
   }
 }
 
-const registeredModels = [STAGEFORGE_HUMAN_V1, STAGEFORGE_ROBOT_V1, STAGEFORGE_ALIEN_V1]
+const registeredModels = [STAGEFORGE_HUMAN_V1, STAGEFORGE_ROBOT_V1, STAGEFORGE_ALIEN_V1, STAGEFORGE_HUMAN_V2, STAGEFORGE_FOX_V1]
   .sort((a, b) => a.id.localeCompare(b.id));
 registeredModels.forEach(validateCrowdModelSpec);
 

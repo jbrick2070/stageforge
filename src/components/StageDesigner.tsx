@@ -35,11 +35,13 @@ import type { PlanPoint, RigConfig, ShowState, StagePlatform, TrussPodConfig } f
 import type { IldaClip } from '../data/ilda';
 import type { NativeStage } from '../data/showFile';
 import {
+  CROWD_MODEL_PRESETS,
   crowdModelMix,
   makeDefaultCrowd,
   resolveCrowdLayout,
   withCrowdModelMix,
   type CrowdLayout,
+  type CrowdModelMix,
 } from '../data/crowdPlacement';
 import { GRID_HEIGHT } from '../data/stageEquipment';
 import { placeFixtures } from '../data/fixturePlacement';
@@ -1764,13 +1766,16 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
                           <select
                             aria-label="Crowd model mix"
                             value={crowdModelMix(crowdDraft)}
-                            onChange={(e) => commitCrowd(withCrowdModelMix(
-                              crowdDraft,
-                              e.target.value === 'original-trio' ? 'original-trio' : 'human-only',
-                            ))}
+                            disabled={!crowdDraft.zones.length}
+                            onChange={(e) => {
+                              const mix = e.target.value as CrowdModelMix;
+                              if (Object.hasOwn(CROWD_MODEL_PRESETS, mix)) commitCrowd(withCrowdModelMix(crowdDraft, mix));
+                            }}
                           >
-                            <option value="human-only">StageForge human</option>
-                            <option value="original-trio">Original human, robot and alien</option>
+                            <option value="custom" disabled>Custom</option>
+                            {Object.entries(CROWD_MODEL_PRESETS).map(([id, preset]) => (
+                              <option key={id} value={id}>{preset.label}</option>
+                            ))}
                           </select>
                         </label>
                         {crowdDraft.zones[0] && (

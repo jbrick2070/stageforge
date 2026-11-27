@@ -303,7 +303,7 @@ test('AI bridge HTTP server enforces Origin, Host, Bearer token, body cap (incl.
     });
     assert.equal(batchRes.status, 400);
 
-    // 8. Initialize session and verify exact tools/list, forbidden tools/call rejection, and canonical v9 schema parity
+    // 8. Initialize session and verify exact tools/list, forbidden tools/call rejection, and canonical schema parity
     fakeNow += 2000;
     const session = await initSession(port, token);
     const listRes = await session.call('tools/list', {}, 2);
@@ -318,8 +318,8 @@ test('AI bridge HTTP server enforces Origin, Host, Bearer token, body cap (incl.
       assert.ok(badCall.json.error, `tools/call "${forbidden}" must return JSON-RPC error`);
     }
 
-    // Canonical show-v11.schema.json parity for get_schema AND stageforge://schema/show
-    const diskSchema = await fs.readFile(path.join(root, 'src', 'schemas', 'show-v11.schema.json'), 'utf8');
+    // Canonical show-v12.schema.json parity for get_schema AND stageforge://schema/show
+    const diskSchema = await fs.readFile(path.join(root, 'src', 'schemas', 'show-v12.schema.json'), 'utf8');
     const diskHash = crypto.createHash('sha256').update(diskSchema.replace(/\r\n/g, '\n')).digest('hex');
 
     const schemaTool = await session.call('tools/call', { name: 'get_schema', arguments: {} }, 20);
@@ -327,7 +327,7 @@ test('AI bridge HTTP server enforces Origin, Host, Bearer token, body cap (incl.
     assert.equal(
       crypto.createHash('sha256').update(schemaToolText.replace(/\r\n/g, '\n')).digest('hex'),
       diskHash,
-      'get_schema must match src/schemas/show-v11.schema.json byte-for-byte',
+      'get_schema must match src/schemas/show-v12.schema.json byte-for-byte',
     );
 
     const resList = await session.call('resources/list', {}, 21);
@@ -336,7 +336,7 @@ test('AI bridge HTTP server enforces Origin, Host, Bearer token, body cap (incl.
     assert.equal(
       crypto.createHash('sha256').update(resRead.json.result.contents[0].text.replace(/\r\n/g, '\n')).digest('hex'),
       diskHash,
-      'stageforge://schema/show must match src/schemas/show-v11.schema.json byte-for-byte',
+      'stageforge://schema/show must match src/schemas/show-v12.schema.json byte-for-byte',
     );
 
     // 9. Deep audienceScan rejection, prototype pollution, and oversized strings rejected BEFORE IPC

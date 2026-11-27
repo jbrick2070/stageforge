@@ -2,6 +2,9 @@ import type { RigConfig } from '../types/show';
 import { computeVenueBounds } from './venueBounds';
 import {
   CROWD_MAX_AUTHORED_OCCUPANTS,
+  CROWD_HUMAN_CLOTHING_COLORS,
+  CROWD_HUMAN_SKIN_TONES,
+  CROWD_MODEL_IDS_V11,
   CROWD_MODEL_REGISTRY,
   CROWD_PLACEMENT_ENVELOPE,
   STAGEFORGE_HUMAN_V1,
@@ -82,6 +85,7 @@ export interface ResolvedCrowdPlacement {
   scaleY: number;
   phase: number;
   paletteIndex: number;
+  humanColors?: { skinToneIndex: number; clothingColorIndex: number };
   gesture: number;
   phone: boolean;
 }
@@ -140,7 +144,7 @@ function hashText(seed: number, text: string): number {
 }
 
 /** Public for tests: every random concern receives a distinct domain string. */
-export function crowdSelection(seed: number, domain: 'location-x' | 'location-z' | 'occupancy' | 'appearance' | 'phone' | 'palette' | 'motion' | 'scale', id: string): number {
+export function crowdSelection(seed: number, domain: 'location-x' | 'location-z' | 'occupancy' | 'appearance' | 'phone' | 'palette' | 'motion' | 'scale' | 'skin' | 'clothing', id: string): number {
   return hashText(seed, `${domain}\0${id}`) / 0x1_0000_0000;
 }
 
@@ -247,6 +251,12 @@ function resolved(
     scaleY: standing ? 0.88 + crowdSelection(layout.seed, 'scale', key) * 0.24 : 0.68 + crowdSelection(layout.seed, 'scale', key) * 0.06,
     phase: crowdSelection(layout.seed, 'motion', key) * Math.PI * 2,
     paletteIndex: Math.floor(crowdSelection(layout.seed, 'palette', key) * 7),
+    ...(modelId === 'stageforge-human-v2' ? {
+      humanColors: {
+        skinToneIndex: Math.floor(crowdSelection(layout.seed, 'skin', key) * CROWD_HUMAN_SKIN_TONES.length),
+        clothingColorIndex: Math.floor(crowdSelection(layout.seed, 'clothing', key) * CROWD_HUMAN_CLOTHING_COLORS.length),
+      },
+    } : {}),
     gesture: crowdSelection(layout.seed, 'appearance', `${key}:gesture`),
     phone: standing && crowdModel(modelId).poses.standing.handset !== null && crowdSelection(layout.seed, 'phone', key) < 0.09,
   };
@@ -458,31 +468,73 @@ export function makeDefaultCrowd(rig: Pick<RigConfig, 'venue' | 'stageWidth' | '
   return layout;
 }
 
-export type CrowdModelMix = 'human-only' | 'original-trio';
-
-export function crowdModelMix(layout: CrowdLayout): CrowdModelMix {
-  return layout.zones.some((zone) => zone.modelWeights.some((item) => item.modelId !== STAGEFORGE_HUMAN_V1.id))
-    || layout.placements.some((placement) => placement.modelId !== STAGEFORGE_HUMAN_V1.id)
-    ? 'original-trio'
-    : 'human-only';
-}
-
-/** Stage Designer preset: upgrading to v2 is permanent unless the operator recreates a v1 layout. */
-export function withCrowdModelMix(layout: CrowdLayout, mix: CrowdModelMix): CrowdLayout {
-  const weights: CrowdModelWeight[] = mix === 'original-trio'
-    ? [
+export const CROWD_MODEL_PRESETS = {
+  'human-only': {
+    label: 'StageForge human',
+    weights: [{ modelId: 'stageforge-human-v1', weight: 1 }],
+  },
+  'original-trio': {
+    label: 'Original human, robot and alien',
+    weights: [
       { modelId: 'stageforge-human-v1', weight: 6 },
       { modelId: 'stageforge-robot-v1', weight: 2 },
       { modelId: 'stageforge-alien-v1', weight: 2 },
-    ]
-    : [{ modelId: 'stageforge-human-v1', weight: 1 }];
+    ],
+  },
+  'original-library': {
+    label: 'Original characters and human variants',
+    weights: [
+      { modelId: 'stageforge-human-v1', weight: 2 },
+      { modelId: 'stageforge-human-v2', weight: 5 },
+      { modelId: 'stageforge-robot-v1', weight: 1 },
+      { modelId: 'stageforge-alien-v1', weight: 1 },
+      { modelId: 'stageforge-fox-v1', weight: 1 },
+    ],
+  },
+} as const satisfies Record<string, { label: string; weights: readonly CrowdModelWeight[] }>;
+
+export type CrowdModelMix = keyof typeof CROWD_MODEL_PRESETS;
+
+function totalModelWeight(weights: readonly CrowdModelWeight[]): number {
+  return weights.reduce((sum, item) => sum + item.weight, 0);
+}
+
+export function crowdModelMix(layout: CrowdLayout): CrowdModelMix | 'custom' {
+  if (!layout.zones.length) return layout.placements.length ? 'custom' : 'human-only';
+  const presetIds = Object.keys(CROWD_MODEL_PRESETS) as CrowdModelMix[];
+  return presetIds.find(mix => {
+    const { weights } = CROWD_MODEL_PRESETS[mix];
+    const presetTotal = totalModelWeight(weights);
+    return layout.placements.every(placement => weights.some(item => item.modelId === placement.modelId))
+      && layout.zones.every(zone => {
+        if (zone.modelWeights.length !== weights.length) return false;
+        const zoneTotal = totalModelWeight(zone.modelWeights);
+        return weights.every(({ modelId, weight }) => {
+          const stored = zone.modelWeights.find(item => item.modelId === modelId);
+          return stored && Math.abs(stored.weight / zoneTotal - weight / presetTotal) < 1e-9;
+        });
+      });
+  }) ?? 'custom';
+}
+
+/** Applying generated zone weights leaves deliberate placements in place. */
+export function withCrowdModelMix(layout: CrowdLayout, mix: CrowdModelMix): CrowdLayout {
+  if (!layout.zones.length) return layout;
+  const { weights } = CROWD_MODEL_PRESETS[mix];
   return {
     ...layout,
-    generatorVersion: mix === 'original-trio' ? CROWD_GENERATOR_VERSION_2 : layout.generatorVersion,
-    zones: layout.zones.map((zone) => ({ ...zone, modelWeights: weights.map((item) => ({ ...item })) })),
+    generatorVersion: mix === 'human-only' ? layout.generatorVersion : CROWD_GENERATOR_VERSION_2,
+    zones: layout.zones.map(zone => ({ ...zone, modelWeights: weights.map(item => ({ ...item })) })),
   };
 }
 
-export function crowdRequiresV11(layout: CrowdLayout): boolean {
-  return layout.generatorVersion === CROWD_GENERATOR_VERSION_2 || crowdModelMix(layout) === 'original-trio';
+export function crowdShowVersion(layout: CrowdLayout): 10 | 11 | 12 {
+  const modelIds = [
+    ...layout.zones.flatMap(zone => zone.modelWeights.map(item => item.modelId)),
+    ...layout.placements.map(placement => placement.modelId),
+  ];
+  if (modelIds.some(modelId => !CROWD_MODEL_IDS_V11.some(known => known === modelId))) return 12;
+  if (layout.generatorVersion === CROWD_GENERATOR_VERSION_2
+    || modelIds.some(modelId => modelId !== STAGEFORGE_HUMAN_V1.id)) return 11;
+  return 10;
 }

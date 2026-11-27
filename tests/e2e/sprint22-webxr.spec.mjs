@@ -441,3 +441,59 @@ test('audience viewpoints, comfort menu, preview workflows and emulator budgets 
   expect((await xrState(page)).audience.currentQuality).toBe('standalone-low');
   await exit(page);
 });
+
+test('the expanded original crowd renders in both stereo profiles and preserves its stage draft history', async ({ page }) => {
+  test.setTimeout(120_000);
+  const shaderErrors = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error' && /Shader Error|WebGLProgram.*invalid/i.test(message.text())) {
+      shaderErrors.push(message.text());
+    }
+  });
+  await boot(page);
+  await page.getByRole('button', { name: 'Play demo', exact: true }).click();
+  await page.getByRole('button', { name: /Arena Rock/ }).first().click();
+  await page.getByRole('button', { name: 'Pause', exact: true }).click();
+
+  await page.getByRole('button', { name: 'Design stage', exact: true }).first().click();
+  const designer = page.getByRole('dialog', { name: 'Stage designer' });
+  await designer.getByLabel('Authored crowd').check();
+  const mix = designer.getByLabel('Crowd model mix');
+  await mix.selectOption('original-library');
+  await designer.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(mix).toHaveValue('human-only');
+  await designer.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(mix).toHaveValue('original-library');
+  await designer.getByLabel('Crowd zone occupancy').fill('1');
+  await designer.getByRole('button', { name: 'Apply design' }).click();
+  await expect(designer).toBeHidden();
+
+  const readCrowd = () => page.evaluate(() => window.stageforgeProbe.crowd());
+  await expect.poll(async () => (await readCrowd()).batches.map(batch => batch.modelId)).toEqual([
+    'stageforge-alien-v1', 'stageforge-fox-v1', 'stageforge-human-v1', 'stageforge-human-v2', 'stageforge-robot-v1',
+  ]);
+  expect((await readCrowd()).resourceAdmission).toMatchObject({
+    admitted: true,
+    eyeViews: 2,
+    arenaDelta: { draws: 8, triangles: 0, textures: 0 },
+  });
+
+  const checkBudget = async (profile) => {
+    await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
+    const state = await xrState(page);
+    expect(state.audience.currentQuality).toBe(profile);
+    expect(state.lastViews).toBe(2);
+    expect(state.lastCalls).toBeLessThanOrEqual(state.audience.emulatorBudget.calls);
+    expect(state.lastTriangles).toBeLessThanOrEqual(state.audience.emulatorBudget.triangles);
+    expect(state.memory.textures).toBeLessThanOrEqual(state.audience.emulatorBudget.rendererTextures);
+    expect(state.audience.ownedTextures).toBe(state.audience.emulatorBudget.ownedTextures);
+  };
+  await enter(page, true);
+  await checkBudget('pc-link-high');
+  await page.evaluate(() => window.stageforgeProbe.webXrMenuAction('quality:standalone-low'));
+  await exit(page);
+  await enter(page);
+  await checkBudget('standalone-low');
+  await exit(page);
+  expect(shaderErrors).toEqual([]);
+});

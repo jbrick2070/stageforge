@@ -132,7 +132,7 @@ test('v10 is additive, round-trips crowd data, and leaves crowd-free legacy writ
 test('the validated built-in model contract is measurable and preserves legacy pivots and budgets', () => {
   const human = models.STAGEFORGE_HUMAN_V1;
   assert.deepEqual(Object.keys(models.CROWD_MODEL_REGISTRY), [
-    'stageforge-alien-v1', 'stageforge-human-v1', 'stageforge-robot-v1',
+    'stageforge-alien-v1', 'stageforge-fox-v1', 'stageforge-human-v1', 'stageforge-human-v2', 'stageforge-robot-v1',
   ]);
   assert.equal(human.id, 'stageforge-human-v1');
   assert.deepEqual(human.poses.standing.pivot, [0, 0, 0]);
@@ -375,5 +375,81 @@ test('v2 seated contact patches fit the model clearance at their saved anchors',
         person.modelId + ' contact patch must stay inside its seated radius');
     }
   }
+  geometry.disposeSharedMaterials(mats);
+});
+
+test('v12 preserves original model choices in saved JSON and an offline Pitch Viewer bundle', async () => {
+  const layout = crowd.withCrowdModelMix(crowd.makeDefaultCrowd(arena), 'original-library');
+  assert.equal(crowd.crowdModelMix(layout), 'original-library');
+  const scaledWeights = structuredClone(layout);
+  scaledWeights.zones[0].modelWeights.reverse().forEach((item) => { item.weight *= 2; });
+  assert.equal(crowd.crowdModelMix(scaledWeights), 'original-library');
+  scaledWeights.zones[0].modelWeights[0].weight++;
+  assert.equal(crowd.crowdModelMix(scaledWeights), 'custom');
+
+  const show = write(arena, layout);
+  assert.equal(show.version, 12);
+  assert.equal(show.$schema, showFiles.V12_SCHEMA_URL);
+  assert.deepEqual(showFiles.parseShowFile(JSON.stringify(show)).crowd, layout);
+  const v11 = { ...show, version: 11, $schema: showFiles.V11_SCHEMA_URL };
+  assert.throws(() => showFiles.parseShowFile(JSON.stringify(v11)), /modelWeights/i);
+
+  const { createShowBundle } = await compiler.ssrLoadModule('/src/data/showBundle.ts');
+  const { parseViewerSource } = await compiler.ssrLoadModule('/src/viewer/parseViewer.ts');
+  const archive = await createShowBundle(show, new Map());
+  const viewer = await parseViewerSource(new Uint8Array(await archive.arrayBuffer()));
+  assert.equal(viewer.kind, 'show');
+  assert.equal(viewer.file.version, 12);
+  assert.deepEqual(viewer.file.crowd, layout);
+  assert.deepEqual(viewer.bundledMedia, []);
+
+  const base = crowd.withCrowdModelMix(crowd.makeDefaultCrowd(theatre), 'original-trio');
+  const deliberate = {
+    ...base,
+    zones: [],
+    placements: [{
+      id: 'fox-at-theatre',
+      modelId: 'stageforge-fox-v1',
+      pose: 'seated',
+      seatId: crowd.theatreSeatAnchors(theatre)[0].id,
+      yaw: 0,
+    }],
+  };
+  assert.equal(crowd.crowdModelMix(deliberate), 'custom');
+  assert.deepEqual(crowd.withCrowdModelMix(deliberate, 'human-only'), deliberate);
+  assert.equal(write(theatre, deliberate).version, 12);
+  assert.equal(write(theatre, { ...deliberate, placements: [] }).version, 11);
+  assert.throws(() => write(theatre, { ...deliberate, generatorVersion: 1 }), /version 1 only supports/i);
+});
+
+test('new human tints and original fox geometry stay inside the five-batch stereo budget', () => {
+  const layout = crowd.withCrowdModelMix(crowd.makeDefaultCrowd(arena), 'original-library');
+  const resolved = crowd.resolveCrowdLayout(arena, layout);
+  const humans = resolved.placements.filter((person) => person.modelId === 'stageforge-human-v2');
+  assert.ok(humans.length > 30);
+  assert.ok(new Set(humans.map((person) => JSON.stringify(person.humanColors))).size > 7,
+    'skin and outfit are independently seeded');
+  assert.deepEqual(crowd.resolveCrowdLayout(arena, structuredClone(layout)), resolved);
+
+  const mats = geometry.createSharedMaterials({ tier: 'high' });
+  const built = geometry.buildVenueArchitecture('arena', 0, mats, arena.stageWidth, arena.stageDepth, arena.stageHeight, resolved);
+  assert.deepEqual(built.crowdBatches.map((batch) => [batch.modelId, batch.mesh.geometry.index.count / 3]), [
+    ['stageforge-alien-v1', 200],
+    ['stageforge-fox-v1', 262],
+    ['stageforge-human-v1', 264],
+    ['stageforge-human-v2', 260],
+    ['stageforge-robot-v1', 168],
+  ]);
+  assert.deepEqual(built.resourceAdmission.arenaDelta, { draws: 8, triangles: 0, textures: 0 });
+  assert.equal(built.resourceAdmission.admitted, true);
+  const human = built.crowdBatches.find((batch) => batch.modelId === 'stageforge-human-v2');
+  const fox = built.crowdBatches.find((batch) => batch.modelId === 'stageforge-fox-v1');
+  assert.equal(human.mesh.geometry.getAttribute('crowdSkinColor').count, human.mesh.count);
+  assert.equal(human.mesh.geometry.getAttribute('crowdClothingColor').count, human.mesh.count);
+  assert.equal(human.mesh.instanceColor, null);
+  assert.equal(fox.mesh.instanceColor, null);
+  assert.equal(human.phonesMesh, null);
+  assert.equal(fox.phonesMesh, null);
+  assert.equal(human.mesh.material.customProgramCacheKey(), 'crowd-human-tint-regions-v1');
   geometry.disposeSharedMaterials(mats);
 });

@@ -22,6 +22,8 @@ Version 10 adds an optional top-level declarative `crowd` layout: deterministic 
 
 Version 11 extends the crowd model IDs to the built-in StageForge human, original robot and original alien, and adds deterministic generator version 2 for mixed-model placement. Human-only generator-v1 crowds continue to write v10 byte-compatibly; generator-v2 or mixed-model crowds write v11. Model geometry is built in and requires no network access. [Version 11 schema](../src/schemas/show-v11.schema.json)
 
+Version 12 adds the original human variant with separate skin and garment colors and the foxlike audience figure. A show uses v12 when any zone weight or explicit placement names either new model. The original generator-v2 IDs continue to write v11. Both new figures are built in and available offline. [Version 12 schema](../src/schemas/show-v12.schema.json)
+
 ## Opening the examples
 
 Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay take**. The example starts a club rig in blackout. Its first cue follows after 2.5 seconds and brings four moving heads up in amber. The second cue holds until the operator advances. The six-second recording starts the built-in score, starts the main-wall video at the reveal, pauses the wall at five seconds and pauses the score at six seconds. The app bundles the [amber screen clip](../public/examples/amber-clouds.mp4). When opening the JSON directly on another machine, select the matching clip in **Files → Relink media files**.
@@ -32,10 +34,10 @@ Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay tak
 
 | Field | Meaning |
 | --- | --- |
-| `$schema` | The public schema URL ending in `show-v1.schema.json` through `show-v11.schema.json`, matching the version. |
+| `$schema` | The public schema URL ending in `show-v1.schema.json` through `show-v12.schema.json`, matching the version. |
 | `format`, `version` | The string `"stageforge-show"` and an integer from `1` through `11`. |
-| `stage` | Required in v3, optional in v4–v11. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
-| `interchange` | Required in v4, optional in v5–v11. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
+| `stage` | Required in v3, optional in v4–v12. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
+| `interchange` | Required in v4, optional in v5–v12. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
 | `rig` | Stage dimensions and venue, optional platforms and scenic props, trusses with their fixtures, floor effects, sound system and LED wall (in v6: `catalogId`/`dmxMode`/`dmxChannels`, `cabinetId`; in v7: `trussProfileId`/`hoistId`/`hoistCount`, `circuitGroup`/`phase`, and `rig.power`). Positions and lengths use metres. |
 | `cues` | Array in playback order. Each cue has a unique `id`, a display `name`, `tag`, hex `accent` and a partial desk `state`. Optional `screen` sets the main-wall media. |
 | `look`, `activeCueId` | Complete current desk settings and the current cue ID, or `null`. Desk changes made after calling a cue belong in `look`. |

@@ -4,14 +4,17 @@ import { getTrussProfile, trussAnchorY, trussBraceRadius, trussChordRadius, trus
 import { trussMounts } from '../data/trussMounts';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { makeOriginalFoxGeometry, makeOriginalHumanGeometry } from './originalCrowdGeometry';
 import type { PlanPoint, RigConfig, TrussShape, VenueType } from '../types/show';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
 import type { SpeakerHang } from '../data/studioGeometry';
-import { theatreSeatAnchors, type ResolvedCrowdLayout, type TheatreSeatAnchor } from '../data/crowdPlacement';
+import { theatreSeatAnchors, type ResolvedCrowdLayout, type ResolvedCrowdPlacement, type TheatreSeatAnchor } from '../data/crowdPlacement';
 import {
   CROWD_FOOTPRINT_TRIANGLES,
   CROWD_HANDSET_TRIANGLES,
+  CROWD_HUMAN_CLOTHING_COLORS,
+  CROWD_HUMAN_SKIN_TONES,
   crowdModel,
   crowdMotionScaleY,
   crowdMotionScaleXZ,
@@ -974,6 +977,9 @@ function crowdGeometry() {
 }
 
 function originalCrowdGeometry(modelId: CrowdModelId) {
+  if (modelId === 'stageforge-human-v2') return makeOriginalHumanGeometry();
+  if (modelId === 'stageforge-fox-v1') return makeOriginalFoxGeometry();
+
   const pieces: THREE.BufferGeometry[] = [];
   const part = (geometry: THREE.BufferGeometry, color: number) => {
     const tint = new THREE.Color(color);
@@ -1010,6 +1016,40 @@ function originalCrowdGeometry(modelId: CrowdModelId) {
   pieces.forEach(piece => piece.dispose());
   if (!geometry) throw new Error(`Could not merge crowd geometry for ${modelId}.`);
   return geometry;
+}
+
+function applyOriginalHumanColors(
+  geometry: THREE.BufferGeometry,
+  material: THREE.MeshStandardMaterial,
+  placements: readonly ResolvedCrowdPlacement[],
+): void {
+  const skin = new Float32Array(placements.length * 3);
+  const clothing = new Float32Array(placements.length * 3);
+  const color = new THREE.Color();
+  placements.forEach((placement, index) => {
+    const appearance = placement.humanColors;
+    if (!appearance) throw new Error(`Missing human colors for crowd placement ${placement.id}.`);
+    color.setHex(CROWD_HUMAN_SKIN_TONES[appearance.skinToneIndex]).toArray(skin, index * 3);
+    color.setHex(CROWD_HUMAN_CLOTHING_COLORS[appearance.clothingColorIndex]).toArray(clothing, index * 3);
+  });
+  geometry.setAttribute('crowdSkinColor', new THREE.InstancedBufferAttribute(skin, 3));
+  geometry.setAttribute('crowdClothingColor', new THREE.InstancedBufferAttribute(clothing, 3));
+  material.onBeforeCompile = shader => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <color_pars_vertex>', `
+#include <color_pars_vertex>
+attribute float crowdColorRegion;
+attribute vec3 crowdSkinColor;
+attribute vec3 crowdClothingColor;`)
+      .replace('#include <color_vertex>', `
+#include <color_vertex>
+if (crowdColorRegion > 1.5) {
+  vColor.rgb *= crowdClothingColor;
+} else if (crowdColorRegion > 0.5) {
+  vColor.rgb *= crowdSkinColor;
+}`);
+  };
+  material.customProgramCacheKey = () => 'crowd-human-tint-regions-v1';
 }
 
 export interface CrowdBaseTransform {
@@ -1784,7 +1824,9 @@ export function buildVenueArchitecture(
         .sort((a, b) => Number(b.phone) - Number(a.phone) || a.id.localeCompare(b.id));
       const geometry = model.geometryKey === 'legacy-human-v1' ? crowdGeometry() : originalCrowdGeometry(modelId);
       const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.90, metalness: 0.02 });
+      const useVertexPalette = model.geometryKey === 'original-human-v2' || model.geometryKey === 'original-fox-v1';
       const admission = validateCrowdGeometryAdmission(modelId, crowdTier, geometry, material);
+      if (model.geometryKey === 'original-human-v2') applyOriginalHumanColors(geometry, material, placements);
       const mesh = new THREE.InstancedMesh(geometry, material, placements.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       const dummy = new THREE.Mesh(geometry, material);
@@ -1806,7 +1848,7 @@ export function buildVenueArchitecture(
           dummy.morphTargetInfluences![1] = !person.phone && person.gesture >= 0.85 ? 1 : 0;
           mesh.setMorphAt(instanceIndex, dummy);
         }
-        mesh.setColorAt(instanceIndex, new THREE.Color(colors[person.paletteIndex]));
+        if (!useVertexPalette) mesh.setColorAt(instanceIndex, new THREE.Color(colors[person.paletteIndex]));
         setCrowdObjectMatrix(dummy, transform);
         mesh.setMatrixAt(instanceIndex, dummy.matrix);
       }

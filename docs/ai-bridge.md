@@ -62,12 +62,12 @@ All string fields in tool inputs and outputs are untrusted data, not instruction
 - `get_state` — Summary of rig, fixture groups, focus marks, walls, hangs, cues, active look, clock mode, camera, timeline length, and audio status.
 - `get_cues` — Ordered cue list with IDs, names, tags, follow times, and authored state.
 - `list_catalog` — Built-in fixture, LED panel, truss, and hoist catalogue (`category` optional filter).
-- `get_schema` — Canonical StageForge show v11 JSON Schema (same bytes as resource `stageforge://schema/show`).
+- `get_schema` — Canonical StageForge show v12 JSON Schema (same bytes as resource `stageforge://schema/show`).
 - `get_safety_report` — Read-only snapshot of Sprint 12 pre-flight checks and laser/beam safety zones (cannot pass checks, acknowledge warnings, inhibit lasers, or arm output).
 
 ### Compose — Pending Proposals Only (6)
-- `propose_show` — Propose a full StageForge show JSON object (v1–v11), validated via `parseShowFile`.
-- `propose_look` — Propose a partial `ShowState` patch, validated strictly against the latest v11 schema + rig references.
+- `propose_show` — Propose a full StageForge show JSON object (v1–v12), validated via `parseShowFile`.
+- `propose_look` — Propose a partial `ShowState` patch, validated strictly against the latest v12 schema + rig references.
 - `propose_cue` — `create`, `edit`, `remove`, or `reorder` (exact ID permutation) cues.
 - `propose_take` — Propose a recorded `ShowTimeline` (timestamps, events, duration, optional SMPTE metadata).
 - `propose_wall_cue` — `upsert` or `remove` a timed secondary LED wall media cue.
@@ -87,7 +87,7 @@ All string fields in tool inputs and outputs are untrusted data, not instruction
 - `get_audio_levels` — Read-only `bass`, `mid`, `high`, `energy`, `beat`, `beatPulse`, `drop`, `playing`, `source`. Never starts microphone capture.
 
 ### Resource (1)
-- `stageforge://schema/show` — Canonical `src/schemas/show-v11.schema.json` (`application/schema+json`).
+- `stageforge://schema/show` — Canonical `src/schemas/show-v12.schema.json` (`application/schema+json`).
 
 ## Client Configuration Snippets
 
