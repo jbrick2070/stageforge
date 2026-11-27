@@ -27,10 +27,12 @@ function rehearsal(withTake = false) {
   delete show.media;
   delete show.timeline;
   if (withTake) {
+    const screen = { target: 'main-led', kind: 'none', name: '', playing: false };
     show.timeline = { durationMs: 2600, events: [
-      { atMs: 0, look: structuredClone(show.look) },
+      { atMs: 0, look: structuredClone(show.look), cueId: show.activeCueId,
+        camera: 'foh', volume: 0.65, bump: noBump, music: { kind: 'none', name: '', playing: false }, screen },
       { atMs: 100, bump: { ...noBump, strobe: true, smoke: true } },
-      { atMs: 250, screen: { target: 'main-led', kind: 'none', name: '', playing: false } },
+      { atMs: 250, screen },
       { atMs: 950, bump: noBump },
       { atMs: 1400, bump: { ...noBump, strobe: true } },
       { atMs: 1600, look: { ...show.look, masterDimmer: 0.7 } },
@@ -280,6 +282,7 @@ test('Pitch Viewer plays the authored look and the editor restores its hold with
   await page.keyboard.press('Space');
   await page.clock.fastForward(350);
   expect((await takeState(page)).mode).toBe('playing');
+  await page.clock.runFor(32);
   expect(await page.evaluate(() => window.stageforgeProbe.fixtureParams().atmo.smoke)).toBe(1);
   await page.keyboard.press('Space');
   expect((await takeState(page)).mode).toBe('idle');
