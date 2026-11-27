@@ -50,7 +50,7 @@ test('buildDmxPatch and unitStart detect exact 512/513 overflow and cross-group 
 test('resolved units keep separate parent identities and both conflict and overflow status', () => {
   const hung = { id: 'x:y', type: 'beam', modelName: 'Hung', count: 2, dmxUniverse: 1, dmxStartChannel: 101 };
   const other = { ...hung, id: 'y', count: 1, dmxStartChannel: 117 };
-  const at512 = { id: 'last', type: 'blinder', modelName: 'Last slot', count: 1, dmxUniverse: 2, dmxStartChannel: 512 };
+  const at512 = { id: 'last', type: 'blinder', modelName: 'Last slot', count: 1, dmxChannels: 1, dmxUniverse: 2, dmxStartChannel: 512 };
   const floor = { ...hung, type: 'floor_beam', modelName: 'Floor', dmxStartChannel: 488, dmxUniverse: 2, x: 0, z: 0, spread: 2 };
   const rig = rigWith([hung], [floor]);
   rig.trussPods[0].id = 'floor';
