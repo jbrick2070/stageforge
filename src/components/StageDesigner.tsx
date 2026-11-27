@@ -34,7 +34,13 @@ import {
 import type { PlanPoint, RigConfig, ShowState, StagePlatform, TrussPodConfig } from '../types/show';
 import type { IldaClip } from '../data/ilda';
 import type { NativeStage } from '../data/showFile';
-import { makeDefaultCrowd, resolveCrowdLayout, type CrowdLayout } from '../data/crowdPlacement';
+import {
+  crowdModelMix,
+  makeDefaultCrowd,
+  resolveCrowdLayout,
+  withCrowdModelMix,
+  type CrowdLayout,
+} from '../data/crowdPlacement';
 import { GRID_HEIGHT } from '../data/stageEquipment';
 import { placeFixtures } from '../data/fixturePlacement';
 import { computeReachMap, computeVenueBounds, evaluateLaserZones } from '../data/measure';
@@ -1752,6 +1758,20 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
                               if (Number.isSafeInteger(seed) && seed >= 0 && seed <= 4294967295) commitCrowd({ ...crowdDraft, seed });
                             }}
                           />
+                        </label>
+                        <label className="sd-field">
+                          <span>Crowd model mix</span>
+                          <select
+                            aria-label="Crowd model mix"
+                            value={crowdModelMix(crowdDraft)}
+                            onChange={(e) => commitCrowd(withCrowdModelMix(
+                              crowdDraft,
+                              e.target.value === 'original-trio' ? 'original-trio' : 'human-only',
+                            ))}
+                          >
+                            <option value="human-only">StageForge human</option>
+                            <option value="original-trio">Original human, robot and alien</option>
+                          </select>
                         </label>
                         {crowdDraft.zones[0] && (
                           <label className="sd-field">

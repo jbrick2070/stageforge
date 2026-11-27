@@ -59,8 +59,12 @@ import {
   createSubwoofer,
   createSharedMaterials,
   disposeSharedMaterials,
+  setCrowdObjectMatrix,
+  type CrowdRenderBatch,
+  type CrowdPlacementBinding,
   type VenueRoom,
 } from './geometryBuilders';
+import type { CrowdResourceAdmission } from '../data/crowdModels';
 import { FixtureModelCache, type FixtureMotion } from './fixtureModels';
 import { detectRenderTier, maxPixelRatioForTier, type RenderTier } from './hardwareMaterials';
 import { FocusMark, PAN_LIMIT, TILT_LIMIT, aimAngles, aimTiltOnly, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
@@ -470,7 +474,10 @@ export class StageEngine {
   private atmosphereDmx: (DmxOutput & { type: 'hazer' | 'smoke' | 'co2' })[] = [];
   private djStripMat: THREE.MeshBasicMaterial | null = null;
   private crowdMesh: THREE.InstancedMesh | null = null;
-  private crowdBaseTransforms: { x: number; y: number; z: number; scaleY: number; phase: number; rotY: number }[] = [];
+  private crowdBatches: CrowdRenderBatch[] = [];
+  private crowdBaseTransforms: CrowdRenderBatch['transforms'] = [];
+  private crowdPlacementBindings: CrowdPlacementBinding[] = [];
+  private crowdResourceAdmission: CrowdResourceAdmission | null = null;
   private crowdSeated = false;
   /** Interior of a small room (theatre, club); null for arena/warehouse/festival framing. */
   private room: VenueRoom | null = null;
@@ -2798,8 +2805,17 @@ export class StageEngine {
   public crowdDiagnostics() {
     return {
       authored: Boolean(this.currentCrowd),
-      count: this.crowdMesh?.count ?? 0,
+      count: this.crowdBatches.reduce((total, batch) => total + batch.mesh.count, 0),
       transforms: this.crowdBaseTransforms.map((item) => ({ ...item })),
+      batches: this.crowdBatches.map(batch => ({
+        modelId: batch.modelId,
+        batchIndex: batch.batchIndex,
+        count: batch.mesh.count,
+        phoneCount: batch.phonesMesh?.count ?? 0,
+        placementIds: [...batch.placementIds],
+      })),
+      placementBindings: this.crowdPlacementBindings.map(binding => ({ ...binding })),
+      resourceAdmission: this.crowdResourceAdmission ? structuredClone(this.crowdResourceAdmission) : null,
       seated: this.crowdSeated,
       phones: this.crowdLighting?.getStats().phoneCount ?? 0,
     };
@@ -2864,16 +2880,20 @@ export class StageEngine {
 
     // 1. Venue architecture + animated arena crowd
     const venueBuild = buildVenueArchitecture(rig.venue, rig.audioRig.crowdDensity, this.mats, rig.stageWidth,
-      rig.stageDepth, rig.stageHeight, resolvedCrowd);
+      rig.stageDepth, rig.stageHeight, resolvedCrowd, this.renderTier);
     venueBuild.group.userData.kind = 'venue';
     this.rigGroup.add(venueBuild.group);
     this.houseColors = venueBuild.practicals.map(material => ({ color: material.color, full: material.color.clone() }));
     this.crowdMesh = venueBuild.crowdMesh;
+    this.crowdBatches = venueBuild.crowdBatches;
     this.crowdBaseTransforms = venueBuild.crowdBaseTransforms;
+    this.crowdPlacementBindings = venueBuild.placementBindings;
+    this.crowdResourceAdmission = venueBuild.resourceAdmission;
     this.crowdSeated = venueBuild.seated;
     this.crowdLighting?.bindVenue({
       crowdMesh: venueBuild.crowdMesh,
       phonesMesh: venueBuild.phonesMesh,
+      batches: venueBuild.crowdBatches,
       transforms: venueBuild.crowdBaseTransforms,
       seated: venueBuild.seated,
       stageDepth: rig.stageDepth,
@@ -5178,23 +5198,22 @@ export class StageEngine {
 
     const prof = this.profiler;
     const crowdStart = prof ? performance.now() : 0;
-    if (this.crowdMesh && this.crowdBaseTransforms.length > 0) {
-      // A seated house sways rather than jumps.
-      const bounceAmp = (s.audioReactive && audio.playing ? 0.06 + audio.bass * 0.16 : 0.045) * (0.5 + previewMaster * 0.5)
-        * (this.crowdSeated ? 0.12 : 1);
+    if (this.crowdBatches.length > 0) {
+      const standingBounceAmp = (s.audioReactive && audio.playing ? 0.06 + audio.bass * 0.16 : 0.045)
+        * (0.5 + previewMaster * 0.5);
       const bounceFreq = (s.bpm / 60) * Math.PI * 2;
-      for (let i = 0; i < this.crowdBaseTransforms.length; i++) {
-        const c = this.crowdBaseTransforms[i];
-        const hop = Math.abs(Math.sin(t * bounceFreq * 0.5 + c.phase)) * bounceAmp;
-        this.crowdDummy.position.set(c.x, c.y + hop, c.z);
-        this.crowdDummy.scale.set(1, c.scaleY + hop * 0.25, 1);
-        this.crowdDummy.rotation.set(0, c.rotY, Math.sin(t * 2.2 + c.phase) * 0.05);
-        this.crowdDummy.updateMatrix();
-        this.crowdMesh.setMatrixAt(i, this.crowdDummy.matrix);
-      }
-      this.crowdMesh.instanceMatrix.needsUpdate = true;
-      if (prof) {
-        prof.curUploadBytes += (this.crowdMesh.instanceMatrix.array as Float32Array).byteLength;
+      for (const batch of this.crowdBatches) {
+        for (let i = 0; i < batch.transforms.length; i++) {
+          const c = batch.transforms[i];
+          const seated = c.pose ? c.pose === 'seated' : this.crowdSeated;
+          const bounceAmp = standingBounceAmp * (seated ? 0.12 : 1);
+          const hop = Math.abs(Math.sin(t * bounceFreq * 0.5 + c.phase)) * bounceAmp;
+          const sway = Math.sin(t * 2.2 + c.phase) * 0.05;
+          setCrowdObjectMatrix(this.crowdDummy, c, hop, sway);
+          batch.mesh.setMatrixAt(i, this.crowdDummy.matrix);
+        }
+        batch.mesh.instanceMatrix.needsUpdate = true;
+        if (prof) prof.curUploadBytes += (batch.mesh.instanceMatrix.array as Float32Array).byteLength;
       }
     }
     if (this.crowdLighting.isActive()) {

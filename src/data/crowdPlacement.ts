@@ -3,13 +3,16 @@ import { computeVenueBounds } from './venueBounds';
 import {
   CROWD_MAX_AUTHORED_OCCUPANTS,
   CROWD_MODEL_REGISTRY,
+  CROWD_PLACEMENT_ENVELOPE,
   STAGEFORGE_HUMAN_V1,
   crowdModel,
   type CrowdModelId,
   type CrowdPose,
 } from './crowdModels';
 
-export const CROWD_GENERATOR_VERSION = 1 as const;
+export const CROWD_GENERATOR_VERSION_1 = 1 as const;
+export const CROWD_GENERATOR_VERSION_2 = 2 as const;
+export type CrowdGeneratorVersion = typeof CROWD_GENERATOR_VERSION_1 | typeof CROWD_GENERATOR_VERSION_2;
 export const CROWD_MAX_ZONES = 32;
 export const CROWD_MAX_EXCLUSIONS = 32;
 export const CROWD_MAX_EXPLICIT = 64;
@@ -49,7 +52,7 @@ export type CrowdExplicitPlacement = {
 );
 
 export interface CrowdLayout {
-  generatorVersion: typeof CROWD_GENERATOR_VERSION;
+  generatorVersion: CrowdGeneratorVersion;
   seed: number;
   zones: CrowdZone[];
   exclusions: CrowdExclusion[];
@@ -183,20 +186,35 @@ function circleHitsRect(x: number, z: number, radius: number, rect: CrowdRect) {
   return Math.hypot(x - px, z - pz) < radius - 1e-9 || pointInRect(x, z, rect);
 }
 
-function collides(a: ResolvedCrowdPlacement, b: ResolvedCrowdPlacement) {
-  const ar = crowdModel(a.modelId).poses[a.pose].clearanceRadiusM;
-  const br = crowdModel(b.modelId).poses[b.pose].clearanceRadiusM;
+function placementRadius(layout: CrowdLayout, modelId: CrowdModelId, pose: CrowdPose) {
+  return layout.generatorVersion === CROWD_GENERATOR_VERSION_2
+    ? CROWD_PLACEMENT_ENVELOPE[pose].clearanceRadiusM
+    : crowdModel(modelId).poses[pose].clearanceRadiusM;
+}
+
+function placementHeight(layout: CrowdLayout, modelId: CrowdModelId, pose: CrowdPose) {
+  return layout.generatorVersion === CROWD_GENERATOR_VERSION_2
+    ? CROWD_PLACEMENT_ENVELOPE[pose].maxHeightM
+    : crowdModel(modelId).poses[pose].maxHeightM;
+}
+
+function collides(layout: CrowdLayout, a: ResolvedCrowdPlacement, b: ResolvedCrowdPlacement) {
+  const ar = placementRadius(layout, a.modelId, a.pose);
+  const br = placementRadius(layout, b.modelId, b.pose);
   return Math.hypot(a.x - b.x, a.z - b.z) < ar + br - 1e-6;
 }
 
-function chooseModel(weights: CrowdModelWeight[], value: number): CrowdModelId {
-  const total = weights.reduce((sum, item) => sum + item.weight, 0);
+function chooseModel(layout: CrowdLayout, weights: CrowdModelWeight[], value: number): CrowdModelId {
+  const ordered = layout.generatorVersion === CROWD_GENERATOR_VERSION_2
+    ? [...weights].sort((a, b) => a.modelId.localeCompare(b.modelId))
+    : weights;
+  const total = ordered.reduce((sum, item) => sum + item.weight, 0);
   let cursor = value * total;
-  for (const item of weights) {
+  for (const item of ordered) {
     cursor -= item.weight;
     if (cursor <= 0) return item.modelId;
   }
-  return weights[weights.length - 1].modelId;
+  return ordered[ordered.length - 1].modelId;
 }
 
 function resolved(
@@ -234,7 +252,9 @@ function resolved(
 }
 
 function validateHeader(layout: CrowdLayout) {
-  if (layout.generatorVersion !== CROWD_GENERATOR_VERSION) fail('crowd.generatorVersion', 'has an unsupported value');
+  if (layout.generatorVersion !== CROWD_GENERATOR_VERSION_1 && layout.generatorVersion !== CROWD_GENERATOR_VERSION_2) {
+    fail('crowd.generatorVersion', 'has an unsupported value');
+  }
   if (!Number.isSafeInteger(layout.seed) || layout.seed < 0 || layout.seed > UINT32_MAX) fail('crowd.seed', 'must be an unsigned 32-bit integer');
   if (layout.zones.length > CROWD_MAX_ZONES) fail('crowd.zones', `cannot contain more than ${CROWD_MAX_ZONES} entries`);
   if (layout.exclusions.length > CROWD_MAX_EXCLUSIONS) fail('crowd.exclusions', `cannot contain more than ${CROWD_MAX_EXCLUSIONS} entries`);
@@ -279,6 +299,13 @@ function validateHeader(layout: CrowdLayout) {
       fail(`crowd.placements[${index}]`, 'must give only a real seat ID for a seated pose');
     }
   });
+  if (layout.generatorVersion === CROWD_GENERATOR_VERSION_1) {
+    const extendedZone = layout.zones.find((zone) => zone.modelWeights.some((item) => item.modelId !== STAGEFORGE_HUMAN_V1.id));
+    const extendedPlacement = layout.placements.find((placement) => placement.modelId !== STAGEFORGE_HUMAN_V1.id);
+    if (extendedZone || extendedPlacement) {
+      fail('crowd.generatorVersion', 'version 1 only supports stageforge-human-v1');
+    }
+  }
 }
 
 export function resolveCrowdLayout(rig: Pick<RigConfig, 'venue' | 'stageWidth' | 'stageDepth'>, layout: CrowdLayout): ResolvedCrowdLayout {
@@ -316,12 +343,12 @@ export function resolveCrowdLayout(rig: Pick<RigConfig, 'venue' | 'stageWidth' |
       finite(z, `crowd.placements.${placement.id}.position.z`);
       if (Math.abs(y) > 1e-6) fail(`crowd.placements.${placement.id}.position.y`, 'must be zero on the audience floor');
     }
-    const radius = model.poses[placement.pose].clearanceRadiusM;
+    const radius = placementRadius(layout, model.id, placement.pose);
     if (!pointInRect(x, z, venueRect, radius)) fail(`crowd.placements.${placement.id}`, 'falls outside the venue audience bounds');
-    if (bounds.ceilingY !== null && y + model.poses[placement.pose].maxHeightM > bounds.ceilingY + 1e-6) fail(`crowd.placements.${placement.id}`, 'exceeds the venue height');
+    if (bounds.ceilingY !== null && y + placementHeight(layout, model.id, placement.pose) > bounds.ceilingY + 1e-6) fail(`crowd.placements.${placement.id}`, 'exceeds the venue height');
     if (exclusions.some((item) => circleHitsRect(x, z, radius, item.rect))) fail(`crowd.placements.${placement.id}`, 'conflicts with an exclusion');
     const next = resolved(layout, `explicit:${placement.id}`, 'explicit', placement.modelId, placement.pose, x, y, z, placement.yaw * Math.PI / 180);
-    if (placements.some((other) => collides(next, other))) fail(`crowd.placements.${placement.id}`, 'collides with another deliberate placement');
+    if (placements.some((other) => collides(layout, next, other))) fail(`crowd.placements.${placement.id}`, 'collides with another deliberate placement');
     placements.push(next);
   }
 
@@ -346,18 +373,26 @@ export function resolveCrowdLayout(rig: Pick<RigConfig, 'venue' | 'stageWidth' |
       for (let gz = minZ; gz <= maxZ; gz++) for (let gx = minX; gx <= maxX; gx++) {
         const id = `standing:${gx}:${gz}`;
         const jitter = 0.018;
+        const rawX = gx * pitch + (crowdSelection(layout.seed, 'location-x', id) * 2 - 1) * jitter;
+        const rawZ = gz * pitch + (crowdSelection(layout.seed, 'location-z', id) * 2 - 1) * jitter;
         candidates.push({
           id,
-          x: gx * pitch + (crowdSelection(layout.seed, 'location-x', id) * 2 - 1) * jitter,
+          x: layout.generatorVersion === CROWD_GENERATOR_VERSION_2
+            ? Math.max(zone.rect.minX + radius, Math.min(rawX, zone.rect.maxX - radius))
+            : rawX,
           y: 0,
-          z: gz * pitch + (crowdSelection(layout.seed, 'location-z', id) * 2 - 1) * jitter,
+          z: layout.generatorVersion === CROWD_GENERATOR_VERSION_2
+            ? Math.max(zone.rect.minZ + radius, Math.min(rawZ, zone.rect.maxZ - radius))
+            : rawZ,
         });
       }
     }
     let excluded = 0;
     let occupied = 0;
     const eligible: Candidate[] = [];
-    const radius = crowdModel(zone.modelWeights[0].modelId).poses[zone.kind].clearanceRadiusM;
+    const radius = layout.generatorVersion === CROWD_GENERATOR_VERSION_2
+      ? CROWD_PLACEMENT_ENVELOPE[zone.kind].clearanceRadiusM
+      : crowdModel(zone.modelWeights[0].modelId).poses[zone.kind].clearanceRadiusM;
     for (const candidate of candidates) {
       const ownershipKey = zone.kind === 'seated' ? `seat:${candidate.id}` : candidate.id;
       if (ownedCandidates.has(ownershipKey)) { occupied++; continue; }
@@ -374,13 +409,13 @@ export function resolveCrowdLayout(rig: Pick<RigConfig, 'venue' | 'stageWidth' |
     let placed = 0;
     for (const candidate of ranked.slice(0, requested)) {
       const key = `${zone.id}:${candidate.id}`;
-      const modelId = chooseModel(zone.modelWeights, crowdSelection(layout.seed, 'appearance', key));
-      if (bounds.ceilingY !== null && candidate.y + crowdModel(modelId).poses[zone.kind].maxHeightM > bounds.ceilingY + 1e-6) {
+      const modelId = chooseModel(layout, zone.modelWeights, crowdSelection(layout.seed, 'appearance', key));
+      if (bounds.ceilingY !== null && candidate.y + placementHeight(layout, modelId, zone.kind) > bounds.ceilingY + 1e-6) {
         fail(`crowd.zones.${zone.id}`, 'places a model above the venue height');
       }
       const rotY = Math.atan2(-candidate.x, -candidate.z);
       const next = resolved(layout, `zone:${zone.id}:${candidate.id}`, 'generated', modelId, zone.kind, candidate.x, candidate.y, candidate.z, rotY, zone.id, candidate.id);
-      if (placements.some((other) => collides(next, other))) { occupied++; continue; }
+      if (placements.some((other) => collides(layout, next, other))) { occupied++; continue; }
       placements.push(next);
       placed++;
       if (placements.length > CROWD_MAX_AUTHORED_OCCUPANTS) fail('crowd', `resolves more than ${CROWD_MAX_AUTHORED_OCCUPANTS} occupants`);
@@ -401,7 +436,7 @@ export function makeDefaultCrowd(rig: Pick<RigConfig, 'venue' | 'stageWidth' | '
   const marginX = Math.min(1.5, Math.max(0.5, (bounds.maxX - bounds.minX) * 0.08));
   const marginZ = Math.min(2, Math.max(0.5, (bounds.maxZ - bounds.minZ) * 0.08));
   const layout: CrowdLayout = {
-    generatorVersion: CROWD_GENERATOR_VERSION,
+    generatorVersion: CROWD_GENERATOR_VERSION_1,
     seed: 249057,
     zones: [{
       id: rig.venue === 'theatre' ? 'stalls' : 'floor',
@@ -416,4 +451,33 @@ export function makeDefaultCrowd(rig: Pick<RigConfig, 'venue' | 'stageWidth' | '
   const capacity = resolveCrowdLayout(rig, layout).zones[0]?.capacity ?? 0;
   layout.zones[0].occupancy = capacity ? Math.min(0.65, 640 / capacity) : 0;
   return layout;
+}
+
+export type CrowdModelMix = 'human-only' | 'original-trio';
+
+export function crowdModelMix(layout: CrowdLayout): CrowdModelMix {
+  return layout.zones.some((zone) => zone.modelWeights.some((item) => item.modelId !== STAGEFORGE_HUMAN_V1.id))
+    || layout.placements.some((placement) => placement.modelId !== STAGEFORGE_HUMAN_V1.id)
+    ? 'original-trio'
+    : 'human-only';
+}
+
+/** Stage Designer preset: upgrading to v2 is permanent unless the operator recreates a v1 layout. */
+export function withCrowdModelMix(layout: CrowdLayout, mix: CrowdModelMix): CrowdLayout {
+  const weights: CrowdModelWeight[] = mix === 'original-trio'
+    ? [
+      { modelId: 'stageforge-human-v1', weight: 6 },
+      { modelId: 'stageforge-robot-v1', weight: 2 },
+      { modelId: 'stageforge-alien-v1', weight: 2 },
+    ]
+    : [{ modelId: 'stageforge-human-v1', weight: 1 }];
+  return {
+    ...layout,
+    generatorVersion: mix === 'original-trio' ? CROWD_GENERATOR_VERSION_2 : layout.generatorVersion,
+    zones: layout.zones.map((zone) => ({ ...zone, modelWeights: weights.map((item) => ({ ...item })) })),
+  };
+}
+
+export function crowdRequiresV11(layout: CrowdLayout): boolean {
+  return layout.generatorVersion === CROWD_GENERATOR_VERSION_2 || crowdModelMix(layout) === 'original-trio';
 }

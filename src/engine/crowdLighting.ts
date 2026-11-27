@@ -657,11 +657,13 @@ export function patchCrowdStandardShader(
 export class CrowdLightingController {
   private requested = false;
   private disposed = false;
-  private crowdMesh: THREE.InstancedMesh | null = null;
-  private phonesMesh: THREE.InstancedMesh | null = null;
-  private baseMaterial: THREE.MeshStandardMaterial | null = null;
-  private litMaterial: THREE.MeshStandardMaterial | null = null;
-  private origRenderOrder = 0;
+  private bindings: Array<{
+    crowdMesh: THREE.InstancedMesh;
+    phonesMesh: THREE.InstancedMesh | null;
+    baseMaterial: THREE.MeshStandardMaterial;
+    litMaterial: THREE.MeshStandardMaterial | null;
+    origRenderOrder: number;
+  }> = [];
   private seated = false;
   private crowdCenter = { x: 0, y: 1.25, z: 15.5 };
   private readonly state: CrowdShowLightState;
@@ -674,21 +676,26 @@ export class CrowdLightingController {
   public bindVenue(params: {
     crowdMesh: THREE.InstancedMesh | null;
     phonesMesh: THREE.InstancedMesh | null;
+    batches?: readonly { mesh: THREE.InstancedMesh; phonesMesh: THREE.InstancedMesh | null }[];
     transforms: readonly CrowdTransformPoint[];
     seated: boolean;
     stageDepth: number;
   }): void {
     if (this.disposed) return;
     this.unbindVenue();
-    this.crowdMesh = params.crowdMesh;
-    this.phonesMesh = params.phonesMesh;
-    this.origRenderOrder = params.crowdMesh ? params.crowdMesh.renderOrder : 0;
     this.seated = Boolean(params.seated);
     this.crowdCenter = computeCrowdCenter(params.transforms, params.stageDepth);
-    if (params.crowdMesh && params.crowdMesh.material instanceof THREE.MeshStandardMaterial) {
-      this.baseMaterial = params.crowdMesh.material;
-    } else {
-      this.baseMaterial = null;
+    const sources = params.batches?.length
+      ? params.batches.map(batch => ({ crowdMesh: batch.mesh, phonesMesh: batch.phonesMesh }))
+      : params.crowdMesh ? [{ crowdMesh: params.crowdMesh, phonesMesh: params.phonesMesh }] : [];
+    for (const source of sources) {
+      if (!(source.crowdMesh.material instanceof THREE.MeshStandardMaterial)) continue;
+      this.bindings.push({
+        ...source,
+        baseMaterial: source.crowdMesh.material,
+        litMaterial: null,
+        origRenderOrder: source.crowdMesh.renderOrder,
+      });
     }
     if (this.requested) {
       this.activateLitMaterial();
@@ -696,22 +703,19 @@ export class CrowdLightingController {
   }
 
   public unbindVenue(): void {
-    if (this.crowdMesh && this.baseMaterial) {
-      this.crowdMesh.material = this.baseMaterial;
-      this.crowdMesh.renderOrder = this.origRenderOrder;
+    for (const binding of this.bindings) {
+      binding.crowdMesh.material = binding.baseMaterial;
+      binding.crowdMesh.renderOrder = binding.origRenderOrder;
     }
     this.releaseLitMaterial();
-    this.crowdMesh = null;
-    this.phonesMesh = null;
-    this.baseMaterial = null;
-    this.origRenderOrder = 0;
+    this.bindings = [];
   }
 
   public setEnabled(enabled: boolean): void {
     if (this.disposed) return;
     const next = Boolean(enabled);
     if (this.requested === next) {
-      if (next && this.baseMaterial && !this.litMaterial) {
+      if (next && this.bindings.some(binding => !binding.litMaterial)) {
         this.activateLitMaterial();
       }
       return;
@@ -720,9 +724,9 @@ export class CrowdLightingController {
     if (next) {
       this.activateLitMaterial();
     } else {
-      if (this.crowdMesh && this.baseMaterial) {
-        this.crowdMesh.material = this.baseMaterial;
-        this.crowdMesh.renderOrder = this.origRenderOrder;
+      for (const binding of this.bindings) {
+        binding.crowdMesh.material = binding.baseMaterial;
+        binding.crowdMesh.renderOrder = binding.origRenderOrder;
       }
       this.releaseLitMaterial();
       this.state.color0.setRGB(0, 0, 0);
@@ -732,7 +736,8 @@ export class CrowdLightingController {
   }
 
   public isActive(): boolean {
-    return !this.disposed && this.requested && this.litMaterial !== null && this.crowdMesh !== null;
+    return !this.disposed && this.requested && this.bindings.length > 0
+      && this.bindings.every(binding => binding.litMaterial !== null && binding.crowdMesh.material === binding.litMaterial);
   }
 
   public updateFromScene(heads: readonly CrowdHeadSample[], frame: CrowdFrameInputs): void {
@@ -742,22 +747,20 @@ export class CrowdLightingController {
   }
 
   public onContextRestored(): void {
-    if (this.disposed || !this.litMaterial) return;
-    this.litMaterial.needsUpdate = true;
+    if (this.disposed) return;
+    for (const binding of this.bindings) {
+      if (binding.litMaterial) binding.litMaterial.needsUpdate = true;
+    }
     this.syncUniformValues();
   }
 
   public getStats(): CrowdLightingStats {
     const slotCount = crowdLightSlotsForTier(this.tier);
     const active = this.isActive();
-    const spectatorCount = this.crowdMesh ? this.crowdMesh.count : 0;
-    const phoneCount = this.phonesMesh ? this.phonesMesh.count : 0;
-    const phonesShareInstanceMatrix =
-      this.crowdMesh === null
-        ? true
-        : this.phonesMesh === null
-          ? phoneCount === 0
-          : this.phonesMesh.instanceMatrix === this.crowdMesh.instanceMatrix;
+    const spectatorCount = this.bindings.reduce((total, binding) => total + binding.crowdMesh.count, 0);
+    const phoneCount = this.bindings.reduce((total, binding) => total + (binding.phonesMesh?.count ?? 0), 0);
+    const phonesShareInstanceMatrix = this.bindings.every(binding =>
+      !binding.phonesMesh || binding.phonesMesh.instanceMatrix === binding.crowdMesh.instanceMatrix);
 
     const lights: CrowdLightingStats['lights'] = [];
     if (active) {
@@ -799,29 +802,29 @@ export class CrowdLightingController {
   }
 
   private activateLitMaterial(): void {
-    if (!this.crowdMesh || !this.baseMaterial) return;
-    if (this.litMaterial && this.crowdMesh.material === this.litMaterial) return;
+    if (!this.bindings.length) return;
+    if (this.bindings.every(binding => binding.litMaterial && binding.crowdMesh.material === binding.litMaterial)) return;
     this.releaseLitMaterial();
 
     const slotCount = crowdLightSlotsForTier(this.tier);
-    const base = this.baseMaterial;
-    const origBeforeCompile = base.onBeforeCompile;
-    const origCacheKey = base.customProgramCacheKey;
-    const lit = base.clone();
     const uniforms = this.uniforms;
-
-    lit.onBeforeCompile = (shader, renderer) => {
-      origBeforeCompile.call(lit, shader, renderer);
-      patchCrowdStandardShader(shader, slotCount, uniforms);
-    };
-    lit.customProgramCacheKey = () => `${origCacheKey.call(lit)}|crowd-show-v1-${slotCount}`;
-    lit.needsUpdate = true;
-
-    this.litMaterial = lit;
-    this.crowdMesh.material = lit;
-    // Preserve baseMaterial-before-phonesMesh opaque sort order (cloned lit.id > phonesMesh.material.id).
-    if (this.phonesMesh && this.origRenderOrder >= this.phonesMesh.renderOrder) {
-      this.crowdMesh.renderOrder = this.phonesMesh.renderOrder - 1;
+    for (const binding of this.bindings) {
+      const base = binding.baseMaterial;
+      const origBeforeCompile = base.onBeforeCompile;
+      const origCacheKey = base.customProgramCacheKey;
+      const lit = base.clone();
+      lit.onBeforeCompile = (shader, renderer) => {
+        origBeforeCompile.call(lit, shader, renderer);
+        patchCrowdStandardShader(shader, slotCount, uniforms);
+      };
+      lit.customProgramCacheKey = () => `${origCacheKey.call(lit)}|crowd-show-v1-${slotCount}`;
+      lit.needsUpdate = true;
+      binding.litMaterial = lit;
+      binding.crowdMesh.material = lit;
+      // Preserve figure-before-phone opaque sort order (cloned lit.id > phone material id).
+      if (binding.phonesMesh && binding.origRenderOrder >= binding.phonesMesh.renderOrder) {
+        binding.crowdMesh.renderOrder = binding.phonesMesh.renderOrder - 1;
+      }
     }
     this.syncUniformValues();
   }
@@ -834,9 +837,9 @@ export class CrowdLightingController {
   }
 
   private releaseLitMaterial(): void {
-    if (this.litMaterial) {
-      this.litMaterial.dispose();
-      this.litMaterial = null;
+    for (const binding of this.bindings) {
+      binding.litMaterial?.dispose();
+      binding.litMaterial = null;
     }
   }
 }

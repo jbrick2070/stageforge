@@ -18,7 +18,9 @@ Version 8 is an additive superset that adds optional audio-reactive fixture and 
 
 Version 9 adds optional cue `fadeSeconds` and recorded-take `cueFade` descriptors for deterministic preview intensity fades. The writer selects v9 only when one of those fields is present; files that do not use them retain their prior v1–v8 writer selection. [Version 9 schema](../src/schemas/show-v9.schema.json)
 
-Version 10 adds an optional top-level declarative `crowd` layout: deterministic standing or theatre-seat zones, rectangular exclusions, explicit placements, model weights, generator seed, and generator version. The writer selects v10 only when authored crowd data is present; crowd-free files retain their prior v1–v9 writer selection. Runtime placements are derived and are never serialized. [Version 10 schema](../src/schemas/show-v10.schema.json)
+Version 10 adds an optional top-level declarative `crowd` layout: deterministic standing or theatre-seat zones, rectangular exclusions, explicit placements, model weights, generator seed, and generator version. The writer selects v10 for human-only generator-v1 crowd data; crowd-free files retain their prior v1–v9 writer selection. Runtime placements are derived and are never serialized. [Version 10 schema](../src/schemas/show-v10.schema.json)
+
+Version 11 extends the crowd model IDs to the built-in StageForge human, original robot and original alien, and adds deterministic generator version 2 for mixed-model placement. Human-only generator-v1 crowds continue to write v10 byte-compatibly; generator-v2 or mixed-model crowds write v11. Model geometry is built in and requires no network access. [Version 11 schema](../src/schemas/show-v11.schema.json)
 
 ## Opening the examples
 
@@ -30,10 +32,10 @@ Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay tak
 
 | Field | Meaning |
 | --- | --- |
-| `$schema` | The public schema URL ending in `show-v1.schema.json` through `show-v10.schema.json`, matching the version. |
-| `format`, `version` | The string `"stageforge-show"` and the integer `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8` or `9`. |
-| `stage` | Required in v3, optional in v4–v9. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
-| `interchange` | Required in v4, optional in v5–v9. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
+| `$schema` | The public schema URL ending in `show-v1.schema.json` through `show-v11.schema.json`, matching the version. |
+| `format`, `version` | The string `"stageforge-show"` and an integer from `1` through `11`. |
+| `stage` | Required in v3, optional in v4–v11. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
+| `interchange` | Required in v4, optional in v5–v11. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
 | `rig` | Stage dimensions and venue, optional platforms and scenic props, trusses with their fixtures, floor effects, sound system and LED wall (in v6: `catalogId`/`dmxMode`/`dmxChannels`, `cabinetId`; in v7: `trussProfileId`/`hoistId`/`hoistCount`, `circuitGroup`/`phase`, and `rig.power`). Positions and lengths use metres. |
 | `cues` | Array in playback order. Each cue has a unique `id`, a display `name`, `tag`, hex `accent` and a partial desk `state`. Optional `screen` sets the main-wall media. |
 | `look`, `activeCueId` | Complete current desk settings and the current cue ID, or `null`. Desk changes made after calling a cue belong in `look`. |

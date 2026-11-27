@@ -95,7 +95,7 @@ describe('Sprint 23D: dark fixture-palette global atmosphere', () => {
     assert.equal(stats.extraGpuBytes, 0);
     assert.equal(stats.addedDraws, 0);
     assert.equal(stats.addedPasses, 0);
-    for (let version = 1; version <= 8; version++) {
+    for (let version = 1; version <= 11; version++) {
       const schema = await readFile(new URL(`../src/schemas/show-v${version}.schema.json`, import.meta.url), 'utf8');
       assert.ok(!schema.includes('lookAtmosphere'));
     }

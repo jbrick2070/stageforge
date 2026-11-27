@@ -235,6 +235,7 @@ test('authored crowd drafts cancel, apply, save offline, and stay isolated throu
 
   designer = await openDesigner(page);
   await designer.getByLabel('Authored crowd').check();
+  await designer.getByLabel('Crowd model mix').selectOption('original-trio');
   await designer.getByLabel('Crowd generator seed').fill('123');
   await designer.getByLabel('Crowd zone occupancy').fill('0.2');
   await designer.getByRole('button', { name: 'Add centre aisle' }).click();
@@ -242,6 +243,11 @@ test('authored crowd drafts cancel, apply, save offline, and stay isolated throu
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.crowd().authored)).toBe(true);
   const savedCrowd = await page.evaluate(() => window.stageforgeProbe.crowd());
   expect(savedCrowd.count).toBeGreaterThan(0);
+  expect(savedCrowd.batches.map((batch) => batch.modelId)).toEqual([
+    'stageforge-alien-v1', 'stageforge-human-v1', 'stageforge-robot-v1',
+  ]);
+  expect(savedCrowd.placementBindings).toHaveLength(savedCrowd.count);
+  expect(savedCrowd.resourceAdmission).toMatchObject({ eyeViews: 2, admitted: true });
 
   await page.getByRole('button', { name: 'Show files', exact: true }).click();
   let files = page.getByRole('dialog', { name: 'Show files' });
@@ -250,8 +256,8 @@ test('authored crowd drafts cancel, apply, save offline, and stay isolated throu
   const path = info.outputPath('authored-crowd.stageforge.show.json');
   await (await transfer).saveAs(path);
   const show = JSON.parse(await readFile(path, 'utf8'));
-  expect(show.version).toBe(10);
-  expect(show.crowd).toMatchObject({ generatorVersion: 1, seed: 123 });
+  expect(show.version).toBe(11);
+  expect(show.crowd).toMatchObject({ generatorVersion: 2, seed: 123 });
   expect(show.crowd.exclusions).toHaveLength(1);
   await files.getByRole('button', { name: 'Close Show files' }).click();
 

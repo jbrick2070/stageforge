@@ -10,6 +10,14 @@ import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles
 import type { SpeakerHang } from '../data/studioGeometry';
 import { theatreSeatAnchors, type ResolvedCrowdLayout, type TheatreSeatAnchor } from '../data/crowdPlacement';
 import {
+  crowdModel,
+  crowdResourceAdmission,
+  type CrowdModelId,
+  type CrowdPose,
+  type CrowdRenderTier,
+  type CrowdResourceAdmission,
+} from '../data/crowdModels';
+import {
   atlasSizeForTier,
   createHardwareMaterials,
   generateDeckPixels,
@@ -961,6 +969,160 @@ function crowdGeometry() {
   return geometry;
 }
 
+function originalCrowdGeometry(modelId: CrowdModelId) {
+  const pieces: THREE.BufferGeometry[] = [];
+  const part = (geometry: THREE.BufferGeometry, color: number) => {
+    const tint = new THREE.Color(color);
+    const colors = new Float32Array(geometry.attributes.position.count * 3);
+    for (let i = 0; i < geometry.attributes.position.count; i++) tint.toArray(colors, i * 3);
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    pieces.push(geometry);
+  };
+  if (modelId === 'stageforge-robot-v1') {
+    part(new THREE.BoxGeometry(0.36, 0.62, 0.25).translate(0, 1.18, 0), 0x748697);
+    part(new THREE.BoxGeometry(0.32, 0.28, 0.28).translate(0, 1.66, 0), 0xa9bac3);
+    part(new THREE.BoxGeometry(0.30, 0.18, 0.23).translate(0, 0.79, 0), 0x445363);
+    part(new THREE.BoxGeometry(0.24, 0.08, 0.025).translate(0, 1.67, 0.15), 0x9dd6dc);
+    for (const side of [-1, 1]) {
+      part(new THREE.BoxGeometry(0.13, 0.15, 0.24).translate(side * 0.255, 1.38, 0), 0x526778);
+      part(new THREE.CylinderGeometry(0.055, 0.065, 0.72, 6).translate(side * 0.10, 0.40, 0), 0x334252);
+      part(new THREE.CylinderGeometry(0.05, 0.06, 0.62, 6).translate(side * 0.27, 1.08, 0), 0x647a8d);
+    }
+  } else if (modelId === 'stageforge-alien-v1') {
+    part(new THREE.CylinderGeometry(0.15, 0.22, 0.70, 8).translate(0, 1.12, 0), 0x637f70);
+    const head = new THREE.SphereGeometry(0.22, 8, 4).scale(0.78, 1.18, 0.72).translate(0, 1.65, 0);
+    part(head, 0x9cb6a1);
+    for (const side of [-1, 1]) {
+      part(new THREE.CylinderGeometry(0.045, 0.065, 0.86, 5).translate(side * 0.09, 0.43, 0), 0x4c665a);
+      const arm = new THREE.CylinderGeometry(0.038, 0.055, 0.76, 5);
+      arm.rotateZ(side * -0.22).translate(side * 0.27, 1.11, 0.01);
+      part(arm, 0x789584);
+      part(new THREE.SphereGeometry(0.038, 5, 3).scale(1.35, 0.82, 0.55).translate(side * 0.075, 1.70, 0.145), 0x162129);
+    }
+  } else {
+    throw new Error(`No original crowd geometry factory exists for ${modelId}.`);
+  }
+  const geometry = mergeGeometries(pieces, false);
+  pieces.forEach(piece => piece.dispose());
+  if (!geometry) throw new Error(`Could not merge crowd geometry for ${modelId}.`);
+  return geometry;
+}
+
+export interface CrowdBaseTransform {
+  x: number;
+  y: number;
+  z: number;
+  scaleY: number;
+  phase: number;
+  rotY: number;
+  placementId?: string;
+  modelId?: CrowdModelId;
+  pose?: CrowdPose;
+  pivot?: readonly [number, number, number];
+}
+
+export interface CrowdRenderBatch {
+  modelId: CrowdModelId;
+  batchIndex: number;
+  mesh: THREE.InstancedMesh;
+  phonesMesh: THREE.InstancedMesh | null;
+  transforms: CrowdBaseTransform[];
+  placementIds: string[];
+}
+
+export interface CrowdPlacementBinding {
+  placementId: string;
+  modelId: CrowdModelId;
+  batchIndex: number;
+  instanceIndex: number;
+  pose: CrowdPose;
+  phase: number;
+}
+
+export interface CrowdGeometryAdmission {
+  modelId: CrowdModelId;
+  tier: CrowdRenderTier;
+  trianglesPerInstance: number;
+  materialSlots: number;
+  materialTextures: number;
+  morphTextures: number;
+  floorMinY: number;
+  standingHeightM: number;
+  seatedHeightM: number;
+}
+
+function materialTextureCount(material: THREE.MeshStandardMaterial) {
+  const maps = [
+    material.map, material.alphaMap, material.aoMap, material.bumpMap, material.displacementMap,
+    material.emissiveMap, material.envMap, material.lightMap, material.metalnessMap, material.normalMap,
+    material.roughnessMap,
+  ];
+  return maps.filter(Boolean).length;
+}
+
+/** Compare renderer facts with the authoritative manifest before a batch is admitted. */
+export function validateCrowdGeometryAdmission(
+  modelId: CrowdModelId,
+  tier: CrowdRenderTier,
+  geometry: THREE.BufferGeometry,
+  material: THREE.MeshStandardMaterial,
+): CrowdGeometryAdmission {
+  const index = geometry.getIndex();
+  if (!index || index.count % 3 !== 0) throw new Error(`crowd model ${modelId} must use indexed triangle geometry.`);
+  const positions = [geometry.getAttribute('position'), ...(geometry.morphAttributes.position ?? [])] as THREE.BufferAttribute[];
+  let floorMinY = Infinity;
+  let maxY = -Infinity;
+  for (const position of positions) {
+    for (let i = 0; i < position.count; i++) {
+      floorMinY = Math.min(floorMinY, position.getY(i));
+      maxY = Math.max(maxY, position.getY(i));
+    }
+  }
+  const actual: CrowdGeometryAdmission = {
+    modelId,
+    tier,
+    trianglesPerInstance: index.count / 3,
+    materialSlots: 1,
+    materialTextures: materialTextureCount(material),
+    morphTextures: (geometry.morphAttributes.position?.length ?? 0) > 0 ? 1 : 0,
+    floorMinY,
+    standingHeightM: maxY * 1.12,
+    seatedHeightM: maxY * 0.74,
+  };
+  const model = crowdModel(modelId);
+  const budget = model.budgets[tier];
+  for (const key of ['trianglesPerInstance', 'materialSlots', 'materialTextures', 'morphTextures'] as const) {
+    if (actual[key] !== budget[key]) {
+      throw new Error(`crowd model ${modelId} ${tier} ${key} measured ${actual[key]}, expected ${budget[key]}.`);
+    }
+  }
+  if (actual.floorMinY < -0.01) throw new Error(`crowd model ${modelId} extends below its placement pivot.`);
+  if (actual.standingHeightM > model.poses.standing.maxHeightM + 1e-6) {
+    throw new Error(`crowd model ${modelId} standing geometry exceeds its declared height.`);
+  }
+  if (actual.seatedHeightM > model.poses.seated.maxHeightM + 1e-6) {
+    throw new Error(`crowd model ${modelId} seated geometry exceeds its declared height.`);
+  }
+  return actual;
+}
+
+export function setCrowdObjectMatrix(object: THREE.Object3D, transform: CrowdBaseTransform, hop = 0, sway = 0) {
+  const pivot = transform.pivot ?? [0, 0, 0];
+  const sin = Math.sin(transform.rotY + sway);
+  const cos = Math.cos(transform.rotY + sway);
+  const px = pivot[0];
+  const py = pivot[1] * transform.scaleY;
+  const pz = pivot[2];
+  object.position.set(
+    transform.x - (px * cos + pz * sin),
+    transform.y + hop - py,
+    transform.z - (-px * sin + pz * cos),
+  );
+  object.scale.set(1, transform.scaleY + hop * 0.25, 1);
+  object.rotation.set(0, transform.rotY + sway, 0);
+  object.updateMatrix();
+}
+
 /** Interior bounds of a small room, so cameras stay inside its walls and under its ceiling. */
 export interface VenueRoom {
   halfWidth: number;
@@ -1222,12 +1384,16 @@ export function buildVenueArchitecture(
   stageDepth = 11,
   stageHeight = 1.8,
   authoredCrowd?: ResolvedCrowdLayout,
+  crowdTier: CrowdRenderTier = 'high',
 ): {
   group: THREE.Group;
   crowdMesh: THREE.InstancedMesh | null;
   phonesMesh: THREE.InstancedMesh | null;
+  crowdBatches: CrowdRenderBatch[];
+  placementBindings: CrowdPlacementBinding[];
+  resourceAdmission: CrowdResourceAdmission | null;
   practicals: (THREE.MeshBasicMaterial | THREE.PointsMaterial)[];
-  crowdBaseTransforms: { x: number; y: number; z: number; scaleY: number; phase: number; rotY: number }[];
+  crowdBaseTransforms: CrowdBaseTransform[];
   roofY: number;
   room: VenueRoom | null;
   seated: boolean;
@@ -1417,17 +1583,18 @@ export function buildVenueArchitecture(
 
   batchHardware(group);
 
-  // Instanced crowd: standing on the floor, or seated in a theatre's stalls.
+  // Instanced crowd: the absent-authored branch below is the frozen legacy allocation path.
   const density = THREE.MathUtils.clamp(crowdDensity, 0, 1);
-  const authoredPlacements = authoredCrowd
-    ? [...authoredCrowd.placements].sort((a, b) => Number(b.phone) - Number(a.phone) || a.id.localeCompare(b.id))
-    : null;
+  const authoredPlacements = authoredCrowd ? [...authoredCrowd.placements] : null;
   const maxCrowd = authoredPlacements?.length ?? Math.floor((seats ? seats.length : standingFloor ? 300 : 680) * density);
   let crowdMesh: THREE.InstancedMesh | null = null;
   let phonesMesh: THREE.InstancedMesh | null = null;
-  const crowdBaseTransforms: { x: number; y: number; z: number; scaleY: number; phase: number; rotY: number }[] = [];
+  const crowdBaseTransforms: CrowdBaseTransform[] = [];
+  const crowdBatches: CrowdRenderBatch[] = [];
+  const placementBindings: CrowdPlacementBinding[] = [];
+  let resourceAdmission: CrowdResourceAdmission | null = null;
 
-  if (maxCrowd > 0) {
+  if (maxCrowd > 0 && !authoredPlacements) {
     const personGeo = crowdGeometry();
     const personMat = new THREE.MeshStandardMaterial({
       vertexColors: true, roughness: 0.90, metalness: 0.02,
@@ -1436,7 +1603,7 @@ export function buildVenueArchitecture(
     crowdMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     const dummy = new THREE.Mesh(personGeo, personMat);
     const colors = [0x5c6579, 0x5e5156, 0x87939e, 0x858079, 0x666e62, 0x755d64, 0x688491];
-    const phoneCount = authoredPlacements ? authoredPlacements.filter((person) => person.phone).length : seats ? 0 : Math.floor(maxCrowd * 0.09);
+    const phoneCount = seats ? 0 : Math.floor(maxCrowd * 0.09);
     // A feathered contact patch anchors feet to the floor even without shadow maps.
     const footprint = new THREE.CircleGeometry(1, 10);
     footprint.rotateX(-Math.PI / 2).scale(0.42, 1, 0.32).translate(0, 0.012, 0);
@@ -1462,10 +1629,7 @@ export function buildVenueArchitecture(
       let x: number,
         y = 0,
         z: number;
-      const authored = authoredPlacements?.[i];
-      if (authored) {
-        ({ x, y, z } = authored);
-      } else if (seats) {
+      if (seats) {
         ({ x, y, z } = seats[seatOrder[i]]);
       } else {
         // Scatter into distinct floor spaces. Increasing density fills gaps in the same crowd.
@@ -1482,15 +1646,15 @@ export function buildVenueArchitecture(
         }
       }
       // Seated figures are scaled so heads sit at seated eye height above the cushion.
-      const scaleY = authored?.scaleY ?? (seats ? 0.68 + random() * 0.06 : 0.88 + random() * 0.24);
-      const phase = authored?.phase ?? random() * Math.PI * 2;
-      const rotY = authored?.rotY ?? ((seats ? Math.atan2(-x * 0.3, -z) : Math.atan2(-x, -z)) + (random() - 0.5) * (seats ? 0.12 : 0.45));
-      const pose = authored?.gesture ?? (seats ? 0 : random());
-      const hasPhone = authored?.phone ?? i < phoneCount;
+      const scaleY = seats ? 0.68 + random() * 0.06 : 0.88 + random() * 0.24;
+      const phase = random() * Math.PI * 2;
+      const rotY = (seats ? Math.atan2(-x * 0.3, -z) : Math.atan2(-x, -z)) + (random() - 0.5) * (seats ? 0.12 : 0.45);
+      const pose = seats ? 0 : random();
+      const hasPhone = i < phoneCount;
       dummy.morphTargetInfluences![0] = hasPhone || (pose > 0.64 && pose < 0.85) ? 1 : 0;
       dummy.morphTargetInfluences![1] = !hasPhone && pose >= 0.85 ? 1 : 0;
       crowdMesh.setMorphAt(i, dummy);
-      crowdMesh.setColorAt(i, new THREE.Color(colors[authored?.paletteIndex ?? Math.floor(random() * colors.length)]));
+      crowdMesh.setColorAt(i, new THREE.Color(colors[Math.floor(random() * colors.length)]));
 
       crowdBaseTransforms.push({ x, y, z, scaleY, phase, rotY });
       dummy.position.set(x, y, z);
@@ -1515,7 +1679,104 @@ export function buildVenueArchitecture(
       phonesMesh.instanceMatrix = crowdMesh.instanceMatrix;
       group.add(phonesMesh);
     }
+    crowdBatches.push({
+      modelId: 'stageforge-human-v1', batchIndex: 0, mesh: crowdMesh, phonesMesh,
+      transforms: crowdBaseTransforms, placementIds: [],
+    });
+  } else if (maxCrowd > 0 && authoredPlacements) {
+    resourceAdmission = crowdResourceAdmission(authoredPlacements, crowdTier);
+    if (!resourceAdmission.admitted) {
+      throw new Error(`Authored crowd exceeds Arena XR headroom: ${JSON.stringify(resourceAdmission.arenaDelta)}.`);
+    }
+    const colors = [0x5c6579, 0x5e5156, 0x87939e, 0x858079, 0x666e62, 0x755d64, 0x688491];
+    const footprint = new THREE.CircleGeometry(1, 10);
+    footprint.rotateX(-Math.PI / 2).scale(0.42, 1, 0.32).translate(0, 0.012, 0);
+    const opacity = new Float32Array(footprint.attributes.position.count * 4);
+    opacity[3] = 0.68;
+    footprint.setAttribute('color', new THREE.BufferAttribute(opacity, 4));
+    const shadowMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false });
+    const footprints = new THREE.InstancedMesh(footprint, shadowMat, maxCrowd);
+    const footprintDummy = new THREE.Object3D();
+    for (const [index, person] of [...authoredPlacements].sort((a, b) => a.id.localeCompare(b.id)).entries()) {
+      const transform: CrowdBaseTransform = {
+        x: person.x, y: person.y, z: person.z, scaleY: person.scaleY, phase: person.phase, rotY: person.rotY,
+        placementId: person.id, modelId: person.modelId, pose: person.pose,
+        pivot: crowdModel(person.modelId).poses[person.pose].pivot,
+      };
+      setCrowdObjectMatrix(footprintDummy, transform);
+      footprints.setMatrixAt(index, footprintDummy.matrix);
+    }
+    footprints.instanceMatrix.needsUpdate = true;
+    group.add(footprints);
+
+    const modelIds = [...new Set(authoredPlacements.map(person => person.modelId))].sort();
+    for (const [batchIndex, modelId] of modelIds.entries()) {
+      const model = crowdModel(modelId);
+      const placements = authoredPlacements
+        .filter(person => person.modelId === modelId)
+        .sort((a, b) => Number(b.phone) - Number(a.phone) || a.id.localeCompare(b.id));
+      const geometry = model.geometryKey === 'legacy-human-v1' ? crowdGeometry() : originalCrowdGeometry(modelId);
+      const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.90, metalness: 0.02 });
+      const admission = validateCrowdGeometryAdmission(modelId, crowdTier, geometry, material);
+      const mesh = new THREE.InstancedMesh(geometry, material, placements.length);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      const dummy = new THREE.Mesh(geometry, material);
+      const transforms: CrowdBaseTransform[] = [];
+      for (const [instanceIndex, person] of placements.entries()) {
+        const transform: CrowdBaseTransform = {
+          x: person.x, y: person.y, z: person.z, scaleY: person.scaleY, phase: person.phase, rotY: person.rotY,
+          placementId: person.id, modelId: person.modelId, pose: person.pose,
+          pivot: model.poses[person.pose].pivot,
+        };
+        transforms.push(transform);
+        crowdBaseTransforms.push(transform);
+        placementBindings.push({
+          placementId: person.id, modelId, batchIndex, instanceIndex, pose: person.pose, phase: person.phase,
+        });
+        if (admission.morphTextures) {
+          dummy.morphTargetInfluences![0] = person.phone || (person.gesture > 0.64 && person.gesture < 0.85) ? 1 : 0;
+          dummy.morphTargetInfluences![1] = !person.phone && person.gesture >= 0.85 ? 1 : 0;
+          mesh.setMorphAt(instanceIndex, dummy);
+        }
+        mesh.setColorAt(instanceIndex, new THREE.Color(colors[person.paletteIndex]));
+        setCrowdObjectMatrix(dummy, transform);
+        mesh.setMatrixAt(instanceIndex, dummy.matrix);
+      }
+      if (admission.morphTextures) {
+        if (!mesh.morphTexture) throw new Error(`crowd model ${modelId} did not allocate its declared morph texture.`);
+        mesh.morphTexture.needsUpdate = true;
+      } else if (mesh.morphTexture) {
+        throw new Error(`crowd model ${modelId} allocated an undeclared morph texture.`);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      group.add(mesh);
+
+      const phoneCount = placements.filter(person => person.phone).length;
+      let modelPhones: THREE.InstancedMesh | null = null;
+      if (phoneCount > 0) {
+        const socket = model.poses.standing.handset;
+        if (!socket) throw new Error(`crowd model ${modelId} has phone owners without a handset socket.`);
+        const screen = new THREE.PlaneGeometry(0.073, 0.13);
+        screen.applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(...socket.rotation)));
+        screen.translate(...socket.translation);
+        const screenMat = new THREE.MeshBasicMaterial({ color: 0x94a9c6 });
+        practicals.push(screenMat);
+        modelPhones = new THREE.InstancedMesh(screen, screenMat, phoneCount);
+        modelPhones.instanceMatrix = mesh.instanceMatrix;
+        group.add(modelPhones);
+      }
+      crowdBatches.push({
+        modelId, batchIndex, mesh, phonesMesh: modelPhones, transforms,
+        placementIds: placements.map(person => person.id),
+      });
+    }
+    const compatibilityBatch = crowdBatches.find(batch => batch.modelId === 'stageforge-human-v1') ?? crowdBatches[0];
+    crowdMesh = compatibilityBatch?.mesh ?? null;
+    phonesMesh = crowdBatches.find(batch => batch.phonesMesh)?.phonesMesh ?? null;
   }
 
-  return { group, practicals, crowdMesh, phonesMesh, crowdBaseTransforms, roofY, room, seated: !!seats };
+  return {
+    group, practicals, crowdMesh, phonesMesh, crowdBatches, placementBindings, resourceAdmission,
+    crowdBaseTransforms, roofY, room, seated: !!seats,
+  };
 }
