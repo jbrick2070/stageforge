@@ -45,6 +45,8 @@ const authoredScene = ({ rig, stage, crowd, cues, activeCueId, interchange }) =>
 });
 
 const dmxAudit = page => page.evaluate(() => window.venueDmxAudit);
+const armedClaim = { type: 'claim', kind: 'armed' };
+const armedRelease = { type: 'release', kind: 'armed' };
 
 async function mockOutput(page) {
   await page.addInitScript(() => {
@@ -89,8 +91,7 @@ async function armMockOutput(page) {
   await button(panel, 'Done').click();
   await page.getByTestId('dmx-output-arm').click();
   await expect(page.getByTestId('dmx-output-go-live')).toBeEnabled();
-  expect((await dmxAudit(page)).claims).toEqual([{ type: 'claim', kind: 'armed' }]);
-  await button(page, 'Close DMX monitor').click();
+  expect((await dmxAudit(page)).claims).toEqual([armedClaim]);
 }
 
 test('the Club venue rejection preserves the Steamboat Willie desk, saved rig and mocked output claim', async ({ page }) => {
@@ -110,7 +111,8 @@ test('the Club venue rejection preserves the Steamboat Willie desk, saved rig an
   await button(cueEditor, 'Add current look').click();
   await cueEditor.getByLabel('Cue name').fill('Venue check');
   await button(cueEditor, 'Apply cues').click();
-  await button(page, 'Cue 1, Venue check').click();
+  const cueList = page.getByRole('list', { name: 'Numbered cue list', exact: true });
+  await button(cueList, 'Cue 1, Venue check, fade 0 seconds, manual follow').click();
 
   // Give the rejection real native stage, cue and interchange data to preserve.
   await download(page, 'Rig for consoles and visualizers MVR');
@@ -136,20 +138,25 @@ test('the Club venue rejection preserves the Steamboat Willie desk, saved rig an
   expect(await rig(page)).toEqual(beforeRig);
   expect(await savedRig(page)).toEqual(beforeSaved);
   await button(drawer, 'Close Rig Builder').click();
-  await button(page, 'DMX monitor').click();
   await expect(page.getByTestId('dmx-output-go-live')).toBeEnabled();
-  expect(await dmxAudit(page)).toMatchObject({ claims: [{ type: 'claim', kind: 'armed' }], frames: 0 });
+  expect(await dmxAudit(page)).toMatchObject({ claims: [armedClaim], frames: 0 });
   expect((await dmxAudit(page)).commands).not.toContain('enable');
-  await button(page, 'Close DMX monitor').click();
   expect(authoredScene(await exportedShow(page))).toEqual(before);
   expect(await savedRig(page)).toEqual(beforeSaved);
 
   // The same authored crowd fits the wider Festival bounds. A successful edit still disarms.
   drawer = await openRigBuilder(page);
+  await expect(page.getByTestId('dmx-output-go-live')).toBeEnabled();
+  expect((await dmxAudit(page)).claims).toEqual([armedClaim]);
   await button(drawer, 'festival').click();
   await expect(button(drawer, 'festival')).toHaveClass(/border-cyan-400/);
   await expect.poll(async () => (await savedRig(page)).venue).toBe('festival');
-  await expect.poll(async () => (await dmxAudit(page)).claims.at(-1)).toEqual({ type: 'release', kind: 'armed' });
+  await expect.poll(async () => (await dmxAudit(page)).claims).toEqual([armedClaim, armedRelease]);
+  await expect(page.getByTestId('dmx-output-go-live')).toHaveCount(0);
+  const afterFestival = await dmxAudit(page);
+  expect(afterFestival.frames).toBe(0);
+  expect(afterFestival.commands).not.toContain('enable');
+  await button(page, 'Close DMX monitor').click();
   await button(drawer, 'Close Rig Builder').click();
   expect(authoredScene(await exportedShow(page))).toEqual({ ...before, rig: { ...before.rig, venue: 'festival' } });
 
