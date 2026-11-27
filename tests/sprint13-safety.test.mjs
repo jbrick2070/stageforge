@@ -915,7 +915,43 @@ test('Codex R1: combined strobe bump + audio mapping caps final ETC ColorSource 
   }
 });
 
-test('Codex R2: timecode chase stop and stationary hold immediately clear recorded replay hazardous bumps', () => {
+test('take reconstruction uses recorded bumps only while running inside their recorded intervals', () => {
+  const empty = bumpMod.EMPTY_BUMP_STATE;
+  const held = { ...empty, strobe: true };
+  const base = {
+    look: structuredClone(presets.INITIAL_SHOW_STATE), cueId: null,
+    camera: 'foh', volume: 0.7, bump: { ...empty, blinder: true },
+    music: { kind: 'none', name: '', playing: false },
+    screen: { target: 'main-led', kind: 'none', name: '', playing: false },
+  };
+  const take = { durationMs: 1000, events: [
+    { atMs: 0, look: { masterDimmer: 0.8 } },
+    { atMs: 150, bump: held },
+    { atMs: 240, screen: base.screen },
+    { atMs: 400, bump: empty },
+    { atMs: 500, bump: held },
+    { atMs: 600, look: { ...base.look, masterDimmer: 0.6 } },
+    { atMs: 850, bump: held },
+  ] };
+  const at = (ms, running = true) => showClockMod.resolveTakeFrame(take, ms, base, running).bump;
+  assert.deepEqual(at(120), empty, 'the baseline live owner must never become replay-owned');
+  assert.deepEqual(at(150), held);
+  assert.deepEqual(at(250), held, 'a screen-only event cannot change the replay bump');
+  assert.deepEqual(at(250, false), empty);
+  assert.deepEqual(at(400), empty);
+  assert.deepEqual(at(550), held);
+  assert.deepEqual(at(600), empty, 'a full no-bump frame clears the preceding replay event');
+  assert.deepEqual(at(999), held);
+  assert.deepEqual(at(1000), empty, 'a running seek to the end still releases the replay bump');
+
+  const ledger = new bumpMod.BumpLedger();
+  ledger.setHold('keyboard', 'local', 'blinder', true, 0);
+  ledger.setHold('replay', 'local', 'strobe', true, 0);
+  assert.deepEqual(ledger.resolve({ onlySource: 'replay' }, 10).effective, held);
+  assert.deepEqual(ledger.resolve({}, 10).effective, { ...held, blinder: true });
+});
+
+test('Codex R2: timecode chase stop, stationary hold and end clear recorded replay hazardous bumps', () => {
   const ledger = new bumpMod.BumpLedger({ remoteLeaseMs: 2000, gamepadLeaseMs: 2000 });
   const engineBumpHistory = [];
   const syncLiveBump = () => {
@@ -963,6 +999,13 @@ test('Codex R2: timecode chase stop and stationary hold immediately clear record
   handlers.onChaseHold(3000);
   assert.equal(ledger.resolve({ laserDeskEnabled: true }, 3100).effective.co2, false, 'CO2 must clear on stationary hold');
   assert.equal(engineBumpHistory.at(-1).co2, false);
+
+  ledger.setHold('replay', 'local', 'strobe', true, 7000);
+  ledger.setHold('keyboard', 'local', 'blinder', true, 7000);
+  handlers.onChaseAdvance(7999);
+  assert.equal(ledger.resolve({}, 7999).effective.strobe, true);
+  handlers.onChaseAdvance(8000);
+  assert.deepEqual(engineBumpHistory.at(-1), { ...bumpMod.EMPTY_BUMP_STATE, blinder: true });
 });
 
 test('Codex R3: four-subsystem frameDelta preserves unchanged audioMap, movingGroups, and focusMarkId through save, reopen, replay, and seek', () => {

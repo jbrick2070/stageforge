@@ -64,7 +64,7 @@ const playable = (take?: ShowTimeline): take is ShowTimeline => !!take && (take.
  * `minDurationMs` reports the last secondary-wall cue so a new recording never
  * ends before cues the show already schedules (the v3 reader rejects those).
  */
-export function useShowTimeline(sample: () => DeskFrame, apply: (event: TimelineEvent | ReturnType<typeof resolveTakeFrame>, lateMs: number) => void, endReplay: () => void,
+export function useShowTimeline(sample: () => DeskFrame, apply: (event: TimelineEvent | ReturnType<typeof resolveTakeFrame>, lateMs: number) => void, endReplay: (preserveLiveBumps: boolean) => void,
   minDurationMs: () => number = () => 0) {
   const live = useRef({ sample, apply, endReplay, minDurationMs });
   live.current = { sample, apply, endReplay, minDurationMs };
@@ -129,7 +129,7 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
     active.events.push({ atMs, cueFade: structuredClone(cueFade) });
     active.sampledMs = atMs;
   };
-  const stop = () => {
+  const stop = ({ preserveLiveBumps = false } = {}) => {
     const run = session.current;
     if (!run) return;
     clearInterval(timer.current);
@@ -151,7 +151,7 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
       setTimeMs(run.sampledMs);
     }
     session.current = null;
-    if (run.mode === 'playing') live.current.endReplay();
+    if (run.mode === 'playing') live.current.endReplay(preserveLiveBumps);
     setMode('idle');
   };
   const tick = () => {
@@ -166,7 +166,7 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
       }
       if (atMs >= run.durationMs) {
         setTimeMs(run.durationMs);
-        stop();
+        stop({ preserveLiveBumps: true });
         return;
       }
     }
@@ -215,7 +215,7 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
     const run = session.current;
     const running = !!run && !hold && ms < timeline.durationMs;
     baseline.current ??= live.current.sample();
-    if (run && !running) stop();
+    if (run && !running) stop({ preserveLiveBumps: true });
     if (timeline.events.length) live.current.apply(resolveTakeFrame(timeline, ms, baseline.current, running), 0);
     if (run && running) {
       run.started = performance.now() - ms;
@@ -248,7 +248,7 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
   const chaseSeek = (requestedMs: number, running: boolean) => {
     const take = timelineRef.current;
     if (!playable(take) || session.current?.mode === 'recording') return;
-    if (session.current) stop();
+    if (session.current) stop({ preserveLiveBumps: true });
     const ms = Math.max(0, Math.min(take.durationMs, Math.round(requestedMs)));
     baseline.current ??= live.current.sample();
     if (take.events.length) {
@@ -270,7 +270,7 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
       chaseSeek(requestedMs, true);
       return;
     }
-    if (session.current) stop();
+    if (session.current) stop({ preserveLiveBumps: true });
     const ms = Math.max(0, Math.min(take.durationMs, Math.round(requestedMs)));
     while (chaseIndex.current < take.events.length && take.events[chaseIndex.current].atMs <= ms) {
       const event = take.events[chaseIndex.current++];

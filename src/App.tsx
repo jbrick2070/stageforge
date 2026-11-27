@@ -32,7 +32,7 @@ import { ClockBadge } from './components/ClockBadge';
 import { allows, createChaseTransportHandlers, type ClockMode } from './showControl/clockOwner';
 import { useShowControl } from './showControl/useShowControl';
 import { useShowGamepad } from './input/useShowGamepad';
-import { BumpLedger, sameBumpState, type BumpSourceClass } from './input/bumpLedger';
+import { BumpLedger, EMPTY_BUMP_STATE as EMPTY_BUMP, sameBumpState, type BumpSourceClass } from './input/bumpLedger';
 import { applyTimelineLookPatch, cueLook, differsFromCue, isFullLookSnapshot } from './data/cueLook';
 import type { ResolvedTakeFrame } from './data/showClock';
 import {
@@ -237,14 +237,7 @@ function webXrBlocksPhysicalOutput(phase: WebXrPhase): boolean {
   return phase === 'requesting' || phase === 'active' || phase === 'exiting';
 }
 
-const EMPTY_BUMP: BumpState = {
-  blinder: false,
-  strobe: false,
-  co2: false,
-  smoke: false,
-  laser: false,
-  motorDrop: false,
-};
+const REPLAY_BUMP_SOURCE = 'replay';
 
 const SAVED_DESIGN_KEY = 'stageforge.design.v1';
 const NO_MUSIC: MusicRef = { kind: 'none', name: '', playing: false };
@@ -525,6 +518,9 @@ export const App: React.FC = () => {
   const [showState, setShowStateRaw] = useState<ShowState>(() => structuredClone(INITIAL_SHOW_STATE));
   const showStateRef = useRef(showState);
   showStateRef.current = showState;
+  const operatorBlackoutRef = useRef(false);
+  const [operatorBlackout, setOperatorBlackout] = useState(false);
+  const effectiveBlackout = showState.blackout || (!viewerMode && operatorBlackout);
   // Every ordinary authored mutation terminates an active cue preview transition first.
   // Cue fire and deterministic take replay use setShowStateRaw directly, then install their one evaluator.
   const setShowState = useCallback<React.Dispatch<React.SetStateAction<ShowState>>>((action) => {
@@ -610,21 +606,24 @@ export const App: React.FC = () => {
   const bumpExpiryTimerRef = useRef<number | null>(null);
   const [liveBump, setLiveBump] = useState<BumpState>(EMPTY_BUMP);
   const liveBumpRef = useRef<BumpState>(EMPTY_BUMP);
-  liveBumpRef.current = liveBump;
   const syncLiveBump = useCallback(() => {
     if (bumpExpiryTimerRef.current !== null) {
       window.clearTimeout(bumpExpiryTimerRef.current);
       bumpExpiryTimerRef.current = null;
     }
     const now = performance.now();
-    const resolved = capabilitiesRef.current.edit
-      ? bumpLedgerRef.current.resolve({ laserDeskEnabled: showStateRef.current.laser.enabled }, now).effective
-      : EMPTY_BUMP;
+    const canEdit = capabilitiesRef.current.edit;
+    const resolved = bumpLedgerRef.current.resolve({
+      laserDeskEnabled: showStateRef.current.laser.enabled,
+      // Pitch Viewer can play authored takes. Its playback never consumes live input owners.
+      onlySource: canEdit ? undefined : REPLAY_BUMP_SOURCE,
+    }, now).effective;
     if (!sameBumpState(liveBumpRef.current, resolved)) {
       liveBumpRef.current = resolved;
+      engineRef.current?.setBumpState(resolved);
       setLiveBump(resolved);
     }
-    const nextExpiry = capabilitiesRef.current.edit ? bumpLedgerRef.current.nextExpiryMs(now) : null;
+    const nextExpiry = canEdit ? bumpLedgerRef.current.nextExpiryMs(now) : null;
     if (nextExpiry !== null) {
       bumpExpiryTimerRef.current = window.setTimeout(() => {
         bumpExpiryTimerRef.current = null;
@@ -638,6 +637,9 @@ export const App: React.FC = () => {
   }, [syncLiveBump]);
   const clearSourceBumps = useCallback((prefix: string) => {
     if (bumpLedgerRef.current.clearSourcePrefix(prefix)) syncLiveBump();
+  }, [syncLiveBump]);
+  const clearReplayBumps = useCallback(() => {
+    if (bumpLedgerRef.current.clearSource(REPLAY_BUMP_SOURCE)) syncLiveBump();
   }, [syncLiveBump]);
   const clearAllBumps = useCallback(() => {
     if (bumpLedgerRef.current.clearAll()) syncLiveBump();
@@ -808,6 +810,28 @@ export const App: React.FC = () => {
   const lastAutoSwitchRef = useRef(0);
   const lastDemoTick = useRef(-1);
   const previewRig = useCallback(() => engineRef.current?.previewRig(), []);
+  const publishDmxMonitor = useCallback((engine: StageEngine) => {
+    if (!dmxOpenRef.current) return;
+    live.dmx.set({
+      u1: new Uint8Array(engine.dmxUniverse1),
+      u2: new Uint8Array(engine.dmxUniverse2),
+      physU1: new Uint8Array(engine.physicalDmxU1),
+      physU2: new Uint8Array(engine.physicalDmxU2),
+    });
+  }, [live]);
+  const applyOperatorBlackout = useCallback((active?: boolean) => {
+    if (capabilitiesRef.current.edit) {
+      const next = active ?? !operatorBlackoutRef.current;
+      operatorBlackoutRef.current = next;
+      const engine = engineRef.current;
+      if (engine) {
+        engine.setOperatorBlackout(next);
+        publishDmxMonitor(engine);
+      }
+      setOperatorBlackout(next);
+    }
+    return showStateRef.current.blackout || (capabilitiesRef.current.edit && operatorBlackoutRef.current);
+  }, [publishDmxMonitor]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -1436,18 +1460,20 @@ export const App: React.FC = () => {
         // on a cue whose look was edited after it fired; partial cue events cannot.
         setCueModified(fullLook && differsFromCue(replayLook.current, cue, replayScreen.current));
       } else if (event.look) setCueModified(true);
-      if (event.bump) {
-        bumpLedgerRef.current.clearAll();
-        for (const k of Object.keys(event.bump) as (keyof BumpState)[]) {
-          if (event.bump[k]) bumpLedgerRef.current.setHold('replay', 'local', k, true);
+      if (event.bump || fullLook) {
+        const ledger = bumpLedgerRef.current;
+        ledger.clearSource(REPLAY_BUMP_SOURCE);
+        if (event.bump) {
+          for (const key of Object.keys(event.bump) as (keyof BumpState)[]) {
+            if (event.bump[key]) ledger.setHold(REPLAY_BUMP_SOURCE, 'local', key, true);
+          }
         }
-        syncLiveBump();
-        engine?.setBumpState(event.bump);
       }
+      if (event.look || event.bump) syncLiveBump();
       if (event.camera) { setActiveCamera(event.camera); engine?.setCameraPreset(event.camera); }
       if (event.volume !== undefined) { setVolume(event.volume); ae?.setVolume(event.volume); }
     },
-    () => {
+    (preserveLiveBumps) => {
       cancelCuePreview(false);
       wallClock.set(wallClock.position(), false);
       replaying.current = false; directorArmed.current = false;
@@ -1461,7 +1487,8 @@ export const App: React.FC = () => {
         const offsetSeconds = linked ? engineRef.current?.screenTransport().offsetSeconds : replayScreenOffset();
         setScreen({ ...ref, playing: false, offsetSeconds });
       }
-      clearAllBumps();
+      if (preserveLiveBumps || !capabilitiesRef.current.edit) clearReplayBumps();
+      else clearAllBumps();
     },
     () => nativeStage.current?.screenEvents.at(-1)?.atMs ?? 0,
   );
@@ -1721,10 +1748,7 @@ export const App: React.FC = () => {
     setScreenPlaying: (playing) => { engineRef.current?.restoreScreenTransport(playing); },
     setWallClock: (posMs, running, endMs) => wallClock.set(posMs, running, endMs),
     getWallClockPos: () => wallClock.position(),
-    clearReplayBumps: () => {
-      bumpLedgerRef.current.clearSource('replay');
-      syncLiveBump();
-    },
+    clearReplayBumps,
   });
 
   const stopDeskPlayback = () => {
@@ -1808,11 +1832,7 @@ export const App: React.FC = () => {
         audioEngineRef.current.togglePlayPause();
       }
     },
-    onSetBlackout: (active) => {
-      previewRig();
-      setCueModified(true);
-      setShowState((s) => (s.blackout === active ? s : { ...s, blackout: active }));
-    },
+    onSetBlackout: applyOperatorBlackout,
     onSetMaster: (value) => {
       const clamped = Math.max(0, Math.min(1, value));
       previewRig();
@@ -1966,14 +1986,7 @@ export const App: React.FC = () => {
               ? prev
               : { source: metrics.source, playing: metrics.playing, openingBlack, openingBar, openingTotalBars, openingBeforeDownbeat }
           );
-          if (dmxOpenRef.current) {
-            live.dmx.set({
-              u1: new Uint8Array(engine.dmxUniverse1),
-              u2: new Uint8Array(engine.dmxUniverse2),
-              physU1: new Uint8Array(engine.physicalDmxU1),
-              physU2: new Uint8Array(engine.physicalDmxU2),
-            });
-          }
+          publishDmxMonitor(engine);
           const modSnap = engine.getAudioModulationSnapshot();
           if (modSnap.active || live.audioMod.get().active) {
             live.audioMod.set(modSnap);
@@ -2002,6 +2015,7 @@ export const App: React.FC = () => {
           renderSettings: renderSettingsRef.current,
           fullRateStrobePreview: effectiveFullRateStrobeRef.current,
           prefersReducedMotion,
+          operatorBlackout: capabilitiesRef.current.edit && operatorBlackoutRef.current,
           onContextLossChange: (lost) => {
             setWebglContextLost(lost);
             if (lost) {
@@ -2019,6 +2033,7 @@ export const App: React.FC = () => {
       throw error;
     }
     engineRef.current = engine;
+    engine.setBumpState(liveBumpRef.current);
     if (isWebXrPageInterlocked()) engine.setWebXrPhysicalOutputInterlock(true);
     // Apply initial safety & overlay bindings immediately after engine construction (effects above run before mount).
     engine.setInhibitedLasers(effectiveInhibitedLasersRef.current);
@@ -2114,7 +2129,9 @@ export const App: React.FC = () => {
       activeCueId: () => activeCueIdRef.current,
       camera: () => activeCameraRef.current,
       showStateSummary: () => ({
-        blackout: showStateRef.current.blackout,
+        blackout: showStateRef.current.blackout || (capabilitiesRef.current.edit && operatorBlackoutRef.current),
+        authoredBlackout: showStateRef.current.blackout,
+        operatorBlackout: capabilitiesRef.current.edit && operatorBlackoutRef.current,
         masterDimmer: showStateRef.current.masterDimmer,
         bpm: showStateRef.current.bpm,
         primaryColor: showStateRef.current.primaryColor,
@@ -2190,11 +2207,6 @@ export const App: React.FC = () => {
     }
   }, [screen, showState.led.customMediaUrl]);
 
-  // Sync momentary bump overrides
-  useEffect(() => {
-    engineRef.current?.setBumpState(liveBump);
-  }, [liveBump]);
-
   // Rebuild 3D rig whenever user edits stage/trusses/fixtures/templates
   const firstRigMount = useRef(true);
   useEffect(() => {
@@ -2229,21 +2241,24 @@ export const App: React.FC = () => {
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (isTyping(e.target) || document.querySelector('dialog[open],[aria-modal=true]')) return;
-      if (e.target instanceof Element && e.target.closest('select,[role=listbox],[role=combobox]')) return;
-      if (e.code === 'Space' && e.target instanceof Element && e.target.closest('button,summary,input[type=color],input[type=checkbox],a')) return;
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest('select,[role=listbox],[role=combobox]')) return;
       if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'PageUp' || e.code === 'PageDown') &&
-        e.target instanceof Element && e.target.closest('input[type=range],[role=slider],[aria-label="Take markers"]')) return;
-      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+        target?.closest('input[type=range],[role=slider],[aria-label="Take markers"]')) return;
 
       const action = resolveGlobalHotkey(e.code, capabilitiesRef.current);
-      if (!action) return;
+      if (!action || (e.repeat && action.type !== 'blackout')) return;
+      if (e.code === 'Space') {
+        if (action.type === 'blackout' && e.shiftKey) return;
+        const control = target?.closest('button,[role=button],summary,input[type=button],input[type=color],input[type=checkbox],a');
+        if (control && !(action.type === 'blackout' && control.matches('button[data-editor-blackout-space]'))) return;
+      }
 
       switch (action.type) {
         case 'blackout':
           e.preventDefault();
-          previewRig();
-          setCueModified(true);
-          setShowState((s) => ({ ...s, blackout: !s.blackout }));
+          if (!e.repeat) applyOperatorBlackout();
           break;
         case 'bump':
           setSourceBump('keyboard', 'local', action.key, true);
@@ -2291,7 +2306,7 @@ export const App: React.FC = () => {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', releaseBumps);
     };
-  }, [clearAllBumps, handleTapTempo, previewRig, setSourceBump, toggleMeasureOverlay]);
+  }, [applyOperatorBlackout, clearAllBumps, handleTapTempo, setSourceBump, toggleMeasureOverlay]);
 
   const handleCamera = (cam: CameraPreset) => {
     previewRig();
@@ -3005,6 +3020,7 @@ export const App: React.FC = () => {
       sessionEpochRef.current++;
       viewerModeRef.current = true;
       capabilitiesRef.current = VIEWER_CAPABILITIES;
+      engineRef.current?.setOperatorBlackout(false);
       setViewerMode(true);
     } else {
       sessionEpochRef.current++;
@@ -3035,6 +3051,7 @@ export const App: React.FC = () => {
       try { window.history.replaceState(null, '', nextUrl); } catch { /* ignore */ }
     }
 
+    engineRef.current?.setOperatorBlackout(operatorBlackoutRef.current);
     viewerModeRef.current = false;
     capabilitiesRef.current = EDITOR_CAPABILITIES;
     setViewerMode(false);
@@ -3857,18 +3874,7 @@ export const App: React.FC = () => {
         aiDeskRefs.current.seekTake(positionMs);
         return { ok: true };
       },
-      onSetBlackout: (active?: boolean) => {
-        // Pure state updater: apply engine + ref updates outside React setShowState updater (L9).
-        const prev = aiDeskRefs.current.showState;
-        const nextVal = active !== undefined ? active : !prev.blackout;
-        const next = { ...prev, blackout: nextVal };
-        previewRig();
-        setCueModified(true);
-        aiDeskRefs.current = { ...aiDeskRefs.current, showState: next };
-        engineRef.current?.setShowState(next);
-        setShowState((s) => ({ ...s, blackout: nextVal }));
-        return nextVal;
-      },
+      onSetBlackout: applyOperatorBlackout,
       onSetMaster: (value: number) => {
         const clamped = Math.max(0, Math.min(1, value));
         const next = { ...aiDeskRefs.current.showState, masterDimmer: clamped };
@@ -3998,7 +4004,7 @@ export const App: React.FC = () => {
         openingBar={demoOpeningBlack ? audioDiscrete.openingBar : undefined}
         openingTotalBars={demoOpeningBlack ? audioDiscrete.openingTotalBars : undefined}
         openingBeforeDownbeat={demoOpeningBlack ? audioDiscrete.openingBeforeDownbeat : undefined}
-        blackout={showState.blackout}
+        blackout={effectiveBlackout}
         autoDirector={showState.autoDirector}
         audioReactive={showState.audioReactive}
         activeCamera={activeCamera}
@@ -4433,13 +4439,15 @@ export const App: React.FC = () => {
         <BottomConsole
           state={showState}
           bump={liveBump}
+          operatorBlackout={operatorBlackout}
+          onOperatorBlackout={() => applyOperatorBlackout()}
           rig={rig}
           cues={cues}
           activeCueId={activeCueId}
           cueModified={cueModified}
           onPatchState={(patch) => {
             if (!capabilitiesRef.current.edit) return;
-            if (Object.keys(patch).some(key => key !== 'masterDimmer' && key !== 'blackout' && key !== 'bloomStrength')) takeDesk();
+            if (Object.keys(patch).some(key => key !== 'masterDimmer' && key !== 'bloomStrength')) takeDesk();
             else { previewRig(); setCueModified(true); }
             setShowState((s) => applyDeskPatch(s, patch));
           }}
@@ -4613,9 +4621,10 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {showState.blackout && !demoOpeningBlack && (
+      {effectiveBlackout && (!demoOpeningBlack || (!viewerMode && operatorBlackout)) && (
         <div role="alert" className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none px-5 py-2 rounded-xl bg-rose-950/80 border border-rose-500/70 font-mono-tech text-sm tracking-widest text-rose-200 shadow-[0_0_30px_rgba(244,63,94,0.45)]">
-          {capabilities.mutatingHotkeys ? 'STAGE BLACKOUT — PRESS [SPACE] TO RESTORE' : 'STAGE BLACKOUT'}
+          {viewerMode ? 'STAGE BLACKOUT' : !operatorBlackout ? 'STAGE BLACKOUT · CUE BLACKOUT' :
+            showState.blackout ? 'STAGE BLACKOUT · OPERATOR HOLD · CUE BLACKOUT' : 'STAGE BLACKOUT · OPERATOR HOLD'}
         </div>
       )}
     </main>

@@ -181,7 +181,7 @@ export class BumpLedger {
     return Number.isFinite(earliest) ? earliest : null;
   }
 
-  public resolve(options: { laserDeskEnabled?: boolean } = {}, now = performance.now()): ResolvedBumps {
+  public resolve(options: { laserDeskEnabled?: boolean; onlySource?: string } = {}, now = performance.now()): ResolvedBumps {
     this.pruneExpired(now);
     const effective: BumpState = {
       blinder: false,
@@ -195,7 +195,8 @@ export class BumpLedger {
     let laserRemote = false;
     const laserDeskEnabled = options.laserDeskEnabled ?? true;
 
-    for (const rec of this.sources.values()) {
+    for (const [sourceId, rec] of this.sources) {
+      if (options.onlySource !== undefined && sourceId !== options.onlySource) continue;
       for (const key of BUMP_KEYS) {
         const exp = rec.holds[key];
         if (exp === undefined || exp <= now) continue;

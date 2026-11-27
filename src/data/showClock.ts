@@ -1,8 +1,9 @@
 import type { NativeStage, ShowTimeline, TimelineEvent } from './showFile';
-import { applyTimelineLookPatch } from './cueLook';
+import { applyTimelineLookPatch, isFullLookSnapshot } from './cueLook';
 import { DEMO_TOTAL_STEPS } from './demoShow';
 import type { BumpState, CameraPreset, MusicRef, ScreenRef, ShowState } from '../types/show';
 import { resolveCuePreview, type CueFadeDescriptor, type ResolvedCuePreview } from './cueFade';
+import { EMPTY_BUMP_STATE } from '../input/bumpLedger';
 
 export interface TransportFrame {
   look: ShowState;
@@ -15,6 +16,7 @@ export interface TransportFrame {
 }
 
 export interface ResolvedTakeFrame extends TimelineEvent {
+  bump: BumpState;
   /** Runtime-only preview state. Never serialized into a show file. */
   resolvedCuePreview?: ResolvedCuePreview;
 }
@@ -31,7 +33,7 @@ function advanceMusic(music: MusicRef, seconds: number, bpm: number): MusicRef {
 export function resolveTakeFrame(take: ShowTimeline, requestedMs: number, base: TransportFrame, running: boolean): ResolvedTakeFrame {
   const safeRequested = Number.isFinite(requestedMs) ? requestedMs : requestedMs === Infinity ? take.durationMs : 0;
   const atMs = Math.round(Math.max(0, Math.min(safeRequested, take.durationMs)));
-  const frame = { ...base, look: { ...base.look } };
+  const frame = { ...base, look: { ...base.look }, bump: EMPTY_BUMP_STATE };
   let musicAt = 0;
   let screenAt = 0;
   let activeCueFade: { descriptor: CueFadeDescriptor; atMs: number } | undefined;
@@ -53,7 +55,9 @@ export function resolveTakeFrame(take: ShowTimeline, requestedMs: number, base: 
     }
     if (event.cueId !== undefined) frame.cueId = event.cueId;
     if (event.camera !== undefined) frame.camera = event.camera;
-    if (event.bump !== undefined) frame.bump = event.bump;
+    if (event.bump !== undefined || (event.look && isFullLookSnapshot(event.look))) {
+      frame.bump = event.bump ?? EMPTY_BUMP_STATE;
+    }
     if (event.volume !== undefined) frame.volume = event.volume;
   }
   const music = advanceMusic(frame.music, (atMs - musicAt) / 1000, frame.look.bpm);
@@ -66,6 +70,7 @@ export function resolveTakeFrame(take: ShowTimeline, requestedMs: number, base: 
   return {
     ...frame,
     atMs,
+    bump: running && atMs < take.durationMs ? frame.bump : EMPTY_BUMP_STATE,
     music: { ...music, playing: running && music.playing },
     screen,
     ...(resolvedCuePreview ? { resolvedCuePreview } : {}),

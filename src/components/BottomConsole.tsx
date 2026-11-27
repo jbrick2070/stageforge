@@ -66,6 +66,8 @@ type ConsoleTab = 'show' | 'dmx' | 'laser' | 'motors_fx';
 interface BottomConsoleProps {
   state: ShowState;
   bump: BumpState;
+  operatorBlackout: boolean;
+  onOperatorBlackout: () => void;
   rig: RigConfig;
   cues: ShowCue[];
   activeCueId: string | null;
@@ -280,6 +282,8 @@ function FollowCountdown({ deadline }: { deadline: number }) {
 export const BottomConsole: React.FC<BottomConsoleProps> = ({
   state,
   bump,
+  operatorBlackout,
+  onOperatorBlackout,
   rig,
   cues,
   activeCueId,
@@ -434,7 +438,7 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
                   </div>
                   <div className="cue-actions">
                     <button disabled={!cues.length || take.mode === 'playing' || clockMode === 'chase'} onClick={onBack}>Back</button>
-                    <button className="cue-go" disabled={!cues.length || take.mode === 'playing' || clockMode === 'chase'} onClick={onGo}>GO</button>
+                    <button className="cue-go" data-editor-blackout-space disabled={!cues.length || take.mode === 'playing' || clockMode === 'chase'} onClick={onGo}>GO</button>
                     <button onClick={onResetCue} disabled={!cues.length || take.mode === 'playing' || clockMode === 'chase'}>Reset to cue 1</button>
                     <button onClick={onEditCues} disabled={take.mode !== 'idle'}>Edit cue list</button>
                     <button
@@ -1067,15 +1071,18 @@ export const BottomConsole: React.FC<BottomConsoleProps> = ({
           {/* RIGHT WORKSPACE: Always-Live Momentary Flash / Bump Bank */}
           <div className="bump-bank border-t lg:border-t-0 lg:border-l border-white/10 pt-2 lg:pt-0 lg:pl-2.5 flex flex-col justify-between gap-1.5">
             <button
-              onClick={() => onPatchState({ blackout: !state.blackout })}
+              data-editor-blackout-space
+              aria-label="Operator blackout hold"
+              aria-pressed={operatorBlackout}
+              onClick={onOperatorBlackout}
               className={`w-full py-2 rounded-lg font-mono-tech font-bold text-xs tracking-wider border flex items-center justify-center gap-2 transition cursor-pointer ${
-                state.blackout
+                operatorBlackout
                   ? 'bg-rose-600 text-white border-rose-300 shadow-[0_0_20px_rgba(244,63,94,0.65)] animate-pulse'
                   : 'bg-rose-950/50 text-rose-300 border-rose-500/40 hover:bg-rose-900/60'
               }`}
             >
               <Power className="w-4 h-4" />
-              {state.blackout ? 'BLACKOUT ACTIVE [SPACE]' : 'BLACKOUT [SPACE]'}
+              {operatorBlackout ? 'BLACKOUT HOLD ACTIVE [SPACE]' : 'BLACKOUT HOLD [SPACE]'}
             </button>
 
             <div className="grid grid-cols-2 gap-1.5 flex-1">

@@ -535,6 +535,7 @@ export class StageEngine {
   public physicalDmxU2 = new Uint8Array(512);
   public serialPhysicalDmxU1 = new Uint8Array(512);
   public serialPhysicalDmxU2 = new Uint8Array(512);
+  private operatorBlackout = false;
   private dmxFrameListener?: (
     u1: Uint8Array,
     u2: Uint8Array,
@@ -696,11 +697,13 @@ export class StageEngine {
       renderSettings?: Partial<RenderSettings>;
       fullRateStrobePreview?: boolean;
       prefersReducedMotion?: boolean;
+      operatorBlackout?: boolean;
       onContextLossChange?: (lost: boolean) => void;
     },
   ) {
     this.container = container;
     this.currentState = initialState;
+    this.operatorBlackout = Boolean(options?.operatorBlackout);
     this.audioGetter = audioGetter;
     this.onFrameTelemetry = onFrameTelemetry;
     this.onContextLossChange = options?.onContextLossChange;
@@ -2118,6 +2121,7 @@ export class StageEngine {
 
   public setShowState(state: ShowState) {
     if (state.autoDirector && !this.currentState.autoDirector) this.manualFadeStart = undefined;
+    if (state.blackout && !this.currentState.blackout) this.clearPhysicalDmxBuffers();
     this.currentState = state;
     this.neonFrame?.setPalette(state.primaryColor, state.accentColor);
     if (this.bloomPass) {
@@ -2133,6 +2137,24 @@ export class StageEngine {
       this.updateCustomLedMedia(state.led.customMediaUrl, state.led.customMediaType);
     }
     this.syncScreenPlayback();
+  }
+
+  public setOperatorBlackout(active: boolean) {
+    if (active === this.operatorBlackout) return;
+    this.operatorBlackout = active;
+    if (active) {
+      // Attaching an armed listener can publish these buffers before the next control tick.
+      this.clearPhysicalDmxBuffers();
+      this.dmxUniverse1.fill(0);
+      this.dmxUniverse2.fill(0);
+    }
+  }
+
+  private clearPhysicalDmxBuffers() {
+    this.physicalDmxU1.fill(0);
+    this.physicalDmxU2.fill(0);
+    this.serialPhysicalDmxU1.fill(0);
+    this.serialPhysicalDmxU2.fill(0);
   }
 
   public setBumpState(bump: BumpState) {
@@ -2959,10 +2981,7 @@ export class StageEngine {
     try {
     this.dmxUniverse1.fill(0);
     this.dmxUniverse2.fill(0);
-    this.physicalDmxU1.fill(0);
-    this.physicalDmxU2.fill(0);
-    this.serialPhysicalDmxU1.fill(0);
-    this.serialPhysicalDmxU2.fill(0);
+    this.clearPhysicalDmxBuffers();
     this.trussPods = [];
     this.movingFixtures = [];
     this.laserUnits = [];
@@ -4412,16 +4431,13 @@ export class StageEngine {
     const openingStep = this.directedStep;
 
     // Effective master blackout / dimmer
-    const blackoutActive = Boolean(s.blackout);
+    const blackoutActive = this.operatorBlackout || Boolean(s.blackout);
     const darkOpening = !!demo && (!!demo.beforeDownbeat || demoOpeningStep! <= DEMO_BLACKOUT_STEPS);
     const master = blackoutActive || darkOpening ? 0 : s.masterDimmer;
     this.neonFrame.setBlackout(blackoutActive || darkOpening);
     this.neonFrame.setMasterDimmer(master);
     // Clear physical buffers before encoding so repatched, generic, or simulation-only ranges always stay neutral 0.
-    this.physicalDmxU1.fill(0);
-    this.physicalDmxU2.fill(0);
-    this.serialPhysicalDmxU1.fill(0);
-    this.serialPhysicalDmxU2.fill(0);
+    this.clearPhysicalDmxBuffers();
     const roomGain = openingStep === undefined ? 1 : THREE.MathUtils.lerp(demoFade(openingStep, 96, 208), 1, manualMix);
     this.houseAmbient.intensity = 0.36 * roomGain;
     this.scene.environmentIntensity = 0.55 * roomGain;

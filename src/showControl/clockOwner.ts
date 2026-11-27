@@ -663,6 +663,7 @@ export function createChaseTransportHandlers(deps: ChaseTransportDeps) {
       const endMs = deps.getEndMs();
       deps.setReplaying(true);
       deps.chaseAdvanceTimeline(takeMs);
+      if (takeMs >= endMs) deps.clearReplayBumps();
       if (opts?.resumedFromHold) {
         const held: ChaseHeldMediaState = { audio: deps.held.audio, screen: deps.held.screen };
         deps.held.audio = false;
