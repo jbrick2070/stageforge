@@ -68,7 +68,7 @@ describe('Sprint 23C: one neutral PMREM composition and zero-texture deck breaku
     assert.equal(settings.DEFAULT_RENDER_SETTINGS.lookWetDeck, true);
     assert.equal(settings.parseRenderSettings({ lookWetDeck: false }).lookWetDeck, false);
     assert.equal(settings.parseRenderSettings({ lookWetDeck: 'yes' }).lookWetDeck, true);
-    for (let version = 1; version <= 12; version++) {
+    for (let version = 1; version <= 13; version++) {
       const schema = await readFile(new URL(`../src/schemas/show-v${version}.schema.json`, import.meta.url), 'utf8');
       assert.ok(!schema.includes('lookWetDeck'));
     }

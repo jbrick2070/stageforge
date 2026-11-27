@@ -5,6 +5,7 @@ import {
   CROWD_HUMAN_CLOTHING_COLORS,
   CROWD_HUMAN_SKIN_TONES,
   CROWD_MODEL_IDS_V11,
+  CROWD_MODEL_IDS_V12,
   CROWD_MODEL_REGISTRY,
   CROWD_PLACEMENT_ENVELOPE,
   STAGEFORGE_HUMAN_V1,
@@ -491,6 +492,18 @@ export const CROWD_MODEL_PRESETS = {
       { modelId: 'stageforge-fox-v1', weight: 1 },
     ],
   },
+  'original-with-cartoons': {
+    label: 'Original crowd with monochrome characters',
+    weights: [
+      { modelId: 'stageforge-human-v1', weight: 2 },
+      { modelId: 'stageforge-human-v2', weight: 4 },
+      { modelId: 'stageforge-robot-v1', weight: 1 },
+      { modelId: 'stageforge-alien-v1', weight: 1 },
+      { modelId: 'stageforge-fox-v1', weight: 1 },
+      { modelId: 'stageforge-moth-v1', weight: 1 },
+      { modelId: 'stageforge-ticket-taker-v1', weight: 1 },
+    ],
+  },
 } as const satisfies Record<string, { label: string; weights: readonly CrowdModelWeight[] }>;
 
 export type CrowdModelMix = keyof typeof CROWD_MODEL_PRESETS;
@@ -528,11 +541,12 @@ export function withCrowdModelMix(layout: CrowdLayout, mix: CrowdModelMix): Crow
   };
 }
 
-export function crowdShowVersion(layout: CrowdLayout): 10 | 11 | 12 {
+export function crowdShowVersion(layout: CrowdLayout): 10 | 11 | 12 | 13 {
   const modelIds = [
     ...layout.zones.flatMap(zone => zone.modelWeights.map(item => item.modelId)),
     ...layout.placements.map(placement => placement.modelId),
   ];
+  if (modelIds.some(modelId => !CROWD_MODEL_IDS_V12.some(known => known === modelId))) return 13;
   if (modelIds.some(modelId => !CROWD_MODEL_IDS_V11.some(known => known === modelId))) return 12;
   if (layout.generatorVersion === CROWD_GENERATOR_VERSION_2
     || modelIds.some(modelId => modelId !== STAGEFORGE_HUMAN_V1.id)) return 11;

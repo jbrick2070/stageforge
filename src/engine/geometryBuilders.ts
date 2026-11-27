@@ -4,7 +4,8 @@ import { getTrussProfile, trussAnchorY, trussBraceRadius, trussChordRadius, trus
 import { trussMounts } from '../data/trussMounts';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { makeOriginalFoxGeometry, makeOriginalHumanGeometry } from './originalCrowdGeometry';
+import { makeOriginalFoxGeometry, makeOriginalHumanGeometry, makeOriginalMothGeometry, makeOriginalTicketTakerGeometry } from './originalCrowdGeometry';
+import { packCrowdGeometry, setPackedCrowdMaterial } from './packedCrowdGeometry';
 import type { PlanPoint, RigConfig, TrussShape, VenueType } from '../types/show';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
@@ -19,6 +20,7 @@ import {
   crowdMotionScaleY,
   crowdMotionScaleXZ,
   crowdResourceAdmission,
+  planCrowdFigureBatches,
   type CrowdModelId,
   type CrowdPose,
   type CrowdRenderTier,
@@ -979,6 +981,8 @@ function crowdGeometry() {
 function originalCrowdGeometry(modelId: CrowdModelId) {
   if (modelId === 'stageforge-human-v2') return makeOriginalHumanGeometry();
   if (modelId === 'stageforge-fox-v1') return makeOriginalFoxGeometry();
+  if (modelId === 'stageforge-moth-v1') return makeOriginalMothGeometry();
+  if (modelId === 'stageforge-ticket-taker-v1') return makeOriginalTicketTakerGeometry();
 
   const pieces: THREE.BufferGeometry[] = [];
   const part = (geometry: THREE.BufferGeometry, color: number) => {
@@ -1018,22 +1022,32 @@ function originalCrowdGeometry(modelId: CrowdModelId) {
   return geometry;
 }
 
-function applyOriginalHumanColors(
+function setCrowdTintAttributes(
   geometry: THREE.BufferGeometry,
-  material: THREE.MeshStandardMaterial,
   placements: readonly ResolvedCrowdPlacement[],
 ): void {
-  const skin = new Float32Array(placements.length * 3);
-  const clothing = new Float32Array(placements.length * 3);
+  const skin = new Float32Array(placements.length * 3).fill(1);
+  const clothing = new Float32Array(placements.length * 3).fill(1);
   const color = new THREE.Color();
   placements.forEach((placement, index) => {
     const appearance = placement.humanColors;
-    if (!appearance) throw new Error(`Missing human colors for crowd placement ${placement.id}.`);
+    if (!appearance) {
+      if (placement.modelId === 'stageforge-human-v2') throw new Error(`Missing human colors for crowd placement ${placement.id}.`);
+      return;
+    }
     color.setHex(CROWD_HUMAN_SKIN_TONES[appearance.skinToneIndex]).toArray(skin, index * 3);
     color.setHex(CROWD_HUMAN_CLOTHING_COLORS[appearance.clothingColorIndex]).toArray(clothing, index * 3);
   });
   geometry.setAttribute('crowdSkinColor', new THREE.InstancedBufferAttribute(skin, 3));
   geometry.setAttribute('crowdClothingColor', new THREE.InstancedBufferAttribute(clothing, 3));
+}
+
+function applyOriginalHumanColors(
+  geometry: THREE.BufferGeometry,
+  material: THREE.MeshStandardMaterial,
+  placements: readonly ResolvedCrowdPlacement[],
+): void {
+  setCrowdTintAttributes(geometry, placements);
   material.onBeforeCompile = shader => {
     shader.vertexShader = shader.vertexShader
       .replace('#include <color_pars_vertex>', `
@@ -1052,6 +1066,25 @@ if (crowdColorRegion > 1.5) {
   material.customProgramCacheKey = () => 'crowd-human-tint-regions-v1';
 }
 
+function buildPackedOriginalCrowd(
+  modelIds: readonly CrowdModelId[],
+  trianglesPerInstance: number,
+  tier: CrowdRenderTier,
+  material: THREE.MeshStandardMaterial,
+) {
+  const sources = new Map<CrowdModelId, THREE.BufferGeometry>();
+  try {
+    for (const modelId of modelIds) {
+      const geometry = originalCrowdGeometry(modelId);
+      sources.set(modelId, geometry);
+      validateCrowdGeometryAdmission(modelId, tier, geometry, material);
+    }
+    return packCrowdGeometry(sources, trianglesPerInstance);
+  } finally {
+    sources.forEach(geometry => geometry.dispose());
+  }
+}
+
 export interface CrowdBaseTransform {
   x: number;
   y: number;
@@ -1068,6 +1101,8 @@ export interface CrowdBaseTransform {
 
 export interface CrowdRenderBatch {
   modelId: CrowdModelId;
+  modelIds: CrowdModelId[];
+  packed: boolean;
   batchIndex: number;
   mesh: THREE.InstancedMesh;
   phonesMesh: THREE.InstancedMesh | null;
@@ -1774,7 +1809,7 @@ export function buildVenueArchitecture(
       group.add(phonesMesh);
     }
     crowdBatches.push({
-      modelId: 'stageforge-human-v1', batchIndex: 0, mesh: crowdMesh, phonesMesh,
+      modelId: 'stageforge-human-v1', modelIds: ['stageforge-human-v1'], packed: false, batchIndex: 0, mesh: crowdMesh, phonesMesh,
       transforms: crowdBaseTransforms, placementIds: [],
     });
   } else if (maxCrowd > 0 && authoredPlacements) {
@@ -1816,34 +1851,46 @@ export function buildVenueArchitecture(
     footprints.instanceMatrix.needsUpdate = true;
     group.add(footprints);
 
-    const modelIds = [...new Set(authoredPlacements.map(person => person.modelId))].sort();
-    for (const [batchIndex, modelId] of modelIds.entries()) {
+    const figurePlans = planCrowdFigureBatches(authoredPlacements, crowdTier);
+    for (const [batchIndex, plan] of figurePlans.entries()) {
+      const { modelIds, placements } = plan;
+      const modelId = modelIds[0];
       const model = crowdModel(modelId);
-      const placements = authoredPlacements
-        .filter(person => person.modelId === modelId)
-        .sort((a, b) => Number(b.phone) - Number(a.phone) || a.id.localeCompare(b.id));
-      const geometry = model.geometryKey === 'legacy-human-v1' ? crowdGeometry() : originalCrowdGeometry(modelId);
+      placements.sort((a, b) => Number(b.phone) - Number(a.phone) || a.id.localeCompare(b.id));
       const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.90, metalness: 0.02 });
-      const useVertexPalette = model.geometryKey === 'original-human-v2' || model.geometryKey === 'original-fox-v1';
-      const admission = validateCrowdGeometryAdmission(modelId, crowdTier, geometry, material);
-      if (model.geometryKey === 'original-human-v2') applyOriginalHumanColors(geometry, material, placements);
+      const packed = plan.packed ? buildPackedOriginalCrowd(modelIds, plan.trianglesPerInstance, crowdTier, material) : null;
+      const geometry = packed?.geometry ?? (model.geometryKey === 'legacy-human-v1' ? crowdGeometry() : originalCrowdGeometry(modelId));
+      const useVertexPalette = plan.packed || model.geometryKey === 'original-human-v2' || model.geometryKey === 'original-fox-v1';
+      if (packed) {
+        const slots = Float32Array.from(placements, person => packed.slots.get(person.modelId)!);
+        geometry.setAttribute('crowdGeometrySlot', new THREE.InstancedBufferAttribute(slots, 1));
+        setCrowdTintAttributes(geometry, placements);
+        setPackedCrowdMaterial(material, packed.vertexTexture);
+      } else {
+        validateCrowdGeometryAdmission(modelId, crowdTier, geometry, material);
+        if (model.geometryKey === 'original-human-v2') applyOriginalHumanColors(geometry, material, placements);
+      }
       const mesh = new THREE.InstancedMesh(geometry, material, placements.length);
+      if (packed) mesh.addEventListener('dispose', () => packed.vertexTexture.dispose());
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       const dummy = new THREE.Mesh(geometry, material);
       const transforms: CrowdBaseTransform[] = [];
+      const packedBounds = packed ? new THREE.Box3() : null;
+      const boundCorner = new THREE.Vector3();
       for (const [instanceIndex, person] of placements.entries()) {
+        const pose = crowdModel(person.modelId).poses[person.pose];
         const transform: CrowdBaseTransform = {
           x: person.x, y: person.y, z: person.z, scaleY: person.scaleY, phase: person.phase, rotY: person.rotY,
           placementId: person.id, modelId: person.modelId, pose: person.pose,
-          pivot: model.poses[person.pose].pivot,
+          pivot: pose.pivot,
           generatorVersion: authoredGeneratorVersion,
         };
         transforms.push(transform);
         crowdBaseTransforms.push(transform);
         placementBindings.push({
-          placementId: person.id, modelId, batchIndex, instanceIndex, pose: person.pose, phase: person.phase,
+          placementId: person.id, modelId: person.modelId, batchIndex, instanceIndex, pose: person.pose, phase: person.phase,
         });
-        if (admission.morphTextures) {
+        if (plan.morphTextures) {
           dummy.morphTargetInfluences![0] = person.phone || (person.gesture > 0.64 && person.gesture < 0.85) ? 1 : 0;
           dummy.morphTargetInfluences![1] = !person.phone && person.gesture >= 0.85 ? 1 : 0;
           mesh.setMorphAt(instanceIndex, dummy);
@@ -1851,8 +1898,18 @@ export function buildVenueArchitecture(
         if (!useVertexPalette) mesh.setColorAt(instanceIndex, new THREE.Color(colors[person.paletteIndex]));
         setCrowdObjectMatrix(dummy, transform);
         mesh.setMatrixAt(instanceIndex, dummy.matrix);
+        if (packedBounds) {
+          // Culling must use animated world bounds rather than the zero-filled index template.
+          const radius = pose.clearanceRadiusM;
+          packedBounds.expandByPoint(boundCorner.set(person.x - radius, person.y - radius, person.z - radius));
+          packedBounds.expandByPoint(boundCorner.set(person.x + radius, person.y + pose.maxHeightM, person.z + radius));
+        }
       }
-      if (admission.morphTextures) {
+      if (packedBounds) {
+        mesh.boundingBox = packedBounds;
+        mesh.boundingSphere = packedBounds.getBoundingSphere(new THREE.Sphere());
+      }
+      if (plan.morphTextures) {
         if (!mesh.morphTexture) throw new Error(`crowd model ${modelId} did not allocate its declared morph texture.`);
         mesh.morphTexture.needsUpdate = true;
       } else if (mesh.morphTexture) {
@@ -1880,7 +1937,7 @@ export function buildVenueArchitecture(
         group.add(modelPhones);
       }
       crowdBatches.push({
-        modelId, batchIndex, mesh, phonesMesh: modelPhones, transforms,
+        modelId, modelIds, packed: plan.packed, batchIndex, mesh, phonesMesh: modelPhones, transforms,
         placementIds: placements.map(person => person.id),
       });
     }

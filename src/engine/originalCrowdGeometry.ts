@@ -91,3 +91,61 @@ export function makeOriginalFoxGeometry(): THREE.BufferGeometry {
     add(new THREE.ConeGeometry(0.076, 0.15, 5).rotateX(-1.28).translate(0, 0.962, -0.298), cream);
   });
 }
+
+export function makeOriginalMothGeometry(): THREE.BufferGeometry {
+  return makeFigure(add => {
+    const ruff = 0xd2d2d2;
+    const body = 0x7a7a7a;
+    const wings = 0x545454;
+    const dark = 0x2d2d2d;
+
+    add(new THREE.CylinderGeometry(0.09, 0.12, 0.46, 6).scale(0.88, 1, 0.85).translate(0, 0.73, -0.02), wings);
+    add(new THREE.CylinderGeometry(0.14, 0.10, 0.40, 6, 1, true).scale(0.9, 1, 0.8).translate(0, 1.10, 0.01), body);
+    add(new THREE.CylinderGeometry(0.106, 0.14, 0.14, 6).scale(1.1, 1, 0.9).translate(0, 1.34, 0.02), ruff);
+    add(new THREE.SphereGeometry(0.115, 6, 4).scale(0.9, 1.1, 0.95).translate(0, 1.50, 0.04), body);
+
+    for (const side of [-1, 1]) {
+      const wing = new THREE.CylinderGeometry(0.096, 0.028, 0.83, 5).scale(1, 1, 0.25);
+      add(wing.rotateZ(side * 0.12).rotateY(side * 0.29).translate(side * 0.085, 0.94, -0.13), wings);
+      const eye = new THREE.PlaneGeometry(0.048, 0.059).rotateY(side * 0.52);
+      add(eye.translate(side * 0.075, 1.515, 0.126), dark);
+      const antenna = new THREE.ConeGeometry(0.025, 0.31, 3);
+      add(antenna.rotateZ(side * -0.54).rotateX(0.22).translate(side * 0.10, 1.70, 0.10), ruff);
+
+      const sleeve = new THREE.CylinderGeometry(0.039, 0.028, 0.54, 4, 1, true);
+      add(sleeve.rotateZ(side * 0.13).translate(side * 0.166, 1.13, 0.01), body);
+      add(new THREE.BoxGeometry(0.032, 0.09, 0.032).translate(side * 0.20, 0.851, 0.02), dark);
+      const leg = new THREE.CylinderGeometry(0.045, 0.028, 0.68, 4, 1, true);
+      add(leg.rotateZ(side * 0.03).translate(side * 0.08, 0.39, -0.01), body);
+      add(new THREE.BoxGeometry(0.059, 0.058, 0.16).translate(side * 0.082, 0.029, 0.04), dark);
+    }
+  });
+}
+
+export function makeOriginalTicketTakerGeometry(): THREE.BufferGeometry {
+  return makeFigure(add => {
+    const light = 0xd8d8d8;
+    const coat = 0x6a6a6a;
+    const lapel = 0xacacac;
+    const dark = 0x333333;
+
+    add(new THREE.CylinderGeometry(0.24, 0.21, 0.62, 8).scale(1, 1, 0.86).translate(0, 0.98, 0), coat);
+    add(new THREE.CylinderGeometry(0.10, 0.11, 0.10, 6, 1, true).translate(0, 1.33, 0.02), lapel);
+    add(new THREE.SphereGeometry(0.125, 6, 4).scale(1.05, 1, 0.95).translate(0, 1.48, 0.02), light);
+    add(new THREE.CylinderGeometry(0.13, 0.12, 0.11, 6).translate(0, 1.62, 0.02), coat);
+    add(new THREE.BoxGeometry(0.16, 0.02, 0.09).rotateX(0.18).translate(0, 1.575, 0.135), dark);
+
+    for (const side of [-1, 1]) {
+      add(new THREE.PlaneGeometry(0.028, 0.015).rotateY(side * 0.31).translate(side * 0.049, 1.49, 0.134), dark);
+      const collar = new THREE.BoxGeometry(0.075, 0.24, 0.025);
+      add(collar.rotateZ(side * -0.32).translate(side * 0.084, 1.14, 0.168), lapel);
+      const sleeve = new THREE.CylinderGeometry(0.072, 0.058, 0.48, 5, 1, true);
+      add(sleeve.rotateZ(side * 0.17).translate(side * 0.238, 1.045, 0.01), coat);
+      add(new THREE.BoxGeometry(0.055, 0.08, 0.05).translate(side * 0.275, 0.789, 0.02), light);
+
+      add(new THREE.CylinderGeometry(0.095, 0.075, 0.68, 5, 1, true).translate(side * 0.11, 0.39, 0), coat);
+      add(new THREE.BoxGeometry(0.105, 0.108, 0.20).translate(side * 0.11, 0.054, 0.035), dark);
+    }
+    add(new THREE.BoxGeometry(0.046, 0.081, 0.016).rotateY(0.2).translate(0.278, 0.80, 0.054), light);
+  });
+}

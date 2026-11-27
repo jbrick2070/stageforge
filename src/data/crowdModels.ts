@@ -1,17 +1,22 @@
 export type CrowdPose = 'standing' | 'seated';
 export type CrowdRenderTier = 'high' | 'low' | 'xr';
-export type CrowdModelFamily = 'human' | 'robot' | 'alien' | 'animal';
-export type CrowdGeometryKey = 'legacy-human-v1' | 'original-robot-v1' | 'original-alien-v1' | 'original-human-v2' | 'original-fox-v1';
+export type CrowdModelFamily = 'human' | 'robot' | 'alien' | 'animal' | 'cartoon';
+export type CrowdGeometryKey = 'legacy-human-v1' | 'original-robot-v1' | 'original-alien-v1' | 'original-human-v2' | 'original-fox-v1' | 'original-moth-v1' | 'original-ticket-taker-v1';
 
 export const CROWD_MODEL_IDS_V11 = [
   'stageforge-human-v1',
   'stageforge-robot-v1',
   'stageforge-alien-v1',
 ] as const;
-export const CROWD_MODEL_IDS = [
+export const CROWD_MODEL_IDS_V12 = [
   ...CROWD_MODEL_IDS_V11,
   'stageforge-human-v2',
   'stageforge-fox-v1',
+] as const;
+export const CROWD_MODEL_IDS = [
+  ...CROWD_MODEL_IDS_V12,
+  'stageforge-moth-v1',
+  'stageforge-ticket-taker-v1',
 ] as const;
 export type CrowdModelId = (typeof CROWD_MODEL_IDS)[number];
 
@@ -63,6 +68,8 @@ export interface CrowdModelSpec {
   budgets: Readonly<Record<CrowdRenderTier, CrowdModelBudget>>;
   /** Only the original human may use the frozen generator-v1 and legacy batch path. */
   legacyCompatible: boolean;
+  /** Static figures can share one vertex texture when a packed model is present. */
+  packing?: 'when-needed' | 'required';
 }
 
 export const CROWD_MAX_AUTHORED_OCCUPANTS = 680;
@@ -195,6 +202,7 @@ export const STAGEFORGE_HUMAN_V2: CrowdModelSpec = Object.freeze({
     },
   },
   budgets: { high: originalHumanBudget, low: originalHumanBudget, xr: originalHumanBudget },
+  packing: 'when-needed',
   legacyCompatible: false,
 } as CrowdModelSpec);
 
@@ -215,6 +223,59 @@ export const STAGEFORGE_FOX_V1: CrowdModelSpec = Object.freeze({
     },
   },
   budgets: { high: foxBudget, low: foxBudget, xr: foxBudget },
+  packing: 'when-needed',
+  legacyCompatible: false,
+} as CrowdModelSpec);
+
+const mothBudget: CrowdModelBudget = {
+  trianglesPerInstance: 232, materialSlots: 1, materialTextures: 0, morphTextures: 0, figureBatches: 1,
+};
+const ticketTakerBudget: CrowdModelBudget = {
+  trianglesPerInstance: 244, materialSlots: 1, materialTextures: 0, morphTextures: 0, figureBatches: 1,
+};
+
+const mothBounds = { geometryHeightM: 1.829741, geometryRadiusM: 0.228984 };
+const ticketTakerBounds = { geometryHeightM: 1.675, geometryRadiusM: 0.334139 };
+
+export const STAGEFORGE_MOTH_V1: CrowdModelSpec = Object.freeze({
+  id: 'stageforge-moth-v1', family: 'cartoon', label: 'StageForge moth', geometryKey: 'original-moth-v1',
+  ...mothBounds,
+  provenance: {
+    creator: 'StageForge', source: 'Original procedural monochrome moth', license: 'StageForge original',
+  },
+  poses: {
+    standing: {
+      maxHeightM: 2.07, clearanceRadiusM: 0.30, pivot: [0, 0, 0],
+      submittedHeightM: mothBounds.geometryHeightM, submittedRadiusM: mothBounds.geometryRadiusM, handset: null,
+    },
+    seated: {
+      maxHeightM: 1.38, clearanceRadiusM: 0.24, pivot: [0, 0, 0],
+      submittedHeightM: mothBounds.geometryHeightM, submittedRadiusM: mothBounds.geometryRadiusM, handset: null,
+    },
+  },
+  budgets: { high: mothBudget, low: mothBudget, xr: mothBudget },
+  packing: 'required',
+  legacyCompatible: false,
+} as CrowdModelSpec);
+
+export const STAGEFORGE_TICKET_TAKER_V1: CrowdModelSpec = Object.freeze({
+  id: 'stageforge-ticket-taker-v1', family: 'cartoon', label: 'StageForge ticket taker', geometryKey: 'original-ticket-taker-v1',
+  ...ticketTakerBounds,
+  provenance: {
+    creator: 'StageForge', source: 'Original procedural monochrome ticket taker', license: 'StageForge original',
+  },
+  poses: {
+    standing: {
+      maxHeightM: 1.91, clearanceRadiusM: 0.38, pivot: [0, 0, 0],
+      submittedHeightM: ticketTakerBounds.geometryHeightM, submittedRadiusM: ticketTakerBounds.geometryRadiusM, handset: null,
+    },
+    seated: {
+      maxHeightM: 1.28, clearanceRadiusM: 0.26, pivot: [0, 0, 0],
+      submittedHeightM: ticketTakerBounds.geometryHeightM, submittedRadiusM: ticketTakerBounds.geometryRadiusM, handset: null,
+    },
+  },
+  budgets: { high: ticketTakerBudget, low: ticketTakerBudget, xr: ticketTakerBudget },
+  packing: 'required',
   legacyCompatible: false,
 } as CrowdModelSpec);
 
@@ -226,6 +287,8 @@ const EXPECTED_MODEL_KIND: Readonly<Record<CrowdModelId, readonly [CrowdModelFam
   'stageforge-alien-v1': ['alien', 'original-alien-v1'],
   'stageforge-human-v2': ['human', 'original-human-v2'],
   'stageforge-fox-v1': ['animal', 'original-fox-v1'],
+  'stageforge-moth-v1': ['cartoon', 'original-moth-v1'],
+  'stageforge-ticket-taker-v1': ['cartoon', 'original-ticket-taker-v1'],
 });
 
 function finiteTuple(value: readonly number[], path: string): void {
@@ -294,12 +357,19 @@ export function validateCrowdModelSpec(spec: CrowdModelSpec): void {
       throw new Error(`crowd model ${spec.id} ${tier} has an unsupported renderer contribution.`);
     }
   }
+  if (spec.packing && (spec.legacyCompatible || spec.poses.standing.handset || spec.poses.seated.handset
+    || Object.values(spec.budgets).some(budget => budget.morphTextures || budget.materialTextures))) {
+    throw new Error(`crowd model ${spec.id} cannot share a packed static figure batch.`);
+  }
   if (spec.legacyCompatible !== (spec.id === STAGEFORGE_HUMAN_V1.id)) {
     throw new Error(`crowd model ${spec.id} has an invalid legacy-compatibility claim.`);
   }
 }
 
-const registeredModels = [STAGEFORGE_HUMAN_V1, STAGEFORGE_ROBOT_V1, STAGEFORGE_ALIEN_V1, STAGEFORGE_HUMAN_V2, STAGEFORGE_FOX_V1]
+const registeredModels = [
+  STAGEFORGE_HUMAN_V1, STAGEFORGE_ROBOT_V1, STAGEFORGE_ALIEN_V1,
+  STAGEFORGE_HUMAN_V2, STAGEFORGE_FOX_V1, STAGEFORGE_MOTH_V1, STAGEFORGE_TICKET_TAKER_V1,
+]
   .sort((a, b) => a.id.localeCompare(b.id));
 registeredModels.forEach(validateCrowdModelSpec);
 
@@ -309,7 +379,7 @@ export const CROWD_MODEL_REGISTRY: Readonly<Record<CrowdModelId, CrowdModelSpec>
 
 export function crowdModel(modelId: string): CrowdModelSpec {
   const model = CROWD_MODEL_REGISTRY[modelId as CrowdModelId];
-  if (!model) throw new Error(`crowd model "${modelId}" is not available in this build.`);
+  if (!Object.hasOwn(CROWD_MODEL_REGISTRY, modelId)) throw new Error(`crowd model "${modelId}" is not available in this build.`);
   return model;
 }
 
@@ -362,6 +432,61 @@ export interface CrowdResourcePlacement {
   phone: boolean;
 }
 
+export interface CrowdFigureBatchPlan<T extends CrowdResourcePlacement> {
+  packed: boolean;
+  modelIds: CrowdModelId[];
+  placements: T[];
+  trianglesPerInstance: number;
+  materialTextures: number;
+  morphTextures: number;
+}
+
+/** Renderer and admission share the same sorted batches and padded draw size. */
+export function planCrowdFigureBatches<T extends CrowdResourcePlacement>(
+  placements: readonly T[],
+  tier: CrowdRenderTier,
+): CrowdFigureBatchPlan<T>[] {
+  const byModel = new Map<CrowdModelId, T[]>();
+  for (const placement of placements) {
+    const model = crowdModel(placement.modelId);
+    if (placement.phone && !model.poses.standing.handset) {
+      throw new Error(`crowd model ${model.id} cannot own a handset.`);
+    }
+    const group = byModel.get(model.id);
+    if (group) group.push(placement);
+    else byModel.set(model.id, [placement]);
+  }
+
+  const modelIds = [...byModel.keys()].sort();
+  const needsPacked = modelIds.some(id => crowdModel(id).packing === 'required');
+  const batches: CrowdFigureBatchPlan<T>[] = [];
+  let packed: CrowdFigureBatchPlan<T> | undefined;
+  for (const modelId of modelIds) {
+    const model = crowdModel(modelId);
+    const budget = model.budgets[tier];
+    const people = byModel.get(modelId)!;
+    if (needsPacked && model.packing) {
+      if (!packed) {
+        packed = { packed: true, modelIds: [], placements: [], trianglesPerInstance: 0, materialTextures: 0, morphTextures: 0 };
+        batches.push(packed);
+      }
+      packed.modelIds.push(modelId);
+      packed.placements.push(...people);
+      packed.trianglesPerInstance = Math.max(packed.trianglesPerInstance, budget.trianglesPerInstance);
+    } else {
+      batches.push({
+        packed: false,
+        modelIds: [modelId],
+        placements: people,
+        trianglesPerInstance: budget.trianglesPerInstance,
+        materialTextures: budget.materialTextures,
+        morphTextures: budget.morphTextures,
+      });
+    }
+  }
+  return batches;
+}
+
 export interface CrowdResourceAdmission {
   eyeViews: number;
   figureBatches: number;
@@ -376,6 +501,7 @@ export interface CrowdResourceAdmission {
   submittedTriangles: number;
   materialTextures: number;
   morphTextures: number;
+  packedVertexTextures: number;
   rendererTextures: number;
   arenaDelta: { draws: number; triangles: number; textures: number };
   admitted: boolean;
@@ -390,28 +516,14 @@ export function crowdResourceAdmission(
   if (!Number.isSafeInteger(eyeViews) || eyeViews < 1 || eyeViews > CROWD_XR_EYE_VIEWS) {
     throw new Error(`crowd eyeViews must be an integer from 1 to ${CROWD_XR_EYE_VIEWS}.`);
   }
-  const counts = new Map<CrowdModelId, number>();
-  const phoneModels = new Set<CrowdModelId>();
-  for (const placement of placements) {
-    const model = crowdModel(placement.modelId);
-    counts.set(model.id, (counts.get(model.id) ?? 0) + 1);
-    if (placement.phone) {
-      if (!model.poses.standing.handset) throw new Error(`crowd model ${model.id} cannot own a handset.`);
-      phoneModels.add(model.id);
-    }
-  }
-  let instanceTriangles = 0;
-  let materialTextures = 0;
-  let morphTextures = 0;
-  let figureBatches = 0;
-  for (const [modelId, count] of counts) {
-    const budget = crowdModel(modelId).budgets[tier];
-    instanceTriangles += budget.trianglesPerInstance * count;
-    materialTextures += budget.materialTextures;
-    morphTextures += budget.morphTextures;
-    figureBatches += budget.figureBatches;
-  }
-  const phoneBatches = phoneModels.size;
+  const batches = planCrowdFigureBatches(placements, tier);
+  const figureBatches = batches.length;
+  const phoneBatches = batches.filter(batch => batch.placements.some(placement => placement.phone)).length;
+  const instanceTriangles = batches.reduce((total, batch) => total + batch.trianglesPerInstance * batch.placements.length, 0);
+  const materialTextures = batches.reduce((total, batch) => total + batch.materialTextures, 0);
+  const morphTextures = batches.reduce((total, batch) => total + batch.morphTextures, 0);
+  const packedVertexTextures = batches.filter(batch => batch.packed).length;
+  const rendererTextures = materialTextures + morphTextures + packedVertexTextures;
   const phoneInstances = placements.reduce((total, placement) => total + Number(placement.phone), 0);
   const footprintBatches = placements.length ? 1 : 0;
   const sceneDraws = figureBatches + phoneBatches + footprintBatches;
@@ -427,13 +539,12 @@ export function crowdResourceAdmission(
   const arenaDelta = {
     draws: Math.max(0, (sceneDraws - baselineSceneDraws) * eyeViews),
     triangles: Math.max(0, submittedTriangles - baselineSceneTriangles * eyeViews),
-    textures: Math.max(0, materialTextures + morphTextures - (placements.length ? baselineBudget.materialTextures + baselineBudget.morphTextures : 0)),
+    textures: Math.max(0, rendererTextures - (placements.length ? baselineBudget.materialTextures + baselineBudget.morphTextures : 0)),
   };
   return {
     eyeViews, figureBatches, phoneBatches, footprintBatches, sceneDraws, submittedDraws,
     instanceTriangles, footprintTriangles, handsetTriangles, sceneTriangles, submittedTriangles,
-    materialTextures, morphTextures,
-    rendererTextures: materialTextures + morphTextures,
+    materialTextures, morphTextures, packedVertexTextures, rendererTextures,
     arenaDelta,
     admitted:
       arenaDelta.draws <= CROWD_XR_AGGREGATE_BUDGET.remaining.draws &&

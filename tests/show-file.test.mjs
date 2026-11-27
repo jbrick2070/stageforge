@@ -208,7 +208,7 @@ test('malformed nested rig, cue, media and timeline data produce a readable Erro
   assert.equal(parseShowFile('\uFEFF' + JSON.stringify(example)).version, 1);
 });
 
-test('legacy fixtures load cleanly and published v1-v11 schema hashes stay pinned', async () => {
+test('legacy fixtures load cleanly and published v1-v12 schema hashes stay pinned', async () => {
   const v1 = parseShowFile(await readFile(new URL('./fixtures/legacy-v1.stageforge.show.json', import.meta.url), 'utf8'));
   const v2 = parseShowFile(await readFile(new URL('./fixtures/legacy-v2.stageforge.show.json', import.meta.url), 'utf8'));
   const v3 = parseShowFile(await readFile(new URL('./fixtures/native-authoring-v3.stageforge.show.json', import.meta.url), 'utf8'));
@@ -233,6 +233,7 @@ test('legacy fixtures load cleanly and published v1-v11 schema hashes stay pinne
     9: 'be22bb11ec9bc656b5235b0fa0a0241126a7830e45ae41ffcff9c1f4f3a7e3a5',
     10: 'a1e8ba9cbf05ceeca2f1f2467240bfff1c736c301ea45f6957b1d3faf5a8cf07',
     11: '3a628624280cbebd5c6e003d6b05558e3a8261545ea4b692223a13657f5d920d',
+    12: '1b590eed165d55ba87193cb053b04d62db64694ea85278857332d10ed008160d',
   };
   for (const [ver, hash] of Object.entries(expectedHashes)) {
     const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));

@@ -2809,6 +2809,8 @@ export class StageEngine {
       transforms: this.crowdBaseTransforms.map((item) => ({ ...item })),
       batches: this.crowdBatches.map(batch => ({
         modelId: batch.modelId,
+        modelIds: [...batch.modelIds],
+        packed: batch.packed,
         batchIndex: batch.batchIndex,
         count: batch.mesh.count,
         phoneCount: batch.phonesMesh?.count ?? 0,

@@ -132,7 +132,8 @@ test('v10 is additive, round-trips crowd data, and leaves crowd-free legacy writ
 test('the validated built-in model contract is measurable and preserves legacy pivots and budgets', () => {
   const human = models.STAGEFORGE_HUMAN_V1;
   assert.deepEqual(Object.keys(models.CROWD_MODEL_REGISTRY), [
-    'stageforge-alien-v1', 'stageforge-fox-v1', 'stageforge-human-v1', 'stageforge-human-v2', 'stageforge-robot-v1',
+    'stageforge-alien-v1', 'stageforge-fox-v1', 'stageforge-human-v1', 'stageforge-human-v2',
+    'stageforge-moth-v1', 'stageforge-robot-v1', 'stageforge-ticket-taker-v1',
   ]);
   assert.equal(human.id, 'stageforge-human-v1');
   assert.deepEqual(human.poses.standing.pivot, [0, 0, 0]);
@@ -451,5 +452,86 @@ test('new human tints and original fox geometry stay inside the five-batch stere
   assert.equal(human.phonesMesh, null);
   assert.equal(fox.phonesMesh, null);
   assert.equal(human.mesh.material.customProgramCacheKey(), 'crowd-human-tint-regions-v1');
+  geometry.disposeSharedMaterials(mats);
+});
+
+test('packed monochrome models retain individual IDs, exact padded admission and one owned texture', () => {
+  const layout = crowd.withCrowdModelMix(crowd.makeDefaultCrowd(arena), 'original-with-cartoons');
+  const resolved = crowd.resolveCrowdLayout(arena, layout);
+  const stored = write(arena, layout);
+  assert.equal(stored.version, 13);
+  assert.equal(stored.$schema, showFiles.V13_SCHEMA_URL);
+  assert.deepEqual(showFiles.parseShowFile(JSON.stringify(stored)).crowd, layout);
+  const oldVersion = { ...stored, version: 12, $schema: showFiles.V12_SCHEMA_URL };
+  assert.throws(() => showFiles.parseShowFile(JSON.stringify(oldVersion)), /modelWeights/i);
+
+  const mats = geometry.createSharedMaterials({ tier: 'high' });
+  const built = geometry.buildVenueArchitecture('arena', 0, mats, arena.stageWidth, arena.stageDepth, arena.stageHeight, resolved);
+  const packed = built.crowdBatches.find(batch => batch.packed);
+  assert.deepEqual(packed.modelIds, ['stageforge-fox-v1', 'stageforge-human-v2', 'stageforge-moth-v1', 'stageforge-ticket-taker-v1']);
+  assert.equal(built.crowdBatches.length, 4);
+  assert.equal(built.resourceAdmission.packedVertexTextures, 1);
+  assert.deepEqual(built.resourceAdmission.arenaDelta, { draws: 6, triangles: 0, textures: 1 });
+  assert.equal(built.resourceAdmission.admitted, true);
+  let actualTriangles = 0;
+  for (const batch of built.crowdBatches) {
+    actualTriangles += batch.mesh.geometry.index.count / 3 * batch.mesh.count;
+  }
+  assert.equal(built.resourceAdmission.instanceTriangles, actualTriangles);
+
+  const slots = packed.mesh.geometry.getAttribute('crowdGeometrySlot');
+  for (const binding of built.placementBindings.filter(item => item.batchIndex === packed.batchIndex)) {
+    assert.equal(packed.placementIds[binding.instanceIndex], binding.placementId);
+    assert.equal(slots.getX(binding.instanceIndex), packed.modelIds.indexOf(binding.modelId));
+    assert.equal(packed.transforms[binding.instanceIndex].modelId, binding.modelId);
+    const transform = packed.transforms[binding.instanceIndex];
+    const bounds = packed.mesh.boundingBox;
+    assert.ok(bounds.containsPoint(new THREE.Vector3(transform.x, transform.y, transform.z)));
+  }
+  assert.equal(packed.phonesMesh, null);
+  const human = built.crowdBatches.find(batch => batch.modelId === 'stageforge-human-v1');
+  assert.equal(human.phonesMesh.instanceMatrix, human.mesh.instanceMatrix);
+
+  const shaderInput = () => ({
+    vertexShader: THREE.ShaderLib.standard.vertexShader,
+    fragmentShader: THREE.ShaderLib.standard.fragmentShader,
+    uniforms: {},
+  });
+  const baseMaterial = packed.mesh.material;
+  const baseShader = shaderInput();
+  baseMaterial.onBeforeCompile(baseShader);
+  const texture = baseShader.uniforms.uPackedCrowdVertices.value;
+  assert.equal(texture.image.width, 262 * 3);
+  assert.equal(texture.image.height, 12);
+  assert.match(baseShader.vertexShader, /texelFetch\(uPackedCrowdVertices/);
+  assert.match(baseShader.vertexShader, /#include <morphtarget_vertex>/);
+
+  for (const slot of [2, 3]) {
+    const offset = (slot * 3 + 2) * texture.image.width * 4;
+    const values = texture.image.data.subarray(offset, offset + texture.image.width * 4);
+    for (let column = 0; column < values.length; column += 4) {
+      assert.equal(values[column], values[column + 1]);
+      assert.equal(values[column], values[column + 2]);
+    }
+  }
+
+  let disposals = 0;
+  texture.addEventListener('dispose', () => disposals++);
+  const controller = new lighting.CrowdLightingController('high');
+  controller.bindVenue({
+    crowdMesh: built.crowdMesh, phonesMesh: built.phonesMesh, batches: built.crowdBatches,
+    transforms: built.crowdBaseTransforms, seated: false, stageDepth: arena.stageDepth,
+  });
+  controller.setEnabled(true);
+  const litShader = shaderInput();
+  packed.mesh.material.onBeforeCompile(litShader);
+  assert.equal(litShader.uniforms.uPackedCrowdVertices.value, texture);
+  assert.match(litShader.vertexShader, /texelFetch\(uPackedCrowdVertices/);
+  assert.ok(litShader.uniforms.uCrowdLightDir0);
+  controller.dispose();
+  assert.equal(packed.mesh.material, baseMaterial);
+  assert.equal(disposals, 0, 'lighting variants do not own the geometry texture');
+  packed.mesh.dispose();
+  assert.equal(disposals, 1, 'the packed mesh owns the geometry texture');
   geometry.disposeSharedMaterials(mats);
 });
