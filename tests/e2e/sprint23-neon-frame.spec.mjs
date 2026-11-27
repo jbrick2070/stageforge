@@ -213,29 +213,73 @@ test('Sprint 23B: neon architecture visuals, accessibility, exports, lifecycle a
   await page.keyboard.press('Escape');
 
   // Near-eye attenuation and close-up aliasing: the decorative batch must not fill the view.
-  const nearEye = await page.evaluate(async () => {
+  await page.evaluate(() => {
     const p = window.stageforgeProbe;
-    const pixels = async (enabled) => {
-      p.setRenderSettings({ lookNeonFrame: enabled, trueColour: false, reducedEffects: false, bloom: 'off' });
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const img = new Image(); img.src = p.redrawAndCapture(); await img.decode();
-      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
-      const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0); return ctx.getImageData(0, 0, c.width, c.height);
-    };
     p.setCameraPose([0, 1.72, 5.57], [0, 1.7, 0]);
-    const off = await pixels(false), on = await pixels(true);
-    let changed = 0, strong = 0;
-    for (let i = 0; i < off.data.length; i += 4) {
-      const d = Math.max(Math.abs(off.data[i] - on.data[i]), Math.abs(off.data[i + 1] - on.data[i + 1]), Math.abs(off.data[i + 2] - on.data[i + 2]));
-      if (d > 2) changed++;
-      if (d > 96) strong++;
-    }
-    const count = off.width * off.height;
-    return { changedFraction: changed / count, strongFraction: strong / count };
+    p.setRenderSettings({ lookNeonFrame: false, trueColour: false, reducedEffects: false, bloom: 'off' });
   });
-  console.log('[SPRINT23B_NEAR_EYE]', JSON.stringify(nearEye));
-  expect(nearEye.strongFraction).toBeLessThan(0.08);
-  expect(nearEye.changedFraction).toBeLessThan(0.35);
+  await waitFrames(page, 3);
+
+  // Audio is paused, but renderer ticks still move beams and particles. Capture both
+  // PNGs before yielding to another frame, changing only the neon batch between them.
+  const nearEyeFrames = await page.evaluate(() => {
+    const p = window.stageforgeProbe;
+    const capture = () => {
+      const dataUrl = p.redrawAndCapture();
+      const { activePasses, neonFrame } = p.graphicsProbe();
+      return { dataUrl, activePasses, neonFrame };
+    };
+    const off = capture();
+    p.setRenderSettings({ lookNeonFrame: true });
+    return { off, on: capture() };
+  });
+  try {
+    const { off, on } = nearEyeFrames;
+    expect(off.neonFrame).toMatchObject({ requested: false, allocated: false, active: false });
+    expect(on.neonFrame).toMatchObject({ requested: true, allocated: true, active: true });
+    expect(on.activePasses).toEqual(off.activePasses);
+    expect(off.activePasses).not.toContain('UnrealBloomPass');
+    const nearEye = await page.evaluate(async ([offUrl, onUrl]) => {
+      const pixels = async (dataUrl) => {
+        const img = new Image();
+        img.src = dataUrl;
+        await img.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        return ctx.getImageData(0, 0, canvas.width, canvas.height);
+      };
+      const [off, on] = await Promise.all([pixels(offUrl), pixels(onUrl)]);
+      let offHasScene = false;
+      let changed = 0, strong = 0;
+      for (let i = 0; i < off.data.length; i += 4) {
+        offHasScene ||= off.data[i] !== off.data[0]
+          || off.data[i + 1] !== off.data[1] || off.data[i + 2] !== off.data[2];
+        const d = Math.max(Math.abs(off.data[i] - on.data[i]), Math.abs(off.data[i + 1] - on.data[i + 1]), Math.abs(off.data[i + 2] - on.data[i + 2]));
+        if (d > 2) changed++;
+        if (d > 96) strong++;
+      }
+      const count = off.width * off.height;
+      return {
+        offSize: [off.width, off.height], onSize: [on.width, on.height], offHasScene,
+        changedFraction: changed / count, strongFraction: strong / count,
+      };
+    }, [off.dataUrl, on.dataUrl]);
+    console.log('[SPRINT23B_NEAR_EYE]', JSON.stringify(nearEye));
+    expect(nearEye.onSize).toEqual(nearEye.offSize);
+    expect(nearEye.offHasScene).toBe(true);
+    expect(nearEye.strongFraction).toBeLessThan(0.08);
+    expect(nearEye.changedFraction).toBeLessThan(0.35);
+  } catch (error) {
+    for (const [state, { dataUrl }] of Object.entries(nearEyeFrames)) {
+      await test.info().attach(`near-eye-neon-${state}`, {
+        body: Buffer.from(dataUrl.split(',')[1], 'base64'), contentType: 'image/png',
+      });
+    }
+    throw error;
+  }
 
   // Batching is independent, and toggle/rebuild/resize/context restore returns to the same bounded resource state.
   await page.evaluate(() => {
