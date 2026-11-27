@@ -14,6 +14,7 @@ after(() => compiler.close());
 const { RenderBatcher, BATCH_HIDDEN_LAYER, isBatchable, geometryHash, sameGeometry } = await compiler.ssrLoadModule('/src/engine/renderBatcher.ts');
 const { VOLUMETRIC_BEAM_VARIANT, volumetricBeamProxy } = await compiler.ssrLoadModule('/src/engine/beamProxy.ts');
 const { VOLUMETRIC_BEAM_VERT, VOLUMETRIC_BEAM_FRAG } = await compiler.ssrLoadModule('/src/engine/shaders.ts');
+const { SIX_FACET_LINEAR_PRISM } = await compiler.ssrLoadModule('/src/engine/prismPattern.ts');
 
 const hidden = new THREE.Layers();
 hidden.set(BATCH_HIDDEN_LAYER);
@@ -500,6 +501,15 @@ test('volumetricBeamProxy batches moving-head beam shaders, tracks uniforms, and
   assert.deepEqual(Array.from(paramsAttr.array.slice(4, 8)), [1.25, 1, Math.fround(2.4), Math.fround(1.462)]);
   assert.equal(batch.material.uniforms.uHaze.value, 0.92);
   assert.equal(batch.material.uniforms.uTime.value, 7.5);
+
+  b0.material.uniforms.uPrism.value = 0.75;
+  b1.material.uniforms.uPrism.value = 0.375;
+  b1.material.uniforms.uPrismTopology = { value: SIX_FACET_LINEAR_PRISM };
+  batcher.sync();
+  assert.equal(paramsAttr.getY(0), 0.75);
+  assert.equal(paramsAttr.getY(1), -0.375);
+  assert.equal(batches(batcher).length, 1, 'identical meshes with different prism topologies stay batched');
+  assert.equal(batcher.stats().released, 0);
 
   assert.deepEqual(Array.from(endRadiusDeltaAttr.array), [0, 0], 'existing beam materials default to zero deformation');
   b0.material.uniforms.uEndRadiusDelta = { value: 1.25 };

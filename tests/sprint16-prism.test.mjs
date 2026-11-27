@@ -285,6 +285,92 @@ describe('Sprint 16: Jacobian, EWA Gaussian filtering, energy conservation & con
   });
 });
 
+describe('Realism 7: MegaPointe six-facet linear prism', () => {
+  it('selects only the explicit model and projects six equal, collinear centres in the same tilted beam frame', () => {
+    const { SIX_FACET_LINEAR_PRISM: linear, CIRCULAR_PRISM: circular, PRISM_RING_RADIUS: radius } = prismMod;
+    assert.equal(prismMod.resolvePrismTopology('beam', 'robe-megapointe'), linear);
+    assert.equal(prismMod.resolvePrismTopology('floor_beam', 'robe-megapointe'), linear);
+    assert.equal(prismMod.resolvePrismTopology('wash', 'robe-megapointe'), circular);
+    assert.equal(prismMod.resolvePrismTopology('floor_beam'), circular);
+    assert.equal(prismMod.resolvePrismTopology('beam', 'claypaky-sharpy'), circular);
+    assert.equal(prismMod.encodePrismMix(0, linear), 0);
+    assert.equal(prismMod.encodePrismMix(0.375, linear), -0.375);
+    assert.equal(prismMod.encodePrismMix(0.375, circular), 0.375);
+
+    for (const isFloor of [false, true]) {
+      const { beam } = buildStageBeamHierarchy({ mountYaw: 0.48, podTiltZ: 0.23, pan: -0.31, tilt: isFloor ? 0.9 : -0.63 });
+      const aerial = prismMod.aerialPrismAzimuth(beam.matrixWorld, 0.17, new THREE.Vector3(4, 5, 16), isFloor);
+      assert.equal(aerial.collinear, false);
+      for (const phase of [0, prismMod.prismPhase(9.25, 1.731), prismMod.prismPhase(120, 2.193)]) {
+        const centres = prismMod.prismShaftCenters(phase, 1, undefined, linear);
+        const direction = new THREE.Vector2(Math.sin(phase), -Math.cos(phase));
+        assert.equal(centres.length, 6);
+        assert.equal(prismMod.prismShaftCenters(phase, 1).length, 8);
+        for (const [i, [u, v]] of centres.entries()) {
+          const signedOffset = radius * (2 * i - 5) / 5;
+          assert.ok(Math.abs(u * direction.y - v * direction.x) < 1e-12);
+          assert.ok(Math.abs(u * direction.x + v * direction.y - signedOffset) < 1e-12);
+          const world = new THREE.Vector3().addScaledVector(aerial.tx, u).addScaledVector(aerial.tz, v);
+          assert.ok(Math.abs(world.dot(aerial.across) - signedOffset * Math.sin(phase - aerial.azimuth)) < 1e-6);
+          assert.ok(world.length() < 1);
+        }
+      }
+    }
+  });
+
+  it('keeps the linear receiver energy under filtering and blends continuously with the original beam', () => {
+    const linear = prismMod.SIX_FACET_LINEAR_PRISM;
+    const size = 120;
+    const cell = 2 / size;
+    for (const [phase, filter] of [[0, [0, 0, 0, 0]], [0.7, [0.09, 0.02, 0, 0.07]]]) {
+      let sum = 0;
+      for (let iy = 0; iy < size; iy++) {
+        const v = -1 + (iy + 0.5) * cell;
+        for (let ix = 0; ix < size; ix++) {
+          const u = -1 + (ix + 0.5) * cell;
+          sum += prismMod.prismPoolProfile(u, v, 1, phase, ...filter, 1, linear) * cell ** 2;
+        }
+      }
+      assert.ok(Math.abs(sum / prismMod.PRISM_BEAM_INTEGRAL_E0 - 1) < 0.015);
+    }
+    const sample = (mix) => prismMod.prismPoolProfile(0, 0.426, 1, 0, 0, 0, 0, 0, mix, linear);
+    assert.equal(sample(0), prismMod.baseBeamPoolProfile(0.426));
+    assert.ok(sample(1) > sample(0));
+    assert.ok(Math.abs(sample(0.375) - (0.625 * sample(0) + 0.375 * sample(1))) < 1e-12);
+    assert.ok(sample(1) > prismMod.prismPoolProfile(0.426, 0, 1, 0, 0, 0, 0, 0, 1, linear));
+  });
+
+  it('packs both topologies into the existing receiver attributes and keeps the overlap guard', () => {
+    const { beam } = buildStageBeamHierarchy({ y: 9 });
+    const optics = fixtureOpticsMod.fixtureOptics('beam');
+    const color = new THREE.Color('white');
+    const { SIX_FACET_LINEAR_PRISM: linear, CIRCULAR_PRISM: circular } = prismMod;
+    const pools = new beamPoolsMod.BeamPools(38, 22, 11, 1.8, undefined, { prism: true, tier: 'low' });
+    const add = (mix, phase, topology) => pools.add(beam, 'beam', false, color, 1, optics, mix, phase, undefined, topology);
+    pools.begin();
+    add(0.375, 0.75, linear);
+    add(0.625, 0.5, circular);
+    add(0, 1, linear);
+    const bytes = pools.finish();
+    const stats = pools.getStats();
+    assert.equal(stats.allocated, true);
+    assert.equal(stats.active, true);
+    assert.equal(stats.extraBufferBytes, 38 * 2 * 32);
+    assert.equal(bytes, stats.totalInstances * 100);
+    assert.deepEqual(pools.frustaForTest().slice(0, 3).map(({ prism }) => prism), [
+      { phase: 0.75, signedMix: -0.375 }, { phase: 0.5, signedMix: 0.625 }, { phase: 0, signedMix: 0 },
+    ]);
+
+    pools.begin();
+    for (let i = 0; i < 37; i++) add(1, 0, linear);
+    pools.finish();
+    assert.equal(pools.getStats().suppressedReason, 'low-tier-overlap');
+    assert.equal(pools.getStats().active, false);
+    assert.equal(pools.group.children[0].material.uniforms.uPrismSuppressed.value, 1);
+    pools.dispose();
+  });
+});
+
 describe('Sprint 16: BeamPools flag-off parity, <0.1 MiB cap, upload bytes, low-tier guard & preview flash limiter', () => {
   it('allocates zero optional attributes/uniforms when off, tracks exact upload bytes, and enforces <0.1 MiB cap & low-tier hysteresis', () => {
     const opticsBeam = fixtureOpticsMod.fixtureOptics('beam');

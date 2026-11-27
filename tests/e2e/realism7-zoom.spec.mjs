@@ -276,3 +276,179 @@ test('Realism 7 finite lens geometry, cold Measure, pool refill and batched rend
   expect(reopened.find((unit) => unit.groupId === 'robe').beamAngleDeg).toBe(21);
   expect(reopened.find((unit) => unit.groupId === 'authored').calibratedOptics).toBeUndefined();
 });
+
+function prismRehearsal() {
+  const file = rehearsal();
+  file.cues = [
+    { id: 'plain', name: 'Plain beam', tag: 'SHOW', accent: '#ffffff', state: { goboPrism: false } },
+    { id: 'prism', name: 'Apply prism', tag: 'SHOW', accent: '#ffffff', state: { goboPrism: true } },
+  ];
+  file.activeCueId = 'plain';
+  return file;
+}
+
+// This case uses baseline probe fields only. The same file and case run on both revisions.
+test('Realism 7 deterministic six-buffer prism DMX observation', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  await freeze(page);
+  await openRehearsal(page, prismRehearsal());
+  await page.getByRole('button', { name: 'Show cues', exact: true }).press('Enter');
+  await page.evaluate(() => window.stageforgeProbe.setRenderSettings({ prismPools: true }));
+  const ticks = [];
+  const tick = async (name, cueId, zoom, prism) => {
+    await expect.poll(() => page.evaluate(() => window.stageforgeProbe.activeCueId())).toBe(cueId);
+    const { buffers, active } = await page.evaluate((beamZoom) => {
+      const p = window.stageforgeProbe;
+      p.patchShowState({ beamZoom });
+      for (let i = 0; i < 3; i++) p.stepAndReadLuminance(200);
+      return {
+        buffers: { simulated: p.dmxSnapshot(), physical: p.physicalDmxSnapshot(), serial: p.serialDmxSnapshot() },
+        active: p.graphicsProbe().prismPools.activePrismInstances,
+      };
+    }, zoom);
+    expect(active > 0).toBe(prism);
+    for (const output of Object.values(buffers)) {
+      expect(output.u1).toHaveLength(512);
+      expect(output.u2).toHaveLength(512);
+    }
+    for (const output of [buffers.physical, buffers.serial]) {
+      expect(output.u1.slice(179, 182).every((byte) => byte > 0)).toBe(true);
+      expect(output.u2.slice(169, 172).every((byte) => byte > 0)).toBe(true);
+    }
+    ticks.push({ name, ...buffers });
+    return buffers;
+  };
+  for (const zoom of [0, 0.5, 1]) {
+    const before = await tick(`zoom-${zoom}-plain`, 'plain', zoom, false);
+    await page.getByRole('button', { name: 'Cue 2, Apply prism' }).press('Enter');
+    const on = await tick(`zoom-${zoom}-prism`, 'prism', zoom, true);
+    await page.getByRole('button', { name: 'Cue 1, Plain beam' }).press('Enter');
+    const after = await tick(`zoom-${zoom}-released`, 'plain', zoom, false);
+    expect(on).toEqual(before);
+    expect(after).toEqual(before);
+  }
+  await info.attach('realism7-dmx-bytes', { body: Buffer.from(JSON.stringify(ticks)), contentType: 'application/json' });
+});
+
+test('Realism 7 MegaPointe linear prism agrees in aerial, receiver and restored preview', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (/THREE\.WebGLProgram/.test(message.text())) errors.push(message.text());
+  });
+  await page.clock.install();
+  await page.goto('/?probe');
+  await openRehearsal(page, prismRehearsal());
+  await page.evaluate(() => {
+    const p = window.stageforgeProbe;
+    p.setCameraPose([0, 5.4, 14], [0, 4, 0]);
+    p.setRenderSettings({ bloom: 'off', prismPools: true, litPuffs: false });
+    p.patchShowState({ focusMarkId: 'platform:main-deck' });
+  });
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.beamAxes().filter((beam) => beam.optics.emitted > 0.001).length)).toBe(9);
+  const plain = await page.evaluate(() => window.stageforgeProbe.poolFrusta());
+  expect(plain.length).toBeGreaterThan(0);
+  expect(plain.every(({ prism }) => prism.signedMix === 0)).toBe(true);
+  await page.getByRole('button', { name: 'Show cues', exact: true }).press('Enter');
+  await page.getByRole('button', { name: 'Cue 2, Apply prism' }).press('Enter');
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.activeCueId())).toBe('prism');
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+
+  for (const zoom of [0, 0.5, 1]) {
+    const state = await page.evaluate((beamZoom) => {
+      const p = window.stageforgeProbe;
+      p.patchShowState({ beamZoom });
+      p.stepAndReadLuminance(200);
+      return { units: p.measureSnapshot().units, beams: p.beamPrisms(), pools: p.poolFrusta() };
+    }, zoom);
+    expect(state.beams.filter(({ topology }) => topology === 1)).toHaveLength(4);
+    const [named] = state.units.filter(({ groupId }) => groupId === 'robe');
+    expect(named.beamAngleDeg).toBeCloseTo(1.8 + zoom * (21 - 1.8), 8);
+    for (const unit of state.units.filter(({ type }) => type === 'beam')) {
+      const beam = state.beams.find(({ unitId }) => unitId === unit.unitId);
+      // An explicit profile keeps its authored angle and still uses the catalogue prism.
+      const isMegaPointe = ['robe', 'authored', 'robe-floor'].includes(unit.groupId);
+      expect(beam.topology).toBe(isMegaPointe ? 1 : 0);
+      expect(beam.mix).toBe(1);
+      const { x, y, z } = unit.lensOrigin;
+      const received = state.pools.find(({ lens }) => Math.hypot(lens[0] - x, lens[1] - y, lens[2] - z) < 1e-5);
+      expect(received, `${unit.groupId} has a receiver at zoom ${zoom}`).toBeDefined();
+      expect(received.prism.signedMix).toBe(isMegaPointe ? -1 : 1);
+      expect(received.prism.phase).toBeCloseTo(beam.phase, 6);
+    }
+  }
+
+  const images = await page.evaluate(async () => {
+    const p = window.stageforgeProbe;
+    p.setBatching(true);
+    const batched = p.redrawAndCapture();
+    const on = p.renderStats();
+    const pools = p.redrawAndCapture({ hideBeams: true });
+    p.setBatching(false);
+    const ordinary = p.redrawAndCapture();
+    p.setBatching(true);
+    p.setRenderSettings({ prismPools: false });
+    const withoutPrismPools = p.redrawAndCapture({ hideBeams: true });
+    p.redrawAndCapture();
+    const off = p.renderStats();
+    const disabled = p.graphicsProbe().prismPools;
+    p.setRenderSettings({ prismPools: true });
+    const refilled = p.poolFrusta();
+    p.simulateContextLoss(true);
+    p.simulateContextLoss(false);
+    const restored = p.poolFrusta();
+
+    const decode = async (source) => {
+      const img = new Image();
+      img.src = source;
+      await img.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    };
+    const diff = (a, b) => a.reduce((sum, value, i) => sum + Math.abs(value - b[i]), 0) / (a.length * 255);
+    const [batchedPixels, ordinaryPixels, poolsPixels, noPrismPixels] = await Promise.all(
+      [batched, ordinary, pools, withoutPrismPools].map(decode),
+    );
+    return { on, off, disabled, refilled, restored, batched, pools,
+      aerialSignal: diff(batchedPixels, poolsPixels),
+      poolSignal: diff(poolsPixels, noPrismPixels),
+      parity: diff(batchedPixels, ordinaryPixels),
+    };
+  });
+  await info.attach('linear-prism-preview', { body: Buffer.from(images.batched.split(',')[1], 'base64'), contentType: 'image/png' });
+  await info.attach('linear-prism-receiver', { body: Buffer.from(images.pools.split(',')[1], 'base64'), contentType: 'image/png' });
+  expect(images.aerialSignal).toBeGreaterThan(0.0001);
+  expect(images.poolSignal).toBeGreaterThan(0.00001);
+  expect(images.parity).toBeLessThan(images.aerialSignal * 0.15);
+  expect(images.on.calls).toBe(images.off.calls);
+  expect(images.on.textures).toBe(images.off.textures);
+  expect(images.on.batching.proxied).toBe(6);
+  expect(images.disabled.extraBufferBytes).toBe(0);
+  expect(images.refilled.some(({ prism }) => prism.signedMix === -1)).toBe(true);
+  expect(images.restored).toEqual(images.refilled);
+  expect(errors).toEqual([]);
+
+  await page.getByRole('button', { name: 'Show files' }).press('Enter');
+  const files = page.getByRole('dialog', { name: 'Show files' });
+  const saving = page.waitForEvent('download');
+  await files.getByRole('button', { name: 'Save show JSON' }).press('Enter');
+  const saved = JSON.parse(await readFile(await (await saving).path(), 'utf8'));
+  expect(saved.cues.find(({ id }) => id === 'prism').state).toEqual({ goboPrism: true });
+  expect(saved.look.goboPrism).toBe(true);
+  await files.getByRole('button', { name: 'Close Show files' }).press('Enter');
+  await openRehearsal(page, saved);
+  const reopened = await page.evaluate(() => {
+    const p = window.stageforgeProbe;
+    for (let i = 0; i < 3; i++) p.stepAndReadLuminance(200);
+    const linear = p.beamPrisms().filter(({ topology, mix }) => topology === 1 && mix === 1).length;
+    p.patchShowState({ blackout: true });
+    p.stepAndReadLuminance(200);
+    return { linear, beams: p.beamAxes().filter(({ optics }) => optics.emitted > 0).length, pools: p.poolFrusta().length };
+  });
+  expect(reopened).toEqual({ linear: 4, beams: 0, pools: 0 });
+});

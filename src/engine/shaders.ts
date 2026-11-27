@@ -1,3 +1,4 @@
+import { PRISM_AERIAL_GLSL, PRISM_ROTATION_RATE, PRISM_MIX_REACH_START, PRISM_MIX_REACH_END } from './prismPattern';
 import {
   LASER_CONE_SPREAD_BASE,
   LASER_CONE_SPREAD_SCALE,
@@ -87,12 +88,11 @@ export const VOLUMETRIC_BEAM_FRAG = /* glsl */ `
   uniform float uHaze, uTime;
   #define uColor vInstColor
   #define uIntensity vInstParams.x
-  #define uPrism vInstParams.y
   #define uSoftness vInstParams.z
   #define uSeed vInstParams.w
 #else
   uniform vec3 uColor;
-  uniform float uIntensity, uHaze, uTime, uPrism, uSoftness, uSeed;
+  uniform float uIntensity, uHaze, uTime, uPrism, uPrismTopology, uSoftness, uSeed;
 #endif
   varying vec2 vUv;
   varying vec3 vWorld;
@@ -100,6 +100,7 @@ export const VOLUMETRIC_BEAM_FRAG = /* glsl */ `
   varying vec3 vAxis;
   varying vec4 vCrossAndAzimuth;
   ${AIR_GLSL}
+  ${PRISM_AERIAL_GLSL}
 
   void main() {
     if (uIntensity < 0.001) discard;
@@ -110,17 +111,18 @@ export const VOLUMETRIC_BEAM_FRAG = /* glsl */ `
     float wash = smoothstep(1.6, 2.4, uSoftness);
     float profile = pow(chord, mix(1.4, 4.2, wash));
 
-    if (uPrism > 0.001) {
-      // Project eight angularly separated shafts onto the camera's transverse axis.
-      float phase = uTime * 0.48 + uSeed - vCrossAndAzimuth.w;
-      float radius = 0.71 * smoothstep(0.0, 0.16, reach);
-      float bundle = 0.0;
-      for (int k = 0; k < 8; ++k) {
-        float offset = across - radius * sin(phase + float(k) * 0.78539816);
-        bundle += exp2(-125.0 * offset * offset);
-      }
-      float prismProfile = chord * mix(profile, 0.055 + 0.48 * bundle, smoothstep(0.01, 0.14, reach));
-      profile = uPrism >= 0.999 ? prismProfile : mix(profile, prismProfile, clamp(uPrism, 0.0, 1.0));
+#ifdef INSTANCED_BEAM
+    float prismMix = abs(vInstParams.y);
+    bool linearPrism = vInstParams.y < 0.0;
+#else
+    float prismMix = uPrism;
+    bool linearPrism = uPrismTopology > 0.5;
+#endif
+    if (prismMix > 0.001) {
+      float phase = uTime * ${PRISM_ROTATION_RATE} + uSeed - vCrossAndAzimuth.w;
+      float bundle = prismAerialBundle(across, phase, reach, linearPrism);
+      float prismProfile = chord * mix(profile, 0.055 + 0.48 * bundle, smoothstep(${PRISM_MIX_REACH_START}, ${PRISM_MIX_REACH_END}, reach));
+      profile = prismMix >= 0.999 ? prismProfile : mix(profile, prismProfile, clamp(prismMix, 0.0, 1.0));
     }
 
     float endFade = 1.0 - smoothstep(0.69, 1.0, reach);

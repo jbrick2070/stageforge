@@ -1,16 +1,33 @@
 import * as THREE from 'three';
+import type { FixtureType, FloorFxType } from '../types/show';
 import type { RenderTier } from './hardwareMaterials';
 
 /**
  * Shared constants, pure geometry/projection math, CPU filtering oracle,
  * overlap-guard policy, and GLSL evaluation snippet for Sprint 16 prism floor projections.
  *
- * Constants mirror `VOLUMETRIC_BEAM_VERT` / `VOLUMETRIC_BEAM_FRAG` (`src/engine/shaders.ts`)
- * and are interpolated directly into `BeamPools` (`src/engine/beamPools.ts`) so CPU tests
- * and GPU shaders cannot drift.
+ * The aerial and receiver GLSL snippets use these constants alongside the CPU oracle.
  */
 
 export const PRISM_SHAFT_COUNT = 8;
+export const CIRCULAR_PRISM = 0;
+export const SIX_FACET_LINEAR_PRISM = 1;
+export type PrismTopology = typeof CIRCULAR_PRISM | typeof SIX_FACET_LINEAR_PRISM;
+export const LINEAR_PRISM_SHAFT_COUNT = 6;
+const LINEAR_PRISM_PAIRS = LINEAR_PRISM_SHAFT_COUNT / 2;
+
+/** Robe documents the six-facet line. Spacing and rotation use the preview envelope. */
+export function resolvePrismTopology(kind: FixtureType | FloorFxType, authoredCatalogId?: string): PrismTopology {
+  return authoredCatalogId === 'robe-megapointe' && (kind === 'beam' || kind === 'floor_beam')
+    ? SIX_FACET_LINEAR_PRISM : CIRCULAR_PRISM;
+}
+
+/** Sign selects topology in the existing per-instance mix slots. Zero means no pattern. */
+export function encodePrismMix(mix: number, topology: PrismTopology): number {
+  return mix > 0 && topology === SIX_FACET_LINEAR_PRISM ? -mix : mix;
+}
+
+const linearOffset = (pair: number) => (2 * pair + 1) / (LINEAR_PRISM_SHAFT_COUNT - 1);
 /** Matches `uTime * 0.48 + uSeed` in `VOLUMETRIC_BEAM_FRAG`. */
 export const PRISM_ROTATION_RATE = 0.48;
 /** Matches `0.71 * smoothstep(0.0, 0.16, reach)` in `VOLUMETRIC_BEAM_FRAG`. */
@@ -80,20 +97,31 @@ export function baseBeamPoolProfile(r: number): number {
 }
 
 /**
- * Compute the 8 prism shaft centers in normalized beam cross-section `(u, v)` coordinates
+ * Compute prism shaft centers in normalized beam cross-section `(u, v)` coordinates
  * (`u = dot(radial, Tx) / radius`, `v = dot(radial, Tz) / radius`).
- * Uses the exact same `±d0..±d3` 45°-step rotation construction as `BeamPools` GLSL.
+ * Shares the linear offsets and circular rotation construction with the receiver GLSL.
  */
 export function prismShaftCenters(
   phase: number,
   reach: number,
   out?: [number, number][],
+  topology: PrismTopology = CIRCULAR_PRISM,
 ): [number, number][] {
   const clampedReach = Math.max(0, Math.min(1, Number.isFinite(reach) ? reach : 0));
   const safePhase = Number.isFinite(phase) ? phase : 0;
   const ringR = PRISM_RING_RADIUS * smoothstep(0, PRISM_REACH_RAMP_END, clampedReach);
   const d0x = Math.sin(safePhase) * ringR;
   const d0y = -Math.cos(safePhase) * ringR;
+  if (topology === SIX_FACET_LINEAR_PRISM) {
+    const target = out ?? new Array<[number, number]>(LINEAR_PRISM_SHAFT_COUNT);
+    target.length = LINEAR_PRISM_SHAFT_COUNT;
+    for (let pair = 0; pair < LINEAR_PRISM_PAIRS; pair++) {
+      const offset = linearOffset(pair);
+      target[LINEAR_PRISM_PAIRS - 1 - pair] = [-d0x * offset, -d0y * offset];
+      target[LINEAR_PRISM_PAIRS + pair] = [d0x * offset, d0y * offset];
+    }
+    return target;
+  }
   const d2x = -d0y;
   const d2y = d0x;
   const d1x = (d0x + d2x) * INV_SQRT2;
@@ -102,6 +130,7 @@ export function prismShaftCenters(
   const d3y = (d2y - d0y) * INV_SQRT2;
 
   const target = out ?? new Array<[number, number]>(PRISM_SHAFT_COUNT);
+  target.length = PRISM_SHAFT_COUNT;
   target[0] = [d0x, d0y];
   target[1] = [d1x, d1y];
   target[2] = [d2x, d2y];
@@ -114,16 +143,16 @@ export function prismShaftCenters(
 }
 
 /**
- * Numerically integrate the complete clipped 8-spot profile (including pedestal and `outerMask`
+ * Numerically integrate the complete clipped spot profile (including pedestal and `outerMask`
  * over the unit disk `u² + v² < 1`) at full ring radius (`reach = 1`, `J = 0`) so
  * `∫_disk P_prism dA === PRISM_BEAM_INTEGRAL_E0`.
  */
-export function computeNormalizedPrismSpotGain(gridSamples = 128): number {
+export function computeNormalizedPrismSpotGain(gridSamples = 128, topology: PrismTopology = CIRCULAR_PRISM): number {
   const n = Math.max(16, Math.round(gridSamples));
   const step = 2 / n;
   const cellArea = step * step;
   const inv2SigmaSq = 0.5 / PRISM_SIGMA_SQ;
-  const centers = prismShaftCenters(0, 1);
+  const centers = prismShaftCenters(0, 1, undefined, topology);
   let pedestalIntegral = 0;
   let spotsIntegral = 0;
   for (let iy = 0; iy < n; iy++) {
@@ -136,7 +165,7 @@ export function computeNormalizedPrismSpotGain(gridSamples = 128): number {
       pedestalIntegral += PRISM_AMBIENT_SHARE * baseBeamPoolProfile(r) * cellArea;
       const outerMask = 1 - smoothstep(PRISM_OUTER_MASK_START, PRISM_OUTER_MASK_END, r);
       let s = 0;
-      for (let k = 0; k < PRISM_SHAFT_COUNT; k++) {
+      for (let k = 0; k < centers.length; k++) {
         const du = u - centers[k][0];
         const dv = v - centers[k][1];
         s += Math.exp(-(du * du + dv * dv) * inv2SigmaSq);
@@ -147,11 +176,12 @@ export function computeNormalizedPrismSpotGain(gridSamples = 128): number {
   const targetSpotsEnergy = Math.max(0, PRISM_BEAM_INTEGRAL_E0 - pedestalIntegral);
   return spotsIntegral > 0
     ? targetSpotsEnergy / spotsIntegral
-    : ((1 - PRISM_AMBIENT_SHARE) * PRISM_BEAM_INTEGRAL_E0) / PRISM_UNCLIPPED_SPOTS_INTEGRAL;
+    : ((1 - PRISM_AMBIENT_SHARE) * PRISM_BEAM_INTEGRAL_E0) / (PRISM_UNCLIPPED_SPOTS_INTEGRAL * (centers.length / PRISM_SHAFT_COUNT));
 }
 
 /** Disk-integrated spot gain shared by CPU oracle and `BeamPools` GLSL shader. */
 export const PRISM_SPOT_GAIN = computeNormalizedPrismSpotGain(128);
+export const LINEAR_PRISM_SPOT_GAIN = computeNormalizedPrismSpotGain(128, SIX_FACET_LINEAR_PRISM);
 
 /** Wrap prism phase `(timeSec * 0.48 + seed)` into `[0, 2π)` without precision drift. */
 export function prismPhase(timeSec: number, seed: number): number {
@@ -324,7 +354,7 @@ export function computePrismPoolJacobian(params: {
 
 /**
  * Pure CPU oracle matching `PRISM_POOL_EVAL_GLSL` in `src/engine/beamPools.ts`.
- * Evaluates the derivative-filtered 8-facet prism pool profile at normalized beam coordinate `(u, v)`.
+ * Evaluates the derivative-filtered prism pool profile at normalized beam coordinate `(u, v)`.
  */
 export function prismPoolProfile(
   u: number,
@@ -336,6 +366,7 @@ export function prismPoolProfile(
   jyX = 0,
   jyY = 0,
   prismMix = 1,
+  topology: PrismTopology = CIRCULAR_PRISM,
 ): number {
   const rSq = u * u + v * v;
   if (!Number.isFinite(rSq) || rSq >= 1) return 0;
@@ -377,22 +408,32 @@ export function prismPoolProfile(
   const ringR = PRISM_RING_RADIUS * smoothstep(0, PRISM_REACH_RAMP_END, clampedReach);
   const d0x = Math.sin(safePhase) * ringR;
   const d0y = -Math.cos(safePhase) * ringR;
-  const d2x = -d0y;
-  const d2y = d0x;
-  const d1x = (d0x + d2x) * INV_SQRT2;
-  const d1y = (d0y + d2y) * INV_SQRT2;
-  const d3x = (d2x - d0x) * INV_SQRT2;
-  const d3y = (d2y - d0y) * INV_SQRT2;
 
   const evalSpot = (dx: number, dy: number) => Math.exp(-(m00 * dx * dx + 2 * m01 * dx * dy + m11 * dy * dy));
-  const spots =
-    evalSpot(u - d0x, v - d0y) + evalSpot(u + d0x, v + d0y) +
-    evalSpot(u - d1x, v - d1y) + evalSpot(u + d1x, v + d1y) +
-    evalSpot(u - d2x, v - d2y) + evalSpot(u + d2x, v + d2y) +
-    evalSpot(u - d3x, v - d3y) + evalSpot(u + d3x, v + d3y);
+  const linear = topology === SIX_FACET_LINEAR_PRISM;
+  let spots = 0;
+  if (linear) {
+    for (let pair = 0; pair < LINEAR_PRISM_PAIRS; pair++) {
+      const offset = linearOffset(pair);
+      const x = d0x * offset, y = d0y * offset;
+      spots += evalSpot(u - x, v - y) + evalSpot(u + x, v + y);
+    }
+  } else {
+    const d2x = -d0y;
+    const d2y = d0x;
+    const d1x = (d0x + d2x) * INV_SQRT2;
+    const d1y = (d0y + d2y) * INV_SQRT2;
+    const d3x = (d2x - d0x) * INV_SQRT2;
+    const d3y = (d2y - d0y) * INV_SQRT2;
+    spots = evalSpot(u - d0x, v - d0y) + evalSpot(u + d0x, v + d0y) +
+      evalSpot(u - d1x, v - d1y) + evalSpot(u + d1x, v + d1y) +
+      evalSpot(u - d2x, v - d2y) + evalSpot(u + d2x, v + d2y) +
+      evalSpot(u - d3x, v - d3y) + evalSpot(u + d3x, v + d3y);
+  }
 
   const outerMask = 1 - smoothstep(PRISM_OUTER_MASK_START, PRISM_OUTER_MASK_END, r);
-  const prismVal = PRISM_AMBIENT_SHARE * baseProfile + (PRISM_SPOT_GAIN * normAmp * spots) * outerMask;
+  const gain = linear ? LINEAR_PRISM_SPOT_GAIN : PRISM_SPOT_GAIN;
+  const prismVal = PRISM_AMBIENT_SHARE * baseProfile + (gain * normAmp * spots) * outerMask;
 
   const tr = sxx + syy;
   const df = sxx - syy;
@@ -438,11 +479,42 @@ const glslNum = (n: number) => {
   return s.endsWith('.') ? `${s}0` : s;
 };
 
+const PRISM_LINEAR_OFFSETS_GLSL = /* glsl */ `
+  float prismLinearOffset(int pair) {
+    return (2.0 * float(pair) + 1.0) / ${glslNum(LINEAR_PRISM_SHAFT_COUNT - 1)};
+  }
+`;
+
+export const PRISM_AERIAL_GLSL = /* glsl */ `
+  ${PRISM_LINEAR_OFFSETS_GLSL}
+  float prismAerialBundle(float across, float phase, float reach, bool linearPrism) {
+    float radius = ${glslNum(PRISM_RING_RADIUS)} * smoothstep(0.0, ${glslNum(PRISM_REACH_RAMP_END)}, reach);
+    float bundle = 0.0;
+    if (linearPrism) {
+      float projectedAxis = radius * sin(phase);
+      for (int pair = 0; pair < ${LINEAR_PRISM_PAIRS}; pair++) {
+        float center = projectedAxis * prismLinearOffset(pair);
+        float a = across - center;
+        float b = across + center;
+        bundle += exp2(-${glslNum(PRISM_AERIAL_EXP2_COEFF)} * a * a) + exp2(-${glslNum(PRISM_AERIAL_EXP2_COEFF)} * b * b);
+      }
+      // Keep the total weight of the projected Gaussians constant across topologies.
+      return bundle * ${glslNum(PRISM_SHAFT_COUNT / LINEAR_PRISM_SHAFT_COUNT)};
+    }
+    for (int k = 0; k < ${PRISM_SHAFT_COUNT}; k++) {
+      float offset = across - radius * sin(phase + float(k) * 0.78539816);
+      bundle += exp2(-${glslNum(PRISM_AERIAL_EXP2_COEFF)} * offset * offset);
+    }
+    return bundle;
+  }
+`;
+
 /**
  * GLSL snippet interpolated directly from the exported TypeScript constants so CPU tests
  * and GPU fragment evaluation share identical math and constants.
  */
 export const PRISM_POOL_EVAL_GLSL = /* glsl */ `
+  ${PRISM_LINEAR_OFFSETS_GLSL}
   float evalPrismPoolProfile(
     float baseProfile,
     vec2 q,
@@ -451,7 +523,8 @@ export const PRISM_POOL_EVAL_GLSL = /* glsl */ `
     vec2 dir0,
     vec2 jx,
     vec2 jy,
-    float prismMix
+    float prismMix,
+    bool linearPrism
   ) {
     float clampedMix = clamp(prismMix, 0.0, 1.0);
     float reachMix = smoothstep(${glslNum(PRISM_MIX_REACH_START)}, ${glslNum(PRISM_MIX_REACH_END)}, reach);
@@ -471,21 +544,30 @@ export const PRISM_POOL_EVAL_GLSL = /* glsl */ `
     float normAmp = ${glslNum(PRISM_SIGMA_SQ)} * inversesqrt(det);
     float ringR = ${glslNum(PRISM_RING_RADIUS)} * smoothstep(0.0, ${glslNum(PRISM_REACH_RAMP_END)}, reach);
     vec2 d0 = dir0 * ringR;
-    vec2 d2 = vec2(-d0.y, d0.x);
-    vec2 d1 = (d0 + d2) * 0.707106781;
-    vec2 d3 = (d2 - d0) * 0.707106781;
     float spots = 0.0;
     vec2 p;
-    p = q - d0; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
-    p = q + d0; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
-    p = q - d1; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
-    p = q + d1; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
-    p = q - d2; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
-    p = q + d2; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
-    p = q - d3; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
-    p = q + d3; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+    if (linearPrism) {
+      for (int pair = 0; pair < ${LINEAR_PRISM_PAIRS}; pair++) {
+        vec2 center = d0 * prismLinearOffset(pair);
+        p = q - center; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+        p = q + center; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+      }
+    } else {
+      vec2 d2 = vec2(-d0.y, d0.x);
+      vec2 d1 = (d0 + d2) * 0.707106781;
+      vec2 d3 = (d2 - d0) * 0.707106781;
+      p = q - d0; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+      p = q + d0; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+      p = q - d1; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+      p = q + d1; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+      p = q - d2; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+      p = q + d2; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+      p = q - d3; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+      p = q + d3; spots += exp(-(m00 * p.x * p.x + 2.0 * m01 * p.x * p.y + m11 * p.y * p.y));
+    }
     float outerMask = 1.0 - smoothstep(${glslNum(PRISM_OUTER_MASK_START)}, ${glslNum(PRISM_OUTER_MASK_END)}, r);
-    float prismVal = ${glslNum(PRISM_AMBIENT_SHARE)} * baseProfile + (${glslNum(PRISM_SPOT_GAIN)} * normAmp * spots) * outerMask;
+    float gain = linearPrism ? ${glslNum(LINEAR_PRISM_SPOT_GAIN)} : ${glslNum(PRISM_SPOT_GAIN)};
+    float prismVal = ${glslNum(PRISM_AMBIENT_SHARE)} * baseProfile + (gain * normAmp * spots) * outerMask;
     float tr = sxx + syy;
     float df = sxx - syy;
     float maxEig = 0.5 * (tr + sqrt(max(0.0, df * df + 4.0 * sxy * sxy)));

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CIRCULAR_PRISM, encodePrismMix, SIX_FACET_LINEAR_PRISM } from './prismPattern';
 import type { ShaderProxy } from './renderBatcher';
 import { VOLUMETRIC_BEAM_FRAG, VOLUMETRIC_BEAM_VERT } from './shaders';
 
@@ -87,7 +88,8 @@ export const volumetricBeamProxy: ShaderProxy = {
       write(material, out, offset) {
         const u = (material as THREE.ShaderMaterial).uniforms;
         out[offset] = Number(u.uIntensity.value);
-        out[offset + 1] = Number(u.uPrism.value);
+        const topology = u.uPrismTopology?.value === SIX_FACET_LINEAR_PRISM ? SIX_FACET_LINEAR_PRISM : CIRCULAR_PRISM;
+        out[offset + 1] = encodePrismMix(Number(u.uPrism.value), topology);
         out[offset + 2] = Number(u.uSoftness.value);
         out[offset + 3] = Number(u.uSeed.value);
       },

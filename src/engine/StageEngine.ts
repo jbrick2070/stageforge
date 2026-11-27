@@ -94,7 +94,7 @@ import { encodeLaserDmxChannels, ildaScanTangents, LASER_ILDA_ROLL_SCALE, LASER_
 import { flickerIntensityMultiplier, laserRefreshHz } from '../data/laserScan';
 import { DEFAULT_LASER_COLORS, DEFAULT_LASER_RESOLUTION, laserProjectorKey } from '../data/laserProjectors';
 import { BeamPools, type BeamPoolsStats } from './beamPools';
-import { prismPhase } from './prismPattern';
+import { prismPhase, resolvePrismTopology, type PrismTopology } from './prismPattern';
 import {
   aerialGain, beamZoomScale, createCalibratedFrustum, evaluateCalibratedZoom, resolveMovingFixtureOptics,
   type CalibratedFrustum,
@@ -210,6 +210,7 @@ interface MovingFixtureInstance {
   opticalSetup: ReturnType<typeof resolveMovingFixtureOptics>;
   optics: ReturnType<typeof resolveMovingFixtureOptics>['optics'];
   frustum?: CalibratedFrustum;
+  prismTopology: PrismTopology;
   lensOffsetY: number;
   appliedDimmer: number;
   lastZoomScale: number;
@@ -1156,6 +1157,7 @@ export class StageEngine {
           prismMix,
           phase,
           fx.frustum,
+          fx.prismTopology,
         );
       }
       this.beamPools.finish();
@@ -2405,6 +2407,15 @@ export class StageEngine {
     return this.beamPools?.frustaForTest() ?? [];
   }
 
+  public beamPrismsForTest() {
+    return this.movingFixtures.map((fx) => ({
+      unitId: fx.unitId,
+      topology: Number(fx.beamMat.uniforms.uPrismTopology.value),
+      mix: Number(fx.beamMat.uniforms.uPrism.value),
+      phase: prismPhase(Number(fx.beamMat.uniforms.uTime.value), Number(fx.beamMat.uniforms.uSeed.value)),
+    }));
+  }
+
   public releaseDirector(crossfade: boolean) {
     this.manualFadeStart = crossfade && this.directedStep !== undefined && this.directedStep < 384
       ? this.elapsed : undefined;
@@ -3651,6 +3662,7 @@ export class StageEngine {
       }
     }
 
+    const prismTopology = resolvePrismTopology(hardwareType, catalogId);
     const beamMat = new THREE.ShaderMaterial({
       vertexShader: VOLUMETRIC_BEAM_VERT,
       fragmentShader: VOLUMETRIC_BEAM_FRAG,
@@ -3666,6 +3678,7 @@ export class StageEngine {
         uHaze: { value: 0.78 },
         uTime: { value: 0 },
         uPrism: { value: 0 },
+        uPrismTopology: { value: prismTopology },
         uSoftness: { value: type === 'wash' ? 2.4 : 1.55 },
         uSeed: { value: index * 0.731 },
       },
@@ -3690,6 +3703,7 @@ export class StageEngine {
       opticalSetup,
       optics,
       frustum,
+      prismTopology,
       lensOffsetY: parts.lensOffsetY,
       appliedDimmer: 0,
       lastZoomScale: 1,
@@ -4802,6 +4816,7 @@ export class StageEngine {
         previewPrismMix,
         previewPrismMix > 0.001 ? prismPhase(t, fxSeed) : 0,
         frustum,
+        fx.prismTopology,
       );
       fx.lastPreviewIntensity = previewFinalInt;
       fx.lastPreviewR = previewTempCol.r;

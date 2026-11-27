@@ -4,10 +4,13 @@ import type { CalibratedFrustum, fixtureOptics } from '../data/fixtureOptics';
 import type { RenderTier } from './hardwareMaterials';
 import {
   canAdmitPrismBuffers,
+  CIRCULAR_PRISM,
+  encodePrismMix,
   extractPrismFrame,
   PRISM_POOL_EVAL_GLSL,
   prismExtraBufferBytes,
   stepPrismOverlapGuard,
+  type PrismTopology,
 } from './prismPattern';
 
 /**
@@ -89,12 +92,12 @@ export const POOL_VERTEX_PRISM = /* glsl */ `
   attribute vec3 lens, axis, tint;
   attribute vec4 optics;    // near radius, radial slope, throw, wash softness
   attribute vec4 prismU;    // transverse Tx (xyz), phase (w)
-  attribute vec4 prismV;    // transverse Tz (xyz), prismMix (w)
+  attribute vec4 prismV;    // transverse Tz (xyz), signed prism mix (w)
   uniform float surfaceY;
   varying vec3 vWorld, vLens, vAxis, vTint;
   varying vec4 vOptics;
   varying vec3 vPrismU, vPrismV;
-  varying vec3 vPrismDirAndMix; // dir0.xy, prismMix
+  varying vec3 vPrismDirAndMix; // dir0.xy, signed mix (negative for six-facet linear)
   void main() {
     vec2 horizontal = mix(bounds.xy, bounds.zw, position.xy);
     vWorld = vec3(horizontal.x, surfaceY, horizontal.y);
@@ -113,7 +116,7 @@ export const POOL_VERTEX_PRISM = /* glsl */ `
  * Prism-enabled beam-pool fragment shader.
  * Evaluates screen-space world derivatives BEFORE any discard or divergent branch (GLSL ES 3.0),
  * computes the analytic 2×2 Jacobian of normalized beam coordinates `(u, v)`, and evaluates
- * the shared derivative-filtered 8-spot prism pattern.
+ * the shared derivative-filtered prism pattern.
  */
 export const POOL_FRAGMENT_PRISM = /* glsl */ `
   #if MAX_BLOCKERS > 0
@@ -160,7 +163,8 @@ export const POOL_FRAGMENT_PRISM = /* glsl */ `
     float wash = vOptics.w;
     float edge = 1.0 - smoothstep(mix(0.50, 0.03, wash), 1.0, r);
     float profile = edge * mix(1.0 - 0.32 * r * r, exp2(-2.5 * r * r), wash);
-    if (vPrismDirAndMix.z > 0.001 && uPrismSuppressed < 0.5 && wash < 0.5) {
+    float prismMix = abs(vPrismDirAndMix.z);
+    if (prismMix > 0.001 && uPrismSuppressed < 0.5 && wash < 0.5) {
       float invR = 1.0 / radius;
       vec2 q = vec2(dot(radial, vPrismU), dot(radial, vPrismV)) * invR;
       float drx = vOptics.y * dot(dWx, vAxis);
@@ -168,7 +172,7 @@ export const POOL_FRAGMENT_PRISM = /* glsl */ `
       vec2 jx = (vec2(dot(dWx, vPrismU), dot(dWx, vPrismV)) - q * drx) * invR;
       vec2 jy = (vec2(dot(dWy, vPrismU), dot(dWy, vPrismV)) - q * dry) * invR;
       float reach = clamp(throwDist / max(vOptics.z, 0.0001), 0.0, 1.0);
-      profile = evalPrismPoolProfile(profile, q, r, reach, vPrismDirAndMix.xy, jx, jy, vPrismDirAndMix.z);
+      profile = evalPrismPoolProfile(profile, q, r, reach, vPrismDirAndMix.xy, jx, jy, prismMix, vPrismDirAndMix.z < 0.0);
     }
     // Flux spreads over the beam cross-section. Matte flooring returns a
     // smaller share at grazing incidence, even when the aerial beam is bright.
@@ -196,7 +200,7 @@ export interface Platform {
 }
 
 export interface BeamPoolsOptions {
-  /** Enable Sprint 16 8-facet prism floor projections (default false; zero optional allocation when off). */
+  /** Enable prism floor projections (default false; zero optional allocation when off). */
   prism?: boolean;
   /** Active render tier for low-tier overlap hysteresis guard (default 'high'). */
   tier?: RenderTier;
@@ -360,7 +364,7 @@ class Receiver {
     origin: THREE.Vector3, direction: THREE.Vector3,
     nearRadius: number, slope: number, length: number,
     wash: boolean, color: THREE.Color, intensity: number,
-    prismU?: THREE.Vector3, prismV?: THREE.Vector3, prismMix = 0, prismPhaseRad = 0,
+    prismU?: THREE.Vector3, prismV?: THREE.Vector3, prismMix = 0, prismPhaseRad = 0, prismTopology: PrismTopology = CIRCULAR_PRISM,
   ) {
     const i = this.count++;
     const a = this.attributes;
@@ -373,7 +377,7 @@ class Receiver {
       const clampedMix = Number.isFinite(prismMix) ? Math.max(0, Math.min(1, prismMix)) : 0;
       if (clampedMix > 0.001 && !wash && prismU && prismV) {
         a.prismU.setXYZW(i, prismU.x, prismU.y, prismU.z, prismPhaseRad);
-        a.prismV.setXYZW(i, prismV.x, prismV.y, prismV.z, clampedMix);
+        a.prismV.setXYZW(i, prismV.x, prismV.y, prismV.z, encodePrismMix(clampedMix, prismTopology));
         this.prismCount++;
       } else {
         a.prismU.setXYZW(i, 1, 0, 0, 0);
@@ -474,6 +478,7 @@ export class BeamPools {
     prismMix: number | boolean = 0,
     prismPhaseRad = 0,
     frustum?: CalibratedFrustum,
+    prismTopology: PrismTopology = CIRCULAR_PRISM,
   ) {
     if (!Number.isFinite(intensity) || intensity <= 0.001) return;
     const sign: 1 | -1 = isFloor ? 1 : -1;
@@ -535,6 +540,7 @@ export class BeamPools {
         effectiveMix > 0.001 ? this.prismV : undefined,
         effectiveMix,
         prismPhaseRad,
+        prismTopology,
       );
     }
   }
@@ -587,13 +593,14 @@ export class BeamPools {
   /** Active GPU instance inputs for the latest tick or restoration refill. */
   frustaForTest() {
     return this.receivers.flatMap(({ mesh, surfaceY }) => {
-      const { lens, axis, optics, bounds } = mesh.geometry.attributes;
+      const { lens, axis, optics, bounds, prismU, prismV } = mesh.geometry.attributes;
       return Array.from({ length: mesh.geometry.instanceCount }, (_, i) => ({
         surfaceY,
         lens: [lens.getX(i), lens.getY(i), lens.getZ(i)],
         axis: [axis.getX(i), axis.getY(i), axis.getZ(i)],
         optics: [optics.getX(i), optics.getY(i), optics.getZ(i)],
         bounds: [bounds.getX(i), bounds.getY(i), bounds.getZ(i), bounds.getW(i)],
+        ...(prismU && prismV && { prism: { phase: prismU.getW(i), signedMix: prismV.getW(i) } }),
       }));
     });
   }

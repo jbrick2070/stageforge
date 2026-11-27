@@ -2028,6 +2028,7 @@ export const App: React.FC = () => {
     if (probe) (window as unknown as { stageforgeProbe?: unknown }).stageforgeProbe = {
       beamAxes: () => engine.beamAxes(),
       beamFrusta: () => engine.beamFrustaForTest(),
+      beamPrisms: () => engine.beamPrismsForTest(),
       poolFrusta: () => engine.poolFrustaForTest(),
       measureSnapshot: () => engine.getMeasureSnapshot(false),
       preflightReport: () => preflightRef.current,
