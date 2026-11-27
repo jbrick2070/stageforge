@@ -464,7 +464,8 @@ test('the expanded original crowd renders in both stereo profiles and preserves 
   await expect(mix).toHaveValue('human-only');
   await designer.getByRole('button', { name: 'Redo', exact: true }).click();
   await expect(mix).toHaveValue('original-library');
-  await designer.getByLabel('Crowd zone occupancy').fill('1');
+  // This Arena floor has 1,785 slots. 38% keeps the test near the 680-person authored cap.
+  await designer.getByLabel('Crowd zone occupancy').fill('0.38');
   await designer.getByRole('button', { name: 'Apply design' }).click();
   await expect(designer).toBeHidden();
 
@@ -472,7 +473,10 @@ test('the expanded original crowd renders in both stereo profiles and preserves 
   await expect.poll(async () => (await readCrowd()).batches.map(batch => batch.modelId)).toEqual([
     'stageforge-alien-v1', 'stageforge-fox-v1', 'stageforge-human-v1', 'stageforge-human-v2', 'stageforge-robot-v1',
   ]);
-  expect((await readCrowd()).resourceAdmission).toMatchObject({
+  const renderedCrowd = await readCrowd();
+  expect(renderedCrowd.count).toBeGreaterThanOrEqual(675);
+  expect(renderedCrowd.count).toBeLessThanOrEqual(680);
+  expect(renderedCrowd.resourceAdmission).toMatchObject({
     admitted: true,
     eyeViews: 2,
     arenaDelta: { draws: 8, triangles: 0, textures: 0 },
