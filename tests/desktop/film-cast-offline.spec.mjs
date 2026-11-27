@@ -71,11 +71,11 @@ test('cold ' + (installed ? 'installed' : 'prepared') + ' desktop opens the bund
     const files = page.getByRole('dialog', { name: 'Show files' });
     await expect(openFiles).toBeVisible();
     await expect.poll(() => page.evaluate(() => typeof window.stageforgeProbe?.crowd)).toBe('function');
-    expect(await page.evaluate(url => performance.getEntriesByName(url).length, sampleUrl)).toBe(0);
+    expect(await page.evaluate(() => window.stageforgeProbe.crowd().authored)).toBe(false);
     await openFiles.click();
     await files.getByRole('button', { name: 'Open Steamboat Willie example', exact: true }).click();
     await expect(files).toBeHidden();
-    await expect.poll(() => page.evaluate(url => performance.getEntriesByName(url).length, sampleUrl)).toBeGreaterThan(0);
+    await expect.poll(() => page.evaluate(() => window.stageforgeProbe.crowd().authored)).toBe(true);
 
     // Read the bytes served by this executable only after the product's own first open.
     const bytes = await page.evaluate(async url => {
