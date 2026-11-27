@@ -13,7 +13,7 @@ import {
   CROWD_FOOTPRINT_TRIANGLES,
   CROWD_HANDSET_TRIANGLES,
   crowdModel,
-  crowdMotionEnvelope,
+  crowdMotionScaleY,
   crowdResourceAdmission,
   type CrowdModelId,
   type CrowdPose,
@@ -1078,10 +1078,12 @@ export function validateCrowdGeometryAdmission(
   const positions = [geometry.getAttribute('position'), ...(geometry.morphAttributes.position ?? [])] as THREE.BufferAttribute[];
   let floorMinY = Infinity;
   let maxY = -Infinity;
+  let maxRadius = 0;
   for (const position of positions) {
     for (let i = 0; i < position.count; i++) {
       floorMinY = Math.min(floorMinY, position.getY(i));
       maxY = Math.max(maxY, position.getY(i));
+      maxRadius = Math.max(maxRadius, Math.hypot(position.getX(i), position.getZ(i)));
     }
   }
   const actual: CrowdGeometryAdmission = {
@@ -1098,6 +1100,9 @@ export function validateCrowdGeometryAdmission(
   const model = crowdModel(modelId);
   if (Math.abs(maxY - model.geometryHeightM) > 1e-5) {
     throw new Error(`crowd model ${modelId} geometry height measured ${maxY}, expected ${model.geometryHeightM}.`);
+  }
+  if (Math.abs(maxRadius - model.geometryRadiusM) > 1e-5) {
+    throw new Error(`crowd model ${modelId} geometry radius measured ${maxRadius}, expected ${model.geometryRadiusM}.`);
   }
   const budget = model.budgets[tier];
   for (const key of ['trianglesPerInstance', 'materialSlots', 'materialTextures', 'morphTextures'] as const) {
@@ -1119,18 +1124,18 @@ export function setCrowdObjectMatrix(object: THREE.Object3D, transform: CrowdBas
   const pivot = transform.pivot ?? CROWD_ORIGIN_PIVOT;
   const modelId = transform.modelId ?? 'stageforge-human-v1';
   const pose = transform.pose ?? 'standing';
-  const motion = crowdMotionEnvelope(modelId, pose, transform.scaleY, hop, transform.generatorVersion === 2);
+  const motionScaleY = crowdMotionScaleY(modelId, pose, transform.scaleY, hop, sway, transform.generatorVersion === 2);
   const sin = Math.sin(transform.rotY);
   const cos = Math.cos(transform.rotY);
   const px = pivot[0];
-  const py = pivot[1] * motion.scaleY;
+  const py = pivot[1] * motionScaleY;
   const pz = pivot[2];
   object.position.set(
     transform.x - (px * cos + pz * sin),
     transform.y + hop - py,
     transform.z - (-px * sin + pz * cos),
   );
-  object.scale.set(1, motion.scaleY, 1);
+  object.scale.set(1, motionScaleY, 1);
   object.rotation.set(0, transform.rotY, sway);
   object.updateMatrix();
 }

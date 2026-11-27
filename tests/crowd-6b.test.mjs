@@ -206,7 +206,7 @@ test('generator v2 applies the shared seated envelope at authored zone edges', (
     && person.z - radius >= layout.zones[0].rect.minZ && person.z + radius <= layout.zones[0].rect.maxZ));
 });
 
-test('v1 animation keeps released roll while v2 motion stays inside declared pose heights', () => {
+test('v1 animation keeps released roll and the v2 motion helper is allocation-free', () => {
   const object = new THREE.Object3D();
   const legacy = {
     x: 1, y: 0, z: 2, scaleY: 1.12, phase: 0, rotY: 0.2,
@@ -217,13 +217,9 @@ test('v1 animation keeps released roll while v2 motion stays inside declared pos
   assert.equal(object.rotation.z, 0.05);
   assert.equal(object.scale.y, legacy.scaleY + 0.045 * 0.25);
 
-  for (const modelId of models.CROWD_MODEL_IDS) for (const pose of ['standing', 'seated']) {
-    const motion = models.crowdMotionEnvelope(
-      modelId, pose, models.CROWD_POSE_MAX_SCALE[pose], 0.22, true,
-    );
-    assert.ok(motion.heightM <= models.crowdModel(modelId).poses[pose].maxHeightM + 1e-9,
-      `${modelId} ${pose} runtime motion fits its declared height`);
-  }
+  assert.equal(typeof models.crowdMotionScaleY(
+    'stageforge-human-v1', 'standing', 1.12, 0.22, 0.05, true,
+  ), 'number', 'the hot motion helper returns a scalar instead of allocating a result object');
 });
 
 test('generator v2 keeps placement identity and motion stable across deterministic model mixes', () => {
@@ -280,6 +276,24 @@ test('the current venue builder renders authored placements with the existing fi
     assert.ok(measured.standingHeightM <= models.crowdModel(batch.modelId).poses.standing.maxHeightM);
     assert.ok(measured.seatedHeightM <= models.crowdModel(batch.modelId).poses.seated.maxHeightM);
     assert.ok(measured.floorMinY >= -0.01);
+    for (const pose of ['standing', 'seated']) for (const sway of [-0.05, 0.05]) {
+      const transform = {
+        x: 0, y: 0, z: 0, scaleY: models.CROWD_POSE_MAX_SCALE[pose], phase: 0, rotY: 0.7,
+        modelId: batch.modelId, pose, pivot: models.crowdModel(batch.modelId).poses[pose].pivot,
+        generatorVersion: 2,
+      };
+      const object = new THREE.Object3D();
+      geometry.setCrowdObjectMatrix(object, transform, 0.22, sway);
+      let worldMaxY = -Infinity;
+      const point = new THREE.Vector3();
+      const positions = [batch.mesh.geometry.getAttribute('position'), ...(batch.mesh.geometry.morphAttributes.position ?? [])];
+      for (const position of positions) for (let index = 0; index < position.count; index++) {
+        point.fromBufferAttribute(position, index).applyMatrix4(object.matrix);
+        worldMaxY = Math.max(worldMaxY, point.y);
+      }
+      assert.ok(worldMaxY <= models.crowdModel(batch.modelId).poses[pose].maxHeightM + 1e-6,
+        `${batch.modelId} ${pose} transformed vertices fit at sway ${sway}`);
+    }
   }
   const humanBatch = mixed.crowdBatches.find((batch) => batch.modelId === 'stageforge-human-v1');
   const expectedPhones = mixedResolved.placements.filter((person) => person.modelId === humanBatch.modelId && person.phone)
@@ -308,9 +322,12 @@ test('the current venue builder renders authored placements with the existing fi
   });
   assert.equal(disposedLitMaterials, firstLitMaterials.length, 'rig rebuild disposes every prior lit batch material');
   assert.ok(mixed.crowdBatches.every((batch, index) => batch.mesh.material !== baseMaterials[index]));
-  controller.setEnabled(false);
-  assert.ok(mixed.crowdBatches.every((batch, index) => batch.mesh.material === baseMaterials[index]));
+  const secondLitMaterials = mixed.crowdBatches.map((batch) => batch.mesh.material);
+  let teardownDisposals = 0;
+  secondLitMaterials.forEach((material) => material.addEventListener('dispose', () => teardownDisposals++));
   controller.dispose();
+  assert.equal(teardownDisposals, secondLitMaterials.length, 'active teardown disposes every lit batch material');
+  assert.ok(mixed.crowdBatches.every((batch, index) => batch.mesh.material === baseMaterials[index]));
 
   geometry.disposeSharedMaterials(mats);
 });

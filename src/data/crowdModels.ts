@@ -35,6 +35,8 @@ export interface CrowdModelSpec {
   geometryKey: CrowdGeometryKey;
   /** Measured highest local-space vertex across the base geometry and all morph targets. */
   geometryHeightM: number;
+  /** Measured largest local-space XZ radius across the base geometry and all morph targets. */
+  geometryRadiusM: number;
   provenance: {
     creator: string;
     source: string;
@@ -87,6 +89,7 @@ const alienBudget: CrowdModelBudget = {
 export const STAGEFORGE_HUMAN_V1: CrowdModelSpec = Object.freeze({
   id: 'stageforge-human-v1', family: 'human', label: 'StageForge human', geometryKey: 'legacy-human-v1',
   geometryHeightM: 1.918,
+  geometryRadiusM: 0.464082,
   provenance: {
     creator: 'StageForge', source: 'Built-in procedural legacy instanced human', license: 'StageForge original' as const,
   },
@@ -105,6 +108,7 @@ export const STAGEFORGE_HUMAN_V1: CrowdModelSpec = Object.freeze({
 export const STAGEFORGE_ROBOT_V1: CrowdModelSpec = Object.freeze({
   id: 'stageforge-robot-v1', family: 'robot', label: 'StageForge robot', geometryKey: 'original-robot-v1',
   geometryHeightM: 1.8,
+  geometryRadiusM: 0.341761,
   provenance: {
     creator: 'StageForge', source: 'Built-in original procedural service robot', license: 'StageForge original' as const,
   },
@@ -120,6 +124,7 @@ export const STAGEFORGE_ROBOT_V1: CrowdModelSpec = Object.freeze({
 export const STAGEFORGE_ALIEN_V1: CrowdModelSpec = Object.freeze({
   id: 'stageforge-alien-v1', family: 'alien', label: 'StageForge alien', geometryKey: 'original-alien-v1',
   geometryHeightM: 1.9096,
+  geometryRadiusM: 0.388805,
   provenance: {
     creator: 'StageForge', source: 'Built-in original procedural long-headed alien', license: 'StageForge original' as const,
   },
@@ -156,6 +161,10 @@ export function validateCrowdModelSpec(spec: CrowdModelSpec): void {
   }
   if (!Number.isFinite(spec.geometryHeightM) || spec.geometryHeightM <= 0) {
     throw new Error(`crowd model ${spec.id} geometry height must be positive and finite.`);
+  }
+  if (!Number.isFinite(spec.geometryRadiusM) || spec.geometryRadiusM <= 0
+    || spec.geometryRadiusM > spec.poses.standing.clearanceRadiusM) {
+    throw new Error(`crowd model ${spec.id} geometry radius must fit its standing clearance.`);
   }
   for (const [path, value] of [
     ['label', spec.label],
@@ -217,25 +226,29 @@ export function crowdModel(modelId: string): CrowdModelSpec {
   return model;
 }
 
-/** Shared motion calculation used by renderer matrices and admission tests. */
-export function crowdMotionEnvelope(
+/** Allocation-free shared motion calculation used by the per-spectator frame loop. */
+export function crowdMotionScaleY(
   modelId: CrowdModelId,
   pose: CrowdPose,
   authoredScaleY: number,
   hop: number,
+  sway: number,
   envelopeSafe: boolean,
-): { scaleY: number; heightM: number } {
-  if (!Number.isFinite(authoredScaleY) || authoredScaleY <= 0 || !Number.isFinite(hop) || hop < 0) {
-    throw new Error('crowd motion scale must be positive and hop must be non-negative; both must be finite.');
+): number {
+  if (!Number.isFinite(authoredScaleY) || authoredScaleY <= 0 || !Number.isFinite(hop) || hop < 0 || !Number.isFinite(sway)) {
+    throw new Error('crowd motion scale must be positive; hop must be non-negative; scale, hop, and sway must be finite.');
   }
+  const legacyScaleY = authoredScaleY + hop * 0.25;
+  if (!envelopeSafe) return legacyScaleY;
   const model = crowdModel(modelId);
   const pivotY = model.poses[pose].pivot[1];
   const localTop = model.geometryHeightM - pivotY;
-  const legacyScaleY = authoredScaleY + hop * 0.25;
-  const scaleY = envelopeSafe
-    ? Math.min(legacyScaleY, Math.max(0, (model.poses[pose].maxHeightM - hop) / localTop))
-    : legacyScaleY;
-  return { scaleY, heightM: hop + localTop * scaleY };
+  const rollCos = Math.max(1e-6, Math.abs(Math.cos(sway)));
+  // Clearance is a conservative measured horizontal bound. Its roll contribution must be
+  // reserved before scaling the local top or a raised hand can cross the height envelope.
+  const rollLift = Math.abs(Math.sin(sway)) * model.geometryRadiusM;
+  const admittedScaleY = Math.max(0, (model.poses[pose].maxHeightM - hop - rollLift) / (localTop * rollCos));
+  return Math.min(legacyScaleY, admittedScaleY);
 }
 
 export interface CrowdResourcePlacement {
