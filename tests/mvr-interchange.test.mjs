@@ -16,7 +16,7 @@ const { importMvr, readAddress, readAddresses } = await compiler.ssrLoadModule('
 const { readArchive, writeArchive, utf8 } = await compiler.ssrLoadModule('/src/interchange/mvr/archive.ts');
 const { parseXml, list, child, attr, text } = await compiler.ssrLoadModule('/src/interchange/mvr/xml.ts');
 const { compose, readPose, parseMatrix, readMatrix, matrixText, poseMatrix } = await compiler.ssrLoadModule('/src/interchange/mvr/coords.ts');
-const { readGdtf, profileArchive, PROFILES, classifyGdtf, physicalAt } = await compiler.ssrLoadModule('/src/interchange/mvr/gdtf.ts');
+const { readGdtf, profileArchive, profileFor, PROFILES, classifyGdtf, physicalAt } = await compiler.ssrLoadModule('/src/interchange/mvr/gdtf.ts');
 const { placeFixtures, mountSlotIndex } = await compiler.ssrLoadModule('/src/data/fixturePlacement.ts');
 const { parseRigJson } = await compiler.ssrLoadModule('/src/data/rigImport.ts');
 const { makeShowFile, parseShowFile } = await compiler.ssrLoadModule('/src/data/showFile.ts');
@@ -58,11 +58,18 @@ test('the export is a conforming MVR 1.6 archive with GDTF profiles and GLB geom
   assert.equal(attr(root, 'verMinor'), '6');
   assert.equal(attr(root, 'provider'), 'StageForge');
   for (const name of files.keys()) assert.ok(!name.includes('/') && !name.includes('\\'), `${name} is in the root`);
-  for (const file of ['stageforge@moving_beam.gdtf', 'stageforge@moving_wash.gdtf', 'stageforge@strobe.gdtf', 'stageforge@blinder.gdtf', 'stageforge@laser.gdtf']) {
-    assert.ok(files.has(file), `${file} is bundled`);
-  }
   const fixtures = list(childList, 'Fixture');
-  assert.equal(fixtures.length, placeFixtures(rig).length);
+  const placed = placeFixtures(rig);
+  assert.equal(fixtures.length, placed.length);
+  const profiles = new Map();
+  for (const [i, fixture] of fixtures.entries()) {
+    const spec = text(fixture, 'GDTFSpec').toLowerCase();
+    assert.ok(files.has(spec), `${spec} is bundled`);
+    if (!profiles.has(spec)) profiles.set(spec, readGdtf(files.get(spec).data));
+    const mode = profiles.get(spec).modes.find(mode => mode.name === text(fixture, 'GDTFMode'));
+    assert.deepEqual(mode?.breaks, [{ dmxBreak: 1, footprint: placed[i].patch.width }], `${spec} reserves the fixture's exact width`);
+  }
+  assert.ok(profiles.size >= 5);
   const uuids = new Set();
   for (const kind of ['Fixture', 'Truss', 'VideoScreen', 'SceneObject', 'FocusPoint']) {
     for (const node of list(childList, kind)) {
@@ -79,6 +86,13 @@ test('the export is a conforming MVR 1.6 archive with GDTF profiles and GLB geom
   // The same rig exports the same uuids every time.
   const again = scene(exportMvr(rig, undefined, '1.3.0'));
   assert.deepEqual(list(again.childList, 'Fixture').map((f) => attr(f, 'uuid')), fixtures.map((f) => attr(f, 'uuid')));
+
+  const matched = referenceRig();
+  matched.trussPods[0].fixtures[0].dmxChannels = 8;
+  matched.floorFx[0].dmxChannels = 8;
+  const matchedExport = scene(exportMvr(matched));
+  assert.ok(matchedExport.files.has('stageforge@moving_beam.gdtf'));
+  assert.ok(list(matchedExport.childList, 'Fixture').every(node => text(node, 'GDTFSpec') === PROFILES.beam.file));
 });
 
 test('fixtures, trusses, screens and hangs land within 1 mm and 0.05° of their StageForge placement', () => {
@@ -624,7 +638,7 @@ test('multi-instance LED wall GDTF resolves GeometryReference breaks (single, mu
   assert.ok(cyclic.modes[0].flags.includes('cyclicReference'));
 });
 
-test('passthrough: import MVR with unknown nodes, move one fixture, re-export (in-session & via v4 JSON) keeps every UUID and unknown node', async () => {
+test('passthrough: import MVR with unknown nodes, move one fixture, re-export (in-session & via Show JSON) keeps every UUID and unknown node', async () => {
   const { boxGlb } = await compiler.ssrLoadModule('/src/interchange/mvr/glb.ts');
   const LAYER_UUID = '11111111-2222-4333-8444-555555555555';
   const TRUSS_UUID = 'AAAAAAAA-0000-4000-8000-000000000001';
@@ -749,14 +763,30 @@ test('passthrough: import MVR with unknown nodes, move one fixture, re-export (i
   assert.ok(s1.files.has('vendor@spot.gdtf'), 'original manufacturer GDTF kept in-session');
   assert.ok(s1.files.has('vendor@hazer.gdtf'), 'original manufacturer hazer GDTF kept in-session');
 
-  // 2) Also verify full persistence through Show v4 JSON save/reload (without in-memory resources).
-  const v4Show = makeShowFile(movedRig, [], INITIAL_SHOW_STATE, null, undefined, undefined, undefined, imported.stage, imported.interchange);
-  assert.equal(v4Show.version, 4);
-  const reloadedShow = parseShowFile(JSON.stringify(v4Show));
+  // 2) The foreign spot and hazer modes differ from the generic 16- and 3-byte footprints.
+  // Persist the 8- and 1-byte reservations in v6, even without the original GDTF archives.
+  assert.ok(movedRig.trussPods.flatMap(pod => pod.fixtures).every(group => group.dmxChannels === 8));
+  assert.ok(movedRig.floorFx.every(group => group.dmxChannels === 1));
+  const savedShow = makeShowFile(movedRig, [], INITIAL_SHOW_STATE, null, undefined, undefined, undefined, imported.stage, imported.interchange);
+  assert.equal(savedShow.version, 6);
+  const reloadedShow = parseShowFile(JSON.stringify(savedShow));
+  assert.deepEqual(reloadedShow.rig.trussPods.map(pod => pod.fixtures.map(group => group.dmxChannels)),
+    movedRig.trussPods.map(pod => pod.fixtures.map(group => group.dmxChannels)));
+  assert.deepEqual(reloadedShow.rig.floorFx.map(group => group.dmxChannels), movedRig.floorFx.map(group => group.dmxChannels));
   const afterReload = exportMvrDocument(reloadedShow.rig, reloadedShow.stage, '1.4.0', reloadedShow.interchange);
   const s2 = scene(afterReload.bytes);
 
-  for (const [label, out] of [['in-session', s1], ['after v4 JSON reload', s2]]) {
+  // A foreign mode matching the implicit reservation does not bump the version floor.
+  const matchedSources = [...readArchive(sourceBytes).values()].map(entry => (
+    entry.name === 'Vendor@Spot.gdtf' ? { ...entry, data: profileArchive(profileFor('beam', 16)) }
+      : entry.name === 'Vendor@Hazer.gdtf' ? { ...entry, data: profileArchive(profileFor('hazer', 3)) } : entry
+  ));
+  const matched = importMvr(writeArchive(matchedSources));
+  assert.ok(matched.rig.floorFx.every(group => group.dmxChannels === undefined));
+  assert.ok(matched.rig.trussPods.flatMap(pod => pod.fixtures).every(group => group.dmxChannels === undefined));
+  assert.equal(makeShowFile(matched.rig, [], INITIAL_SHOW_STATE, null, undefined, undefined, undefined, matched.stage, matched.interchange).version, 4);
+
+  for (const [label, out] of [['in-session', s1], ['after Show JSON reload', s2]]) {
     const rawXml = utf8.decode(out.files.get('generalscenedescription.xml').data);
     for (const expectedUuid of [
       LAYER_UUID, TRUSS_UUID, SPOT1_UUID, SPOT2_UUID, FREE_UUID, HAZER1_UUID, HAZER2_UUID,

@@ -78,13 +78,15 @@ const viewerTracker = createViewerModeTracker();
 const grantedSerialDevices = new Map();
 const extendedPatchWindows = new Set();
 
+function notifyDmxAuthorityRevoked(wcId, authority, reason) {
+  const contents = webContents.fromId(wcId);
+  if (contents && !contents.isDestroyed() && isAppPage(contents.getURL())) {
+    contents.send('stageforge:dmx-authority-revoked', authority, reason);
+  }
+}
+
 function revokeDesktopDmxForLifecycle(reason) {
-  outputInterlock?.invalidateAllDmxEligibility((wcId, authority) => {
-    const contents = webContents.fromId(wcId);
-    if (contents && !contents.isDestroyed() && isAppPage(contents.getURL())) {
-      contents.send('stageforge:dmx-authority-revoked', authority, reason);
-    }
-  });
+  outputInterlock?.invalidateAllDmxEligibility((wcId, authority) => notifyDmxAuthorityRevoked(wcId, authority, reason));
 }
 
 function syncMenuForWindow(win) {
@@ -296,7 +298,10 @@ function registerDmxIpc() {
   const onSetViewerMode = createViewerIpcHandler({
     tracker: viewerTracker,
     onEnterViewer: async (wcId) => {
-      if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
+      // The renderer can still be draining the USB port after synchronous detach.
+      // Restrict its authority now and leave that reservation for its scoped release.
+      outputInterlock?.revokeWindowDmxEligibility(wcId,
+        (owner, authority) => notifyDmxAuthorityRevoked(owner, authority, 'entered Pitch Viewer'));
       const shutdowns = [];
       if (dmx && dmx.ownerId === wcId) shutdowns.push(dmx.shutdown('viewer-mode'));
       if (showControl && showControl.ownerId === wcId) shutdowns.push(showControl.shutdown());

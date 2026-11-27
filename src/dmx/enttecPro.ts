@@ -104,6 +104,7 @@ export class EnttecProTransport {
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
   private portDisconnectListener: (() => void) | null = null;
   private sessionGen = 0;
+  private drainPromise: Promise<SerialTransportStatus> | null = null;
   private timerId: ReturnType<typeof setTimeout> | null = null;
   private statsTimerId: ReturnType<typeof setInterval> | null = null;
   private writing = false;
@@ -156,9 +157,10 @@ export class EnttecProTransport {
   }
 
   public async enable(options: { universe: 1 | 2; rateHz: number; allowAllDevices?: boolean; isEligible?: () => boolean }): Promise<SerialTransportStatus> {
-    if (this.enabled || this.port) await this.disable();
+    const drain = this.drainPromise ?? (this.enabled || this.port ? this.disable() : null);
     const gen = ++this.sessionGen;
     const isCurrent = () => this.sessionGen === gen && (options.isEligible?.() ?? true);
+    if (drain) await drain;
     const serial = this.serialProvider();
     if (!serial) {
       throw new Error('Web Serial is not available in this browser. Use Chromium/Edge or the StageForge desktop app.');
@@ -247,12 +249,11 @@ export class EnttecProTransport {
     return this.getStatus();
   }
 
-  public async disable(): Promise<SerialTransportStatus> {
-    if (!this.enabled && !this.port) {
-      this.sessionGen++;
-      return this.getStatus();
-    }
+  public disable(): Promise<SerialTransportStatus> {
     this.sessionGen++;
+    if (this.drainPromise) return this.drainPromise;
+    if (!this.enabled && !this.port) return Promise.resolve(this.getStatus());
+
     this.enabled = false;
     this.writing = false;
     this.clearTimers();
@@ -266,10 +267,27 @@ export class EnttecProTransport {
     this.measuredHz = 0;
     this.framesInWindow = 0;
 
-    if (port && listener) {
-      port.removeEventListener?.('disconnect', listener);
-    }
+    // Publish the drain before touching the port so all Stop and pagehide callers join it.
+    let finish!: (status: SerialTransportStatus) => void;
+    const drain = new Promise<SerialTransportStatus>(resolve => { finish = resolve; });
+    this.drainPromise = drain;
+    void this.drainPort(port, writer, listener).finally(() => {
+      if (this.drainPromise === drain) this.drainPromise = null;
+      const status = this.getStatus();
+      finish(status);
+      this.emit();
+    }).catch(() => {});
+    return drain;
+  }
 
+  private async drainPort(
+    port: WebSerialPortLike | null,
+    writer: WritableStreamDefaultWriter<Uint8Array> | null,
+    listener: (() => void) | null,
+  ): Promise<void> {
+    try {
+      if (port && listener) port.removeEventListener?.('disconnect', listener);
+    } catch { /* the port may already be disconnected */ }
     try {
       if (writer) {
         // Send a full-universe zero blackout frame before closing so the widget does not hold the last look.
@@ -305,27 +323,14 @@ export class EnttecProTransport {
           ]);
         } catch { /* ignore */ }
       }
-    } finally {
-      this.emit();
-    }
-    return this.getStatus();
+    } catch { /* output is already disabled if the disconnected port cannot be drained */ }
   }
 
   /**
    * Best-effort synchronous blackout kick for browser `pagehide` events.
    */
   public emergencyBlackoutBestEffort(): void {
-    if (!this.enabled || !this.writer) return;
-    this.sessionGen++;
-    this.enabled = false;
-    this.writing = false;
-    this.clearTimers();
-    const writer = this.writer;
-    try {
-      void writer.write(this.zeroFrame).catch(() => {});
-    } catch {
-      // ignore
-    }
+    void this.disable();
   }
 
   private async forceCloseAfterError(
@@ -336,26 +341,7 @@ export class EnttecProTransport {
     if (this.sessionGen !== expectedGen || this.port !== expectedPort || this.writer !== expectedWriter) {
       return;
     }
-    const closedGeneration = ++this.sessionGen;
-    this.enabled = false;
-    this.writing = false;
-    this.clearTimers();
-    const port = this.port;
-    const writer = this.writer;
-    const listener = this.portDisconnectListener;
-    this.port = null;
-    this.writer = null;
-    this.portDisconnectListener = null;
-    this.measuredHz = 0;
-    this.framesInWindow = 0;
-    if (port && listener) port.removeEventListener?.('disconnect', listener);
-    if (writer) {
-      try { writer.releaseLock(); } catch { /* ignore */ }
-    }
-    if (port) {
-      try { await port.close(); } catch { /* ignore */ }
-    }
-    if (this.sessionGen === closedGeneration) this.emit();
+    await this.disable();
   }
 
   private clearTimers(): void {

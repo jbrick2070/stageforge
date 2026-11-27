@@ -851,12 +851,11 @@ test('Sprint 24 (Codex SF-M1): live TOCTOU pre-flight staleness and runtime haza
   );
 
   const liveHookSrc = await fs.readFile(path.join(repoRoot, 'src/dmx/useLiveDmxOutput.ts'), 'utf8');
-  const disableFnStart = liveHookSrc.indexOf('const disable = useCallback(async');
-  assert.ok(disableFnStart > 0);
-  const disableDetachIdx = liveHookSrc.indexOf('engineRef.current?.setDmxFrameListener(undefined)', disableFnStart);
-  const disableAwaitIdx = liveHookSrc.indexOf('await Promise.all(tasks)', disableFnStart);
-  assert.ok(
-    disableDetachIdx > disableFnStart && disableAwaitIdx > disableDetachIdx,
-    'useLiveDmxOutput.disable() must synchronously detach StageEngine frame listener before awaiting transport disable',
-  );
+  const disableAction = liveHookSrc.split('const disable = useCallback(async')[1]?.split('const enable = useCallback')[0];
+  assert.match(disableAction, /await\s+stopCurrentOutput\(\)/, 'the public Stop action calls the common drain');
+  const stopBody = liveHookSrc.split('const stopCurrentOutput = useCallback(async () => {')[1]?.split('stopCurrentOutputRef.current =')[0];
+  assert.ok(stopBody);
+  const detach = stopBody.indexOf('setDmxFrameListener(undefined)');
+  const firstAwait = stopBody.search(/\bawait\b/);
+  assert.ok(detach >= 0 && firstAwait > detach, 'the common drain detaches StageEngine before any await');
 });

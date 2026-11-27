@@ -63,12 +63,15 @@ function createOutputInterlock(options = {}) {
     return true;
   }
 
+  function revokeWindowDmxEligibility(wcId, notify) {
+    const current = eligibility.get(wcId);
+    if (!current?.eligible) return;
+    invalidateDmxEligibility(wcId, current.authority);
+    notify(wcId, current.authority);
+  }
+
   function invalidateAllDmxEligibility(notify) {
-    for (const [wcId, current] of eligibility) {
-      if (!current.eligible) continue;
-      invalidateDmxEligibility(wcId, current.authority);
-      notify(wcId, current.authority);
-    }
+    for (const wcId of eligibility.keys()) revokeWindowDmxEligibility(wcId, notify);
   }
 
   function currentSerialAuthority(wcId) {
@@ -253,6 +256,7 @@ function createOutputInterlock(options = {}) {
     requireDmxAuthority,
     updateDmxEligibility,
     invalidateDmxEligibility,
+    revokeWindowDmxEligibility,
     invalidateAllDmxEligibility,
     isCurrentDmxAuthority,
     currentSerialAuthority,

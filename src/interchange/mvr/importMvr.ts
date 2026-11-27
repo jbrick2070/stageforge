@@ -1273,9 +1273,10 @@ export function importMvr(bytes: Uint8Array, options?: ImportMvrOptions): MvrImp
   };
 
   const groupOf = (unit: Unit, index: number, podId: string | undefined, extra: Partial<FloorFxUnit> = {}) => {
+    const defaultWidth = groupFootprint({ type: unit.type });
     const group = { id: `mvr-${index + 1}`, type: unit.type, modelName: unit.model, count: 1,
       dmxUniverse: 1 as LogicalDmxUniverse, dmxStartChannel: 513,
-      ...(unit.width === undefined ? {} : { dmxChannels: unit.width }), ...extra };
+      ...(unit.width !== undefined && unit.width !== defaultWidth ? { dmxChannels: unit.width } : {}), ...extra };
     const fKey = fixtureKey({ podId, group: group as MountedFixtureGroup | FloorFxUnit, index: 0 });
     sourceByKey.set(fKey, unit);
     if (unit.spec) fixtureSpecs[fKey] = { spec: unit.spec, mode: unit.mode ?? '' };

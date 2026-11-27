@@ -949,14 +949,21 @@ test('Codex review-03 R2 & R4 regressions: AI revert preserves MVR resources and
   // R2: MVR custom foreign GDTF resources survive createAiRevertSnapshot -> AI edit -> revert -> MVR re-export
   const exportMvrMod = await compiler.ssrLoadModule('/src/interchange/mvr/exportMvr.ts');
   const archiveMod = await compiler.ssrLoadModule('/src/interchange/mvr/archive.ts');
+  const { placeFixtures } = await compiler.ssrLoadModule('/src/data/fixturePlacement.ts');
+  const { MODE_NAME, profileArchive, profileFor } = await compiler.ssrLoadModule('/src/interchange/mvr/gdtf.ts');
 
   const initialExport = exportMvrMod.exportMvrDocument(desk.rig, desk.stage);
   const firstFixtureKey = Object.keys(initialExport.interchange.mvr.uuids).find((k) => k.startsWith('fixture:'));
   assert.ok(firstFixtureKey, 'initial MVR export must have at least one fixture UUID key');
+  const first = placeFixtures(desk.rig).find(unit => exportMvrMod.fixtureKey(unit) === firstFixtureKey);
+  assert.ok(first);
   const customSpec = 'Vendor@CustomSpot.gdtf';
-  const customMarker = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef]);
+  const profile = profileFor(first.group.type, first.patch.width);
+  const customMarker = profileArchive({
+    ...profile, file: customSpec, name: 'Revert fixture', description: 'Distinct valid profile for the revert test',
+  });
   const interchangeWithSpec = structuredClone(initialExport.interchange);
-  interchangeWithSpec.mvr.fixtureSpecs = { [firstFixtureKey]: { spec: customSpec, mode: 'Standard' } };
+  interchangeWithSpec.mvr.fixtureSpecs = { [firstFixtureKey]: { spec: customSpec, mode: MODE_NAME } };
   const resources = new Map([[customSpec, customMarker]]);
 
   // Capture desk snapshot via production helper and verify mvrResources is preserved even if source map is later cleared
@@ -980,4 +987,11 @@ test('Codex review-03 R2 & R4 regressions: AI revert preserves MVR resources and
   );
   const reEntries = archiveMod.readArchive(reExport.bytes);
   assert.deepEqual(reEntries.get(customSpec.toLowerCase())?.data, customMarker, 'restored MVR resources must survive AI revert into subsequent MVR export');
+
+  const malformed = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef]);
+  const fallback = exportMvrMod.exportMvrDocument(
+    revertSnap.rig, revertSnap.stage, '1', revertSnap.interchange, new Map([[customSpec, malformed]]),
+  );
+  assert.equal(archiveMod.readArchive(fallback.bytes).has(customSpec.toLowerCase()), false);
+  assert.ok(fallback.notes.some(note => note.includes(`generic StageForge profile (${first.group.type}, ${first.patch.width} slot`)));
 });

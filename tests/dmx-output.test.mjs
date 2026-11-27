@@ -13,6 +13,7 @@ const sender = require('../desktop/dmx-sender.cjs');
 const { createDmxIpcHandlers } = require('../desktop/dmx-ipc.cjs');
 const { createAiBridgeIpcHandlers } = require('../desktop/ai-bridge-ipc.cjs');
 const { createOutputInterlock } = require('../desktop/output-interlock.cjs');
+const { createViewerIpcHandler, createViewerModeTracker } = require('../desktop/viewer-ipc.cjs');
 
 const compiler = await createServer({
   configFile: false,
@@ -921,6 +922,113 @@ test('P2 Enttec rejects canceled eligibility before the chooser, after the choos
   await waitFor(() => writes > 0);
   await transport.disable();
   assert.equal(closes, 2);
+});
+
+test('P2 USB Stop, pagehide and Viewer share terminal blackout and close before another window can claim output', async (t) => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    return { promise, resolve };
+  };
+  const zeroStarted = deferred();
+  const allowZero = deferred();
+  const closeStarted = deferred();
+  const allowClose = deferred();
+  const frames = [];
+  let draining = false;
+  let closes = 0;
+  const port = {
+    writable: new WritableStream({
+      write(frame) {
+        const dark = !frame.slice(5, 517).some(Boolean);
+        frames.push(dark);
+        if (draining && dark) {
+          zeroStarted.resolve();
+          return allowZero.promise;
+        }
+      },
+    }),
+    open: async () => {},
+    close() {
+      closes++;
+      closeStarted.resolve();
+      return allowClose.promise;
+    },
+  };
+  const transport = new enttec.EnttecProTransport(() => {}, () => ({ requestPort: async () => port }));
+  t.after(async () => {
+    allowZero.resolve();
+    allowClose.resolve();
+    await transport.disable();
+  });
+  await transport.enable({ universe: 1, rateHz: 30 });
+  transport.update(1, new Uint8Array(512).fill(42));
+  await waitFor(() => frames.includes(false));
+
+  const interlock = createOutputInterlock({ requireDmxAuthority: true });
+  const owner = 14;
+  const sibling = 15;
+  const owned = { revision: 'usb-owner', generation: 1 };
+  const competing = { revision: 'usb-sibling', generation: 1 };
+  const reserveArm = (wcId, authority) => {
+    assert.equal(interlock.updateDmxEligibility(wcId, authority, true).ok, true);
+    assert.equal(interlock.claimOutput(wcId, 'armed', authority).ok, true);
+  };
+  const claimSibling = () => interlock.claimOutput(sibling, 'serial', competing).ok;
+  reserveArm(owner, owned);
+  reserveArm(sibling, competing);
+  assert.equal(interlock.claimOutput(owner, 'serial', owned).ok, true);
+
+  let releases = 0;
+  const releaseAfter = drain => drain.then(() => {
+    if (interlock.releaseOutput(owner, 'serial', owned)) releases++;
+  });
+  const tracker = createViewerModeTracker();
+  let viewerDrain;
+  const enterViewer = createViewerIpcHandler({
+    tracker,
+    onEnterViewer: wcId => {
+      interlock.revokeWindowDmxEligibility(wcId, (notifiedOwner, authority) => {
+        assert.equal(notifiedOwner, owner);
+        assert.deepEqual(authority, owned);
+        viewerDrain = releaseAfter(transport.disable());
+      });
+    },
+  });
+  const frame = { url: 'stageforge://app/' };
+  const event = { senderFrame: frame, sender: { id: owner, mainFrame: frame, isDestroyed: () => false, getURL: () => frame.url } };
+
+  draining = true;
+  const first = transport.disable();
+  const stop = releaseAfter(first);
+  assert.equal(transport.isRunning(), false, 'Stop detaches serial updates synchronously');
+  await zeroStarted.promise;
+  assert.deepEqual(await enterViewer(event, true), { viewer: true });
+  assert.equal(tracker.isViewerWindow(owner), true);
+  transport.emergencyBlackoutBestEffort();
+  const joined = transport.disable();
+  assert.equal(joined, first, 'duplicate Stop and pagehide join the captured drain');
+  const repeatedStop = releaseAfter(joined);
+  await Promise.resolve();
+  assert.deepEqual(interlock.currentSerialAuthority(owner), null, 'Viewer rejects current chooser permission');
+  assert.equal(claimSibling(), false, 'terminal zero has not been delivered yet');
+  assert.equal(releases, 0);
+  assert.match(interlock.canEnableBridge(), /Disconnect Enttec/);
+
+  allowZero.resolve();
+  await closeStarted.promise;
+  assert.equal(claimSibling(), false, 'terminal port close is still pending');
+  assert.equal(releases, 0);
+  allowClose.resolve();
+  await Promise.all([stop, viewerDrain, repeatedStop]);
+  assert.equal(releases, 1);
+  assert.equal(closes, 1);
+  assert.deepEqual(frames.slice(frames.lastIndexOf(false) + 1), [true], 'the single terminal packet is black');
+  assert.equal(claimSibling(), true);
+  assert.equal(interlock.releaseOutput(owner, 'serial', owned), false, 'a late release cannot clear the sibling claim');
+  assert.deepEqual(interlock.currentSerialAuthority(sibling), competing);
+  interlock.clearWindowClaims(sibling);
+  assert.equal(interlock.hasOutputAuthority(), false, 'destroyed windows release their last reservation');
 });
 
 test('QA regression (M5): Enttec Pro disable() resolves cleanly and aborts writer even when write() and close() hang', async () => {
