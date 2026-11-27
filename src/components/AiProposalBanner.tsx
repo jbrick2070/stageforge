@@ -18,7 +18,7 @@ export const AiProposalBanner: React.FC<AiProposalBannerProps> = ({ bridge }) =>
       role="region"
       aria-label="Pending AI proposal"
       data-testid="ai-proposal-banner"
-      className="fixed top-16 left-1/2 -translate-x-1/2 z-40 w-[min(540px,calc(100vw-24px))] rounded-xl border border-fuchsia-400/50 bg-[#0d0d14] shadow-2xl p-3 font-mono-tech text-[11px] text-zinc-100 space-y-2"
+      className="stage-top-center z-[39] w-[min(540px,calc(100vw-24px))] rounded-xl border border-fuchsia-400/50 bg-[#0d0d14] shadow-2xl p-3 font-mono-tech text-[11px] text-zinc-100 space-y-2"
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">

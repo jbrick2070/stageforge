@@ -1280,10 +1280,10 @@ test('primary Play starts the shipped demo from stageforge://app/ under strict C
   let demoApp;
   const demoProblems = [];
   try {
-    const demoProfile = `--user-data-dir=${path.join(demoTmp, 'profile')}`;
+    const demoArgs = [`--user-data-dir=${path.join(demoTmp, 'profile')}`, '--disable-http-cache'];
     demoApp = await electron.launch(packaged
-      ? { executablePath: path.resolve(packaged), args: [demoProfile] }
-      : { executablePath: createRequire(import.meta.url)('electron'), args: [appDir, demoProfile] });
+      ? { executablePath: path.resolve(packaged), args: demoArgs }
+      : { executablePath: createRequire(import.meta.url)('electron'), args: [appDir, ...demoArgs] });
     demoApp.process().stderr?.on('data', chunk => {
       const text = String(chunk);
       if (/Uncaught|UnhandledPromiseRejection|TypeError|ReferenceError/.test(text)) demoProblems.push('main: ' + text.trim());
@@ -1297,7 +1297,9 @@ test('primary Play starts the shipped demo from stageforge://app/ under strict C
     demoPage.on('console', msg => {
       if (msg.type() === 'error') demoProblems.push('console: ' + msg.text());
     });
-    await demoPage.waitForLoadState('domcontentloaded');
+    await demoPage.waitForLoadState('load');
+    // Observe the entire fresh renderer navigation without a warm HTTP cache.
+    await demoPage.reload({ waitUntil: 'domcontentloaded' });
     await expect(demoPage).toHaveURL('stageforge://app/');
 
     // Idle discovery of the metadata never fetches track.mp3.

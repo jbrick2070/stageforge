@@ -76,7 +76,7 @@ export const MeasureOverlayHud: React.FC<MeasureOverlayHudProps> = ({
     <div
       data-testid="measure-overlay-hud"
       aria-label="Live measurements and safety zones"
-      className="pointer-events-none fixed inset-0 z-25 overflow-hidden"
+      className="stage-measure-overlay pointer-events-none relative z-25 overflow-hidden"
     >
       {/* Projected 3D hit-point labels (distance, incidence, footprint) — solid bg avoids WebGL backdrop-filter cost */}
       {hitLabels.map((u) => {
@@ -110,7 +110,7 @@ export const MeasureOverlayHud: React.FC<MeasureOverlayHudProps> = ({
       <aside
         data-testid="measure-panel"
         aria-label="Measurement readout and safety zones"
-        className="pointer-events-auto fixed top-16 left-2.5 z-30 w-[320px] max-w-[calc(100vw-20px)] max-h-[calc(100vh-290px)] overflow-y-auto bg-zinc-950/92 rounded-xl border border-cyan-400/35 shadow-2xl p-2.5 space-y-2 font-mono-tech text-[10px] text-zinc-100"
+        className="pointer-events-auto absolute top-2 left-2.5 z-30 w-[320px] max-w-[calc(100vw-20px)] max-h-[calc(100%_-_16px)] overflow-y-auto bg-zinc-950/92 rounded-xl border border-cyan-400/35 shadow-2xl p-2.5 space-y-2 font-mono-tech text-[10px] text-zinc-100"
       >
         <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-1.5">
           <div className="flex items-center gap-1.5 font-display font-bold text-xs text-cyan-200 tracking-wide">

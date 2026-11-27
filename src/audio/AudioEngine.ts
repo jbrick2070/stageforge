@@ -305,7 +305,7 @@ export class AudioEngine {
     if (this.isSourceGenerationActive(generation)) this.releaseActiveSource();
   }
 
-  private cancelPendingSource() {
+  public cancelPendingSource() {
     if (this.pendingFile) releaseFile(this.pendingFile);
     this.pendingFile = null;
     return ++this.sourceGeneration;
@@ -726,15 +726,15 @@ export class AudioEngine {
       if (element.paused) {
         try {
           await element.play();
-          if (generation === this.sourceGeneration) seekLoop(element, position());
+          if (generation !== this.sourceGeneration || signal?.aborted) throw new DOMException('Source changed', 'AbortError');
+          seekLoop(element, position());
         } catch (error) {
-          if (generation !== this.sourceGeneration) throw new DOMException('Source changed', 'AbortError');
+          if (generation !== this.sourceGeneration || signal?.aborted) throw new DOMException('Source changed', 'AbortError');
           this.playing = false;
           throw error;
         }
       }
     }
-    return { trackName: this.trackName, playing: this.playing, generation };
   }
 
   public togglePlayPause(): boolean {

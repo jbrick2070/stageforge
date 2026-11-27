@@ -55,9 +55,10 @@ const audioSettings = page => page.getByRole('button', { name: 'Audio settings',
 const primaryTransport = page => page.locator('.play-btn');
 
 test('Stop and accepted GO cancel pending Play without losing the operator blackout', async ({ page }) => {
-  let releaseMap, releaseAudio;
+  let releaseMap, releaseAudio, releaseNextAudio;
   const mapGate = new Promise(resolve => { releaseMap = resolve; });
   const audioGate = new Promise(resolve => { releaseAudio = resolve; });
+  const nextAudioGate = new Promise(resolve => { releaseNextAudio = resolve; });
   let mapRequests = 0;
   let audioRequests = 0;
   await page.route('**/demo/track.json', async route => {
@@ -71,6 +72,7 @@ test('Stop and accepted GO cancel pending Play without losing the operator black
       await route.fulfill({ status: 503, body: 'A canceled load must not fall back' });
       return;
     }
+    await nextAudioGate;
     await route.fulfill({ contentType: 'audio/wav', body: buildDemoTrackWav() });
   });
 
@@ -78,6 +80,11 @@ test('Stop and accepted GO cancel pending Play without losing the operator black
   const hold = page.getByRole('button', { name: 'Operator blackout hold', exact: true });
   await hold.click();
   await page.getByRole('button', { name: 'Show cues', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit cue list', exact: true }).click();
+  const cues = page.getByRole('dialog', { name: 'Edit cue list', exact: true });
+  await cues.getByLabel('Cue order', { exact: true }).selectOption('cue-1');
+  await cues.getByLabel('Follow after (seconds)', { exact: true }).fill('10');
+  await cues.getByRole('button', { name: 'Apply cues', exact: true }).click();
   await page.getByRole('button', { name: 'Record take', exact: true }).click();
   await playDemo(page).click();
   await expect(primaryTransport(page)).toHaveAttribute('aria-busy', 'true');
@@ -91,9 +98,14 @@ test('Stop and accepted GO cancel pending Play without losing the operator black
   await expect.poll(() => audioRequests).toBe(1);
   await page.getByRole('button', { name: 'GO', exact: true }).press('Enter');
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.activeCueId())).toBe('cue-1');
+  const cueStack = page.getByRole('group', { name: 'Cue stack', exact: true });
+  await expect(cueStack).toContainText('Follow in');
   await expect(playDemo(page)).toBeVisible();
   releaseAudio();
   await playDemo(page).click();
+  await expect(primaryTransport(page)).toHaveAttribute('aria-busy', 'true');
+  await expect(cueStack).not.toContainText('Follow in');
+  releaseNextAudio();
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.demoPosition()?.totalBars)).toBe(16);
   await expect(hold).toHaveAttribute('aria-pressed', 'true');
   expect(await page.evaluate(() => window.stageforgeProbe.showStateSummary().operatorBlackout)).toBe(true);
@@ -154,11 +166,13 @@ test('a newer audio upload survives a superseded demo element play promise', asy
   await page.getByLabel('Load audio file', { exact: true }).setInputFiles({
     name: 'replacement.wav', mimeType: 'audio/wav', buffer: buildDemoTrackWav(3),
   });
-  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.getAudioLevels().trackName)).toBe('replacement');
+  const replacement = page.getByRole('region', { name: 'Audio settings', exact: true })
+    .getByText('replacement', { exact: true });
+  await expect(replacement).toBeVisible();
   await page.evaluate(() => window.releaseDemoPlay());
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.audioPlaybackTime())).toBeGreaterThan(0.05);
   await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
-  expect(await page.evaluate(() => window.stageforgeProbe.getAudioLevels().trackName)).toBe('replacement');
+  await expect(replacement).toBeVisible();
   await expect(page.getByText(/Falling back to built-in synth demo/)).toHaveCount(0);
 });
 

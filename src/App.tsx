@@ -1548,7 +1548,12 @@ export const App: React.FC = () => {
   const followInitiatedByAiRef = useRef(false);
 
   // Trigger a show cue cleanly preserving user's custom media/text/master
-  const triggerCue = useCallback((cue: ShowCue, automatic = false, source: 'manual' | 'autoLD' | 'follow' | 'ai' | 'osc' | 'msc' = automatic ? 'autoLD' : 'manual') => {
+  const triggerCue = useCallback((
+    cue: ShowCue,
+    automatic = false,
+    source: 'manual' | 'autoLD' | 'follow' | 'ai' | 'osc' | 'msc' = automatic ? 'autoLD' : 'manual',
+    { fromFollow = false } = {},
+  ) => {
     const mode = clockModeRef.current;
     if (automatic && !allows(mode, source, source === 'follow' ? 'cue_follow' : 'auto_ld')) {
       if (source !== 'follow') followInitiatedByAiRef.current = false;
@@ -1559,7 +1564,7 @@ export const App: React.FC = () => {
       return;
     }
     if (!automatic) {
-      cancelDemoTrackLoad();
+      if (!fromFollow) cancelDemoTrackLoad();
       previewRig();
       engineRef.current?.releaseDirector(false);
       autoDirRef.current = false;
@@ -1615,7 +1620,7 @@ export const App: React.FC = () => {
           showToast(AUDIENCE_SCAN_ERROR);
           return;
         }
-        triggerCue(followingCue, false, followInitiatedByAiRef.current ? 'ai' : 'manual');
+        triggerCue(followingCue, false, followInitiatedByAiRef.current ? 'ai' : 'manual', { fromFollow: true });
       }
     }, Math.max(0, follow - performance.now()));
     return () => window.clearTimeout(id);
@@ -2377,6 +2382,7 @@ export const App: React.FC = () => {
     const abort = new AbortController();
     const intent: DemoPlayIntent = { abort };
     demoPlayRef.current = intent;
+    if (primary) setFollow(null);
     const isCurrent = () => demoPlayRef.current === intent && !abort.signal.aborted &&
       epoch === sessionEpochRef.current && capabilitiesRef.current.edit;
     setDemoTrackLoading(true);
@@ -2384,6 +2390,7 @@ export const App: React.FC = () => {
     try {
       // Reserve and prepare in the user gesture even if the idle metadata probe has not started.
       intent.prepared = ae.preparePlaybackGesture();
+      ae.cancelPendingSource();
       cancelReplayDemoLoad();
       const pending = getDemoTrack();
       const discovered = demoTrackProbeRef.current?.available;
@@ -2632,7 +2639,6 @@ export const App: React.FC = () => {
         return;
       }
       if (!ae.isSourceGenerationActive(loaded.generation)) return;
-      cancelDemoLoads();
       const name = loaded.trackName;
       registerAsset('file', file);
       expectedMusic.current = { kind: 'file', name: file.name, playing: true };
@@ -2693,7 +2699,6 @@ export const App: React.FC = () => {
         return;
       }
       if (!ae.isSourceGenerationActive(generation)) return;
-      cancelDemoLoads();
       previewRig();
       showToast('Live Mic / Room Audio Sync Active');
     } catch (error) {
@@ -2755,7 +2760,10 @@ export const App: React.FC = () => {
     directorArmed.current = true; setFollow(null);
     previewRig();
     const next = !autoDirRef.current;
-    if (!next) engineRef.current?.releaseDirector(true);
+    if (!next) {
+      cancelDemoTrackLoad();
+      engineRef.current?.releaseDirector(true);
+    }
     autoDirRef.current = next;
     lastDemoTick.current = -1;
     lastAutoSwitchRef.current = performance.now();
@@ -2766,6 +2774,7 @@ export const App: React.FC = () => {
   };
   const takeDesk = () => {
     if (!capabilitiesRef.current.edit) return;
+    cancelDemoTrackLoad();
     previewRig();
     setCueModified(true);
     if (autoDirRef.current) engineRef.current?.releaseDirector(true);
@@ -3234,8 +3243,8 @@ export const App: React.FC = () => {
       showToast('This MVR import was superseded by a newer file open.');
       return;
     }
-    cancelDemoLoads();
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
+    cancelDemoLoads();
     stopLiveOutputBeforeStructuralChange('Imported an MVR scene while live output was active — re-run pre-flight.');
     setPendingMvr(null);
     aiBridgeRef.current?.notifyDocumentChanged();
@@ -4170,74 +4179,83 @@ export const App: React.FC = () => {
         }}
         onClose={() => setCueEditor(false)}/></ErrorBoundary>}
       {/* Always-visible safety badge whenever live DMX output is enabled or stopped on heartbeat loss (including cinema mode) */}
-      <LiveDmxBadge
-        banner={liveDmx.banner}
-        busy={liveDmx.busy}
-        hasCatalogFixtures={hasCatalogFixtures(rig)}
-        hasSimulationOnly={summarizePhysicalDrive(rig).hasSimulationOnly}
-        preflightLabel={preflightReport.badgeLabel}
-        preflightStatus={preflightReport.overallStatus}
-        liveViolationMessage={liveSafetyViolation}
-        onOpenPreflight={() => {
-          setCinemaMode(false);
-          setPreflightOpen(true);
-        }}
-        onStop={() => {
-          clearAllBumps();
-          void liveDmx.disable();
-        }}
-        onDismissNotice={liveDmx.dismissStoppedNotice}
-        onOpenOutput={() => {
-          setCinemaMode(false);
-          setDmxDrawerOpen(true);
-        }}
-      />
+      <div className="stage-status-stack">
+        <LiveDmxBadge
+          banner={liveDmx.banner}
+          busy={liveDmx.busy}
+          hasCatalogFixtures={hasCatalogFixtures(rig)}
+          hasSimulationOnly={summarizePhysicalDrive(rig).hasSimulationOnly}
+          preflightLabel={preflightReport.badgeLabel}
+          preflightStatus={preflightReport.overallStatus}
+          liveViolationMessage={liveSafetyViolation}
+          onOpenPreflight={() => {
+            setCinemaMode(false);
+            setPreflightOpen(true);
+          }}
+          onStop={() => {
+            clearAllBumps();
+            void liveDmx.disable();
+          }}
+          onDismissNotice={liveDmx.dismissStoppedNotice}
+          onOpenOutput={() => {
+            setCinemaMode(false);
+            setDmxDrawerOpen(true);
+          }}
+        />
 
-      {webXrPhase !== 'disabled' && webXrPhase !== 'checking' && (
-        <div className="fixed top-16 right-3 z-50">
-          {webXrPhase === 'ready' && (
-            <button
-              type="button"
-              data-testid="webxr-enter"
-              onClick={handleWebXrEntry}
-              disabled={liveDmx.armed || liveDmx.isLive || webXrPageInterlocked}
-              title={liveDmx.armed || liveDmx.isLive
-                ? 'Exit or disarm physical output before VR'
-                : webXrPageInterlocked
-                  ? 'A previous VR session is still ending; physical output remains blocked'
-                  : 'Enter immersive VR audience preview'}
-              className="rounded-lg border border-cyan-400/70 bg-cyan-950/90 px-3 py-2 font-mono-tech text-xs font-bold text-cyan-100 shadow-2xl disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              Enter VR
-            </button>
-          )}
-          {webXrPhase === 'requesting' && (
-            <button
-              type="button"
-              data-testid="webxr-cancel-request"
-              onClick={cancelWebXrRequest}
-              className="rounded-lg border border-amber-400/70 bg-amber-950/90 px-3 py-2 font-mono-tech text-xs font-bold text-amber-100 shadow-2xl"
-            >
-              Cancel VR request
-            </button>
-          )}
-          {webXrPhase === 'active' && (
-            <button
-              type="button"
-              data-testid="webxr-exit"
-              onClick={exitWebXr}
-              className="rounded-lg border border-cyan-400/70 bg-cyan-950/90 px-3 py-2 font-mono-tech text-xs font-bold text-cyan-100 shadow-2xl"
-            >
-              Exit VR
-            </button>
-          )}
-          {webXrPhase === 'exiting' && (
-            <span data-testid="webxr-exiting" className="rounded-lg border border-white/20 bg-black/85 px-3 py-2 font-mono-tech text-xs text-zinc-300 shadow-2xl">
-              Exiting VR…
-            </span>
-          )}
-        </div>
-      )}
+        {webXrPhase === 'ready' && (
+          <button
+            type="button"
+            data-testid="webxr-enter"
+            onClick={handleWebXrEntry}
+            disabled={liveDmx.armed || liveDmx.isLive || webXrPageInterlocked}
+            title={liveDmx.armed || liveDmx.isLive
+              ? 'Exit or disarm physical output before VR'
+              : webXrPageInterlocked
+                ? 'A previous VR session is still ending; physical output remains blocked'
+                : 'Enter immersive VR audience preview'}
+            className="rounded-lg border border-cyan-400/70 bg-cyan-950/90 px-3 py-2 font-mono-tech text-xs font-bold text-cyan-100 shadow-2xl disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            Enter VR
+          </button>
+        )}
+        {webXrPhase === 'requesting' && (
+          <button
+            type="button"
+            data-testid="webxr-cancel-request"
+            onClick={cancelWebXrRequest}
+            className="rounded-lg border border-amber-400/70 bg-amber-950/90 px-3 py-2 font-mono-tech text-xs font-bold text-amber-100 shadow-2xl"
+          >
+            Cancel VR request
+          </button>
+        )}
+        {webXrPhase === 'active' && (
+          <button
+            type="button"
+            data-testid="webxr-exit"
+            onClick={exitWebXr}
+            className="rounded-lg border border-cyan-400/70 bg-cyan-950/90 px-3 py-2 font-mono-tech text-xs font-bold text-cyan-100 shadow-2xl"
+          >
+            Exit VR
+          </button>
+        )}
+        {webXrPhase === 'exiting' && (
+          <span data-testid="webxr-exiting" className="rounded-lg border border-white/20 bg-black/85 px-3 py-2 font-mono-tech text-xs text-zinc-300 shadow-2xl">
+            Exiting VR…
+          </span>
+        )}
+        {/* Clock ownership remains visible alongside any live output, including in cinema mode. */}
+        <ClockBadge
+          clockMode={showControl.clockMode}
+          lockState={showControl.lockState}
+          tcStore={showControl.tcStore}
+          onReturnToMaster={() => showControl.setClockMode('master')}
+          onOpenShowControl={() => {
+            setCinemaMode(false);
+            setShowControlOpen(true);
+          }}
+        />
+      </div>
 
       {webXrPhase === 'warning' && (
         <div
@@ -4307,7 +4325,7 @@ export const App: React.FC = () => {
         <div
           role="alert"
           data-testid="webgl-context-lost-banner"
-          className="fixed top-16 left-1/2 -translate-x-1/2 z-[75] rounded-lg border border-rose-400/80 bg-rose-950/95 px-3 py-2 shadow-2xl font-mono-tech text-xs text-rose-100"
+          className="stage-top-center pointer-events-none z-[75] rounded-lg border border-rose-400/80 bg-rose-950/95 px-3 py-2 shadow-2xl font-mono-tech text-xs text-rose-100"
         >
           Graphics context lost — rendering paused while the browser recovers.
         </div>
@@ -4342,19 +4360,6 @@ export const App: React.FC = () => {
           />
         </ErrorBoundary>
       )}
-
-      {/* Clock-ownership indicator when chasing external timecode or driven by external cue caller */}
-      <ClockBadge
-        clockMode={showControl.clockMode}
-        lockState={showControl.lockState}
-        tcStore={showControl.tcStore}
-        liveDmxActive={liveDmx.banner.active}
-        onReturnToMaster={() => showControl.setClockMode('master')}
-        onOpenShowControl={() => {
-          setCinemaMode(false);
-          setShowControlOpen(true);
-        }}
-      />
 
       {/* Slide-Over Rig Builder */}
       {!cinemaMode && rigDrawerOpen && (
@@ -4677,7 +4682,7 @@ export const App: React.FC = () => {
       )}
 
       {toast && (
-        <div role="status" aria-live="polite" className="fixed top-16 left-1/2 -translate-x-1/2 z-50 glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
+        <div role="status" aria-live="polite" className="stage-top-center z-[39] glass-panel px-4 py-1.5 rounded-full text-xs font-mono-tech text-cyan-200 border-cyan-400/50 shadow-lg pointer-events-none">
           {toast}
         </div>
       )}

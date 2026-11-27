@@ -33,15 +33,17 @@ async function assertContained(locator, width, height) {
   return box;
 }
 
+const hitsCenter = locator => locator.evaluate(element => {
+  const rect = element.getBoundingClientRect();
+  return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+});
+
 async function assertTools(page, width, height) {
   const controls = deskControls(page);
   const boxes = [];
   for (const control of controls) {
     boxes.push(await assertContained(control, width, height));
-    expect(await control.evaluate(element => {
-      const rect = element.getBoundingClientRect();
-      return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
-    }), `pointer access at ${width} px for ${await control.getAttribute('aria-label') ?? 'primary Play'}`).toBe(true);
+    expect(await hitsCenter(control), `pointer access at ${width} px for ${await control.getAttribute('aria-label') ?? 'primary Play'}`).toBe(true);
   }
   for (let i = 0; i < boxes.length; i++) {
     const a = boxes[i];
@@ -131,4 +133,85 @@ test('long loading progress fits the primary action at the responsive boundary a
   }
   await button(page, 'GO').press('Enter');
   await expect(button(page, 'Play demo')).toBeVisible();
+});
+
+test('Measure and mock live or stopped output stay below the actual desk header', async ({ page }) => {
+  await page.addInitScript(() => {
+    let notify;
+    let status = {
+      enabled: false, state: 'idle', protocol: 'sacn', iface: '127.0.0.1', rateHz: 40,
+      measuredHz: 40, packetsSent: 0, degraded: false, lastError: null, universes: [1, 2], nodes: [],
+    };
+    window.stageforgeDesktop = {
+      onRigCommand: () => () => {},
+      onDmxStatus: listener => { notify = listener; return () => { notify = undefined; }; },
+      dmxControl: async ({ type }) => {
+        if (type === 'listInterfaces') {
+          return [{ name: 'Loopback', address: '127.0.0.1', netmask: '255.0.0.0', broadcast: null, internal: true }];
+        }
+        if (type === 'enable') status = { ...status, enabled: true, state: 'live' };
+        if (type === 'disable') status = { ...status, enabled: false, state: 'idle' };
+        return status;
+      },
+      outputClaim: async () => ({ ok: true, reason: null }),
+      sendDmxFrame: () => true,
+      sendDmxHeartbeat: () => true,
+    };
+    window.simulateOutputHeartbeatTimeout = () => {
+      status = { ...status, enabled: false, state: 'idle', lastStopReason: 'heartbeat-timeout', stopEventId: 1 };
+      notify?.(status);
+    };
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/?probe');
+  await button(page, 'DMX monitor').click();
+  await page.getByTestId('dmx-advanced-summary').click();
+  await page.getByTestId('dmx-open-preflight').click();
+  const preflight = page.getByTestId('preflight-panel');
+  await preflight.getByTestId('preflight-run-check').click();
+  for (const checkbox of await preflight.locator('input[data-testid^="preflight-ack-"], input[data-testid^="preflight-laser-inhibit-"]').all()) {
+    await checkbox.check();
+  }
+  await expect(preflight.getByTestId('preflight-eligibility')).toContainText('Eligible to arm');
+  await button(preflight, 'Done').click();
+  await page.getByTestId('dmx-output-arm').click();
+  await page.getByTestId('dmx-output-go-live').click();
+  const liveBadge = page.getByTestId('live-dmx-badge');
+  await expect(liveBadge).toBeVisible();
+  await button(page, 'Close DMX monitor').click();
+
+  const header = page.locator('header.stage-transport');
+  const sizes = [[960, 800], [1280, 800], [1440, 900], [1599, 900]];
+  async function assertBelowHeader(locator, width, height) {
+    const box = await assertContained(locator, width, height);
+    const top = await header.boundingBox();
+    expect(box.y).toBeGreaterThanOrEqual(top.y + top.height);
+  }
+  for (const [width, height] of sizes) {
+    await page.setViewportSize({ width, height });
+    await button(page, 'Measure overlay').click();
+    await assertBelowHeader(page.getByTestId('measure-panel'), width, height);
+    await assertBelowHeader(liveBadge, width, height);
+    await assertTools(page, width, height);
+    const closeMeasure = button(page, 'Close measure overlay');
+    expect(await hitsCenter(closeMeasure)).toBe(true);
+    await closeMeasure.click();
+    await expect(page.getByTestId('measure-panel')).toHaveCount(0);
+  }
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await button(page, 'Cinema mode').click();
+  await expect(page.locator('main')).toHaveAttribute('data-cinema', 'true');
+  await expect(liveBadge).toBeVisible();
+  await button(page, 'Show desk').click();
+  await page.evaluate(() => window.simulateOutputHeartbeatTimeout());
+  const stopped = page.getByTestId('live-dmx-stopped-badge');
+  await expect(stopped).toBeVisible();
+  for (const [width, height] of sizes) {
+    await page.setViewportSize({ width, height });
+    await assertBelowHeader(stopped, width, height);
+    await assertTools(page, width, height);
+  }
+  await page.getByTestId('live-dmx-stopped-dismiss').click();
+  await expect(stopped).toHaveCount(0);
 });

@@ -8,7 +8,6 @@ interface ClockBadgeProps {
   clockMode: ClockMode;
   lockState: ChaseLockState;
   tcStore: LiveStore<TimecodeReadout>;
-  liveDmxActive: boolean;
   onReturnToMaster: () => void;
   onOpenShowControl: () => void;
 }
@@ -29,7 +28,6 @@ export const ClockBadge: React.FC<ClockBadgeProps> = ({
   clockMode,
   lockState,
   tcStore,
-  liveDmxActive,
   onReturnToMaster,
   onOpenShowControl,
 }) => {
@@ -44,7 +42,7 @@ export const ClockBadge: React.FC<ClockBadgeProps> = ({
   return (
     <div
       data-testid="clock-owner-badge"
-      className={`fixed ${liveDmxActive ? 'top-[104px]' : 'top-16'} right-3 z-50 flex items-center gap-2 rounded-full border px-2.5 py-1 shadow-xl backdrop-blur-md font-mono-tech text-[10px] ${
+      className={`flex items-center gap-2 rounded-full border px-2.5 py-1 shadow-xl backdrop-blur-md font-mono-tech text-[10px] ${
         isChase
           ? lockState === 'LOCKED'
             ? 'bg-emerald-950/90 border-emerald-400/70 text-emerald-100'
