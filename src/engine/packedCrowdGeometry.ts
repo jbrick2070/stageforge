@@ -53,6 +53,8 @@ export function packCrowdGeometry(
   const indices = Uint16Array.from({ length: width }, (_, index) => index);
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
   geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(width * 3), 3));
+  // Three selects flat shading if the carrier has no normal attribute. The shader reads the real normals from the texture.
+  geometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(width * 3), 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(width * 3).fill(1), 3));
   const vertexTexture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.FloatType);
   vertexTexture.needsUpdate = true;

@@ -479,6 +479,8 @@ test('packed monochrome models retain individual IDs, exact padded admission and
   }
   assert.equal(built.resourceAdmission.instanceTriangles, actualTriangles);
 
+  assert.equal(packed.mesh.geometry.getAttribute('normal').count, packed.mesh.geometry.index.count,
+    'the indexed carrier preserves Three smooth shading for the fetched source normals');
   const slots = packed.mesh.geometry.getAttribute('crowdGeometrySlot');
   for (const binding of built.placementBindings.filter(item => item.batchIndex === packed.batchIndex)) {
     assert.equal(packed.placementIds[binding.instanceIndex], binding.placementId);
