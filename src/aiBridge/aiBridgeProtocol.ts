@@ -84,6 +84,8 @@ export interface AiDeskSnapshot {
   mvrResources?: Map<string, Uint8Array>;
   cues: ShowCue[];
   look: ShowState;
+  /** Runtime status for get_state. Authored looks and revert snapshots exclude the hold. */
+  operatorBlackout?: boolean;
   activeCueId: string | null;
   timeline?: ShowTimeline;
   camera: CameraPreset;
@@ -920,7 +922,7 @@ export function buildAiStateSummary(desk: AiDeskSnapshot) {
     look: {
       bpm: desk.look.bpm,
       masterDimmer: desk.look.masterDimmer,
-      blackout: desk.look.blackout,
+      blackout: Boolean(desk.operatorBlackout) || desk.look.blackout,
       primaryColor: desk.look.primaryColor,
       accentColor: desk.look.accentColor,
       beamIntensity: desk.look.beamIntensity,

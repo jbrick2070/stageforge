@@ -1,5 +1,5 @@
 import type { NativeStage, ShowTimeline, TimelineEvent } from './showFile';
-import { applyTimelineLookPatch, isFullLookSnapshot } from './cueLook';
+import { applyTimelineLookPatch } from './cueLook';
 import { DEMO_TOTAL_STEPS } from './demoShow';
 import type { BumpState, CameraPreset, MusicRef, ScreenRef, ShowState } from '../types/show';
 import { resolveCuePreview, type CueFadeDescriptor, type ResolvedCuePreview } from './cueFade';
@@ -55,9 +55,7 @@ export function resolveTakeFrame(take: ShowTimeline, requestedMs: number, base: 
     }
     if (event.cueId !== undefined) frame.cueId = event.cueId;
     if (event.camera !== undefined) frame.camera = event.camera;
-    if (event.bump !== undefined || (event.look && isFullLookSnapshot(event.look))) {
-      frame.bump = event.bump ?? EMPTY_BUMP_STATE;
-    }
+    if (event.bump !== undefined) frame.bump = event.bump;
     if (event.volume !== undefined) frame.volume = event.volume;
   }
   const music = advanceMusic(frame.music, (atMs - musicAt) / 1000, frame.look.bpm);

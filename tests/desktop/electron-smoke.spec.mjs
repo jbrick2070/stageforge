@@ -723,13 +723,25 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       // before importing `hotShowBuf` (`blackout: false, blinderLevel: 1, smokeOutput: 1`) in Viewer and Show Open!
       await dmxPage.keyboard.press('Space');
 
-      const rawLegacyShow = JSON.parse(await readFile(path.join(root, 'tests/fixtures/legacy-v1.stageforge.show.json'), 'utf8'));
-      rawLegacyShow.rig.venue = 'club';
-      rawLegacyShow.look.blackout = false;
-      rawLegacyShow.look.masterDimmer = 1;
-      rawLegacyShow.look.blinderLevel = 1;
-      rawLegacyShow.look.atmo = { ...rawLegacyShow.look.atmo, smokeOutput: 1, hazeLevel: 1 };
-      const hotShowBuf = Buffer.from(JSON.stringify(rawLegacyShow), 'utf8');
+      const hotShow = JSON.parse(await readFile(path.join(root, 'tests/fixtures/legacy-v1.stageforge.show.json'), 'utf8'));
+      hotShow.version = 9;
+      hotShow.$schema = 'https://jbrick2070.github.io/stageforge/schemas/show-v9.schema.json';
+      hotShow.rig.trussPods[0].fixtures.push({
+        id: 'hot-strike', type: 'blinder', modelName: 'CHAUVET Professional STRIKE 4', count: 1,
+        catalogId: 'chauvet-strike-4', dmxMode: '4-Ch', dmxChannels: 4, dmxUniverse: 1, dmxStartChannel: 129,
+      });
+      hotShow.rig.floorFx.push({
+        id: 'hot-zr45', type: 'smoke', modelName: 'Martin JEM ZR45', count: 1,
+        catalogId: 'martin-jem-zr45', dmxMode: '1-Ch', dmxChannels: 1, dmxUniverse: 2, dmxStartChannel: 312,
+        x: 0, z: 2, spread: 0,
+      });
+      hotShow.look.blackout = false;
+      hotShow.look.masterDimmer = 1;
+      hotShow.look.blinderLevel = 1;
+      hotShow.look.atmo = { ...hotShow.look.atmo, smokeOutput: 1, hazeLevel: 1 };
+      delete hotShow.timeline;
+      delete hotShow.media;
+      const hotShowBuf = Buffer.from(JSON.stringify(hotShow), 'utf8');
 
       // 4f. Sprint 24 (Codex qa-07 R1, qa-06 R1, qa-08 R2): Opening a show in Pitch Viewer while live DMX is active MUST
       //     synchronously stop BOTH universes before applying `blinderLevel: 1 / smokeOutput: 1` (zero U1 or U2 leak)!
@@ -772,6 +784,19 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       if ((await dmxPage.getByTestId('live-dmx-stopped-dismiss').count()) > 0) {
         await dmxPage.getByTestId('live-dmx-stopped-dismiss').click();
       }
+      // Keep the pre-import desk dark with an authored cue. Release the runtime hold so it cannot mask a leak on import.
+      const hold = dmxPage.getByRole('button', { name: 'Operator blackout hold' });
+      await expect(hold).toHaveAttribute('aria-pressed', 'true');
+      await dmxPage.getByRole('button', { name: 'Show cues', exact: true }).click();
+      await dmxPage.getByRole('button', { name: 'Edit cue list' }).click();
+      const cueEditor = dmxPage.getByRole('dialog', { name: 'Edit cue list' });
+      await cueEditor.getByLabel('Cue order').selectOption('cue-4');
+      await cueEditor.getByRole('checkbox', { name: 'Cue blackout' }).check();
+      await cueEditor.getByRole('button', { name: 'Apply cues' }).click();
+      await dmxPage.getByRole('button', { name: /Arena Rock/ }).first().click();
+      await hold.click();
+      await expect(hold).toHaveAttribute('aria-pressed', 'false');
+      await expect(dmxPage.getByRole('alert').filter({ hasText: 'STAGE BLACKOUT' })).toHaveText('STAGE BLACKOUT · CUE BLACKOUT');
       await dmxPage.getByRole('button', { name: 'DMX monitor', exact: true }).click();
       if ((await dmxPage.getByTestId('dmx-advanced-details').getAttribute('open')) === null) {
         await dmxPage.getByTestId('dmx-advanced-summary').click();
@@ -855,7 +880,11 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
       await expect(dmxPage.getByTestId('dmx-output-go-live')).toBeEnabled();
       await dmxPage.getByTestId('dmx-output-go-live').click();
       await expect(dmxPage.getByTestId('live-dmx-badge')).toBeVisible();
-      await expect.poll(() => packets.length > countBeforeCrashArm + 2, { timeout: 5000 }).toBe(true);
+      await expect.poll(() => {
+        const hot = packets.slice(countBeforeCrashArm);
+        return hot.some(p => p.universe === 1 && p.slots.slice(128, 144).some(v => v > 0))
+          && hot.some(p => p.universe === 2 && p.slots.slice(311, 315).some(v => v > 0));
+      }, { timeout: 5000 }).toBe(true);
 
       const beforeCrash = packets.length;
       await dmxApp.evaluate(({ BrowserWindow }) => {

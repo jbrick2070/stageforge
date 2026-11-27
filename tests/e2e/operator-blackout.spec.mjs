@@ -28,6 +28,9 @@ function rehearsal(withTake = false) {
   delete show.timeline;
   if (withTake) {
     const screen = { target: 'main-led', kind: 'none', name: '', playing: false };
+    const fullCue = { id: 'full-cue', name: 'Full look', tag: 'SHOW', accent: '#ffaa88',
+      state: { ...show.look, masterDimmer: 0.7 } };
+    show.cues.push(fullCue);
     show.timeline = { durationMs: 2600, events: [
       { atMs: 0, look: structuredClone(show.look), cueId: show.activeCueId,
         camera: 'foh', volume: 0.65, bump: noBump, music: { kind: 'none', name: '', playing: false }, screen },
@@ -35,7 +38,8 @@ function rehearsal(withTake = false) {
       { atMs: 250, screen },
       { atMs: 950, bump: noBump },
       { atMs: 1400, bump: { ...noBump, strobe: true } },
-      { atMs: 1600, look: { ...show.look, masterDimmer: 0.7 } },
+      { atMs: 1600, cueId: fullCue.id, look: fullCue.state },
+      { atMs: 1950, bump: noBump },
       { atMs: 2200, bump: { ...noBump, strobe: true } },
     ] };
   }
@@ -253,8 +257,11 @@ test('replay pause and idle seeks clear replay holds while preserving live owner
   await page.clock.fastForward(450);
   await expect(strobe).toHaveAttribute('aria-pressed', 'true');
   await page.clock.fastForward(200);
-  await expect(strobe).toHaveAttribute('aria-pressed', 'false'); // Full frame with no bump.
-  await page.clock.fastForward(620);
+  await expect.poll(() => activeCue(page)).toBe('full-cue');
+  await expect(strobe).toHaveAttribute('aria-pressed', 'true'); // A full cue omits an unchanged hold.
+  await page.clock.fastForward(300);
+  await expect(strobe).toHaveAttribute('aria-pressed', 'false'); // Explicit release after the full cue.
+  await page.clock.fastForward(320);
   await expect(strobe).toHaveAttribute('aria-pressed', 'true');
   expect(await summary(page)).toMatchObject({ blackout: true, authoredBlackout: false, operatorBlackout: true });
   await page.clock.fastForward(350);
@@ -282,6 +289,10 @@ test('Pitch Viewer plays the authored look and the editor restores its hold with
   await page.keyboard.press('Space');
   await page.clock.fastForward(350);
   expect((await takeState(page)).mode).toBe('playing');
+  await page.clock.runFor(32);
+  expect(await page.evaluate(() => window.stageforgeProbe.fixtureParams().atmo.smoke)).toBe(1);
+  await page.keyboard.press('h');
+  await expect(page.locator('main')).toHaveAttribute('data-cinema', 'true');
   await page.clock.runFor(32);
   expect(await page.evaluate(() => window.stageforgeProbe.fixtureParams().atmo.smoke)).toBe(1);
   await page.keyboard.press('Space');

@@ -1460,16 +1460,16 @@ export const App: React.FC = () => {
         // on a cue whose look was edited after it fired; partial cue events cannot.
         setCueModified(fullLook && differsFromCue(replayLook.current, cue, replayScreen.current));
       } else if (event.look) setCueModified(true);
-      if (event.bump || fullLook) {
+      const { bump } = event;
+      // A recorded cue can carry a complete look while leaving the current bump unchanged.
+      if (bump !== undefined) {
         const ledger = bumpLedgerRef.current;
         ledger.clearSource(REPLAY_BUMP_SOURCE);
-        if (event.bump) {
-          for (const key of Object.keys(event.bump) as (keyof BumpState)[]) {
-            if (event.bump[key]) ledger.setHold(REPLAY_BUMP_SOURCE, 'local', key, true);
-          }
+        for (const key of Object.keys(bump) as (keyof BumpState)[]) {
+          if (bump[key]) ledger.setHold(REPLAY_BUMP_SOURCE, 'local', key, true);
         }
       }
-      if (event.look || event.bump) syncLiveBump();
+      if (event.look || bump !== undefined) syncLiveBump();
       if (event.camera) { setActiveCamera(event.camera); engine?.setCameraPreset(event.camera); }
       if (event.volume !== undefined) { setVolume(event.volume); ae?.setVolume(event.volume); }
     },
@@ -3468,7 +3468,7 @@ export const App: React.FC = () => {
 
   const demoOpeningBlack = showState.autoDirector && audioDiscrete.openingBlack;
   useEffect(() => {
-    if (cinemaMode || designerRig || costModalOpen || viewerMode) clearAllBumps();
+    if (!viewerMode && (cinemaMode || designerRig || costModalOpen)) clearAllBumps();
   }, [cinemaMode, designerRig, costModalOpen, viewerMode, clearAllBumps]);
   // Every cue the take fires; the console draws them all as scrubber markers.
   const takeCues = useMemo(() => (timeline.timeline?.events ?? [])
@@ -3765,6 +3765,7 @@ export const App: React.FC = () => {
           mvrResources: mvrResourcesRef.current,
           cues: cur.cues,
           look: cur.showState,
+          operatorBlackout: capabilitiesRef.current.edit && operatorBlackoutRef.current,
           activeCueId: cur.activeCueId,
           timeline: timelineRef.current.timeline,
           camera: cur.activeCamera,

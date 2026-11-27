@@ -924,13 +924,22 @@ test('take reconstruction uses recorded bumps only while running inside their re
     music: { kind: 'none', name: '', playing: false },
     screen: { target: 'main-led', kind: 'none', name: '', playing: false },
   };
+  const cue2 = presets.SHOW_CUES.find(cue => cue.id === 'cue-2');
+  const cue3 = presets.SHOW_CUES.find(cue => cue.id === 'cue-3');
+  const before = { ...base, cueId: cue2.id, look: cueLookMod.cueLook(base.look, cue2), bump: held, cueModified: false };
+  const after = { ...before, cueId: cue3.id, look: cueLookMod.cueLook(before.look, cue3) };
+  const fullCue = timelineMod.frameDelta(before, after, 600, 100);
+  assert.ok(cueLookMod.isFullLookSnapshot(fullCue.look));
+  assert.deepEqual(fullCue.look, after.look);
+  assert.equal(fullCue.bump, undefined, 'GO does not record an unchanged hold');
   const take = { durationMs: 1000, events: [
     { atMs: 0, look: { masterDimmer: 0.8 } },
     { atMs: 150, bump: held },
     { atMs: 240, screen: base.screen },
     { atMs: 400, bump: empty },
     { atMs: 500, bump: held },
-    { atMs: 600, look: { ...base.look, masterDimmer: 0.6 } },
+    fullCue,
+    { atMs: 775, bump: empty },
     { atMs: 850, bump: held },
   ] };
   const at = (ms, running = true) => showClockMod.resolveTakeFrame(take, ms, base, running).bump;
@@ -940,7 +949,9 @@ test('take reconstruction uses recorded bumps only while running inside their re
   assert.deepEqual(at(250, false), empty);
   assert.deepEqual(at(400), empty);
   assert.deepEqual(at(550), held);
-  assert.deepEqual(at(600), empty, 'a full no-bump frame clears the preceding replay event');
+  assert.deepEqual(at(600), held, 'a real full GO frame preserves the recorded hold');
+  assert.deepEqual(at(700), held);
+  assert.deepEqual(at(775), empty, 'the explicit release ends the hold');
   assert.deepEqual(at(999), held);
   assert.deepEqual(at(1000), empty, 'a running seek to the end still releases the replay bump');
 

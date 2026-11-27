@@ -767,6 +767,11 @@ test('QA regressions: lazy SDK load (M5), authored-only proposal revision (M6), 
   // M6: computeAuthoredRevision stays stable across runtime master/blackout/activeCueId edits, changes on cue/rig edits
   const desk = makeFakeDesk();
   const rev0 = protocol.computeAuthoredRevision(desk);
+  const heldDesk = { ...desk, operatorBlackout: true };
+  assert.equal(protocol.buildAiStateSummary(desk).look.blackout, false);
+  assert.equal(protocol.buildAiStateSummary(heldDesk).look.blackout, true);
+  assert.equal(protocol.createAiRevertSnapshot(heldDesk).look.blackout, false);
+  assert.equal(protocol.computeAuthoredRevision(heldDesk), rev0);
   const afterRuntimeEdits = {
     ...desk,
     activeCueId: desk.cues[1].id,
