@@ -135,9 +135,10 @@ test('long loading progress fits the primary action at the responsive boundary a
   await expect(button(page, 'Play demo')).toBeVisible();
 });
 
-test('Measure and mock live or stopped output stay below the actual desk header', async ({ page }) => {
+async function installMockOutput(page) {
   await page.addInitScript(() => {
     let notify;
+    window.mockDmxDisableCount = 0;
     let status = {
       enabled: false, state: 'idle', protocol: 'sacn', iface: '127.0.0.1', rateHz: 40,
       measuredHz: 40, packetsSent: 0, degraded: false, lastError: null, universes: [1, 2], nodes: [],
@@ -150,7 +151,10 @@ test('Measure and mock live or stopped output stay below the actual desk header'
           return [{ name: 'Loopback', address: '127.0.0.1', netmask: '255.0.0.0', broadcast: null, internal: true }];
         }
         if (type === 'enable') status = { ...status, enabled: true, state: 'live' };
-        if (type === 'disable') status = { ...status, enabled: false, state: 'idle' };
+        if (type === 'disable') {
+          window.mockDmxDisableCount++;
+          status = { ...status, enabled: false, state: 'idle' };
+        }
         return status;
       },
       outputClaim: async () => ({ ok: true, reason: null }),
@@ -162,10 +166,13 @@ test('Measure and mock live or stopped output stay below the actual desk header'
       notify?.(status);
     };
   });
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('/?probe');
+}
+
+async function startMockOutput(page) {
   await button(page, 'DMX monitor').click();
-  await page.getByTestId('dmx-advanced-summary').click();
+  if (await page.getByTestId('dmx-advanced-details').getAttribute('open') === null) {
+    await page.getByTestId('dmx-advanced-summary').click();
+  }
   await page.getByTestId('dmx-open-preflight').click();
   const preflight = page.getByTestId('preflight-panel');
   await preflight.getByTestId('preflight-run-check').click();
@@ -176,10 +183,50 @@ test('Measure and mock live or stopped output stay below the actual desk header'
   await button(preflight, 'Done').click();
   await page.getByTestId('dmx-output-arm').click();
   await page.getByTestId('dmx-output-go-live').click();
-  const liveBadge = page.getByTestId('live-dmx-badge');
-  await expect(liveBadge).toBeVisible();
+  await expect(page.getByTestId('live-dmx-badge')).toBeVisible();
   await button(page, 'Close DMX monitor').click();
+}
 
+async function assertAbovePanel(action, panel, width, height) {
+  await expect(panel).toBeVisible();
+  const box = await assertContained(action, width, height);
+  const panelBox = await panel.boundingBox();
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  expect(x > panelBox.x && x < panelBox.x + panelBox.width && y > panelBox.y && y < panelBox.y + panelBox.height,
+    `panel covers the action's coordinates at ${width} px`).toBe(true);
+  expect(await hitsCenter(action), `safety action has pointer priority at ${width} px`).toBe(true);
+}
+
+async function checkSafetyActionWithPanels(page, action) {
+  for (const [width, height] of [[390, 844], [540, 800], [720, 800]]) {
+    await page.setViewportSize({ width, height });
+    await button(page, 'Rig builder').click();
+    const rig = page.locator('aside[aria-label="Rig Builder"]');
+    await assertAbovePanel(action, rig, width, height);
+    await button(rig, 'Close Rig Builder').click();
+    await button(page, 'Show control').click();
+    const showControl = page.getByTestId('show-control-drawer');
+    await assertAbovePanel(action, showControl, width, height);
+    await button(showControl, 'Close show control').click();
+  }
+  for (const [width, height] of [[960, 800], [1280, 800], [1599, 900]]) {
+    await page.setViewportSize({ width, height });
+    await button(page, 'Audio settings').click();
+    const audio = page.getByRole('region', { name: 'Audio settings', exact: true });
+    await assertAbovePanel(action, audio, width, height);
+    await page.keyboard.press('Escape');
+    await expect(audio).toBeHidden();
+  }
+}
+
+test('Measure and mock live or stopped output stay below the actual desk header', async ({ page }) => {
+  test.setTimeout(120_000);
+  await installMockOutput(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/?probe');
+  await startMockOutput(page);
+  const liveBadge = page.getByTestId('live-dmx-badge');
   const header = page.locator('header.stage-transport');
   const sizes = [[960, 800], [1280, 800], [1440, 900], [1599, 900]];
   async function assertBelowHeader(locator, width, height) {
@@ -204,6 +251,21 @@ test('Measure and mock live or stopped output stay below the actual desk header'
   await expect(page.locator('main')).toHaveAttribute('data-cinema', 'true');
   await expect(liveBadge).toBeVisible();
   await button(page, 'Show desk').click();
+
+  const stop = page.getByTestId('live-dmx-stop');
+  await checkSafetyActionWithPanels(page, stop);
+  await page.setViewportSize({ width: 540, height: 800 });
+  await button(page, 'Show control').click();
+  const showControl = page.getByTestId('show-control-drawer');
+  await assertAbovePanel(stop, showControl, 540, 800);
+  const beforeStop = await page.evaluate(() => window.mockDmxDisableCount);
+  await stop.click();
+  await expect.poll(() => page.evaluate(() => window.mockDmxDisableCount)).toBe(beforeStop + 1);
+  await expect(liveBadge).toHaveCount(0);
+  await button(showControl, 'Close show control').click();
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startMockOutput(page);
   await page.evaluate(() => window.simulateOutputHeartbeatTimeout());
   const stopped = page.getByTestId('live-dmx-stopped-badge');
   await expect(stopped).toBeVisible();
@@ -212,6 +274,10 @@ test('Measure and mock live or stopped output stay below the actual desk header'
     await assertBelowHeader(stopped, width, height);
     await assertTools(page, width, height);
   }
-  await page.getByTestId('live-dmx-stopped-dismiss').click();
+  const dismiss = page.getByTestId('live-dmx-stopped-dismiss');
+  await checkSafetyActionWithPanels(page, dismiss);
+  await button(page, 'Audio settings').click();
+  await assertAbovePanel(dismiss, page.getByRole('region', { name: 'Audio settings', exact: true }), 1599, 900);
+  await dismiss.click();
   await expect(stopped).toHaveCount(0);
 });

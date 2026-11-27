@@ -43,7 +43,7 @@ export const LiveDmxBadge: React.FC<LiveDmxBadgeProps> = ({
       <div
         role="alert"
         data-testid="live-dmx-stopped-badge"
-        className="flex max-w-full items-center gap-2 rounded-lg border border-amber-400/80 bg-amber-950/95 px-2.5 py-1.5 shadow-2xl backdrop-blur-md font-mono-tech text-[11px] text-amber-100"
+        className="stage-output-status flex max-w-full items-center gap-2 rounded-lg border border-amber-400/80 bg-amber-950/95 px-2.5 py-1.5 shadow-2xl backdrop-blur-md font-mono-tech text-[11px] text-amber-100"
       >
         <button
           type="button"
@@ -85,7 +85,7 @@ export const LiveDmxBadge: React.FC<LiveDmxBadgeProps> = ({
           : 'border-white/30 bg-black/60 text-zinc-200';
 
   return (
-    <div className="flex max-w-full flex-col items-end gap-1.5">
+    <div className="stage-output-status flex max-w-full flex-col items-end gap-1.5">
       <div
         role="status"
         aria-live="polite"

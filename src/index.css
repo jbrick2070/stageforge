@@ -194,11 +194,13 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
 .stage-viewport { grid-area: stage; position: relative; min-height: 0; min-width: 0; overflow: hidden; background: #000; }
 .stage-viewport canvas { display: block; }
 .stage-status-stack {
-  grid-area: stage; align-self: start; justify-self: end; position: relative; z-index: 39;
+  grid-area: stage; align-self: start; justify-self: end; position: relative;
   display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
   max-width: calc(100% - 24px); margin: 8px 12px; pointer-events: none;
 }
-.stage-status-stack > * { pointer-events: auto; }
+.stage-status-stack > * { position: relative; z-index: 39; pointer-events: auto; }
+/* Keep the output stop and notice reachable above desk popovers and narrow drawers. */
+.stage-status-stack > .stage-output-status { z-index: 50; }
 .stage-top-center { grid-area: stage; align-self: start; justify-self: center; position: relative; margin: 8px 12px; max-width: calc(100% - 24px); }
 .stage-measure-overlay { grid-area: stage; min-height: 0; min-width: 0; }
 .stage-workstation[data-cinema="true"] :is(.stage-status-stack, .stage-top-center) { margin-top: 56px; }
