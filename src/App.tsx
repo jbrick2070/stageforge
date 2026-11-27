@@ -55,7 +55,7 @@ import {
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
 import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange, type ShowTimeline } from './data/showFile';
-import type { CrowdLayout } from './data/crowdPlacement';
+import { resolveCrowdLayout, type CrowdLayout } from './data/crowdPlacement';
 import { hasCatalogFixtures } from './data/equipmentCatalog';
 import { summarizePhysicalDrive } from './dmx/physicalDmx';
 import { DEMO_ILDA_PRESETS, generateDemoIlda, ILDA_MAX_BYTES, parseIlda, type DemoIldaKind, type IldaClip } from './data/ilda';
@@ -4328,6 +4328,18 @@ export const App: React.FC = () => {
             }}
             onChangeRig={(next, replacing) => {
               if (!capabilitiesRef.current.edit) return;
+              const current = rigRef.current;
+              const crowd = crowdRef.current;
+              if (!replacing && crowd && (
+                next.venue !== current.venue || next.stageWidth !== current.stageWidth || next.stageDepth !== current.stageDepth
+              )) {
+                try {
+                  resolveCrowdLayout(next, crowd);
+                } catch {
+                  showToast('The authored crowd does not fit this venue or stage size. Edit crowd placements and zones in the stage plan before trying again.');
+                  return;
+                }
+              }
               if (replacing && !confirmDiscardStage()) return;
               if (replacing) {
                 installStage();
@@ -4384,9 +4396,8 @@ export const App: React.FC = () => {
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
       {designerRig && (
         <ErrorBoundary label="Stage Designer" onReset={() => setDesignerRig(null)} onExportRig={() => downloadRig(rig)}>
-          <StageDesigner rig={designerRig} stage={studioStage} crowd={studioCrowd} laserState={showState.laser} ildaClip={ildaClip} onClose={() => setDesignerRig(null)} onChange={(design, stage, crowd, replacing) => {
+          <StageDesigner rig={designerRig} stage={studioStage} crowd={studioCrowd} laserState={showState.laser} ildaClip={ildaClip} onClose={() => setDesignerRig(null)} onChange={(next, stage, crowd, replacing) => {
             if (!capabilitiesRef.current.edit) return;
-            const next = normalizeDesign(design);
             // A new blank design replaces the authored overlay and its wall cues, even if the user then
             // drew new screens or hangs; ask first, and keep the designer open if they decline.
             if (replacing && !confirmDiscardStage()) return false;

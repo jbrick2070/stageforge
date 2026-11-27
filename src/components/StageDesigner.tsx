@@ -26,6 +26,7 @@ import {
   MAX_PATH_POINTS,
   MAX_PLATFORMS,
   MIN_TRUSS_SPAN,
+  normalizeDesign,
   pathLength,
   podLocalPoint,
   podWorldPoint,
@@ -922,7 +923,7 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
     let nextStage: NativeStage | undefined;
     let nextCrowd: CrowdLayout | undefined;
     try {
-      next = parseRigJson(JSON.stringify(draft));
+      next = normalizeDesign(parseRigJson(JSON.stringify(draft)));
       nextStage = finalizeStage(next, stageDraft);
       nextCrowd = crowdDraft ? structuredClone(crowdDraft) : undefined;
       if (nextCrowd) resolveCrowdLayout(next, nextCrowd);
