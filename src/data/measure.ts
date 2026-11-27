@@ -482,12 +482,14 @@ export function lowerConeEdgeDirection(dir: Vec3Tuple, halfAngleRad: number): Ve
   };
 }
 
-/** The lowest aperture rim, or for a vertical axis the rim facing the nearest audience point. */
-function apertureRimDirection(axis: Vec3Tuple, origin: Vec3Tuple, zone: AudienceZoneBox): Vec3Tuple | null {
+function lowestApertureRim(axis: Vec3Tuple): Vec3Tuple | null {
   const horizontal = Math.hypot(axis.x, axis.z);
-  if (horizontal >= 1e-6) {
-    return { x: axis.x * axis.y / horizontal, y: -horizontal, z: axis.z * axis.y / horizontal };
-  }
+  if (horizontal < 1e-6) return null;
+  return { x: axis.x * axis.y / horizontal, y: -horizontal, z: axis.z * axis.y / horizontal };
+}
+
+/** Project the direction to the nearest audience point into the aperture plane. */
+function audienceFacingRim(axis: Vec3Tuple, origin: Vec3Tuple, zone: AudienceZoneBox): Vec3Tuple | null {
   const dx = Math.max(zone.minX, Math.min(zone.maxX, origin.x)) - origin.x;
   const dz = Math.max(zone.minZ, Math.min(zone.maxZ, origin.z)) - origin.z;
   const along = dx * axis.x + dz * axis.z;
@@ -498,10 +500,27 @@ function apertureRimDirection(axis: Vec3Tuple, origin: Vec3Tuple, zone: Audience
   return norm >= 1e-6 ? { x: x / norm, y: y / norm, z: z / norm } : null;
 }
 
+function measureSpillRay(origin: Vec3Tuple, direction: Vec3Tuple, surfaces: SceneRaySurfaces, length = Infinity) {
+  const hit = castRayToScene(origin, direction, surfaces);
+  return intersectRayAudienceZone(origin, direction, surfaces.bounds.audienceZone, Math.min(hit.distanceM ?? Infinity, length));
+}
+
+function measureApertureRim(
+  origin: Vec3Tuple, axis: Vec3Tuple, rim: Vec3Tuple, frustum: CalibratedFrustum, surfaces: SceneRaySurfaces,
+) {
+  const { length, nearRadius, slope } = frustum;
+  const norm = Math.hypot(1, slope);
+  return measureSpillRay(
+    { x: origin.x + nearRadius * rim.x, y: origin.y + nearRadius * rim.y, z: origin.z + nearRadius * rim.z },
+    { x: (axis.x + slope * rim.x) / norm, y: (axis.y + slope * rim.y) / norm, z: (axis.z + slope * rim.z) / norm },
+    surfaces,
+    length * norm,
+  );
+}
+
 /**
  * Pure per-unit measurement from live engine aim data + pre-built scene surfaces.
- * Checks audience keep-out clearance for both the beam center axis and the lower cone edge
- * so wide washes whose axis clears 3.0 m still flag when their lower cone edge dips into the crowd.
+ * Checks the centreline and samples edge rays for audience keep-out clearance.
  */
 export function measureFixtureUnit(
   sample: EngineHeadSample,
@@ -530,47 +549,30 @@ export function measureFixtureUnit(
 
   // Check the lens rim and cone edge as well as the centreline for audience spill.
   const axis = sample.direction;
-  const rim = frustum ? apertureRimDirection(axis, sample.lensOrigin, surfaces.bounds.audienceZone) : null;
-  let edgeOrigin = sample.lensOrigin;
-  let lowerDir: Vec3Tuple | null;
-  let edgeLength = Infinity;
-  if (frustum && rim) {
-    edgeOrigin = {
-      x: edgeOrigin.x + frustum.nearRadius * rim.x,
-      y: edgeOrigin.y + frustum.nearRadius * rim.y,
-      z: edgeOrigin.z + frustum.nearRadius * rim.z,
-    };
-    const k = frustum.slope;
-    const norm = Math.hypot(1, k);
-    lowerDir = {
-      x: (axis.x + k * rim.x) / norm,
-      y: (axis.y + k * rim.y) / norm,
-      z: (axis.z + k * rim.z) / norm,
-    };
-    edgeLength = frustum.length * norm;
+  const origin = sample.lensOrigin;
+  let lowerAudience: ReturnType<typeof measureSpillRay> | null = null;
+  let facingAudience: ReturnType<typeof measureSpillRay> | null = null;
+  if (frustum) {
+    const lower = lowestApertureRim(axis);
+    // The lowest rim can stay inside the tilt plane while spill reaches the audience laterally.
+    const facing = audienceFacingRim(axis, origin, surfaces.bounds.audienceZone);
+    if (lower) lowerAudience = measureApertureRim(origin, axis, lower, frustum, surfaces);
+    if (facing && (!lower || facing.x !== lower.x || facing.y !== lower.y || facing.z !== lower.z)) {
+      facingAudience = measureApertureRim(origin, axis, facing, frustum, surfaces);
+    }
   } else {
-    lowerDir = frustum ? null : lowerConeEdgeDirection(axis, (beamAngleDeg * DEG_TO_RAD) / 2);
-  }
-  let edgeAudience: ReturnType<typeof intersectRayAudienceZone> | null = null;
-  if (lowerDir) {
-    const edgeHit = castRayToScene(edgeOrigin, lowerDir, surfaces);
-    const maxEdgeT = Math.min(edgeHit.distanceM ?? Infinity, edgeLength);
-    edgeAudience = intersectRayAudienceZone(
-      edgeOrigin,
-      lowerDir,
-      surfaces.bounds.audienceZone,
-      maxEdgeT,
-    );
+    const lower = lowerConeEdgeDirection(axis, (beamAngleDeg * DEG_TO_RAD) / 2);
+    if (lower) lowerAudience = measureSpillRay(origin, lower, surfaces);
   }
 
-  let minAudienceClearanceM = axisAudience.minClearanceM;
-  if (edgeAudience && edgeAudience.minClearanceM !== null) {
-    minAudienceClearanceM =
-      minAudienceClearanceM === null
-        ? edgeAudience.minClearanceM
-        : Math.min(minAudienceClearanceM, edgeAudience.minClearanceM);
-  }
-  const audienceEnters = axisAudience.enters || Boolean(edgeAudience?.enters);
+  const minimum = Math.min(
+    axisAudience.minClearanceM ?? Infinity,
+    lowerAudience?.minClearanceM ?? Infinity,
+    facingAudience?.minClearanceM ?? Infinity,
+  );
+  const minAudienceClearanceM = Number.isFinite(minimum) ? minimum : null;
+  const edgeEnters = Boolean(lowerAudience?.enters || facingAudience?.enters);
+  const audienceEnters = axisAudience.enters || edgeEnters;
 
   const footprint =
     hit.distanceM !== null && hit.incidenceDeg !== null
@@ -611,13 +613,13 @@ export function measureFixtureUnit(
 
   if (entersAudienceBelowThreshold) {
     const clr = minAudienceClearanceM !== null ? `${minAudienceClearanceM.toFixed(1)} m` : `< ${MIN_AUDIENCE_CLEARANCE_M.toFixed(1)} m`;
-    const edgeOnly = !axisAudience.enters && Boolean(edgeAudience?.enters);
+    const beam = !axisAudience.enters && edgeEnters
+      ? (frustum ? 'Beam cone edge' : 'Beam lower cone edge')
+      : 'Beam';
     warnings.push({
       code: 'audience_clearance',
       severity: 'danger',
-      message: edgeOnly
-        ? `Beam lower cone edge enters audience zone below ${MIN_AUDIENCE_CLEARANCE_M.toFixed(1)} m (clearance ${clr}).`
-        : `Beam enters audience zone below ${MIN_AUDIENCE_CLEARANCE_M.toFixed(1)} m (clearance ${clr}).`,
+      message: `${beam} enters audience zone below ${MIN_AUDIENCE_CLEARANCE_M.toFixed(1)} m (clearance ${clr}).`,
     });
     severityRank = 2;
   }

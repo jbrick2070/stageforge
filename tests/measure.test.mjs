@@ -142,17 +142,17 @@ test('calibrated finite lens gives an exact complete ellipse and distinguishes p
   overlay.dispose();
 });
 
-test('vertical calibrated rim checks audience spill beyond an axis that clears the audience', () => {
+test('vertical and near-vertical calibrated rims check audience spill beyond a clear axis', () => {
   const rig = { ...RIG_TEMPLATES.arena_mainstage, venue: 'festival' };
   const surfaces = buildSceneRaySurfaces(rig);
-  const z = surfaces.bounds.audienceZone.minZ - 0.25;
   const optics = fixtureOptics('beam');
-  const read = (y, directionY, beamAngleDeg, length) => {
-    const origin = { x: 0, y, z };
+  const read = (y, sign, beamAngleDeg, length, directionX = 0, gap = 0.25) => {
+    const origin = { x: 0, y, z: surfaces.bounds.audienceZone.minZ - gap };
+    const direction = { x: directionX, y: sign * Math.sqrt(1 - directionX ** 2), z: 0 };
     return measureFixtureUnit({
       unitId: 'test:robe:0', fixtureNumber: 1, groupId: 'robe', podId: 'test', positionName: 'Test',
-      label: 'Test MegaPointe', modelName: 'MegaPointe', type: 'beam', motion: 'pan-tilt', isFloor: directionY > 0,
-      mountPosition: origin, lensOrigin: origin, direction: { x: 0, y: directionY, z: 0 }, panRad: 0, tiltRad: 0,
+      label: 'Test MegaPointe', modelName: 'MegaPointe', type: 'beam', motion: 'pan-tilt', isFloor: sign > 0,
+      mountPosition: origin, lensOrigin: origin, direction, panRad: 0, tiltRad: 0,
       zoomScale: 1, optics, frustum: beamAngleDeg === null ? undefined : {
         length, nearRadius: 0.102336, slope: Math.tan(beamAngleDeg * Math.PI / 360), beamAngleDeg, nominalLumens: 20375,
       },
@@ -167,6 +167,14 @@ test('vertical calibrated rim checks audience spill beyond an axis that clears t
     assert.equal(read(y, directionY, 21, 0.3).entersAudienceBelowThreshold, false);
     assert.equal(read(y, directionY, null).entersAudienceBelowThreshold, false);
   }
+  // The axis and its lowest edge lie in the X/Y plane and never close the 0.5 m Z gap.
+  const nearVertical = read(8, -1, 21, 30, 0.002, 0.5);
+  assert.equal(nearVertical.audienceEnterT, null);
+  assert.equal(nearVertical.entersAudienceBelowThreshold, true);
+  assert.match(nearVertical.warnings.find(({ code }) => code === 'audience_clearance').message, /cone edge/);
+  assert.equal(read(8, -1, 1.8, 30, 0.002, 0.5).entersAudienceBelowThreshold, false);
+  assert.equal(read(8, -1, 21, 4, 0.002, 0.5).entersAudienceBelowThreshold, false);
+  assert.equal(read(8, -1, null, undefined, 0.002, 0.5).entersAudienceBelowThreshold, false);
 });
 
 test('pre-flight checks zoom-only cues and resolves cue aim using desk precedence at lowest trim', () => {
@@ -188,14 +196,18 @@ test('pre-flight checks zoom-only cues and resolves cue aim using desk precedenc
   assert.equal(evaluateStaticHeadMeasures(low, wide)[0].entersAudienceBelowThreshold, true);
 
   const cue = (state) => [{ id: 'wide', name: 'Wide', tag: 'ZOOM', accent: '#ffffff', state }];
-  const clearance = (cues, showState = look) => evaluatePreflight({ rig, cues, showState, acks: EMPTY_PREFLIGHT_ACKS })
+  const clearance = (cues, showState = look, cueRig = rig) => evaluatePreflight({ rig: cueRig, cues, showState, acks: EMPTY_PREFLIGHT_ACKS })
     .rows.find((row) => row.groupId === 'trim-wash').findings.some((finding) => finding.code === 'beam_audience_clearance');
   assert.equal(clearance([]), false);
   assert.equal(clearance(cue({ beamZoom: 1 })), true);
 
-  const focusedLook = { ...look, focusMarkId: 'platform:main-deck', manualTilt: 0 };
-  assert.equal(clearance(cue({ manualTilt: 1, beamZoom: 1 }), focusedLook), false, 'an inherited deck focus stays clear');
-  assert.equal(clearance(cue({ focusMarkId: null, manualTilt: 1, beamZoom: 1 }), focusedLook), true, 'explicit null releases focus');
+  const focusRig = { ...rig, platforms: [
+    { id: 'main-deck', name: 'Main deck', x: 0, z: 0, width: rig.stageWidth, depth: rig.stageDepth, height: rig.stageHeight },
+    { id: 'upstage-mark', name: 'Upstage mark', x: 0, z: -8, width: 1, depth: 1, height: rig.stageHeight },
+  ] };
+  const focusedLook = { ...look, focusMarkId: 'platform:upstage-mark', manualTilt: 0 };
+  assert.equal(clearance(cue({ manualTilt: 1, beamZoom: 1 }), focusedLook, focusRig), false, 'an inherited upstage focus stays clear');
+  assert.equal(clearance(cue({ focusMarkId: null, manualTilt: 1, beamZoom: 1 }), focusedLook, focusRig), true, 'explicit null releases focus');
 
   const addressedLook = { ...look, movingGroups: { wash: { manualTilt: -1 } } };
   assert.equal(clearance(cue({ beamZoom: 1 }), addressedLook), false, 'unwritten trim keeps its addressed value');
