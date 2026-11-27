@@ -168,20 +168,24 @@ async function installMockOutput(page) {
   });
 }
 
-async function startMockOutput(page) {
+async function startMockOutput(page, { reusePreflight = false } = {}) {
   await button(page, 'DMX monitor').click();
   if (await page.getByTestId('dmx-advanced-details').getAttribute('open') === null) {
     await page.getByTestId('dmx-advanced-summary').click();
   }
-  await page.getByTestId('dmx-open-preflight').click();
-  const preflight = page.getByTestId('preflight-panel');
-  await preflight.getByTestId('preflight-run-check').click();
-  for (const checkbox of await preflight.locator('input[data-testid^="preflight-ack-"], input[data-testid^="preflight-laser-inhibit-"]').all()) {
-    await checkbox.check();
+  if (!reusePreflight) {
+    await page.getByTestId('dmx-open-preflight').click();
+    const preflight = page.getByTestId('preflight-panel');
+    await preflight.getByTestId('preflight-run-check').click();
+    for (const checkbox of await preflight.locator('input[data-testid^="preflight-ack-"], input[data-testid^="preflight-laser-inhibit-"]').all()) {
+      await checkbox.check();
+    }
+    await expect(preflight.getByTestId('preflight-eligibility')).toContainText('Eligible to arm');
+    await button(preflight, 'Done').click();
   }
-  await expect(preflight.getByTestId('preflight-eligibility')).toContainText('Eligible to arm');
-  await button(preflight, 'Done').click();
-  await page.getByTestId('dmx-output-arm').click();
+  const arm = page.getByTestId('dmx-output-arm');
+  await expect(arm).toBeEnabled();
+  await arm.click();
   await page.getByTestId('dmx-output-go-live').click();
   await expect(page.getByTestId('live-dmx-badge')).toBeVisible();
   await button(page, 'Close DMX monitor').click();
@@ -268,10 +272,11 @@ test('Measure and mock live or stopped output stay below the actual desk header'
   await button(showControl, 'Close show control').click();
 
   await page.setViewportSize({ width: 1440, height: 900 });
-  await startMockOutput(page);
+  await startMockOutput(page, { reusePreflight: true });
   await page.evaluate(() => window.simulateOutputHeartbeatTimeout());
   const stopped = page.getByTestId('live-dmx-stopped-badge');
   await expect(stopped).toBeVisible();
+  await expect(stopped).toContainText('Output stopped: app stopped responding');
   for (const [width, height] of sizes) {
     await page.setViewportSize({ width, height });
     await assertBelowHeader(stopped, width, height);
