@@ -1,3 +1,4 @@
+import { readFile, writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { installFakeWebXr } from '../support/fake-webxr.mjs';
 
@@ -504,8 +505,8 @@ test('the expanded original crowd renders in both stereo profiles and preserves 
   expect(shaderErrors).toEqual([]);
 });
 
-test('the packed monochrome crowd keeps all render budgets and survives context restoration', async ({ page }, info) => {
-  test.setTimeout(150_000);
+test('the equal-density original and 1928 cast crowds render within both Arena stereo budgets', async ({ page }, info) => {
+  test.setTimeout(300_000);
   const renderingErrors = [];
   page.on('pageerror', error => renderingErrors.push(error.message));
   page.on('console', message => {
@@ -537,12 +538,85 @@ test('the packed monochrome crowd keeps all render budgets and survives context 
     admitted: true, packedVertexTextures: 1, arenaDelta: { draws: 6, triangles: 0, textures: 1 },
   });
 
+  const legacy = crowd.batches.find(batch => batch.modelId === 'stageforge-human-v1');
+  expect(legacy.phoneCount).toBeGreaterThan(0);
+  expect(crowd.resourceAdmission.morphTextures).toBe(1);
+  const controlProfiles = await checkProfiles(true, false);
+
+  // Use the Arena show that produced the measured control, including its exact rig, seed and zone.
+  await page.getByRole('button', { name: 'Show files', exact: true }).click();
+  const files = page.getByRole('dialog', { name: 'Show files' });
+  const saving = page.waitForEvent('download');
+  await files.getByRole('button', { name: 'Save show JSON' }).click();
+  const saved = JSON.parse(await readFile(await (await saving).path(), 'utf8'));
+  const fixture = await page.evaluate(async (source) => {
+    const { resolveCrowdLayout } = await import('/src/data/crowdPlacement.ts');
+    const { STEAMBOAT_MODEL_IDS, STEAMBOAT_DEFAULT_PLACEMENT_MODEL_IDS } = await import('/src/data/crowdFilmCast.ts');
+    const { parseShowFile, V14_SCHEMA_URL } = await import('/src/data/showFile.ts');
+    const original = resolveCrowdLayout(source.rig, source.crowd);
+    const roles = [...STEAMBOAT_DEFAULT_PLACEMENT_MODEL_IDS];
+    roles.push(...STEAMBOAT_MODEL_IDS.filter(id => !roles.includes(id)));
+    // Take real, non-phone robot/alien positions. The complete legacy-human morph/handset batch stays identical.
+    const near = source.rig.stageDepth / 2 + 11;
+    const preference = person => Math.abs(person.z - near) + Math.abs(person.x) * 0.7;
+    const candidates = original.placements.filter(person => !person.phone && person.pose === 'standing'
+      && ['stageforge-alien-v1', 'stageforge-robot-v1'].includes(person.modelId));
+    candidates.sort((a, b) => preference(a) - preference(b) || a.id.localeCompare(b.id));
+    const donors = [];
+    for (const person of candidates) {
+      if (donors.every(other => Math.hypot(person.x - other.x, person.z - other.z) >= 2.2)) donors.push(person);
+      if (donors.length === roles.length) break;
+    }
+    if (donors.length !== roles.length) throw new Error('Arena control has too few separated donor positions for the full film roster.');
+    const placements = roles.map((modelId, index) => {
+      const person = donors[index];
+      return { id: 'proof-film-' + index, modelId, pose: 'standing', yaw: person.rotY * 180 / Math.PI,
+        position: { x: person.x, y: person.y, z: person.z } };
+    });
+    const show = parseShowFile(JSON.stringify({ ...source, version: 14, $schema: V14_SCHEMA_URL, crowd: { ...source.crowd, placements } }));
+    const mixed = resolveCrowdLayout(show.rig, show.crowd);
+    const donorIds = new Set(donors.map(person => person.id));
+    const untouched = original.placements.filter(person => !donorIds.has(person.id));
+    const generated = mixed.placements.filter(person => person.source === 'generated');
+    const byId = new Map(mixed.placements.map(person => [person.id, person]));
+    const sameSlots = placements.every((slot, i) => {
+      const person = byId.get('explicit:' + slot.id);
+      return person?.modelId === slot.modelId && person.x === donors[i].x && person.y === donors[i].y && person.z === donors[i].z;
+    });
+    return { show, filmIds: STEAMBOAT_MODEL_IDS, total: mixed.placed, slots: roles.length,
+      sameSlots, othersIdentical: JSON.stringify(untouched) === JSON.stringify(generated) };
+  }, saved);
+  expect(fixture.show.version).toBe(14);
+  expect(fixture.slots).toBe(17);
+  expect(fixture.filmIds).toHaveLength(16);
+  expect(fixture.sameSlots && fixture.othersIdentical).toBe(true);
+  expect(fixture.total).toBe(crowd.count);
+  await files.getByLabel('Open show file').setInputFiles({
+    name: 'Arena-mixed-cast.stageforge.show.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(fixture.show)),
+  });
+  await expect(files).toBeHidden();
+  const readCrowd = () => page.evaluate(() => window.stageforgeProbe.crowd());
+  const originals = crowd.batches.flatMap(batch => batch.modelIds).sort();
+  expect(originals).toHaveLength(7);
+  const expectedIds = [...originals, ...fixture.filmIds].sort();
+  await expect.poll(async () => [...new Set((await readCrowd()).placementBindings.map(item => item.modelId))].sort()).toEqual(expectedIds);
+  const mixed = await readCrowd();
+  expect(mixed.count).toBe(crowd.count);
+  expect(mixed.batches).toHaveLength(crowd.batches.length);
+  const originalPacked = crowd.batches.find(batch => batch.packed);
+  const mixedPacked = mixed.batches.find(batch => batch.packed);
+  expect(mixedPacked.modelIds).toEqual([...originalPacked.modelIds, ...fixture.filmIds].sort());
+  expect(mixedPacked.phoneCount).toBe(0);
+  expect(mixed.batches.find(batch => batch.modelId === legacy.modelId)).toEqual(legacy);
+  expect(mixed.resourceAdmission).toMatchObject({ admitted: true, eyeViews: 2, packedVertexTextures: 1, morphTextures: 1 });
+
   await page.evaluate(() => {
     const probe = window.stageforgeProbe;
     probe.setRenderSettings({ crowdLighting: true });
-    probe.patchShowState({ autoDirector: false, blackout: false, primaryColor: '#ffffff', accentColor: '#ffffff' });
+    probe.patchShowState({ autoDirector: false, blackout: false, masterDimmer: 1, washIntensity: 1, blinderLevel: 0.6, primaryColor: '#ffffff', accentColor: '#ffffff' });
   });
-  const captureCrowd = () => page.evaluate(async () => {
+  const captureCrowd = (ids) => page.evaluate(async (ids) => {
+    const { crowdModel } = await import('/src/data/crowdModels.ts');
     const probe = window.stageforgeProbe;
     const transforms = probe.crowd().transforms;
     const shots = [];
@@ -557,15 +631,20 @@ test('the packed monochrome crowd keeps all render budgets and survives context 
       context.drawImage(image, 0, 0);
       return context.getImageData(0, 0, canvas.width, canvas.height);
     };
-    for (const id of ['stageforge-moth-v1', 'stageforge-ticket-taker-v1']) {
+    for (const id of ids) {
       const people = transforms.filter(item => item.modelId === id).sort((a, b) => a.z - b.z || Math.abs(a.x) - Math.abs(b.x));
       // Frame a central floor row beyond the rail. The foremost side slot can be hidden by the stage structure.
-      const person = people.find(item => item.z > people[0].z + 5 && Math.abs(item.x) < 7);
+      const historical = id.startsWith('stageforge-steamboat-1928-');
+      const person = historical ? people[0] : people.find(item => item.z > people[0].z + 5 && Math.abs(item.x) < 7);
       if (!person) throw new Error(`No unobstructed capture position for ${id}`);
       const forwardX = Math.sin(person.rotY), forwardZ = Math.cos(person.rotY);
+      const height = crowdModel(id).geometryHeightM * person.scaleY;
+      const distance = historical ? Math.max(0.74, height * 1.12) : 2;
+      const side = historical ? distance * 0.12 : 0.25;
       probe.setCameraPose(
-        [person.x + forwardX * 2.0 + forwardZ * 0.25, person.y + 1.26, person.z + forwardZ * 2.0 - forwardX * 0.25],
-        [person.x, person.y + 0.91, person.z],
+        [person.x + forwardX * distance + forwardZ * side, person.y + (historical ? height * 0.72 : 1.26),
+          person.z + forwardZ * distance - forwardX * side],
+        [person.x, person.y + (historical ? height * 0.51 : 0.91), person.z],
       );
       const settings = { hideBeams: true, hidePools: true, hideParticles: true };
       const image = probe.redrawAndCapture(settings);
@@ -581,13 +660,21 @@ test('the packed monochrome crowd keeps all render budgets and survives context 
           if (delta > 24) changedPixels++;
         }
       }
-      shots.push({ id, image, changedPixels });
+      // Attach a small crop of the same measured desktop frame for each appearance.
+      const crop = document.createElement('canvas');
+      crop.width = Math.floor(shown.width * 0.40);
+      crop.height = Math.floor(shown.height * 0.70);
+      crop.getContext('2d').putImageData(shown, -Math.floor((shown.width - crop.width) / 2), -Math.floor((shown.height - crop.height) / 2));
+      shots.push({ id, image: crop.toDataURL('image/png'), changedPixels });
     }
     return shots;
-  });
-  const captures = await captureCrowd();
+  }, ids);
+  const originalsToFrame = ['stageforge-moth-v1', 'stageforge-ticket-taker-v1'];
+  const captures = await captureCrowd([...originalsToFrame, ...fixture.filmIds]);
   for (const { id, image, changedPixels } of captures) {
-    await info.attach(id, { body: Buffer.from(image.split(',')[1], 'base64'), contentType: 'image/png' });
+    const path = info.outputPath(id + '.png');
+    await writeFile(path, Buffer.from(image.split(',')[1], 'base64'));
+    await info.attach(id, { path, contentType: 'image/png' });
     expect(changedPixels, id).toBeGreaterThan(100);
   }
   const texturesBefore = await page.evaluate(() => window.stageforgeProbe.graphicsProbe().stats.textures);
@@ -603,7 +690,8 @@ test('the packed monochrome crowd keeps all render budgets and survives context 
   await page.evaluate(() => window.__crowdContext.restoreContext());
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.graphicsProbe().contextLost)).toBe(false);
   // First read the surviving geometry, then rebuild to exercise texture ownership separately.
-  for (const { id, changedPixels } of await captureCrowd()) expect(changedPixels, id).toBeGreaterThan(100);
+  const restorationIds = [...originalsToFrame, 'stageforge-steamboat-1928-mickey-capped', 'stageforge-steamboat-1928-piglet-dark', 'stageforge-steamboat-1928-dock-bird-leaning'];
+  for (const { id, changedPixels } of await captureCrowd(restorationIds)) expect(changedPixels, id).toBeGreaterThan(100);
   const restoredTextures = await page.evaluate(() => window.stageforgeProbe.graphicsProbe().stats.textures);
   expect(restoredTextures).toBeLessThanOrEqual(texturesBefore);
   await page.evaluate(() => {
@@ -611,24 +699,56 @@ test('the packed monochrome crowd keeps all render budgets and survives context 
     window.stageforgeProbe.rebuildRig();
     window.stageforgeProbe.redrawAndCapture();
   });
-  expect((await page.evaluate(() => window.stageforgeProbe.crowd())).placementBindings).toEqual(crowd.placementBindings);
+  expect((await readCrowd()).placementBindings).toEqual(mixed.placementBindings);
 
-  const checkStereo = async (quality) => {
-    await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
-    const state = await xrState(page);
-    expect(state.audience.currentQuality).toBe(quality);
-    expect(state.lastViews).toBe(2);
-    expect(state.lastCalls).toBeLessThanOrEqual(state.audience.emulatorBudget.calls);
-    expect(state.lastTriangles).toBeLessThanOrEqual(state.audience.emulatorBudget.triangles);
-    expect(state.memory.textures).toBeLessThanOrEqual(state.audience.emulatorBudget.rendererTextures);
-    expect(state.audience.ownedTextures).toBe(state.audience.emulatorBudget.ownedTextures);
-  };
-  await enter(page, true);
-  await checkStereo('pc-link-high');
-  await page.evaluate(() => window.stageforgeProbe.webXrMenuAction('quality:standalone-low'));
-  await exit(page);
-  await enter(page);
-  await checkStereo('standalone-low');
-  await exit(page);
+  async function checkProfiles(firstWarning, checkVisibility) {
+    const results = {};
+    const profiles = ['pc-link-high', 'standalone-low'];
+    for (const quality of profiles) {
+      await enter(page, firstWarning && quality === profiles[0]);
+      await expect.poll(async () => (await xrState(page)).audience?.blink).toBe(null);
+      if (checkVisibility) {
+        const frames = await page.evaluate(() => {
+          const frames = window.stageforgeProbe.webXr().frames;
+          window.__fakeWebXr.setVisibility('hidden');
+          return frames;
+        });
+        await page.waitForTimeout(150);
+        expect((await xrState(page)).frames).toBe(frames);
+        await page.evaluate(() => window.__fakeWebXr.setVisibility('visible'));
+        await expect.poll(async () => (await xrState(page)).frames).toBeGreaterThan(frames);
+      }
+      const peak = { calls: 0, triangles: 0, textures: 0 };
+      let frames = (await xrState(page)).frames;
+      for (let sample = 0; sample < 3; sample++) {
+        await expect.poll(async () => (await xrState(page)).frames).toBeGreaterThan(frames);
+        const state = await xrState(page);
+        frames = state.frames;
+        expect(state.audience.currentQuality).toBe(quality);
+        expect(state.lastViews).toBe(2);
+        expect(state.lastCalls).toBeGreaterThan(0);
+        expect(state.lastTriangles).toBeGreaterThan(0);
+        expect(state.lastCalls).toBeLessThanOrEqual(state.audience.emulatorBudget.calls);
+        expect(state.lastTriangles).toBeLessThanOrEqual(state.audience.emulatorBudget.triangles);
+        expect(state.memory.textures).toBeLessThanOrEqual(state.audience.emulatorBudget.rendererTextures);
+        expect(state.audience.ownedTextures).toBe(state.audience.emulatorBudget.ownedTextures);
+        peak.calls = Math.max(peak.calls, state.lastCalls);
+        peak.triangles = Math.max(peak.triangles, state.lastTriangles);
+        peak.textures = Math.max(peak.textures, state.memory.textures);
+      }
+      results[quality] = peak;
+      const next = quality === profiles[0] ? profiles[1] : profiles[0];
+      await page.evaluate(value => window.stageforgeProbe.webXrMenuAction('quality:' + value), next);
+      await exit(page);
+    }
+    return results;
+  }
+  const mixedProfiles = await checkProfiles(false, true);
+  const path = info.outputPath('equal-density-stereo-evidence.json');
+  await writeFile(path, JSON.stringify({ people: crowd.count, originalModelIds: originals, filmModelIds: fixture.filmIds,
+    original: controlProfiles, mixed: mixedProfiles,
+    packedDesktopPixelDeltas: captures.map(({ id, changedPixels }) => ({ id, changedPixels })),
+  }, null, 2));
+  await info.attach('equal-density-stereo-evidence', { path, contentType: 'application/json' });
   expect(renderingErrors).toEqual([]);
 });

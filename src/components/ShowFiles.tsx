@@ -56,12 +56,14 @@ export function DeskDialog({ title, onClose, className, children }: {title: stri
   </dialog>;
 }
 
+export type ShowExample = 'amber-walk-on' | 'split-rig' | 'steamboat-willie';
+
 export function ShowFiles({ name, media, stage, timeline, missing, cueNames, lastMvrSummary, onViewMvrReport, onOpen, onOpenInViewer, onExample, onSave, onRelink, onError, onClose }: {
   name: string; media: ShowMedia; stage?: NativeStage; timeline?: ShowTimeline; missing: string[]; cueNames: Map<string, string>;
   lastMvrSummary?: { fileName: string; warnings: number; blocks: number };
   onViewMvrReport?: () => void;
   onOpen: (file: File) => Promise<void>; onOpenInViewer?: (file: File) => Promise<void>; onSave: (action: FileAction) => Promise<void>;
-  onExample: (name: 'amber-walk-on' | 'split-rig') => Promise<void>;
+  onExample: (name: ShowExample) => Promise<void>;
   onRelink: (files: File[]) => string; onError?: (message: string) => void; onClose: () => void;
 }) {
   const [note, setNote] = useState('');
@@ -106,6 +108,7 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, las
     <div className="file-actions">
       <button disabled={busy} onClick={() => void job(async () => { await onExample('amber-walk-on'); onClose(); })}>Open Amber Walk-on example</button>
       <button disabled={busy} onClick={() => void job(async () => { await onExample('split-rig'); onClose(); })}>Open Split Rig rehearsal</button>
+      <button disabled={busy} onClick={() => void job(async () => { await onExample('steamboat-willie'); onClose(); })}>Open Steamboat Willie example</button>
       <a href="https://github.com/jbrick2070/stageforge/blob/main/docs/show-format.md" target="_blank" rel="noreferrer">Format &amp; source</a>
     </div>
     <h3>Media</h3>

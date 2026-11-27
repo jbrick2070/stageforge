@@ -63,7 +63,7 @@ import type { IldaRenderMode } from './engine/ildaRenderer';
 import type { MusicRef, ScreenRef, TimelineEvent } from './data/showFile';
 import type { BundleAsset } from './data/showBundle';
 import { isCustomMainWall, MAX_WALL_CUE_MS, pruneNativeStage, removeSecondaryScreenEvent, upsertSecondaryScreenEvent, type SecondaryScreenEvent } from './data/studioGeometry';
-import type { FileAction } from './components/ShowFiles';
+import type { FileAction, ShowExample } from './components/ShowFiles';
 import type { MvrReportRecord } from './components/MvrImportReport';
 import type { MvrImport } from './interchange/mvr/importMvr';
 import { useShowTimeline } from './input/useShowTimeline';
@@ -3289,18 +3289,21 @@ export const App: React.FC = () => {
       downloadStageFile(rig.name, 'patch.csv', new Blob([patchCsv(rig)], { type: 'text/csv;charset=utf-8' }));
     }
   };
-  const openExample = async (name: 'amber-walk-on' | 'split-rig') => {
+  const openExample = async (name: ShowExample) => {
     if (!capabilitiesRef.current.edit) return;
     const epoch = sessionEpochRef.current;
     const request = ++openRequestRef.current;
     setPendingMvr(null);
     const folder = import.meta.env.BASE_URL + 'examples/';
-    const [show, video] = await Promise.all([fetch(folder + name + '.stageforge.show.json'), fetch(folder + 'amber-clouds.mp4')]);
-    if (!show.ok || !video.ok) throw new Error('The example files could not be opened.');
-    const [json, videoBlob] = await Promise.all([show.text(), video.blob()]);
+    const [show, video] = await Promise.all([
+      fetch(folder + name + '.stageforge.show.json'),
+      name === 'steamboat-willie' ? undefined : fetch(folder + 'amber-clouds.mp4'),
+    ]);
+    if (!show.ok || (video && !video.ok)) throw new Error('The example files could not be opened.');
+    const [json, videoBlob] = await Promise.all([show.text(), video?.blob()]);
     if (epoch !== sessionEpochRef.current || request !== openRequestRef.current || !capabilitiesRef.current.edit) return;
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
-    openDocument(json, [{ kind: 'video', file: new File([videoBlob], 'amber-clouds.mp4', { type: 'video/mp4' }) }]);
+    openDocument(json, videoBlob ? [{ kind: 'video', file: new File([videoBlob], 'amber-clouds.mp4', { type: 'video/mp4' }) }] : []);
   };
   const media = { music: readMusic(), screen: readScreen() };
   const referencedMedia = useMemo(() => referencedFiles(media, cues, timeline.timeline, studioStage),

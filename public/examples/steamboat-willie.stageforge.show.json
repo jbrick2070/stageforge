@@ -1,0 +1,567 @@
+{
+  "$schema": "https://jbrick2070.github.io/stageforge/schemas/show-v14.schema.json",
+  "format": "stageforge-show",
+  "version": 14,
+  "rig": {
+    "name": "Steamboat Willie at the Arena",
+    "props": [
+      {
+        "id": "wing-left",
+        "kind": "tentacle",
+        "x": -8.1,
+        "z": 2.6,
+        "scale": 1.22,
+        "rotation": 165,
+        "color": "#c2d2ed"
+      },
+      {
+        "id": "wing-right",
+        "kind": "tentacle",
+        "x": 8.1,
+        "z": 2.6,
+        "scale": 1.22,
+        "rotation": 15,
+        "color": "#c2d2ed"
+      }
+    ],
+    "venue": "arena",
+    "stageWidth": 22,
+    "stageDepth": 11,
+    "stageHeight": 1.8,
+    "ledWall": {
+      "enabled": true,
+      "width": 18,
+      "height": 8.5,
+      "curved": true,
+      "sideWings": true
+    },
+    "audioRig": {
+      "lineArrays": true,
+      "boxesPerSide": 9,
+      "speakerProfile": "k2",
+      "monitorCount": 4,
+      "subWall": true,
+      "subCount": 10,
+      "djBooth": true,
+      "crowdDensity": 0.85
+    },
+    "trussPods": [
+      {
+        "id": "pod-front",
+        "name": "Front Truss (DS)",
+        "shape": "box",
+        "width": 20,
+        "x": 0,
+        "baseY": 11.2,
+        "z": 4.5,
+        "rotationY": 0,
+        "motorized": true,
+        "motorMinY": 6.2,
+        "motorMaxY": 13.5,
+        "fixtures": [
+          {
+            "id": "f-ds-beams",
+            "type": "beam",
+            "modelName": "Sharpy X-Beam 350",
+            "count": 8,
+            "dmxUniverse": 1,
+            "dmxStartChannel": 1
+          },
+          {
+            "id": "f-ds-blinders",
+            "type": "blinder",
+            "modelName": "Molefay 4-Lite Warm",
+            "count": 4,
+            "dmxUniverse": 1,
+            "dmxStartChannel": 129
+          },
+          {
+            "id": "f-ds-strobe",
+            "type": "strobe",
+            "modelName": "Atomic Pro JDC-1",
+            "count": 4,
+            "dmxUniverse": 1,
+            "dmxStartChannel": 145
+          }
+        ]
+      },
+      {
+        "id": "pod-mid",
+        "name": "Center Ring (Kinetic)",
+        "shape": "circle",
+        "width": 7.5,
+        "x": 0,
+        "baseY": 10.2,
+        "z": 0.2,
+        "rotationY": 0,
+        "motorized": true,
+        "motorMinY": 5,
+        "motorMaxY": 13.2,
+        "fixtures": [
+          {
+            "id": "f-mid-beams",
+            "type": "beam",
+            "modelName": "Sharpy X-Beam 350",
+            "count": 8,
+            "dmxUniverse": 1,
+            "dmxStartChannel": 177
+          },
+          {
+            "id": "f-mid-lasers",
+            "type": "laser",
+            "modelName": "KVANT Clubmax 12W",
+            "count": 3,
+            "dmxUniverse": 2,
+            "dmxStartChannel": 1
+          }
+        ]
+      },
+      {
+        "id": "pod-back",
+        "name": "Upstage Truss (US)",
+        "shape": "box",
+        "width": 19,
+        "x": 0,
+        "baseY": 12.2,
+        "z": -4.2,
+        "rotationY": 0,
+        "motorized": true,
+        "motorMinY": 7.5,
+        "motorMaxY": 14,
+        "fixtures": [
+          {
+            "id": "f-us-beams",
+            "type": "beam",
+            "modelName": "Sharpy X-Beam 350",
+            "count": 8,
+            "dmxUniverse": 1,
+            "dmxStartChannel": 305
+          },
+          {
+            "id": "f-us-lasers",
+            "type": "laser",
+            "modelName": "KVANT Clubmax 12W",
+            "count": 4,
+            "dmxUniverse": 2,
+            "dmxStartChannel": 55
+          },
+          {
+            "id": "f-us-wash",
+            "type": "wash",
+            "modelName": "MAC Aura Pro RGBW",
+            "count": 6,
+            "dmxUniverse": 1,
+            "dmxStartChannel": 433
+          }
+        ]
+      },
+      {
+        "id": "pod-wing-l",
+        "name": "SR Kinetic Wing",
+        "shape": "chevron",
+        "width": 6.5,
+        "x": -7.5,
+        "baseY": 9.6,
+        "z": 0.4,
+        "rotationY": 0.28,
+        "motorized": true,
+        "motorMinY": 5.4,
+        "motorMaxY": 13,
+        "fixtures": [
+          {
+            "id": "f-wl-beams",
+            "type": "beam",
+            "modelName": "Sharpy X-Beam 350",
+            "count": 4,
+            "dmxUniverse": 2,
+            "dmxStartChannel": 127
+          },
+          {
+            "id": "f-wl-strobe",
+            "type": "strobe",
+            "modelName": "Atomic Pro JDC-1",
+            "count": 2,
+            "dmxUniverse": 2,
+            "dmxStartChannel": 191
+          }
+        ]
+      },
+      {
+        "id": "pod-wing-r",
+        "name": "SL Kinetic Wing",
+        "shape": "chevron",
+        "width": 6.5,
+        "x": 7.5,
+        "baseY": 9.6,
+        "z": 0.4,
+        "rotationY": -0.28,
+        "motorized": true,
+        "motorMinY": 5.4,
+        "motorMaxY": 13,
+        "fixtures": [
+          {
+            "id": "f-wr-beams",
+            "type": "beam",
+            "modelName": "Sharpy X-Beam 350",
+            "count": 4,
+            "dmxUniverse": 2,
+            "dmxStartChannel": 207
+          },
+          {
+            "id": "f-wr-strobe",
+            "type": "strobe",
+            "modelName": "Atomic Pro JDC-1",
+            "count": 2,
+            "dmxUniverse": 2,
+            "dmxStartChannel": 271
+          }
+        ]
+      }
+    ],
+    "floorFx": [
+      {
+        "id": "fx-co2",
+        "type": "co2",
+        "modelName": "MagicFX CO2Jet II",
+        "count": 6,
+        "x": 0,
+        "z": 4.9,
+        "spread": 16,
+        "dmxUniverse": 2,
+        "dmxStartChannel": 300
+      },
+      {
+        "id": "fx-smoke",
+        "type": "smoke",
+        "modelName": "JEM ZR45 Smoke Machine",
+        "count": 4,
+        "x": 0,
+        "z": 3.4,
+        "spread": 11.8,
+        "dmxUniverse": 2,
+        "dmxStartChannel": 312
+      },
+      {
+        "id": "fx-hazer",
+        "type": "hazer",
+        "modelName": "MDG ATMe Touring Hazer",
+        "count": 2,
+        "x": 0,
+        "z": -2.5,
+        "spread": 18,
+        "dmxUniverse": 2,
+        "dmxStartChannel": 320
+      },
+      {
+        "id": "fx-flaser",
+        "type": "floor_laser",
+        "modelName": "KVANT Spectrum 25W",
+        "count": 3,
+        "x": 0,
+        "z": 2.2,
+        "spread": 11,
+        "dmxUniverse": 2,
+        "dmxStartChannel": 326
+      },
+      {
+        "id": "fx-fbeam",
+        "type": "floor_beam",
+        "modelName": "MegaPointe Floor Beam",
+        "count": 6,
+        "x": 0,
+        "z": -3.2,
+        "spread": 15,
+        "dmxUniverse": 2,
+        "dmxStartChannel": 380
+      }
+    ]
+  },
+  "crowd": {
+    "generatorVersion": 2,
+    "seed": 249057,
+    "zones": [
+      {
+        "id": "floor",
+        "kind": "standing",
+        "rect": {
+          "minX": -25.5,
+          "minZ": 7.5,
+          "maxX": 25.5,
+          "maxZ": 43
+        },
+        "occupancy": 0.08,
+        "modelWeights": [
+          {
+            "modelId": "stageforge-human-v1",
+            "weight": 2
+          },
+          {
+            "modelId": "stageforge-human-v2",
+            "weight": 4
+          },
+          {
+            "modelId": "stageforge-robot-v1",
+            "weight": 1
+          },
+          {
+            "modelId": "stageforge-alien-v1",
+            "weight": 1
+          },
+          {
+            "modelId": "stageforge-fox-v1",
+            "weight": 1
+          },
+          {
+            "modelId": "stageforge-moth-v1",
+            "weight": 1
+          },
+          {
+            "modelId": "stageforge-ticket-taker-v1",
+            "weight": 1
+          }
+        ]
+      }
+    ],
+    "exclusions": [],
+    "placements": [
+      {
+        "id": "sw1928-cast-01",
+        "modelId": "stageforge-steamboat-1928-mickey-capped",
+        "yaw": -180,
+        "pose": "standing",
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 10.5
+        }
+      },
+      {
+        "id": "sw1928-cast-02",
+        "modelId": "stageforge-steamboat-1928-minnie-with-ukulele",
+        "yaw": -180,
+        "pose": "standing",
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 9.5
+        }
+      },
+      {
+        "id": "sw1928-cast-03",
+        "modelId": "stageforge-steamboat-1928-pete",
+        "yaw": 174.55966796899452,
+        "pose": "standing",
+        "position": {
+          "x": -1,
+          "y": 0,
+          "z": 10.5
+        }
+      },
+      {
+        "id": "sw1928-cast-04",
+        "modelId": "stageforge-steamboat-1928-parrot",
+        "yaw": -174.55966796899452,
+        "pose": "standing",
+        "position": {
+          "x": 1,
+          "y": 0,
+          "z": 10.5
+        }
+      },
+      {
+        "id": "sw1928-cast-05",
+        "modelId": "stageforge-steamboat-1928-cow-thin",
+        "yaw": -180,
+        "pose": "standing",
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 11.5
+        }
+      },
+      {
+        "id": "sw1928-cast-06",
+        "modelId": "stageforge-steamboat-1928-goat",
+        "yaw": 173.99099404250546,
+        "pose": "standing",
+        "position": {
+          "x": -1,
+          "y": 0,
+          "z": 9.5
+        }
+      },
+      {
+        "id": "sw1928-cast-07",
+        "modelId": "stageforge-steamboat-1928-galley-cat",
+        "yaw": -173.99099404250546,
+        "pose": "standing",
+        "position": {
+          "x": 1,
+          "y": 0,
+          "z": 9.5
+        }
+      },
+      {
+        "id": "sw1928-cast-08",
+        "modelId": "stageforge-steamboat-1928-waterfowl",
+        "yaw": 175.03025927188972,
+        "pose": "standing",
+        "position": {
+          "x": -1,
+          "y": 0,
+          "z": 11.5
+        }
+      },
+      {
+        "id": "sw1928-cast-09",
+        "modelId": "stageforge-steamboat-1928-sow",
+        "yaw": -175.03025927188972,
+        "pose": "standing",
+        "position": {
+          "x": 1,
+          "y": 0,
+          "z": 11.5
+        }
+      },
+      {
+        "id": "sw1928-cast-10",
+        "modelId": "stageforge-steamboat-1928-piglet-light",
+        "yaw": -180,
+        "pose": "standing",
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 8.5
+        }
+      },
+      {
+        "id": "sw1928-cast-11",
+        "modelId": "stageforge-steamboat-1928-piglet-dark",
+        "yaw": 169.21570213243743,
+        "pose": "standing",
+        "position": {
+          "x": -2,
+          "y": 0,
+          "z": 10.5
+        }
+      },
+      {
+        "id": "sw1928-cast-12",
+        "modelId": "stageforge-steamboat-1928-piglet-light",
+        "yaw": -169.21570213243743,
+        "pose": "standing",
+        "position": {
+          "x": 2,
+          "y": 0,
+          "z": 10.5
+        }
+      },
+      {
+        "id": "sw1928-cast-13",
+        "modelId": "stageforge-steamboat-1928-dock-bird-upright",
+        "yaw": 173.29016319224309,
+        "pose": "standing",
+        "position": {
+          "x": -1,
+          "y": 0,
+          "z": 8.5
+        }
+      },
+      {
+        "id": "sw1928-cast-14",
+        "modelId": "stageforge-steamboat-1928-dock-bird-leaning",
+        "yaw": -173.29016319224309,
+        "pose": "standing",
+        "position": {
+          "x": 1,
+          "y": 0,
+          "z": 8.5
+        }
+      }
+    ]
+  },
+  "cues": [],
+  "look": {
+    "masterDimmer": 1,
+    "blackout": false,
+    "autoDirector": false,
+    "audioReactive": false,
+    "bpm": 128,
+    "beamIntensity": 0.42,
+    "washIntensity": 0.76,
+    "beamZoom": 0.22,
+    "goboPrism": false,
+    "primaryColor": "#cbd5ff",
+    "accentColor": "#ffd4a9",
+    "colorSplitMode": "alternate",
+    "movementMode": "fan",
+    "movementSpeed": 0.26,
+    "movementSpread": 0.72,
+    "manualPan": 0,
+    "manualTilt": 0.2,
+    "focusMarkId": null,
+    "strobeRate": 0,
+    "blinderLevel": 0.2,
+    "laser": {
+      "enabled": false,
+      "intensity": 0.48,
+      "pattern": "liquid_sky",
+      "beamCount": 10,
+      "spreadX": 0.76,
+      "spreadY": 0.3,
+      "speed": 0.32,
+      "tilt": 0.12,
+      "rotation": 0.25,
+      "colorMode": "primary",
+      "strobe": 0,
+      "audienceScan": false
+    },
+    "motors": {
+      "mode": "breathe",
+      "speed": 0.35,
+      "podTargets": {
+        "pod-front": {
+          "height": 0.75,
+          "tilt": 0
+        },
+        "pod-mid": {
+          "height": 0.55,
+          "tilt": 0
+        },
+        "pod-back": {
+          "height": 0.85,
+          "tilt": 0
+        },
+        "pod-wing-l": {
+          "height": 0.6,
+          "tilt": 0.2
+        },
+        "pod-wing-r": {
+          "height": 0.6,
+          "tilt": -0.2
+        }
+      }
+    },
+    "atmo": {
+      "hazeLevel": 0.14,
+      "smokeOutput": 0.12,
+      "co2Active": false,
+      "co2AutoOnDrop": true
+    },
+    "led": {
+      "enabled": true,
+      "brightness": 0.63,
+      "visualMode": "tunnel",
+      "speed": 0.5,
+      "tourText": "STAGEFORGE // WORLD TOUR",
+      "customMediaUrl": null,
+      "customMediaType": null
+    },
+    "bloomStrength": 0.38
+  },
+  "activeCueId": null,
+  "controls": {
+    "camera": "stage_side",
+    "volume": 0.72
+  }
+}

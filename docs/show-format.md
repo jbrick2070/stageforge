@@ -34,6 +34,8 @@ Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay tak
 
 **Files → Open Split Rig rehearsal** opens a 16-second performance. Two washes focus on the drum riser while two beams sweep independently. The final reveal uses two laser projectors with five and seventeen rays. Both examples share the bundled amber video. [Split Rig show](../public/examples/split-rig.stageforge.show.json)
 
+**Files → Open Steamboat Willie example** places the 1928 cast beside an audience of original StageForge characters. Open Stage Designer to edit individual placements or use the full-cast preset. All character geometry ships with the app. [Steamboat Willie show](../public/examples/steamboat-willie.stageforge.show.json)
+
 ## Reading and writing a show
 
 | Field | Meaning |
