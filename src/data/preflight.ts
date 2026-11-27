@@ -4,6 +4,7 @@ import type { NativeStage } from './showFile';
 import { formatCsv, type CsvValue } from './csv';
 import { buildDmxPatch } from './dmxPatch';
 import { getCatalogEntry } from './equipmentCatalog';
+import { cueLook } from './cueLook';
 import {
   classifyPhysicalGroup,
   isSerialBlockedFixtureGroup,
@@ -405,15 +406,7 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
       cs.movementMode === 'manual' ||
       cs.movementMode === 'crowd_scan'
     ) {
-      const cueHeadLook = {
-        ...input.showState,
-        focusMarkId: cs.focusMarkId ?? input.showState.focusMarkId,
-        movementMode: cs.movementMode ?? input.showState.movementMode,
-        manualPan: cs.manualPan ?? input.showState.manualPan,
-        manualTilt: cs.manualTilt ?? input.showState.manualTilt,
-        beamZoom: cs.beamZoom ?? input.showState.beamZoom,
-        movingGroups: cs.movingGroups ?? input.showState.movingGroups,
-      };
+      const cueHeadLook = cueLook(input.showState, cue);
       combinedHeadMeasures.push(...evaluateStaticHeadMeasures(input.rig, cueHeadLook, input.stage));
       if (lowestTrimRig) {
         combinedHeadMeasures.push(...evaluateStaticHeadMeasures(lowestTrimRig, cueHeadLook, input.stage));

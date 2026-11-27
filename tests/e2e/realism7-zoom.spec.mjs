@@ -133,9 +133,14 @@ test('Realism 7 finite lens geometry, cold Measure, pool refill and batched rend
   page.on('console', (message) => {
     if (/THREE\.WebGLProgram/.test(message.text())) errors.push(message.text());
   });
-  await freeze(page);
+  await page.clock.install();
+  await page.goto('/?probe');
   const file = rehearsal();
   await openRehearsal(page, file);
+  // The house wall at x = 9.9 m occludes a view from outside the Theatre.
+  await page.evaluate(() => window.stageforgeProbe.setCameraPose([0, 5.4, 14], [0, 4, 0]));
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.beamAxes().filter((beam) => beam.optics.emitted > 0.001).length)).toBe(9);
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
   let previous;
   for (const zoom of [0, 0.5, 1]) {
     const result = await page.evaluate(async ({ look, zoom }) => {
@@ -169,10 +174,17 @@ test('Realism 7 finite lens geometry, cold Measure, pool refill and batched rend
       };
       const [on, noBeams, off] = await Promise.all([batched, hidden, unbatched].map(decode));
       const diff = (a, b) => a.reduce((sum, value, i) => sum + Math.abs(value - b[i]), 0) / (a.length * 255);
-      return { beams, live, cold, pools, stats, signal: diff(on, noBeams), parity: diff(on, off), batched };
+      return { beams, live, cold, pools, stats, signal: diff(on, noBeams), parity: diff(on, off), batched, hidden, unbatched };
     }, { look: file.look, zoom });
 
+    await info.attach(`zoom-${zoom}`, { body: Buffer.from(result.batched.split(',')[1], 'base64'), contentType: 'image/png' });
+    const lit = result.live.filter((unit) => unit.calibratedOptics && unit.emittedVisible).length;
+    if (result.signal <= 0.0001 || result.parity >= result.signal * 0.15) {
+      await info.attach(`zoom-${zoom}-beams-hidden`, { body: Buffer.from(result.hidden.split(',')[1], 'base64'), contentType: 'image/png' });
+      await info.attach(`zoom-${zoom}-unbatched`, { body: Buffer.from(result.unbatched.split(',')[1], 'base64'), contentType: 'image/png' });
+    }
     expect(result.beams).toHaveLength(5);
+    expect(lit).toBe(5);
     expect(result.stats.batching.proxied).toBe(6); // Two MegaPointes, two Rogues and two identical PARs.
     expect(result.stats.batching.released).toBe(0);
     if (previous) {
@@ -180,7 +192,7 @@ test('Realism 7 finite lens geometry, cold Measure, pool refill and batched rend
       expect(result.stats.textures).toBe(previous.textures);
     }
     previous = result.stats;
-    expect(result.signal).toBeGreaterThan(0.0001);
+    expect(result.signal, `${lit} emitting calibrated heads at zoom ${zoom}`).toBeGreaterThan(0.0001);
     expect(result.parity).toBeLessThan(result.signal * 0.15);
 
     for (const beam of result.beams) {
@@ -236,7 +248,6 @@ test('Realism 7 finite lens geometry, cold Measure, pool refill and batched rend
     expect(generic.beamAngleDeg).toBeCloseTo(360 / Math.PI * Math.atan(legacyScale * (1.75 - 0.12) / 30), 8);
     expect(authored.calibratedOptics).toBeUndefined();
     expect(generic.calibratedOptics).toBeUndefined();
-    await info.attach(`zoom-${zoom}`, { body: Buffer.from(result.batched.split(',')[1], 'base64'), contentType: 'image/png' });
   }
 
   const refill = await page.evaluate(() => {

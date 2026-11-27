@@ -11,6 +11,7 @@ const focusAimMod = await vite.ssrLoadModule('/src/engine/focusAim.ts');
 const opticsMod = await vite.ssrLoadModule('/src/data/fixtureOptics.ts');
 const presetsMod = await vite.ssrLoadModule('/src/data/presets.ts');
 const { BeamPools } = await vite.ssrLoadModule('/src/engine/beamPools.ts');
+const { MeasureOverlay3D } = await vite.ssrLoadModule('/src/engine/measureOverlay.ts');
 const THREE = await import('three');
 
 const {
@@ -125,9 +126,50 @@ test('calibrated finite lens gives an exact complete ellipse and distinguishes p
   assert.equal(unit.throwM, 40 - rig.stageHeight);
   assert.equal(unit.footprint.clipped, true);
   assert.equal(unit.luxFullEst, null);
+
+  const overlay = new MeasureOverlay3D();
+  const endpoints = (fixture) => {
+    overlay.updateRays([fixture], true, fixture.unitId);
+    const { geometry } = overlay.group.children[0];
+    return Array.from(geometry.getAttribute('position').array.slice(0, geometry.drawRange.count * 3));
+  };
+  assert.deepEqual(endpoints(unit), [0, 40, 0, 0, 10, 0], 'calibrated out-of-range hit has no crosshair');
+  assert.deepEqual(endpoints({ ...unit, hitPoint: null, throwM: null }), [0, 40, 0, 0, 10, 0]);
+  assert.equal(endpoints({ ...unit, throwM: 20, hitPoint: { x: 0, y: 20, z: 0 } }).length, 18);
+  const legacy = endpoints({ ...unit, calibratedOptics: undefined });
+  assert.equal(legacy.length, 18, 'legacy out-of-range centreline and hit crosshair remain visible');
+  assert.ok(Math.abs(legacy[4] - rig.stageHeight) < 1e-6);
+  overlay.dispose();
 });
 
-test('pre-flight checks a zoom-only cue at the lowest motor trim', () => {
+test('vertical calibrated rim checks audience spill beyond an axis that clears the audience', () => {
+  const rig = { ...RIG_TEMPLATES.arena_mainstage, venue: 'festival' };
+  const surfaces = buildSceneRaySurfaces(rig);
+  const z = surfaces.bounds.audienceZone.minZ - 0.25;
+  const optics = fixtureOptics('beam');
+  const read = (y, directionY, beamAngleDeg, length) => {
+    const origin = { x: 0, y, z };
+    return measureFixtureUnit({
+      unitId: 'test:robe:0', fixtureNumber: 1, groupId: 'robe', podId: 'test', positionName: 'Test',
+      label: 'Test MegaPointe', modelName: 'MegaPointe', type: 'beam', motion: 'pan-tilt', isFloor: directionY > 0,
+      mountPosition: origin, lensOrigin: origin, direction: { x: 0, y: directionY, z: 0 }, panRad: 0, tiltRad: 0,
+      zoomScale: 1, optics, frustum: beamAngleDeg === null ? undefined : {
+        length, nearRadius: 0.102336, slope: Math.tan(beamAngleDeg * Math.PI / 360), beamAngleDeg, nominalLumens: 20375,
+      },
+      configuredLumens: null, appliedDimmer: 1, emittedVisible: true,
+    }, rig, surfaces);
+  };
+  for (const [y, directionY] of [[4, -1], [rig.stageHeight + 0.1, 1]]) {
+    const wide = read(y, directionY, 21, 30);
+    assert.equal(wide.audienceEnterT, null, 'the vertical centreline stays outside the audience');
+    assert.ok(wide.entersAudienceBelowThreshold, 'the expanded vertical rim reaches the audience');
+    assert.equal(read(y, directionY, 1.8, 30).entersAudienceBelowThreshold, false);
+    assert.equal(read(y, directionY, 21, 0.3).entersAudienceBelowThreshold, false);
+    assert.equal(read(y, directionY, null).entersAudienceBelowThreshold, false);
+  }
+});
+
+test('pre-flight checks zoom-only cues and resolves cue aim using desk precedence at lowest trim', () => {
   const rig = structuredClone(RIG_TEMPLATES.arena_mainstage);
   rig.venue = 'festival';
   rig.ledWall.enabled = false;
@@ -145,10 +187,19 @@ test('pre-flight checks a zoom-only cue at the lowest motor trim', () => {
   assert.equal(evaluateStaticHeadMeasures(low, look)[0].entersAudienceBelowThreshold, false);
   assert.equal(evaluateStaticHeadMeasures(low, wide)[0].entersAudienceBelowThreshold, true);
 
-  const clearance = (cues) => evaluatePreflight({ rig, cues, showState: look, acks: EMPTY_PREFLIGHT_ACKS })
+  const cue = (state) => [{ id: 'wide', name: 'Wide', tag: 'ZOOM', accent: '#ffffff', state }];
+  const clearance = (cues, showState = look) => evaluatePreflight({ rig, cues, showState, acks: EMPTY_PREFLIGHT_ACKS })
     .rows.find((row) => row.groupId === 'trim-wash').findings.some((finding) => finding.code === 'beam_audience_clearance');
   assert.equal(clearance([]), false);
-  assert.equal(clearance([{ id: 'wide-only', name: 'Wide only', tag: 'ZOOM', accent: '#ffffff', state: { beamZoom: 1 } }]), true);
+  assert.equal(clearance(cue({ beamZoom: 1 })), true);
+
+  const focusedLook = { ...look, focusMarkId: 'platform:main-deck', manualTilt: 0 };
+  assert.equal(clearance(cue({ manualTilt: 1, beamZoom: 1 }), focusedLook), false, 'an inherited deck focus stays clear');
+  assert.equal(clearance(cue({ focusMarkId: null, manualTilt: 1, beamZoom: 1 }), focusedLook), true, 'explicit null releases focus');
+
+  const addressedLook = { ...look, movingGroups: { wash: { manualTilt: 0 } } };
+  assert.equal(clearance(cue({ beamZoom: 1 }), addressedLook), false, 'unwritten trim keeps its addressed value');
+  assert.equal(clearance(cue({ manualTilt: 1, beamZoom: 1 }), addressedLook), true, 'global cue trim takes over the addressed value');
 });
 
 test('ray intersections hit stage deck, venue floor, LED walls, indoor ceiling, and report none on open-air festival sky', () => {

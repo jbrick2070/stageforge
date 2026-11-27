@@ -145,7 +145,8 @@ export class MeasureOverlay3D {
       const dx = u.direction.x;
       const dy = u.direction.y;
       const dz = u.direction.z;
-      const endT = u.throwM !== null ? u.throwM : 28;
+      const maxThrow = u.calibratedOptics?.maxThrowM;
+      const endT = maxThrow === undefined ? u.throwM ?? 28 : Math.min(u.throwM ?? maxThrow, maxThrow);
 
       const nr = isSelected ? 1.0 : u.type === 'wash' ? 0.45 : 0.15;
       const ng = isSelected ? 0.85 : u.type === 'wash' ? 0.82 : 0.92;
@@ -176,7 +177,7 @@ export class MeasureOverlay3D {
         pushSeg(ox, oy, oz, ox + dx * endT, oy + dy * endT, oz + dz * endT, nr, ng, nb);
       }
 
-      if (u.hitPoint) {
+      if (u.hitPoint && (maxThrow === undefined || (u.throwM !== null && u.throwM <= maxThrow))) {
         const hx = u.hitPoint.x;
         const hy = u.hitPoint.y + 0.03;
         const hz = u.hitPoint.z;

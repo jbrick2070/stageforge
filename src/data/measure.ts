@@ -482,6 +482,22 @@ export function lowerConeEdgeDirection(dir: Vec3Tuple, halfAngleRad: number): Ve
   };
 }
 
+/** The lowest aperture rim, or for a vertical axis the rim facing the nearest audience point. */
+function apertureRimDirection(axis: Vec3Tuple, origin: Vec3Tuple, zone: AudienceZoneBox): Vec3Tuple | null {
+  const horizontal = Math.hypot(axis.x, axis.z);
+  if (horizontal >= 1e-6) {
+    return { x: axis.x * axis.y / horizontal, y: -horizontal, z: axis.z * axis.y / horizontal };
+  }
+  const dx = Math.max(zone.minX, Math.min(zone.maxX, origin.x)) - origin.x;
+  const dz = Math.max(zone.minZ, Math.min(zone.maxZ, origin.z)) - origin.z;
+  const along = dx * axis.x + dz * axis.z;
+  const x = dx - along * axis.x;
+  const y = -along * axis.y;
+  const z = dz - along * axis.z;
+  const norm = Math.hypot(x, y, z);
+  return norm >= 1e-6 ? { x: x / norm, y: y / norm, z: z / norm } : null;
+}
+
 /**
  * Pure per-unit measurement from live engine aim data + pre-built scene surfaces.
  * Checks audience keep-out clearance for both the beam center axis and the lower cone edge
@@ -512,26 +528,28 @@ export function measureFixtureUnit(
     maxAudienceT,
   );
 
-  // Also check lower cone-edge ray (vertical plane) so wide washes cannot hide crowd spill behind a high center axis.
+  // Check the lens rim and cone edge as well as the centreline for audience spill.
   const axis = sample.direction;
-  const horizontal = frustum ? Math.hypot(axis.x, axis.z) : 0;
+  const rim = frustum ? apertureRimDirection(axis, sample.lensOrigin, surfaces.bounds.audienceZone) : null;
   let edgeOrigin = sample.lensOrigin;
   let lowerDir: Vec3Tuple | null;
   let edgeLength = Infinity;
-  if (frustum && horizontal >= 1e-6) {
-    const downX = axis.x * axis.y / horizontal;
-    const downZ = axis.z * axis.y / horizontal;
+  if (frustum && rim) {
     edgeOrigin = {
-      x: edgeOrigin.x + frustum.nearRadius * downX,
-      y: edgeOrigin.y - frustum.nearRadius * horizontal,
-      z: edgeOrigin.z + frustum.nearRadius * downZ,
+      x: edgeOrigin.x + frustum.nearRadius * rim.x,
+      y: edgeOrigin.y + frustum.nearRadius * rim.y,
+      z: edgeOrigin.z + frustum.nearRadius * rim.z,
     };
     const k = frustum.slope;
     const norm = Math.hypot(1, k);
-    lowerDir = { x: (axis.x + k * downX) / norm, y: (axis.y - k * horizontal) / norm, z: (axis.z + k * downZ) / norm };
+    lowerDir = {
+      x: (axis.x + k * rim.x) / norm,
+      y: (axis.y + k * rim.y) / norm,
+      z: (axis.z + k * rim.z) / norm,
+    };
     edgeLength = frustum.length * norm;
   } else {
-    lowerDir = lowerConeEdgeDirection(axis, (beamAngleDeg * DEG_TO_RAD) / 2);
+    lowerDir = frustum ? null : lowerConeEdgeDirection(axis, (beamAngleDeg * DEG_TO_RAD) / 2);
   }
   let edgeAudience: ReturnType<typeof intersectRayAudienceZone> | null = null;
   if (lowerDir) {
