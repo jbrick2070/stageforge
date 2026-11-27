@@ -81,6 +81,7 @@ const buttons: Button[] = [
   { id: 'limiter', label: 'LIMIT ≤3/s', x: 508, y: 486, width: 484, height: 76 },
   { id: 'quality:standalone-low', label: 'STANDALONE LOW · NEXT ENTRY', x: 32, y: 590, width: 470, height: 76 },
   { id: 'quality:pc-link-high', label: 'PC LINK HIGH · NEXT ENTRY', x: 522, y: 590, width: 470, height: 76 },
+  { id: 'menu:close', label: 'HIDE MENU · TRIGGER OR GRIP TO REOPEN', x: 32, y: 730, width: 960, height: 76 },
   { id: 'exit', label: 'EXIT VR', x: 32, y: 872, width: 960, height: 92 },
 ];
 
@@ -135,6 +136,9 @@ export class WebXrAudienceScene {
   private teleportPending = true;
   private optionalFrames = 0;
   private visible = true;
+  private readonly blockedSeatButtons: ReadonlySet<string>;
+  private readonly interactiveButtons: readonly Button[];
+  private menuOpen = true;
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -143,8 +147,11 @@ export class WebXrAudienceScene {
     private readonly baseReferenceSpace: XRReferenceSpace,
     private readonly config: XrAudienceSceneConfig,
   ) {
-    const initial = config.viewpoints.find((seat) => seat.id === 'floor') ?? config.viewpoints[0];
-    if (!initial) throw new Error('VR audience mode has no viewpoints.');
+    const initial = config.viewpoints.find((seat) => seat.id === 'floor' && !seat.blocked)
+      ?? config.viewpoints.find((seat) => !seat.blocked);
+    if (!initial) throw new Error('VR audience mode has no clear viewpoints.');
+    this.blockedSeatButtons = new Set(config.viewpoints.filter((seat) => seat.blocked).map((seat) => `seat:${seat.id}`));
+    this.interactiveButtons = buttons.filter((button) => !this.blockedSeatButtons.has(button.id));
     this.currentViewpoint = initial;
     this.eyeMode = config.eyeMode;
     this.nextQuality = config.qualityProfile;
@@ -205,11 +212,20 @@ export class WebXrAudienceScene {
   private handleInput(index: number, kind: 'select' | 'squeeze', pressed: boolean) {
     const accepted = consumeInputEdge(this.edgeState, `controller-${index}`, kind, pressed, this.frameSerial);
     if (!accepted || !this.inputEnabled || !this.visible) return;
+    if (!this.menuOpen) {
+      const camera = this.renderer.xr.getCamera();
+      const position = camera.getWorldPosition(new THREE.Vector3());
+      const orientation = camera.getWorldQuaternion(new THREE.Quaternion());
+      this.placeMenu({ position, orientation });
+      this.setMenuOpen(true);
+      return;
+    }
     const hit = this.controllerHit(this.controllers[index]);
     if (hit) this.activate(hit);
   }
 
   private controllerHit(controller: { group: THREE.Group }): string | null {
+    if (!this.menuOpen) return null;
     this.menu.updateWorldMatrix(true, false);
     controller.group.updateWorldMatrix(true, false);
     const worldOrigin = this.controllerWorldOrigin.setFromMatrixPosition(controller.group.matrixWorld);
@@ -225,7 +241,7 @@ export class WebXrAudienceScene {
       },
       CANVAS_SIZE,
       CANVAS_SIZE,
-      buttons,
+      this.interactiveButtons,
       this.menuHitScratch,
     );
     return hit?.id ?? null;
@@ -258,8 +274,7 @@ export class WebXrAudienceScene {
     return true;
   }
 
-  private placeMenu() {
-    const pose = viewpointHeadPose(this.currentViewpoint, this.eyeMode, this.yawOffset);
+  private placeMenu(pose = viewpointHeadPose(this.currentViewpoint, this.eyeMode, this.yawOffset)) {
     const q = new THREE.Quaternion(pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w);
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
     this.menu.position.set(pose.position.x, pose.position.y, pose.position.z).addScaledVector(forward, 1.45);
@@ -267,11 +282,25 @@ export class WebXrAudienceScene {
     this.menu.updateMatrixWorld(true);
   }
 
+  private setMenuOpen(open: boolean) {
+    this.menuOpen = open;
+    this.menu.visible = open;
+    for (const { ray, reticle } of this.controllers) {
+      ray.visible = open;
+      reticle.visible = false;
+    }
+    if (!open) {
+      this.limiterConfirmArmed = false;
+      this.config.actions.setLimiterOverride(false);
+    }
+    this.dirty = true;
+  }
+
   private activate(id: string) {
     const seatId = id.startsWith('seat:') ? id.slice(5) as XrViewpointId : null;
     if (seatId) {
       const viewpoint = this.config.viewpoints.find((seat) => seat.id === seatId);
-      if (viewpoint) {
+      if (viewpoint && !viewpoint.blocked) {
         this.yawOffset = 0;
         this.beginTeleport(viewpoint);
       }
@@ -305,10 +334,11 @@ export class WebXrAudienceScene {
       }
       case 'quality:standalone-low': this.nextQuality = 'standalone-low'; this.config.actions.setQualityProfile(this.nextQuality); break;
       case 'quality:pc-link-high': this.nextQuality = 'pc-link-high'; this.config.actions.setQualityProfile(this.nextQuality); break;
+      case 'menu:close': this.setMenuOpen(false); break;
       case 'exit': this.config.actions.requestExit(); break;
     }
     this.dirty = true;
-    this.drawMenu();
+    if (this.menuOpen) this.drawMenu();
   }
 
   private drawMenu() {
@@ -331,7 +361,8 @@ export class WebXrAudienceScene {
     ctx.fillStyle = '#ffcc85';
     ctx.fillText(status.laserLabel, 500, 132);
     for (const button of buttons) {
-      let label = button.label;
+      const blocked = this.blockedSeatButtons.has(button.id);
+      let label = blocked ? `${button.label} · BLOCKED` : button.label;
       const selected =
         (button.id === `seat:${this.currentViewpoint.id}`) ||
         (button.id === `eye:${this.eyeMode}`) ||
@@ -351,7 +382,7 @@ export class WebXrAudienceScene {
       ctx.strokeStyle = selected ? '#63e7ff' : '#4f6b7c';
       ctx.lineWidth = selected ? 4 : 2;
       ctx.strokeRect(button.x, button.y, button.width, button.height);
-      ctx.fillStyle = '#e8fbff';
+      ctx.fillStyle = blocked ? '#99aab7' : '#e8fbff';
       ctx.font = `bold ${button.id === 'limiter' ? 22 : 20}px sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -415,7 +446,7 @@ export class WebXrAudienceScene {
       const hit = this.controllerHit(controller);
       controller.reticle.visible = Boolean(hit) && this.inputEnabled;
     }
-    if (this.dirty || performance.now() - this.lastStatusDraw > 500) this.drawMenu();
+    if (this.menuOpen && (this.dirty || performance.now() - this.lastStatusDraw > 500)) this.drawMenu();
   }
 
   public activateForTest(id: string) {
@@ -427,6 +458,8 @@ export class WebXrAudienceScene {
     const status = this.config.actions.getStatus();
     return {
       currentViewpoint: this.currentViewpoint.id,
+      menuOpen: this.menuOpen,
+      blockedViewpoints: this.config.viewpoints.filter((seat) => seat.blocked).map((seat) => seat.id),
       eyeMode: this.eyeMode,
       yawOffsetDeg: Math.round(this.yawOffset * 180 / Math.PI),
       vignette: this.vignetteEnabled,

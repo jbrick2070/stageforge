@@ -1,27 +1,27 @@
 import * as THREE from 'three';
 import type { CrowdModelId } from '../data/crowdModels';
 
-export interface PackedCrowdGeometry {
+export interface PackedCrowdGeometry<K extends string = CrowdModelId> {
   geometry: THREE.BufferGeometry;
   vertexTexture: THREE.DataTexture;
-  slots: ReadonlyMap<CrowdModelId, number>;
+  slots: ReadonlyMap<K, number>;
 }
 
 const ROWS_PER_MODEL = 3;
 const CHANNELS = 4;
 
 /** Give each source its own triangle corners under one common sequential index. */
-export function packCrowdGeometry(
-  sources: ReadonlyMap<CrowdModelId, THREE.BufferGeometry>,
+export function packCrowdGeometry<K extends string>(
+  sources: ReadonlyMap<K, THREE.BufferGeometry>,
   trianglesPerInstance: number,
-): PackedCrowdGeometry {
+): PackedCrowdGeometry<K> {
   const width = trianglesPerInstance * 3;
   if (!sources.size || !Number.isSafeInteger(width) || width <= 0 || width > 0xffff) {
     throw new Error('Invalid packed crowd geometry size.');
   }
   const height = sources.size * ROWS_PER_MODEL;
   const data = new Float32Array(width * height * CHANNELS);
-  const slots = new Map<CrowdModelId, number>();
+  const slots = new Map<K, number>();
   for (const [modelId, source] of sources) {
     const slot = slots.size;
     slots.set(modelId, slot);

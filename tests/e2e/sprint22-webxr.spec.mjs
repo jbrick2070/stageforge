@@ -752,3 +752,709 @@ test('the equal-density original and 1928 cast crowds render within both Arena s
   await info.attach('equal-density-stereo-evidence', { path, contentType: 'application/json' });
   expect(renderingErrors).toEqual([]);
 });
+
+async function stereoLandmarkFixture(page, venue) {
+  return page.evaluate(async venue => {
+    const { makeShowFile, parseShowFile } = await import('/src/data/showFile.ts');
+    const { RIG_TEMPLATES, INITIAL_SHOW_STATE } = await import('/src/data/presets.ts');
+    const { deriveAudienceViewpoints } = await import('/src/xr/audienceExperience.ts');
+    const { resolveCrowdLayout, theatreSeatAnchors } = await import('/src/data/crowdPlacement.ts');
+    const { stageSurfaceHeight } = await import('/src/data/stageDesign.ts');
+    const { setLayoutProps } = await import('/src/data/stagePlan.ts');
+    const response = await fetch('/examples/steamboat-willie.stageforge.show.json');
+    if (!response.ok) throw new Error('The committed Arena show fixture is unavailable.');
+    const sample = parseShowFile(await response.text());
+    const rig = structuredClone(venue === 'arena' ? sample.rig : RIG_TEMPLATES.small_theatre);
+    // A stage 20.4 m wide puts a real 2.2 m-spaced barricade post exactly on the centre line.
+    if (venue === 'arena') rig.stageWidth = 20.4;
+    const box = { type: 'scenic', x: 0.4, z: -1.25, height: 2.4 };
+    const stage = setLayoutProps(rig, undefined, [box]);
+    const deck = stageSurfaceHeight(rig, box.x, box.z);
+    // Right/left upper front corners of the native 0.95 × height × 0.70 scenic box.
+    const far = [-1, 1].map(side => ({ name: 'stage-box-' + side,
+      x: box.x + side * 0.475, y: deck + box.height, z: box.z + 0.35 }));
+    const floor = deriveAudienceViewpoints(rig).find(view => view.id === 'floor');
+    const seats = theatreSeatAnchors(rig);
+    const castId = venue === 'arena' ? 'stageforge-steamboat-1928-mickey-capped' : 'stageforge-human-v2';
+    const cast = [];
+    let observedSeat;
+    if (venue === 'arena') {
+      // Aim independently at the real stage mark, then rotate 15 degrees toward the camera's right.
+      const aimX = -floor.x, aimZ = -Math.max(0.5, rig.stageDepth * 0.15) - floor.z;
+      const length = Math.hypot(aimX, aimZ), c = Math.cos(Math.PI / 12), t = Math.sin(Math.PI / 12);
+      const forwardX = (aimX*c - aimZ*t)/length, forwardZ = (aimZ*c + aimX*t)/length;
+      cast.push({ id: 'proof-standing', modelId: castId, pose: 'standing', yaw: 180,
+        position: { x: floor.x + 3.2 * forwardX, y: 0, z: floor.z + 3.2 * forwardZ } });
+    } else {
+      const suitable = seats.filter(seat => seat.row >= 2 && seat.z >= floor.z - 5 && seat.z <= floor.z - 1.25);
+      suitable.sort((a, b) => Math.abs(a.x - floor.x) - Math.abs(b.x - floor.x) || b.row - a.row || a.column - b.column);
+      if (!suitable.length) throw new Error('No raked theatre seat in the intended sightline.');
+      observedSeat = suitable[0];
+      cast.push({ id: 'proof-seated', modelId: castId, pose: 'seated', seatId: observedSeat.id, yaw: 180 });
+    }
+    const layout = { generatorVersion: 2, seed: 249057, zones: [], exclusions: [], placements: cast };
+    const look = { ...INITIAL_SHOW_STATE, autoDirector: false, audioReactive: false, blackout: false,
+      primaryColor: '#ffffff', accentColor: '#ffffff', beamIntensity: 0, washIntensity: 0.85,
+      movementSpeed: 0, strobeRate: 0, blinderLevel: 0, motors: { ...INITIAL_SHOW_STATE.motors, speed: 0, podTargets: {} },
+      laser: { ...INITIAL_SHOW_STATE.laser, enabled: false },
+      atmo: { ...INITIAL_SHOW_STATE.atmo, hazeLevel: 0, smokeOutput: 0, co2Active: false, co2AutoOnDrop: false },
+      led: { ...INITIAL_SHOW_STATE.led, enabled: false, speed: 0 } };
+    const show = parseShowFile(JSON.stringify(makeShowFile(rig, [], look, null, undefined, undefined, undefined, stage, undefined, layout)));
+    const rendered = resolveCrowdLayout(show.rig, show.crowd);
+    if (rendered.placed !== 1) throw new Error('Landmark fixture must have exactly one explicit figure.');
+    const person = rendered.placements[0];
+    const barricadeZ = rig.stageDepth / 2 + 2.4;
+    const railLength = rig.stageWidth + 6;
+    const posts = [];
+    for (let i = 0; i <= Math.min(96, Math.floor(railLength / 2.2)); i++) {
+      posts.push({ name: 'barricade-post-' + i, x: -railLength / 2 + i * Math.max(2.2, railLength / 96) + 0.04,
+        // The low post edge has a visible floor backdrop in both eye-height modes.
+        y: 0.72, z: barricadeZ + 0.225 });
+    }
+    // Artist-space features are approximate for animated people. Rake, seat and scenic boxes use native geometry.
+    const crowd = [{ name: person.id + '-upper-body', x: person.x, y: person.y + (observedSeat ? 0.85 : 1.06) * person.scaleY, z: person.z }];
+    if (observedSeat) crowd[0].y = observedSeat.y + 1.15;
+    // Native Theatre aisle marker on the same riser as the seated actor.
+    const halfHouse = Math.max(18, Math.max(8, rig.stageWidth - 1.2) + 8) / 2;
+    const markerX = Math.sign(floor.x) * (halfHouse - 1.3) * 0.38;
+    const aisleMarker = observedSeat ? [{ name: observedSeat.id + '-aisle-marker', x: markerX + 0.03,
+      y: observedSeat.y + 0.075, z: observedSeat.z - 0.05 - 0.42 + 0.03 }] : [];
+    // White crown of the native capped Mickey model. The dark torso offers little neutral contrast.
+    const capDepth = 0.02;
+    const capCrown = { name: person.id + '-cap-crown', x: person.x + Math.sin(person.rotY) * capDepth,
+      y: person.y + 1.34 * person.scaleY, z: person.z + Math.cos(person.rotY) * capDepth };
+    const empty = makeShowFile(rig, [], look, null, undefined, undefined, undefined, stage, undefined, { ...layout, placements: [] });
+    return { show, empty, far, posts, crowd, aisleMarker, capCrown, barricadeZ, observedSeat,
+      rows: seats.filter((seat, i) => !i || seat.row !== seats[i - 1].row),
+      placementId: person.id, modelId: person.modelId };
+  }, venue);
+}
+
+async function openStereoLandmarkShow(page, fixture, empty = false) {
+  await page.getByRole('button', { name: 'Show files', exact: true }).click();
+  const files = page.getByRole('dialog', { name: 'Show files' });
+  await files.getByLabel('Open show file').setInputFiles({ name: 'audience-landmarks.stageforge.show.json',
+    mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(empty ? fixture.empty : fixture.show)) });
+  await expect(files).toBeHidden();
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.crowd().placementBindings.map(
+    item => [item.placementId, item.modelId, item.pose]))).toEqual(empty ? [] : [
+    [fixture.placementId, fixture.modelId, fixture.observedSeat ? 'seated' : 'standing'],
+  ]);
+}
+
+async function selectStereoView(page, view, mode, snap) {
+  const action = id => page.evaluate(id => window.stageforgeProbe.webXrMenuAction(id), id);
+  const settled = () => expect.poll(async () => (await xrState(page)).audience.blink).toBe(null);
+  await stereoProofReopen(page, snap ? 'squeeze' : 'select');
+  await action('seat:' + view);
+  await settled();
+  await action('eye:' + mode);
+  await settled();
+  if (snap) { await action('snap:right'); await settled(); }
+  await page.evaluate(() => {
+    const menu = window.stageforgeProbe.webXr().audience.menuPose;
+    window.__fakeWebXr.aimControllerAtMenu(menu, 512, 768, 0);
+    window.__fakeWebXr.dispatchInput('selectstart', 0);
+    window.__fakeWebXr.dispatchInput('selectstart', 0);
+    window.__fakeWebXr.dispatchInput('selectend', 0);
+  });
+  await expect.poll(async () => {
+    const a = (await xrState(page)).audience;
+    return [a.currentViewpoint, a.eyeMode, a.yawOffsetDeg, a.blink, a.menuOpen];
+  }).toEqual([view, mode, snap ? 30 : 0, null, false]);
+  const frame = (await xrState(page)).frames;
+  await expect.poll(async () => (await xrState(page)).frames).toBeGreaterThan(frame + 1);
+}
+
+// Independently match a small RGB patch in the actual two eye images. Projection selects the subject;
+// it never supplies the winning shift. A flat/ambiguous or occluded ROI fails its own gate.
+async function measureStereoLandmarks(page, pair, groups) {
+  return page.evaluate(async ({ pair, groups }) => {
+    async function decode(eye) {
+      const image = new Image();
+      image.src = eye.png;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+      if (canvas.width !== eye.viewport.width || canvas.height !== eye.viewport.height) throw new Error('Eye PNG size mismatch.');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(image, 0, 0);
+      const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      return { w: canvas.width, h: canvas.height, rgba };
+    }
+    function project(point, eye) {
+      const m = eye.viewToReferenceMatrix, p = eye.projectionMatrix;
+      const dx = point.x - m[12], dy = point.y - m[13], dz = point.z - m[14];
+      const v = [m[0]*dx + m[1]*dy + m[2]*dz, m[4]*dx + m[5]*dy + m[6]*dz, m[8]*dx + m[9]*dy + m[10]*dz, 1];
+      const clip = row => p[row]*v[0] + p[4+row]*v[1] + p[8+row]*v[2] + p[12+row];
+      const w = clip(3);
+      return { x: (1 + clip(0)/w)*eye.viewport.width/2, y: (1 - clip(1)/w)*eye.viewport.height/2,
+        depth: -v[2], inClip: w > 0 && Math.abs(clip(2)) <= w };
+    }
+    const [l, r] = await Promise.all([decode(pair.left), decode(pair.right)]);
+    function rowValue(img, x, y) {
+      const i = 4 * (y*img.w + x);
+      return (img.rgba[i]*0.299 + img.rgba[i+1]*0.587 + img.rgba[i+2]*0.114);
+    }
+    const windowRadius = 5;
+    function sample(p, q) {
+      const cx = Math.round(p.x), cy = Math.round(p.y), ry = Math.round(q.y);
+      const width = 2*windowRadius+1;
+      const left = [];
+      for (let y = -windowRadius; y <= windowRadius; y++) for (let x = -windowRadius; x <= windowRadius; x++) {
+        left.push(rowValue(l, cx+x, cy+y));
+      }
+      const mean = left.reduce((sum, v) => sum+v, 0)/left.length;
+      const energy = left.reduce((sum, v) => sum+(v-mean)**2, 0);
+      let horiz = 0;
+      for (let i = 0; i < left.length; i++) if (i%width) horiz += Math.abs(left[i]-left[i-1]);
+      const candidates = [];
+      // 64 mm fake IPD; the defined visibility margin admits at most 32 px disparity.
+      for (let shift = -3; shift <= 32; shift += 0.25) {
+        let sum = 0, sum2 = 0, cov = 0, index = 0;
+        for (let y = -windowRadius; y <= windowRadius; y++) for (let x = -windowRadius; x <= windowRadius; x++,index++) {
+          const sx = cx + x - shift, whole = Math.floor(sx), t = sx-whole;
+          const a = rowValue(r, whole, ry+y), b = rowValue(r, whole+1, ry+y), v = a+(b-a)*t;
+          sum += v; sum2 += v*v; cov += (left[index]-mean)*v;
+        }
+        const den = Math.sqrt(energy * Math.max(0, sum2 - sum*sum/left.length));
+        candidates.push({ shift, correlation: den > 0.0001 ? cov/den : -1 });
+      }
+      candidates.sort((a,b) => b.correlation-a.correlation);
+      const best = candidates[0], rival = candidates.find(c => Math.abs(c.shift-best.shift) >= 2);
+      return { observed: best.shift, correlation: best.correlation,
+        margin: best.correlation-rival.correlation, rms: Math.sqrt(energy/left.length), horizontalContrast: horiz/(width*(width-1)) };
+    }
+    const results = {};
+    for (const [key, points] of Object.entries(groups)) {
+      // Pick the geometrically central visible candidate before looking at the pixels.
+      const candidates = points.map(world => ({ world, left:project(world,pair.left), right:project(world,pair.right) }))
+        .filter(v => [v.left,v.right].every(p => p.inClip && p.x >= 40 && p.x < l.w-10 && p.y >= 10 && p.y < l.h-10))
+        .sort((a,b) => Math.abs(a.left.x-l.w/2)-Math.abs(b.left.x-l.w/2) || a.world.name.localeCompare(b.world.name));
+      if (!candidates.length) { results[key] = { error:'No named landmark in both eye viewports', candidates:points }; continue; }
+      const v = candidates[0];
+      results[key] = { ...v, expected:v.left.x-v.right.x, ...sample(v.left,v.right) };
+    }
+    return results;
+  }, { pair, groups });
+}
+
+async function stereoProofReopen(page, kind = 'select') {
+  const audience = (await xrState(page)).audience;
+  expect(typeof audience.menuOpen, 'Runtime must expose real comfort-menu state').toBe('boolean');
+  if (audience.menuOpen) return;
+  await page.evaluate(kind => {
+    window.__fakeWebXr.dispatchInput(kind + 'start', 0);
+    window.__fakeWebXr.dispatchInput(kind + 'end', 0);
+  }, kind);
+  await expect.poll(async () => (await xrState(page)).audience.menuOpen).toBe(true);
+}
+
+function assertEyePose(actual, expected, tolerance = 0.002) {
+  expect(Math.hypot(...['x','y','z'].map(k => actual.position[k]-expected.position[k]))).toBeLessThan(tolerance);
+  const dot = ['x','y','z','w'].reduce((s,k) => s+actual.orientation[k]*expected.orientation[k],0);
+  expect(Math.abs(dot)).toBeGreaterThan(0.9999);
+}
+function horizontalBasis(pose) {
+  const m = pose.matrix, forwardLength = Math.hypot(m[8],m[10]), rightLength = Math.hypot(m[0],m[2]);
+  return { forward:[-m[8]/forwardLength,-m[10]/forwardLength], right:[m[0]/rightLength,m[2]/rightLength] };
+}
+const dotXZ = (a,b) => a[0]*b[0] + a[1]*b[1];
+
+async function captureStereoReceipt(page, info, fixture, quality, view, mode, snap, name, empty = false) {
+  await selectStereoView(page, view, mode, snap);
+  const pair = await page.evaluate(() => window.__fakeWebXr.captureNextEyePair({ timeoutMs: 5000 }));
+  const { left, right, ...header } = pair;
+  const { png: lp, ...lm } = left, { png: rp, ...rm } = right;
+  await Promise.all([['left',lp],['right',rp]].map(async ([eye,png]) => {
+    const path = info.outputPath(name + '-' + eye + '.png');
+    await writeFile(path, Buffer.from(png.split(',')[1], 'base64'));
+    await info.attach(name + '-' + eye, { contentType: 'image/png', path });
+  }));
+  const capEdge = { ...fixture.capCrown, x: fixture.capCrown.x + 0.09 };
+  const near = fixture.observedSeat ? fixture.aisleMarker : view === 'stage-front' ? fixture.posts : [capEdge];
+  const groups = { far:fixture.far };
+  if (view !== 'foh') groups.near = near;
+  if (view === 'floor' || fixture.observedSeat) groups.actor = fixture.crowd;
+  const measured = await measureStereoLandmarks(page, pair, groups);
+  const state = await xrState(page);
+  const report = info.outputPath(name + '-measurements.json');
+  await writeFile(report, JSON.stringify({
+    ...header, left:lm, right:rm, measured, menuOpen:state.audience.menuOpen,
+    blink:state.audience.blink, yawOffsetDeg:state.audience.yawOffsetDeg, fixtureModel:fixture.modelId,
+    fixtureSeat:fixture.observedSeat?.id, asset:'native scenic box, native barricade and film actor or Theatre aisle marker and chair-supported human',
+  },null,2));
+  await info.attach(name + '-measurements', { contentType:'application/json', path: report });
+  expect(state.audience.menuOpen).toBe(false);
+  expect(state.audience.blink).toBe(null);
+  expect([pair.profile,pair.viewpoint,pair.eyeMode]).toEqual([quality,view,mode]);
+  const width = quality === 'pc-link-high' ? 512 : 384;
+  expect(pair.left.viewport).toEqual({x:0,y:0,width,height:width});
+  expect(pair.right.viewport).toEqual({x:width,y:0,width,height:width});
+  expect(pair.counters.views).toBe(2);
+  expect(pair.counters.calls).toBeGreaterThan(0);
+  expect(pair.counters.triangles).toBeGreaterThan(0);
+  assertEyePose(pair.head,pair.desiredHeadPose);
+  const delta = ['x','y','z'].map(k => right.position[k]-left.position[k]);
+  expect(Math.hypot(...delta)).toBeCloseTo(0.064,5);
+  expect(delta.reduce((s,n,i) => s+n*pair.head.matrix[i],0)).toBeCloseTo(0.064,5);
+  for (const k of ['x','y','z']) expect((left.position[k]+right.position[k])/2).toBeCloseTo(pair.head.position[k],5);
+  if (!snap && (view === 'floor' || view === 'foh')) {
+    const forward = horizontalBasis(pair.head).forward;
+    const toStage = [-pair.head.position.x, -pair.head.position.z];
+    const d = Math.hypot(...toStage);
+    expect(dotXZ(forward,toStage)/d, 'Default floor/FOH heading must face the stage').toBeGreaterThan(Math.cos(5*Math.PI/180));
+    // A negative sign is enough to expose mirrored aiming even at very shallow off-centre angles.
+    if (Math.abs(toStage[0])/d > 0.015) expect(forward[0]*toStage[0]).toBeGreaterThan(0);
+  }
+  if (!fixture.observedSeat && view === 'stage-front') {
+    expect(pair.head.position.y).toBeCloseTo(mode === 'standing' ? 1.60 : 1.20,2);
+    expect(pair.head.position.z, 'Stage Front must be on the audience side of the real rail').toBeGreaterThan(fixture.barricadeZ+0.225);
+  }
+  if (fixture.observedSeat) {
+    const row = [...fixture.rows].sort((a,b) => Math.abs(a.z-pair.head.position.z)-Math.abs(b.z-pair.head.position.z))[0];
+    expect(row.row,'Theatre camera must land on a raised row').toBeGreaterThan(0);
+    expect(Math.abs(row.z-pair.head.position.z)).toBeLessThanOrEqual(0.475);
+    expect(pair.head.position.y).toBeCloseTo(row.y+1.20,2);
+  }
+  if (!empty) {
+    for (const key of view === 'foh' ? ['far'] : ['near','far']) {
+      const m = measured[key];
+      expect(m.error, name+' '+key+' must be in both actual eyes').toBeUndefined();
+      expect(m.expected).toBeGreaterThan(0);
+      expect(m.expected).toBeLessThan(31);
+      expect(Math.abs(m.left.y-m.right.y)).toBeLessThan(0.25);
+      expect.soft(m.rms, name+' '+key+' must contain visible detail').toBeGreaterThan(3);
+      expect.soft(m.horizontalContrast).toBeGreaterThan(0.8);
+      expect.soft(m.correlation).toBeGreaterThan(0.75);
+      expect.soft(m.margin, 'A second equally plausible match cannot establish disparity').toBeGreaterThan(0.005);
+      expect.soft(Math.abs(m.observed-m.expected)).toBeLessThan(0.9);
+    }
+    const {near:n,far:f} = measured;
+    if (view === 'foh') {
+      expect(pair.head.position.z, 'FOH frames the stage from behind the floor fixture').toBeGreaterThan(fixture.crowd[0].z);
+    } else {
+      expect(n.left.depth).toBeLessThan(f.left.depth);
+      expect.soft(n.observed-f.observed, 'Near landmark must show more measured disparity than the stage box').toBeGreaterThan(0.20);
+    }
+  }
+  return {pair,measured};
+}
+
+async function verifyVisibleActor(page, info, label, present, absent) {
+  assertEyePose(present.pair.head, absent.pair.head);
+  const measurements = await page.evaluate(async ({present,absent}) => {
+    async function pixels(eye) {
+      const image = new Image(); image.src=eye.png; await image.decode();
+      const canvas=document.createElement('canvas'); canvas.width=image.naturalWidth; canvas.height=image.naturalHeight;
+      const ctx=canvas.getContext('2d',{willReadFrequently:true}); ctx.drawImage(image,0,0);
+      return { w:canvas.width,h:canvas.height,data:ctx.getImageData(0,0,canvas.width,canvas.height).data };
+    }
+    const results={};
+    for (const side of ['left','right']) {
+      const [a,b]=await Promise.all([pixels(present.pair[side]),pixels(absent.pair[side])]);
+      const changed=(point,radius) => {
+        if (!point || point.x < radius || point.y < radius || point.x >= a.w-radius || point.y >= a.h-radius) return null;
+        let count=0, samples=0;
+        for (let y=Math.round(point.y)-radius; y<=Math.round(point.y)+radius; y++) {
+          for (let x=Math.round(point.x)-radius; x<=Math.round(point.x)+radius; x++) {
+            const i=(y*a.w+x)*4;
+            const delta=Math.abs(a.data[i]-b.data[i])+Math.abs(a.data[i+1]-b.data[i+1])+Math.abs(a.data[i+2]-b.data[i+2]);
+            count+=Number(delta>36); samples++;
+          }
+        }
+        return count/samples;
+      };
+      results[side]={ actor:changed(present.measured.actor?.[side],9), scenery:changed(present.measured.far?.[side],9) };
+    }
+    return results;
+  },{present,absent});
+  await info.attach(label+'-actor-contrast',{contentType:'application/json',body:Buffer.from(JSON.stringify(measurements,null,2))});
+  for (const eye of Object.values(measurements)) {
+    expect(eye.actor).not.toBeNull(); expect(eye.scenery).not.toBeNull();
+    expect(eye.actor).toBeGreaterThan(0.06);
+    expect(eye.actor-eye.scenery,'Matched far scenery must be more stable than the actor crop').toBeGreaterThan(0.04);
+  }
+}
+
+for (const quality of ['pc-link-high','standalone-low']) {
+  test('direct paired audience-eye landmarks and cast visibility · '+quality, async ({page},info) => {
+    test.setTimeout(150_000);
+    const webglMessages = [];
+    page.on('console', message => {
+      if (webglMessages.length < 120 && /webgl|shader|context|invalid_operation/i.test(message.text())) {
+        webglMessages.push({ type: message.type(), text: message.text() });
+      }
+    });
+    await boot(page,{directEyeCapture:true});
+    await page.evaluate(() => window.stageforgeProbe.setCrowdPoseFrozen(true));
+    const arena=await stereoLandmarkFixture(page,'arena'), theatre=await stereoLandmarkFixture(page,'theatre');
+    await openStereoLandmarkShow(page,arena);
+    try {
+      await enter(page,true);
+      if (quality === 'standalone-low') {
+        await stereoProofReopen(page);
+        await page.evaluate(() => window.stageforgeProbe.webXrMenuAction('quality:standalone-low'));
+        await exit(page); await enter(page);
+      }
+      const shot=(scene,view,mode,snap,name,empty=false) =>
+        captureStereoReceipt(page,info,scene,quality,view,mode,snap,quality+'-'+name,empty);
+      // Close the menu through the real controller ray while its preview-only limit override is active.
+      await page.evaluate(() => {
+        window.stageforgeProbe.webXrMenuAction('limiter');
+        window.stageforgeProbe.webXrMenuAction('limiter');
+      });
+      await expect.poll(async () => (await xrState(page)).audience.status.limiterOverride).toBe(true);
+      const standing=await shot(arena,'stage-front','standing',false,'front-standing');
+      const hidden = (await xrState(page)).audience;
+      expect(hidden.status.limiterOverride).toBe(false);
+      expect(hidden.limiterConfirmArmed).toBe(false);
+      const seated=await shot(arena,'stage-front','seated',false,'front-seated');
+      expect(standing.pair.head.position.y-seated.pair.head.position.y).toBeCloseTo(0.4,2);
+      const floor=await shot(arena,'floor','standing',false,'floor');
+      const turned=await shot(arena,'floor','standing',true,'floor-right');
+      const beforeBasis=horizontalBasis(floor.pair.head), afterForward=horizontalBasis(turned.pair.head).forward;
+      const forwardDot=dotXZ(beforeBasis.forward,afterForward), rightDot=dotXZ(beforeBasis.right,afterForward);
+      const turn=Math.atan2(rightDot,forwardDot)*180/Math.PI;
+      await info.attach('actual-right-snap',{contentType:'application/json',body:Buffer.from(JSON.stringify({turn,rightDot,forwardDot}))});
+      expect(rightDot,'A real right turn must move toward the previous camera-right vector').toBeCloseTo(0.5,3);
+      expect(turn).toBeCloseTo(30,2);
+      expect(Math.hypot(...['x','y','z'].map(k=>turned.pair.head.position[k]-floor.pair.head.position[k]))).toBeLessThan(0.01);
+      await shot(arena,'foh','standing',false,'foh');
+      await exit(page);
+      await openStereoLandmarkShow(page,arena,true); await enter(page);
+      const floorEmpty=await shot(arena,'floor','standing',false,'floor-control',true);
+      await verifyVisibleActor(page,info,'floor',floor,floorEmpty);
+      await exit(page);
+
+      await openStereoLandmarkShow(page,theatre); await enter(page);
+      const rake=await shot(theatre,'floor','seated',false,'theatre-rake');
+      await exit(page);
+      // Use the established engine lifecycle without an XR lease. Re-enter on a fresh session and layer.
+      await page.evaluate(() => {
+        const canvas = document.querySelector('canvas');
+        const gl = canvas.getContext('webgl2');
+        const ext = gl.getExtension('WEBGL_lose_context');
+        if (!ext) throw new Error('Context loss is required for the restored-pair gate.');
+        window.__eyeProofLoss = ext;
+        window.__eyeProofRestoreErrors = [];
+        canvas.addEventListener('webglcontextrestored', () => {
+          window.__eyeProofRestoreErrors.push({ phase: 'restore callback', code: gl.getError() });
+        }, { once: true });
+        ext.loseContext();
+      });
+      await expect.poll(()=>page.evaluate(()=>window.stageforgeProbe.graphicsProbe().contextLost)).toBe(true);
+      await page.evaluate(()=>window.__eyeProofLoss.restoreContext());
+      await expect.poll(()=>page.evaluate(()=>window.stageforgeProbe.graphicsProbe().contextLost)).toBe(false);
+      const restoreErrors = await page.evaluate(() => {
+        const gl = document.querySelector('canvas').getContext('webgl2');
+        delete window.__eyeProofLoss;
+        window.__eyeProofRestoreErrors.push({ phase: 'before rebuild', code: gl.getError() });
+        window.stageforgeProbe.rebuildRig();
+        window.__eyeProofRestoreErrors.push({ phase: 'after rebuild', code: gl.getError() });
+        return window.__eyeProofRestoreErrors;
+      });
+      expect(restoreErrors, 'GL restore and scene rebuild must still leave the renderer clean').toEqual([
+        { phase: 'restore callback', code: 0 },
+        { phase: 'before rebuild', code: 0 },
+        { phase: 'after rebuild', code: 0 },
+      ]);
+      await enter(page);
+      const restored=await shot(theatre,'floor','seated',false,'theatre-rake-restored');
+      expect(restored.pair.session).toBeGreaterThan(rake.pair.session);
+      assertEyePose(rake.pair.head,restored.pair.head);
+      await exit(page);
+      await openStereoLandmarkShow(page,theatre,true); await enter(page);
+      const rakeEmpty=await shot(theatre,'floor','seated',false,'theatre-control',true);
+      await verifyVisibleActor(page,info,'theatre',restored,rakeEmpty);
+      await exit(page);
+    } finally {
+      const diagnostics=await xrState(page).catch(()=>null);
+      const path = info.outputPath('last-audience-state.json');
+      await writeFile(path, JSON.stringify({ diagnostics, webglMessages }, null, 2));
+      await info.attach('last-audience-state', {contentType:'application/json', path});
+    }
+  });
+}
+
+async function persistStereoLightingReceipt(info, name, contentType, body) {
+  const path = info.outputPath(name + (contentType === 'image/png' ? '.png' : '.json'));
+  await writeFile(path, body);
+  await info.attach(name, {path, contentType});
+}
+
+const STEREO_LIGHTING_LOOKS = ['neutral', 'wash', 'stage-led-backlight', 'blackout'];
+
+function stereoProofLook(base, name) {
+  const wash = name === 'wash';
+  const backlight = name === 'stage-led-backlight' || name === 'blackout';
+  const color = wash ? '#00f0ff' : backlight ? '#ff0066' : '#ffffff';
+  // The neutral look leaves house/environment lighting intact. Blackout retains the programmed
+  // backlight underneath, so this is a real suppression/recovery test.
+  return {
+    ...base, masterDimmer: 1, blackout: name === 'blackout', autoDirector: false, audioReactive: false,
+    primaryColor: color, accentColor: color, colorSplitMode: 'solid', movingGroups: {},
+    beamIntensity: 0, washIntensity: wash ? 1 : 0, blinderLevel: 0, strobeRate: 0,
+    movementMode: 'manual', movementSpeed: 0, movementSpread: 0, manualPan: 0, manualTilt: 0.2,
+    atmo: { ...base.atmo, hazeLevel: 0, smokeOutput: 0, co2Active: false, co2AutoOnDrop: false },
+    laser: { ...base.laser, enabled: false, intensity: 0, strobe: 0 },
+    led: { ...base.led, enabled: backlight, brightness: backlight ? 0.95 : 0, speed: 0, visualMode: 'cybergrid' },
+  };
+}
+
+function stereoLightResponse(stats, name) {
+  if (!stats?.active || !stats.requested || !stats.lights.length) return false;
+  const rgb = [0,1,2].map(channel => stats.lights.reduce((sum, light) => sum + light.color[channel], 0));
+  if (name === 'neutral' || name === 'blackout') return rgb.every(value => value === 0);
+  if (name === 'wash') return rgb[1] > 0.03 && rgb[2] > 0.03 && rgb[0] < Math.min(rgb[1],rgb[2])*0.25;
+  return rgb[0] > 0.03 && rgb[2] > 0.015 && rgb[1] < Math.min(rgb[0],rgb[2])*0.25
+    && stats.lights.filter(light => Math.max(...light.color) > 0.001).every(light => light.dir[2] < -0.25);
+}
+
+async function readStereoLook(page,info,fixture,profile,name,label,hasActor) {
+  const look = stereoProofLook(fixture.show.look,name);
+  const first = await page.evaluate(look => {
+    const probe = window.stageforgeProbe;
+    probe.patchShowState(look);
+    return { frame:probe.webXr().frames, time:performance.now() };
+  },look);
+  // Let the actual preview limiter settle. For empty controls there is no figure material or
+  // crowd-light controller, so use the same minimum elapsed interval and actual XR frames.
+  await expect.poll(() => page.evaluate(first => {
+    const state = window.stageforgeProbe.webXr();
+    return state.frames >= first.frame+3 && performance.now()-first.time >= 1000;
+  }, first)).toBe(true);
+  const receipt=profile+'-'+label;
+  let settlingError;
+  if (hasActor) {
+    try {
+      await expect.poll(async () => stereoLightResponse(
+        await page.evaluate(() => window.stageforgeProbe.graphicsProbe().crowd),name), {timeout:4000}).toBe(true);
+    } catch (error) {
+      // Preserve the real raster before reporting a light which never reached its target.
+      settlingError=String(error);
+    }
+  }
+  const preCapture=await page.evaluate(()=>({lights:window.stageforgeProbe.graphicsProbe().crowd,xr:window.stageforgeProbe.webXr()}));
+  await persistStereoLightingReceipt(info,receipt+'-request','application/json',JSON.stringify({look,preCapture,settlingError},null,2));
+  const result = await page.evaluate(async expectedSubmission => {
+    const pair = await window.__fakeWebXr.captureNextEyePair({ timeoutMs: 6000, expectedSubmission });
+    // Resolution runs in a microtask following that XR callback, before the next browser frame.
+    const probe = window.stageforgeProbe;
+    return { pair, lights:probe.graphicsProbe().crowd, state:probe.webXr() };
+  }, name === 'blackout' ? 'blackout-clear' : 'scene');
+  const { pair, lights, state }=result;
+  const { left,right,...frame }=pair;
+  const {png: lp,...lm}=left, {png: rp,...rm}=right;
+  await Promise.all([['left',lp],['right',rp]].map(([side,png])=>
+    persistStereoLightingReceipt(info,receipt+'-'+side,'image/png',Buffer.from(png.split(',')[1],'base64'))));
+  await persistStereoLightingReceipt(info,receipt+'-state','application/json',JSON.stringify({
+    frame,left:lm,right:rm,look,lights,quantity:'display RGB recorded from each direct emulated eye',
+    activeFrame:state.frames,menuOpen:state.audience.menuOpen,settlingError,
+  },null,2));
+  expect(settlingError,'The programmed light must settle to its expected native response').toBeUndefined();
+  expect(state.frames).toBe(pair.frame);
+  expect([pair.profile,pair.viewpoint,pair.eyeMode,state.audience.menuOpen,state.audience.blink])
+    .toEqual([profile,'floor','standing',false,null]);
+  assertEyePose(pair.head,pair.desiredHeadPose);
+  expect(pair.lastLayerTargetPreserved).toBe(true);
+  expect(pair.counters.views).toBe(2);
+  const size=profile==='pc-link-high'?512:384;
+  expect([left.viewport.width,right.viewport.width,left.viewport.height,right.viewport.height]).toEqual([size,size,size,size]);
+  if (hasActor) expect(stereoLightResponse(lights,name)).toBe(true);
+  if (name === 'blackout') {
+    expect(pair.submission).toBe('blackout-clear');
+    expect(pair.witnessedBlackClears).toBeGreaterThan(0);
+    expect([pair.counters.calls,pair.counters.triangles]).toEqual([0,0]);
+    for (const eye of [left,right]) {
+      expect(eye.pixels).toBe(size*size);
+      expect(eye.nonOpaqueBlackPixels,'All returned pixels must be opaque black after a real full-atlas clear').toBe(0);
+    }
+  } else {
+    expect(pair.submission).toBe('scene');
+    expect(pair.counters.calls).toBeGreaterThan(0);
+    expect(pair.counters.triangles).toBeGreaterThan(0);
+  }
+  return {pair,lights};
+}
+
+async function stereoActorLightingStats(page, present, empty, landmark) {
+  const names = ['neutral', 'wash', 'stage-led-backlight', 'recovered-stage-backlight'];
+  const pairs = Object.fromEntries(names.map(name => {
+    const background = name === 'recovered-stage-backlight' ? 'stage-led-backlight' : name;
+    return [name, Object.fromEntries(['left', 'right'].map(side => [side, {
+      lit: present[name].pair[side].png, empty: empty[background].pair[side].png,
+      focalPx: present[name].pair[side].projectionMatrix[5] * present[name].pair[side].viewport.height / 2,
+    }]))];
+  }));
+
+  return page.evaluate(async ({ pairs, landmark }) => {
+    async function readImage(png) {
+      const image = new Image();
+      image.src = png;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(image, 0, 0);
+      return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    }
+
+    function measureCap(lit, empty, projected, pxPerMetre) {
+      const { width, height } = lit;
+      const box = {
+        x0: Math.floor(projected.x - 0.31 * pxPerMetre), x1: Math.ceil(projected.x + 0.31 * pxPerMetre),
+        y0: Math.floor(projected.y - 0.27 * pxPerMetre), y1: Math.ceil(projected.y + 0.13 * pxPerMetre),
+      };
+      if (width !== empty.width || height !== empty.height || box.x0 < 1 || box.x1 >= width-1 ||
+          box.y0 < 1 || box.y1 >= height-1) return { error: 'Crown window outside matched eyes', box };
+
+      // The crown spans 0.22 m by 0.18 m. Search its immediate neighborhood for its bright
+      // surface over the same-look empty. Allow the native standing bounce and sway in each frame.
+      const remaining = new Set();
+      for (let y = box.y0; y <= box.y1; y++) for (let x = box.x0; x <= box.x1; x++) {
+        const pixel = y * width + x, i = 4 * pixel;
+        const brighter = lit.data[i] - empty.data[i] + lit.data[i+1] - empty.data[i+1]
+          + lit.data[i+2] - empty.data[i+2];
+        if (brighter > 30) remaining.add(pixel);
+      }
+      const neighbors = [-1, 1, -width, width];
+      const components = [];
+      while (remaining.size) {
+        const start = remaining.values().next().value;
+        const component = [start];
+        remaining.delete(start);
+        for (let i = 0; i < component.length; i++) {
+          for (const offset of neighbors) {
+            const neighbor = component[i] + offset;
+            if (remaining.delete(neighbor)) component.push(neighbor);
+          }
+        }
+        components.push(component);
+      }
+      components.sort((a, b) => b.length - a.length);
+      if (!components.length) return { error: 'Crown missing in the paired raster', box, pxPerMetre };
+
+      const pixels = components[0], membership = new Set(pixels);
+      const rim = [], core = [];
+      let sumX = 0, sumY = 0, clipped = false;
+      for (const pixel of pixels) {
+        const x = pixel % width, y = Math.floor(pixel / width);
+        sumX += x; sumY += y;
+        clipped ||= x === box.x0 || x === box.x1 || y === box.y0 || y === box.y1;
+        const isRim = neighbors.some(offset => !membership.has(pixel + offset));
+        (isRim ? rim : core).push(pixel);
+      }
+      function mean(image, indices) {
+        if (!indices.length) return null;
+        return [0, 1, 2].map(c => indices.reduce((sum, p) => sum + image.data[4*p+c], 0) / indices.length);
+      }
+      return {
+        box, pxPerMetre, clipped, centre: [sumX/pixels.length, sumY/pixels.length], pixels: pixels.length,
+        runnerUpPixels: components[1]?.length ?? 0, rimPixels: rim.length, corePixels: core.length,
+        rim: mean(lit, rim), emptyRim: mean(empty, rim), core: mean(lit, core), emptyCore: mean(empty, core),
+      };
+    }
+
+    const result = { landmark, eyes: {} };
+    for (const side of ['left', 'right']) {
+      const looks = {};
+      const anchor = landmark[side];
+      for (const [name, pair] of Object.entries(pairs)) {
+        const {lit, empty, focalPx} = pair[side];
+        const [actor, background] = await Promise.all([readImage(lit), readImage(empty)]);
+        looks[name] = measureCap(actor, background, anchor, focalPx / anchor.depth);
+      }
+      const changes = {};
+      const neutral = looks.neutral;
+      for (const [name, look] of Object.entries(looks)) {
+        if (name === 'neutral' || !look.rim || !look.core || !neutral.rim || !neutral.core) continue;
+        const delta = key => look[key].map((value, i) => value - neutral[key][i]);
+        const subtract = (a, b) => a.map((value, i) => value - b[i]);
+        const rim = subtract(delta('rim'), delta('emptyRim'));
+        const core = subtract(delta('core'), delta('emptyCore'));
+        const chroma = ([r, g, b]) => name === 'wash' ? (g+b)/2-r : (r+b)/2-g;
+        changes[name] = { rim, core, rimChroma: chroma(rim), coreChroma: chroma(core),
+          emptyRimChroma: chroma(delta('emptyRim')) };
+      }
+      result.eyes[side] = { looks, changes };
+    }
+    return result;
+  }, { pairs, landmark });
+}
+
+for (const profile of ['pc-link-high','standalone-low']) {
+  test('direct-eye authored crowd lighting and XR blackout · '+profile,async ({page},info)=>{
+    test.setTimeout(120_000);
+    await boot(page,{directEyeCapture:true});
+    await page.evaluate(() => window.stageforgeProbe.setCrowdPoseFrozen(true));
+    const fixture=await stereoLandmarkFixture(page,'arena');
+    await openStereoLandmarkShow(page,fixture);
+    await page.evaluate(()=>window.stageforgeProbe.setRenderSettings({crowdLighting:true}));
+    await enter(page,true);
+    if (profile==='standalone-low') {
+      await stereoProofReopen(page);
+      await page.evaluate(()=>window.stageforgeProbe.webXrMenuAction('quality:standalone-low'));
+      await exit(page); await enter(page);
+    }
+    const present={},empty={};
+    try {
+      await selectStereoView(page,'floor','standing',false);
+      for(const name of STEREO_LIGHTING_LOOKS) {
+        const shot=await readStereoLook(page,info,fixture,profile,name,name,true);
+        if(present.neutral) assertEyePose(shot.pair.head,present.neutral.pair.head);
+        if(name!=='blackout') present[name]=shot;
+      }
+      // Restore the programmed magenta stage backlight on the same session after clear-only frames.
+      const recovery=await readStereoLook(page,info,fixture,profile,'stage-led-backlight','recovered-stage-backlight',true);
+      assertEyePose(recovery.pair.head,present.neutral.pair.head);
+      expect(recovery.pair.session).toBe(present.neutral.pair.session);
+      present['recovered-stage-backlight'] = recovery;
+      const { cap } = await measureStereoLandmarks(page, present.neutral.pair, { cap: [fixture.capCrown] });
+      expect(cap.error, 'The authored cap crown must project into both native eye viewports').toBeUndefined();
+      await exit(page);
+      await openStereoLandmarkShow(page,fixture,true); await enter(page);
+      await selectStereoView(page,'floor','standing',false);
+      for(const name of ['neutral','wash','stage-led-backlight']) {
+        empty[name]=await readStereoLook(page,info,fixture,profile,name,'empty-'+name,false);
+        assertEyePose(empty[name].pair.head,present[name].pair.head);
+      }
+      const metrics = await stereoActorLightingStats(page, present, empty, cap);
+      await persistStereoLightingReceipt(info,profile+'-actor-light-response','application/json',JSON.stringify(metrics,null,2));
+      for (const [side, eye] of Object.entries(metrics.eyes)) {
+        for (const [name, look] of Object.entries(eye.looks)) {
+          const label = side + ' ' + name;
+          expect(look.error, label).toBeUndefined();
+          expect(look.clipped, label + ' cap must fit the authored window').toBe(false);
+          const areaM2 = look.pixels / look.pxPerMetre**2;
+          expect(areaM2, label + ' projected crown area').toBeGreaterThan(0.014);
+          expect(areaM2, label + ' projected crown area').toBeLessThan(0.075);
+          expect(look.pixels, label + ' cap must dominate isolated noise').toBeGreaterThan(4 * look.runnerUpPixels);
+          expect(look.rimPixels, label + ' rim coverage').toBeGreaterThan(24);
+          expect(look.corePixels, label + ' core coverage').toBeGreaterThan(30);
+          const distance = Math.hypot(look.centre[0] - cap[side].x, look.centre[1] - cap[side].y);
+          expect(distance / look.pxPerMetre, label + ' distance from projected crown').toBeLessThan(0.2);
+        }
+        for (const name of ['wash', 'stage-led-backlight', 'recovered-stage-backlight']) {
+          const response = eye.changes[name], label = side + ' ' + name;
+          const [r, g, b] = response.rim;
+          const wash = name === 'wash';
+          expect(wash ? (g+b)/2 : (r+b)/2, label + ' matched-background color gain').toBeGreaterThan(wash ? 6 : 3);
+          expect(response.rimChroma, label + ' selective rim color').toBeGreaterThan(wash ? 8 : 3);
+          expect(response.rimChroma - response.coreChroma, label + ' rim relative to cap interior').toBeGreaterThan(3);
+          expect(response.rimChroma, label + ' rim relative to empty backdrop').toBeGreaterThan(Math.abs(response.emptyRimChroma) + 2);
+        }
+      }
+      for (const name of Object.keys(metrics.eyes.left.looks)) {
+        const l = metrics.eyes.left.looks[name].centre, r = metrics.eyes.right.looks[name].centre;
+        expect(Math.abs(l[0]-r[0]-cap.expected), name + ' disparity of the same cap').toBeLessThan(2.5);
+        expect(Math.abs(l[1]-r[1]), name + ' rectified cap height').toBeLessThan(2.5);
+      }
+      await exit(page);
+    } finally {
+      const state=await xrState(page).catch(()=>null);
+      await persistStereoLightingReceipt(info,profile+'-last-lighting-state','application/json',JSON.stringify(state,null,2));
+    }
+  });
+}

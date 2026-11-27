@@ -42,6 +42,191 @@ export async function installFakeWebXr(page, options = {}) {
       reducedMotion,
     };
 
+
+    // Opt-in readback of Three's actual emulated XR base layer. Never render an extra frame.
+    const directEyes = initial.directEyeCapture === true;
+    const layerContexts = new WeakMap();
+    let pendingEyes = null;
+    let collectingEyes = null;
+
+    function copyTransform(transform) {
+      return { position: { ...transform.position }, orientation: { ...transform.orientation }, matrix: Array.from(transform.matrix) };
+    }
+
+    function pngFromBottomLeft(bytes, width, height) {
+      // WebGL rows start at the bottom, whereas ImageData and PNG rows start at the top.
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Missing 2D context for eye PNG encoding.');
+      const image = ctx.createImageData(width, height);
+      const stride = width * 4;
+      for (let y = 0; y < height; y++) {
+        const start = (height - y - 1) * stride;
+        image.data.set(bytes.subarray(start, start + stride), y * stride);
+      }
+      ctx.putImageData(image, 0, 0);
+      const png = canvas.toDataURL('image/png');
+      if (!png.startsWith('data:image/png;base64,')) throw new Error('Eye framebuffer could not be encoded.');
+      return png;
+    }
+
+    function captureNextEyePair({ timeoutMs = 4000, expectedSubmission = 'scene' } = {}) {
+      if (expectedSubmission !== 'scene' && expectedSubmission !== 'blackout-clear') {
+        return Promise.reject(new Error('Unknown XR submission type.'));
+      }
+      if (pendingEyes) return Promise.reject(new Error('An eye pair is already pending.'));
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000) {
+        return Promise.reject(new RangeError('Eye capture timeout must be 1–10000 ms.'));
+      }
+      const session = state.activeSession;
+      const layer = session?.renderState.baseLayer;
+      const gl = layerContexts.get(layer);
+      const xr = window.stageforgeProbe?.webXr();
+      if (!session || session.ended || session.ending || session.visibilityState !== 'visible' ||
+          !gl || typeof gl.readBuffer !== 'function' || gl.isContextLost() || !gl.canvas.isConnected || gl.canvas.ownerDocument !== document ||
+          !xr?.active || !xr.directRendering || xr.phase !== 'active') {
+        return Promise.reject(new Error('Eye capture requires a visible, active direct XR session and its live canvas.'));
+      }
+      return new Promise((resolve, reject) => {
+        const request = { session, layer, gl, expectedSubmission, encoding: false, deadline: performance.now() + timeoutMs };
+        const finish = (error, pair) => {
+          if (pendingEyes !== request) return;
+          pendingEyes = null;
+          clearTimeout(timer);
+          session.removeEventListener('end', onEnd);
+          session.removeEventListener('visibilitychange', onVisibility);
+          gl.canvas.removeEventListener('webglcontextlost', onLoss);
+          if (error) reject(error);
+          else resolve(pair);
+        };
+        const onEnd = () => finish(new Error('XR session ended before eye capture completed.'));
+        const onVisibility = () => {
+          if (session.visibilityState !== 'visible') finish(new Error('XR visibility changed before eye capture completed.'));
+        };
+        const onLoss = () => finish(new Error('WebGL context lost before eye capture completed.'));
+        request.finish = finish;
+        pendingEyes = request;
+        session.addEventListener('end', onEnd);
+        session.addEventListener('visibilitychange', onVisibility);
+        gl.canvas.addEventListener('webglcontextlost', onLoss);
+        const timer = setTimeout(() => finish(new Error('Timed out waiting for a rendered stereo eye pair.')), timeoutMs);
+      });
+    }
+
+    // Observe only the armed blackout callback. This creates no GL resource and does not issue a clear.
+    function observeBlackoutClear(frame) {
+      const { gl, layer } = frame.request;
+      const original = gl.clear;
+      const descriptor = Object.getOwnPropertyDescriptor(gl, 'clear');
+      Object.defineProperty(gl, 'clear', { configurable: true, writable: true, value(mask) {
+        if (this === gl && (mask & gl.COLOR_BUFFER_BIT)) {
+          const color = Array.from(gl.getParameter(gl.COLOR_CLEAR_VALUE));
+          const scissor = Array.from(gl.getParameter(gl.SCISSOR_BOX));
+          const coversAtlas = !gl.isEnabled(gl.SCISSOR_TEST) ||
+            (scissor[0] <= 0 && scissor[1] <= 0 && scissor[0] + scissor[2] >= layer.framebufferWidth &&
+             scissor[1] + scissor[3] >= layer.framebufferHeight);
+          if (coversAtlas && Array.from(gl.getParameter(gl.COLOR_WRITEMASK)).every(Boolean) &&
+              gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === layer.framebuffer &&
+              color[0] === 0 && color[1] === 0 && color[2] === 0 && color[3] === 1) frame.blackClears++;
+        }
+        return Reflect.apply(original, this, arguments);
+      } });
+      return () => {
+        if (descriptor) Object.defineProperty(gl, 'clear', descriptor);
+        else delete gl.clear;
+      };
+    }
+
+    function captureRenderedEyes(frame, time) {
+      const { request, viewports, framesBefore } = frame;
+      if (pendingEyes !== request) return;
+      const { session, gl, layer } = request;
+      const xr = window.stageforgeProbe.webXr();
+      if (session !== state.activeSession || session.renderState.baseLayer !== layer || session.ended || session.ending ||
+          session.visibilityState !== 'visible' || gl.isContextLost() || !xr.active || !xr.directRendering) {
+        throw new Error('XR capture lost its original visible session or rendering layer.');
+      }
+      // An unrelated XR RAF or pending teleport can occur before the desired rendered frame.
+      if (xr.frames === framesBefore || xr.audience?.blink !== null) return;
+      if (xr.frames !== framesBefore + 1 || xr.lastViews !== 2 || viewports.length !== 2 ||
+          !xr.rendererXrEnabled || xr.loopOwner !== 'webxr-setAnimationLoop') {
+        throw new Error('The callback did not advance a complete two-view XR frame.');
+      }
+      const blackout = request.expectedSubmission === 'blackout-clear';
+      if (blackout) {
+        if (!frame.blackClears || xr.lastCalls !== 0 || xr.lastTriangles !== 0 || xr.lastLayerTargetPreserved !== true) {
+          throw new Error('Expected a witnessed full-layer opaque black clear, zero scene submissions, and the original Three XR target.');
+        }
+      } else if (xr.lastCalls <= 0 || xr.lastTriangles <= 0) {
+        throw new Error('The callback did not submit a forward stereo scene.');
+      }
+      const left = viewports.find(item => item.view.eye === 'left');
+      const right = viewports.find(item => item.view.eye === 'right');
+      if (!left || !right || !left.pose || left.pose !== right.pose) throw new Error('Expected one viewport per eye from the same XRViewerPose.');
+      const w = layer.framebufferWidth, h = layer.framebufferHeight;
+      const isViewport = (v, x) => v.x === x && v.y === 0 && v.width === w / 2 && v.height === h;
+      if (!isViewport(left.rect, 0) || !isViewport(right.rect, w / 2) ||
+          w !== gl.drawingBufferWidth || h !== gl.drawingBufferHeight || layer.framebuffer !== null ||
+          gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) !== layer.framebuffer ||
+          gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) !== layer.framebuffer ||
+          gl.getParameter(gl.READ_BUFFER) !== gl.BACK ||
+          gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        throw new Error('The eye viewports do not map to the live emulated XR back buffer.');
+      }
+      if (gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING) !== null || gl.getParameter(gl.PACK_ROW_LENGTH) !== 0 ||
+          gl.getParameter(gl.PACK_SKIP_ROWS) !== 0 || gl.getParameter(gl.PACK_SKIP_PIXELS) !== 0 ||
+          ((w / 2) * 4) % gl.getParameter(gl.PACK_ALIGNMENT) !== 0) {
+        throw new Error('Unexpected pixel packing state for the XR frame.');
+      }
+      const priorError = gl.getError();
+      if (priorError !== gl.NO_ERROR) throw new Error('GL error before eye readback: ' + priorError);
+      gl.flush();
+      const readEye = ({ view, rect }) => {
+        const bytes = new Uint8Array(rect.width * rect.height * 4);
+        gl.readPixels(rect.x, rect.y, rect.width, rect.height, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+        const error = gl.getError();
+        if (error !== gl.NO_ERROR || gl.isContextLost()) throw new Error('Failed to read ' + view.eye + ' eye: ' + error);
+        const pose = copyTransform(view.transform);
+        let nonOpaqueBlackPixels = 0;
+        if (blackout) for (let i = 0; i < bytes.length; i += 4) {
+          if (bytes[i] !== 0 || bytes[i+1] !== 0 || bytes[i+2] !== 0 || bytes[i+3] !== 255) nonOpaqueBlackPixels++;
+        }
+        return { bytes, result: { eye: view.eye, viewport: rect, position: pose.position, orientation: pose.orientation,
+          ...(blackout ? { nonOpaqueBlackPixels, pixels: bytes.length / 4 } : {}),
+          viewToReferenceMatrix: pose.matrix, projectionMatrix: Array.from(view.projectionMatrix) } };
+      };
+      // Complete both synchronous reads before returning to window RAF / browser compositing.
+      const leftRead = readEye(left);
+      const rightRead = readEye(right);
+      const result = {
+        frame: xr.frames, session: state.sessions.indexOf(session) + 1, timeMs: time,
+        submission: request.expectedSubmission, lastLayerTargetPreserved: xr.lastLayerTargetPreserved,
+        ...(blackout ? { witnessedBlackClears: frame.blackClears } : {}),
+        atlas: { width: w, height: h, viewportOrigin: 'bottom-left', pngOrigin: 'top-left' },
+        profile: xr.audience.currentQuality, viewpoint: xr.audience.currentViewpoint, eyeMode: xr.audience.eyeMode,
+        scaleFactor: state.scaleFactor, requestedFoveation: state.foveation,
+        head: copyTransform(left.pose.transform), desiredHeadPose: xr.audience.desiredHeadPose,
+        counters: { views: xr.lastViews, calls: xr.lastCalls, triangles: xr.lastTriangles,
+          rendererTextures: xr.memory.textures, ownedTextures: xr.audience.ownedTextures },
+      };
+      request.encoding = true;
+      queueMicrotask(() => {
+        if (pendingEyes !== request) return;
+        try {
+          for (const { bytes, result: eye } of [leftRead, rightRead]) {
+            eye.png = pngFromBottomLeft(bytes, eye.viewport.width, eye.viewport.height);
+            result[eye.eye] = eye;
+          }
+          if (performance.now() > request.deadline) throw new Error('Eye pair exceeded the capture timeout.');
+          if (session.ended || session.ending || session.visibilityState !== 'visible' || gl.isContextLost() ||
+              state.activeSession !== session || session.renderState.baseLayer !== layer) throw new Error('Eye capture was interrupted.');
+          request.finish(null, result);
+        } catch (error) { request.finish(error); }
+      });
+    }
+
     const quatMultiply = (a, b) => ({
       x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
       y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
@@ -167,15 +352,21 @@ export async function installFakeWebXr(page, options = {}) {
         const id = window.requestAnimationFrame((time) => {
           this.rafIds.delete(id);
           if (this.ended) return;
+          const request = pendingEyes;
+          const capture = request && !request.encoding && request.session === this
+            ? { request, poses: new WeakMap(), viewports: [], blackClears: 0, framesBefore: window.stageforgeProbe?.webXr().frames }
+            : null;
           const frame = {
             session: this,
             getViewerPose: (referenceSpace) => {
               const baseHead = { position: { x: 0, y: 1.62, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } };
               const derived = referenceSpace?.offset ? compose(inverse(referenceSpace.offset), baseHead) : baseHead;
-              return {
+              const pose = {
                 transform: new FakeRigidTransform(derived.position, derived.orientation),
                 views: [eyeView('left', -0.032, referenceSpace), eyeView('right', 0.032, referenceSpace)],
               };
+              if (capture) for (const view of pose.views) capture.poses.set(view, pose);
+              return pose;
             },
             getPose: (space, referenceSpace) => {
               const base = space?.pose ?? { position: { x: 0, y: 1.3, z: -0.35 }, orientation: { x: 0, y: 0, z: 0, w: 1 } };
@@ -183,7 +374,30 @@ export async function installFakeWebXr(page, options = {}) {
               return { transform: new FakeRigidTransform(derived.position, derived.orientation) };
             },
           };
-          callback(time, frame);
+          if (!capture) {
+            callback(time, frame);
+            return;
+          }
+          let undoClearObservation;
+          if (request.expectedSubmission === 'blackout-clear') {
+            try { undoClearObservation = observeBlackoutClear(capture); }
+            catch (error) { request.finish(error); callback(time, frame); return; }
+          }
+          collectingEyes = capture;
+          try {
+            callback(time, frame);
+          } catch (error) {
+            request.finish(error);
+            throw error;
+          } finally {
+            collectingEyes = null;
+            undoClearObservation?.();
+          }
+          try {
+            captureRenderedEyes(capture, time);
+          } catch (error) {
+            request.finish(error);
+          }
         });
         this.rafIds.add(id);
         return id;
@@ -263,16 +477,23 @@ export async function installFakeWebXr(page, options = {}) {
     }
 
     class FakeWebGLLayer {
-      constructor(_session, _gl, init = {}) {
-        this.framebufferWidth = 1024;
-        this.framebufferHeight = 512;
+      constructor(_session, gl, init = {}) {
+        const dimension = directEyes ? Math.round(512 * (init.framebufferScaleFactor ?? 1)) : 512;
+        if (directEyes) layerContexts.set(this, gl);
+        this.framebufferWidth = dimension * 2;
+        this.framebufferHeight = dimension;
         this.framebuffer = null;
         this.ignoreDepthValues = false;
         this.fixedFoveation = 0;
         state.scaleFactor = init.framebufferScaleFactor ?? 1;
       }
       getViewport(view) {
-        return { x: view.eye === 'left' ? 0 : 512, y: 0, width: 512, height: 512 };
+        const width = this.framebufferWidth / 2;
+        const rect = { x: view.eye === 'left' ? 0 : width, y: 0, width, height: this.framebufferHeight };
+        if (collectingEyes?.request.layer === this) {
+          collectingEyes.viewports.push({ view, rect: { ...rect }, pose: collectingEyes.poses.get(view) });
+        }
+        return rect;
       }
     }
     Object.defineProperty(FakeWebGLLayer.prototype, 'fixedFoveation', {
@@ -320,6 +541,7 @@ export async function installFakeWebXr(page, options = {}) {
 
     globalThis.__fakeWebXr = {
       state,
+      ...(directEyes ? { captureNextEyePair } : {}),
       denyNext() { state.denyNext = true; },
       deferNext() { state.deferNext = true; },
       resolvePending() {

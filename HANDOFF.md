@@ -2810,3 +2810,9 @@ The next candidate adds the original grayscale moth and ticket taker with measur
 
 
 - 2026-11-27 12:51 a.m. Pacific — Crowd 6B monochrome figures published at `1de2134`. The exact Mac passed 403 units, 107 browser cases and both focused stereo profiles, including WebGL restoration. The RTX 4060 portable package and 13 Electron cases passed. Read-only QA cleared qa-71 through qa-73. Pages run [45968849890](https://github.com/jbrick2070/stageforge/actions/runs/45968849890) deployed the exact commit. The next round integrates the complete 1928 cast. A separate VR graphics pass follows before closing 6B.
+
+### 2026-11-27 01:54 PST — Full 1928 film cast release and VR graphics pickup
+
+Exact main `8a1d26d` shipped all 16 modeled 1928 film depictions, a 14-person cast preset, individual floor and chair placement, v14 show files, source credits and the bundled Steamboat Willie example. Mac passed 405 units, 108 browser cases, focused mixed stereo and the production build. The RTX 4060 passed the portable package and 14 native tests, including first launch of the installed cast offline. Independent reviews qa-74 and qa-75 cleared the release. [Pages run 45977528364](https://github.com/jbrick2070/stageforge/actions/runs/45977528364) deployed the verified revision.
+
+Continue the approved VR graphics pass to close Crowd 6B. Keep the viewport clear near the audience, ground the seated human-v2 in the Theatre and verify the two renderer profiles with actual paired emulator-eye images. The unchanged Arena budgets are 270 calls, 760,000 triangles, 26 renderer textures and one menu-owned texture. Validation stays on the Ethernet Mac and Wi-Fi RTX 4060. The next queue is Realism 7, then P1 through P4.

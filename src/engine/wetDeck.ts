@@ -25,7 +25,7 @@ export interface WetDeckEnvironmentStats {
   targetWidth: number;
   targetHeight: number;
   buildCount: number;
-  persistentTargetCount: 1;
+  persistentTargetCount: 0 | 1;
   narrowStripCount: number;
   extraGpuBytes: 0;
   sceneOwnsTargetTexture: boolean;

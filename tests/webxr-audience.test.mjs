@@ -35,6 +35,35 @@ test('audience viewpoints are bounded and preserve seated/standing eye heights',
   assert.equal(festival.find((seat) => seat.id === 'balcony').virtualTier, true);
 });
 
+test('front sightlines, theatre aisles and elevated lookouts reject occupied landings', async () => {
+  const arena = { venue: 'arena', stageWidth: 24, stageDepth: 12 };
+  const theatre = { ...arena, venue: 'theatre' };
+  const stageFront = mod.deriveAudienceViewpoints(arena).find(seat => seat.id === 'stage-front');
+  const postFaceZ = arena.stageDepth / 2 + 2.4 + 0.225;
+  assert.ok(stageFront.z - postFaceZ >= 1);
+  assert.ok(!stageFront.blocked);
+  const displaced = mod.deriveAudienceViewpoints(arena, undefined,
+    [{ x: stageFront.x, y: 0, z: stageFront.z, radius: 0.5, height: 2 }]).find(seat => seat.id === 'stage-front');
+  assert.ok(!displaced.blocked);
+  assert.ok(Math.hypot(displaced.x - stageFront.x, displaced.z - stageFront.z) >= 0.75);
+
+  const { theatreSeatAnchors } = await loader.ssrLoadModule('/src/data/crowdPlacement.ts');
+  const chairs = theatreSeatAnchors(theatre);
+  const chair = chairs.find(seat => seat.row === 7);
+  const foh = { position: { x: chair.x, y: 1.6, z: chair.z }, target: { x: 0, y: 0, z: 0 } };
+  const theatreViews = mod.deriveAudienceViewpoints(theatre, foh);
+  for (const name of ['floor', 'foh']) {
+    const seat = theatreViews.find(view => view.id === name);
+    assert.ok(!seat.blocked);
+    assert.ok(seat.floorY > 0);
+    assert.ok(chairs.some(chair => chair.y === seat.floorY && chair.z - 0.05 === seat.z));
+    assert.ok(chairs.filter(chair => chair.y === seat.floorY).every(chair => Math.abs(chair.x - seat.x) >= 0.6));
+  }
+
+  const wall = { x: 0, y: 0, z: 0, radius: 500, height: 20 };
+  assert.ok(mod.deriveAudienceViewpoints(arena, undefined, [wall]).every(view => view.blocked));
+});
+
 test('offset reference-space transform resolves viewer and controller poses coherently', () => {
   const q = (yaw) => ({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) });
   const baseHead = { position: { x: 0.12, y: 1.62, z: -0.08 }, orientation: q(0.1) };

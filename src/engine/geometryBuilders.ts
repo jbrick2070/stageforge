@@ -4,12 +4,16 @@ import { getTrussProfile, trussAnchorY, trussBraceRadius, trussChordRadius, trus
 import { trussMounts } from '../data/trussMounts';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { makeOriginalFoxGeometry, makeOriginalHumanGeometry, makeOriginalMothGeometry, makeOriginalTicketTakerGeometry } from './originalCrowdGeometry';
+import {
+  makeMixedHumanGeometry, makeOriginalFoxGeometry, makeOriginalHumanGeometry, makeOriginalMothGeometry,
+  makeOriginalTicketTakerGeometry, makeSeatedOriginalHumanGeometry, seatedHumanSupport,
+} from './originalCrowdGeometry';
 import { packCrowdGeometry, setPackedCrowdMaterial } from './packedCrowdGeometry';
 import { isSteamboatModelId } from '../data/crowdFilmCast';
 import { steamboatCrowdGeometry } from './steamboatCrowdGeometry';
 import type { PlanPoint, RigConfig, TrussShape, VenueType } from '../types/show';
 import { stageSurfaceHeight } from '../data/stageDesign';
+import { AUDIENCE_FRONT_RAILS } from '../data/venueBounds';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
 import type { SpeakerHang } from '../data/studioGeometry';
 import { theatreSeatAnchors, type ResolvedCrowdLayout, type ResolvedCrowdPlacement, type TheatreSeatAnchor } from '../data/crowdPlacement';
@@ -1049,6 +1053,7 @@ function applyOriginalHumanColors(
   geometry: THREE.BufferGeometry,
   material: THREE.MeshStandardMaterial,
   placements: readonly ResolvedCrowdPlacement[],
+  mixedSeat = false,
 ): void {
   setCrowdTintAttributes(geometry, placements);
   material.onBeforeCompile = shader => {
@@ -1057,35 +1062,117 @@ function applyOriginalHumanColors(
 #include <color_pars_vertex>
 attribute float crowdColorRegion;
 attribute vec3 crowdSkinColor;
-attribute vec3 crowdClothingColor;`)
+attribute vec3 crowdClothingColor;
+${mixedSeat ? 'attribute vec3 crowdSeatPosition; attribute vec3 crowdSeatNormal; attribute vec4 crowdSeatColorRegion;' : ''}`)
       .replace('#include <color_vertex>', `
 #include <color_vertex>
-if (crowdColorRegion > 1.5) {
+float crowdActiveRegion = crowdColorRegion;
+${mixedSeat ? `if (crowdSeatTurn < 3.0) {
+  vColor.rgb = crowdSeatColorRegion.rgb;
+  crowdActiveRegion = crowdSeatColorRegion.a;
+}` : ''}
+if (crowdActiveRegion > 1.5) {
   vColor.rgb *= crowdClothingColor;
-} else if (crowdColorRegion > 0.5) {
+} else if (crowdActiveRegion > 0.5) {
   vColor.rgb *= crowdSkinColor;
 }`);
+    if (mixedSeat) {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <beginnormal_vertex>', 'vec3 objectNormal = crowdSeatTurn < 3.0 ? crowdSeatNormal : normal;')
+        .replace('#include <begin_vertex>', 'vec3 transformed = crowdSeatTurn < 3.0 ? crowdSeatPosition : position;');
+    }
   };
-  material.customProgramCacheKey = () => 'crowd-human-tint-regions-v1';
+  material.customProgramCacheKey = () => mixedSeat ? 'crowd-human-mixed-seat-v1' : 'crowd-human-tint-regions-v1';
+}
+
+const SEATED_HUMAN_SOURCE = 'stageforge-human-v2:seated' as const;
+type CrowdSourceKey = CrowdModelId | typeof SEATED_HUMAN_SOURCE;
+type DirectHumanPose = 'ordinary' | 'supported' | 'mixed';
+
+function crowdSourceGeometry(key: CrowdSourceKey, tier: CrowdRenderTier, material: THREE.MeshStandardMaterial) {
+  const geometry = key === SEATED_HUMAN_SOURCE ? makeSeatedOriginalHumanGeometry()
+    : key === 'stageforge-human-v1' ? crowdGeometry() : originalCrowdGeometry(key);
+  try {
+    const supported = key === SEATED_HUMAN_SOURCE;
+    validateCrowdGeometryAdmission(supported ? 'stageforge-human-v2' : key, tier, geometry, material, supported);
+    return geometry;
+  } catch (error) {
+    geometry.dispose();
+    throw error;
+  }
+}
+
+function buildDirectCrowdGeometry(modelId: CrowdModelId, pose: DirectHumanPose, tier: CrowdRenderTier, material: THREE.MeshStandardMaterial) {
+  if (pose === 'supported') return crowdSourceGeometry(SEATED_HUMAN_SOURCE, tier, material);
+  const ordinary = crowdSourceGeometry(modelId, tier, material);
+  if (pose === 'ordinary') return ordinary;
+  try {
+    const seated = crowdSourceGeometry(SEATED_HUMAN_SOURCE, tier, material);
+    try {
+      return makeMixedHumanGeometry(ordinary, seated);
+    } finally {
+      seated.dispose();
+    }
+  } finally {
+    ordinary.dispose();
+  }
 }
 
 function buildPackedOriginalCrowd(
   modelIds: readonly CrowdModelId[],
+  keys: ReadonlySet<CrowdSourceKey>,
   trianglesPerInstance: number,
   tier: CrowdRenderTier,
   material: THREE.MeshStandardMaterial,
 ) {
-  const sources = new Map<CrowdModelId, THREE.BufferGeometry>();
+  // Retain each model's original slot. A second pose of the same human is appended.
+  const ordered: CrowdSourceKey[] = modelIds.map(id => keys.has(id) ? id : SEATED_HUMAN_SOURCE);
+  if (keys.has('stageforge-human-v2') && keys.has(SEATED_HUMAN_SOURCE)) ordered.push(SEATED_HUMAN_SOURCE);
+  const sources = new Map<CrowdSourceKey, THREE.BufferGeometry>();
   try {
-    for (const modelId of modelIds) {
-      const geometry = originalCrowdGeometry(modelId);
-      sources.set(modelId, geometry);
-      validateCrowdGeometryAdmission(modelId, tier, geometry, material);
-    }
+    for (const key of ordered) sources.set(key, crowdSourceGeometry(key, tier, material));
     return packCrowdGeometry(sources, trianglesPerInstance);
   } finally {
     sources.forEach(geometry => geometry.dispose());
   }
+}
+
+function applySeatFacing(
+  material: THREE.MeshStandardMaterial,
+  geometry: THREE.BufferGeometry,
+  turns: Float32Array,
+  source: 'direct' | 'mixed' | 'packed',
+) {
+  geometry.setAttribute('crowdSeatTurn', new THREE.InstancedBufferAttribute(turns, 1));
+  const baseCompile = material.onBeforeCompile;
+  const baseKey = material.customProgramCacheKey();
+  const localY = source === 'packed' ? 'packedPosition.y'
+    : source === 'mixed' ? '(crowdSeatTurn < 3.0 ? crowdSeatPosition.y : position.y)' : 'position.y';
+  material.onBeforeCompile = function (shader, renderer) {
+    baseCompile.call(this, shader, renderer);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `
+#include <common>
+attribute float crowdSeatTurn;
+vec3 crowdSeatFacing(vec3 value, float localY) {
+  if (crowdSeatTurn >= 3.0 || localY <= ${seatedHumanSupport.headJointY.toFixed(2)}) return value;
+  float c = cos(crowdSeatTurn), s = sin(crowdSeatTurn);
+  value.xz = mat2(c, -s, s, c) * value.xz;
+  return value;
+}`)
+      .replace('#include <defaultnormal_vertex>', `
+objectNormal = crowdSeatFacing(objectNormal, ${localY});
+#include <defaultnormal_vertex>`)
+      .replace('#include <morphtarget_vertex>', `
+transformed = crowdSeatFacing(transformed, transformed.y);
+#include <morphtarget_vertex>`);
+  };
+  material.customProgramCacheKey = () => `${baseKey}|seated-human-facing-${source}-v1`;
+}
+
+function supportedHeadTurn(rotY: number) {
+  const angle = THREE.MathUtils.euclideanModulo(rotY, 2 * Math.PI) - Math.PI;
+  return THREE.MathUtils.clamp(Math.abs(angle + Math.PI) < 1e-8 ? Math.PI : angle, -Math.PI / 6, Math.PI / 6);
 }
 
 export interface CrowdBaseTransform {
@@ -1100,6 +1187,7 @@ export interface CrowdBaseTransform {
   pose?: CrowdPose;
   pivot?: readonly [number, number, number];
   generatorVersion?: 1 | 2;
+  supportedHumanSeat?: true;
 }
 
 export interface CrowdRenderBatch {
@@ -1156,7 +1244,9 @@ export function validateCrowdGeometryAdmission(
   tier: CrowdRenderTier,
   geometry: THREE.BufferGeometry,
   material: THREE.MeshStandardMaterial,
+  supportedHumanSeat = false,
 ): CrowdGeometryAdmission {
+  if (supportedHumanSeat && modelId !== 'stageforge-human-v2') throw new Error('Unsupported seated crowd source.');
   const index = geometry.getIndex();
   if (!index || index.count % 3 !== 0) throw new Error(`crowd model ${modelId} must use indexed triangle geometry.`);
   const positions = [geometry.getAttribute('position'), ...(geometry.morphAttributes.position ?? [])] as THREE.BufferAttribute[];
@@ -1178,15 +1268,20 @@ export function validateCrowdGeometryAdmission(
     materialTextures: materialTextureCount(material),
     morphTextures: (geometry.morphAttributes.position?.length ?? 0) > 0 ? 1 : 0,
     floorMinY,
-    standingHeightM: maxY * 1.12,
-    seatedHeightM: maxY * 0.74,
+    standingHeightM: supportedHumanSeat ? maxY : maxY * 1.12,
+    seatedHeightM: supportedHumanSeat ? maxY : maxY * 0.74,
   };
   const model = crowdModel(modelId);
-  if (Math.abs(maxY - model.geometryHeightM) > 1e-5) {
-    throw new Error(`crowd model ${modelId} geometry height measured ${maxY}, expected ${model.geometryHeightM}.`);
+  const expectedHeight = supportedHumanSeat ? seatedHumanSupport.height : model.geometryHeightM;
+  const expectedRadius = supportedHumanSeat ? seatedHumanSupport.radius : model.geometryRadiusM;
+  if (Math.abs(maxY - expectedHeight) > 1e-5) {
+    throw new Error(`crowd model ${modelId} geometry height measured ${maxY}, expected ${expectedHeight}.`);
   }
-  if (Math.abs(maxRadius - model.geometryRadiusM) > 1e-5) {
-    throw new Error(`crowd model ${modelId} geometry radius measured ${maxRadius}, expected ${model.geometryRadiusM}.`);
+  if (Math.abs(maxRadius - expectedRadius) > 1e-5) {
+    throw new Error(`crowd model ${modelId} geometry radius measured ${maxRadius}, expected ${expectedRadius}.`);
+  }
+  if (supportedHumanSeat && (Math.abs(floorMinY) > 1e-5 || maxRadius > model.poses.seated.clearanceRadiusM)) {
+    throw new Error('Seated human source exceeds its chair contact envelope.');
   }
   const budget = model.budgets[tier];
   for (const key of ['trianglesPerInstance', 'materialSlots', 'materialTextures', 'morphTextures'] as const) {
@@ -1226,6 +1321,13 @@ export function validateCrowdHandsetAdmission(
 }
 
 export function setCrowdObjectMatrix(object: THREE.Object3D, transform: CrowdBaseTransform, hop = 0, sway = 0) {
+  if (transform.supportedHumanSeat) {
+    object.position.set(transform.x, transform.y, transform.z);
+    object.scale.set(1, 1, 1);
+    object.rotation.set(0, Math.PI, 0);
+    object.updateMatrix();
+    return;
+  }
   const pivot = transform.pivot ?? CROWD_ORIGIN_PIVOT;
   const modelId = transform.modelId ?? 'stageforge-human-v1';
   const pose = transform.pose ?? 'standing';
@@ -1273,6 +1375,10 @@ function pleatedDrape(width: number, height: number, material: THREE.Material, d
   return new THREE.Mesh(geometry, material);
 }
 
+function theatreSeatLocation(point: { x: number; y: number; z: number }) {
+  return `${point.x}/${point.y}/${point.z}`;
+}
+
 /**
  * A ~350-seat proscenium house: apron, proscenium arch with gathered house tabs, a fly tower,
  * black legs and borders masking the wings, a cyclorama, an orchestra-pit rail and a raked stalls.
@@ -1286,6 +1392,7 @@ function buildTheatreHouse(
   stageDepth: number,
   stageHeight: number,
   roofY: number,
+  supportedSeats: ReadonlySet<string>,
 ): { room: VenueRoom; seats: TheatreSeatAnchor[] } {
   const front = stageDepth / 2;
   const prosZ = front - 1.5; // 1.5 m apron (forestage) in front of the proscenium line
@@ -1355,7 +1462,8 @@ function buildTheatreHouse(
   addBox(group, velour, 0, stageHeight + 0.25, cycZ + 0.6, openW + 3, 0.5, 0.1);
 
   // Orchestra-pit rail, then a raked stalls split by two aisles into three banks.
-  addBox(group, plaster, 0, 0.5, front + 2.1, houseW - 2, 1.0, 0.25);
+  const rail = AUDIENCE_FRONT_RAILS.theatre;
+  addBox(group, plaster, 0, rail.height / 2, front + rail.offset, houseW - 2, rail.height, rail.depth);
   const rows = 14,
     pitch = 0.95,
     rise = 0.17,
@@ -1371,7 +1479,10 @@ function buildTheatreHouse(
     for (const seat of seats) {
       if (seat.row !== r) continue;
       const x = seat.x;
-      addBox(group, seatMat, x, y + 0.42, z, seatW - 0.05, 0.1, 0.46);
+      const supported = supportedSeats.has(theatreSeatLocation(seat));
+      const cushionZ = supported ? z + seatedHumanSupport.cushionCentreFromRowZ : z;
+      const cushionDepth = supported ? seatedHumanSupport.cushionDepth : 0.46;
+      addBox(group, seatMat, x, y + 0.42, cushionZ, seatW - 0.05, 0.1, cushionDepth);
       addBox(group, seatMat, x, y + 0.72, z + 0.26, seatW - 0.05, 0.6, 0.08);
     }
     for (const s of [-1, 1]) addBox(group, houseLamp, s * aisleX, y + 0.06, z - 0.42, 0.06, 0.03, 0.06);
@@ -1543,9 +1654,15 @@ export function buildVenueArchitecture(
   const houseLamp = new THREE.MeshBasicMaterial({ color: 0xaa805b });
   practicals.push(houseLamp);
   const seatMat = new THREE.MeshStandardMaterial({ color: 0x36404c, roughness: 0.85 });
+  const supportedPeople = new Set(venue === 'theatre' && authoredCrowd?.generatorVersion === 2
+    ? authoredCrowd.placements.filter(person => person.modelId === 'stageforge-human-v2' && person.pose === 'seated')
+    : []);
+  const sourceKey = (person: ResolvedCrowdPlacement): CrowdSourceKey =>
+    supportedPeople.has(person) ? SEATED_HUMAN_SOURCE : person.modelId;
   if (venue === 'theatre') {
+    const supportedSeats = new Set(Array.from(supportedPeople, theatreSeatLocation));
     ({ room, seats } = buildTheatreHouse(group, mats, practicals as THREE.MeshBasicMaterial[], houseLamp,
-      stageWidth, stageDepth, stageHeight, roofY));
+      stageWidth, stageDepth, stageHeight, roofY, supportedSeats));
   } else if (venue === 'club') {
     ({ room, floor: standingFloor } = buildClubRoom(group, mats, practicals as THREE.MeshBasicMaterial[],
       stageWidth, stageDepth, roofY));
@@ -1690,17 +1807,18 @@ export function buildVenueArchitecture(
 
   // Front-of-stage crowd barricade fence (concert venues; theatres and clubs have none)
   const barricadeLen = stageWidth + (venue === 'warehouse' ? 2 : 6);
-  const barricadeZ = stageDepth / 2 + 2.4;
+  const rail = AUDIENCE_FRONT_RAILS.concert;
+  const barricadeZ = stageDepth / 2 + rail.offset;
   if (!room) {
     const barTop = new THREE.Mesh(new THREE.BoxGeometry(barricadeLen, 0.1, 0.14), mats.darkSteel);
-    barTop.position.set(0, 1.12, barricadeZ);
+    barTop.position.set(0, rail.height, barricadeZ);
     group.add(barTop);
     const postGaps = Math.min(MAX_BARRICADE_BAYS, Math.floor(barricadeLen / 2.2));
     const postSpacing = Math.max(2.2, barricadeLen / MAX_BARRICADE_BAYS);
     for (let i = 0; i <= postGaps; i++) {
       const x = -barricadeLen / 2 + i * postSpacing;
-      const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.12, 0.45), mats.darkSteel);
-      post.position.set(x, 0.56, barricadeZ);
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, rail.height, rail.depth), mats.darkSteel);
+      post.position.set(x, rail.height / 2, barricadeZ);
       group.add(post);
     }
   }
@@ -1840,7 +1958,13 @@ export function buildVenueArchitecture(
         generatorVersion: authoredGeneratorVersion,
       };
       setCrowdObjectMatrix(footprintDummy, transform);
-      if (authoredGeneratorVersion === 2) {
+      if (supportedPeople.has(person)) {
+        // The existing patch sits beneath both shoes in the theatre chair frame.
+        footprintDummy.position.set(person.x, person.y, person.z - 0.149);
+        footprintDummy.rotation.set(0, Math.PI, 0);
+        footprintDummy.scale.set(0.110 / footprintRadiusM, 1, 0.053 / 0.32);
+        footprintDummy.updateMatrix();
+      } else if (authoredGeneratorVersion === 2) {
         // Keep this static patch centred on its seat or floor anchor even when the
         // figure has a nonzero pivot or the patch is wider than the figure.
         const clearanceM = crowdModel(person.modelId).poses[person.pose].clearanceRadiusM;
@@ -1861,24 +1985,32 @@ export function buildVenueArchitecture(
       const model = crowdModel(modelId);
       placements.sort((a, b) => Number(b.phone) - Number(a.phone) || a.id.localeCompare(b.id));
       const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.90, metalness: 0.02 });
-      const packed = plan.packed ? buildPackedOriginalCrowd(modelIds, plan.trianglesPerInstance, crowdTier, material) : null;
-      const geometry = packed?.geometry ?? (model.geometryKey === 'legacy-human-v1' ? crowdGeometry() : originalCrowdGeometry(modelId));
+      const sourceKeys = new Set(placements.map(sourceKey));
+      const hasSupportedSeat = sourceKeys.has(SEATED_HUMAN_SOURCE);
+      const directPose = !hasSupportedSeat ? 'ordinary' : sourceKeys.size === 1 ? 'supported' : 'mixed';
+      const packed = plan.packed
+        ? buildPackedOriginalCrowd(modelIds, sourceKeys, plan.trianglesPerInstance, crowdTier, material) : null;
+      const geometry = packed?.geometry ?? buildDirectCrowdGeometry(modelId, directPose, crowdTier, material);
+      const mixedDirect = !packed && directPose === 'mixed';
       const useVertexPalette = plan.packed || model.geometryKey === 'original-human-v2' || model.geometryKey === 'original-fox-v1';
       if (packed) {
-        const slots = Float32Array.from(placements, person => packed.slots.get(person.modelId)!);
+        const slots = Float32Array.from(placements, person => packed.slots.get(sourceKey(person))!);
         geometry.setAttribute('crowdGeometrySlot', new THREE.InstancedBufferAttribute(slots, 1));
         setCrowdTintAttributes(geometry, placements);
         setPackedCrowdMaterial(material, packed.vertexTexture);
-      } else {
-        validateCrowdGeometryAdmission(modelId, crowdTier, geometry, material);
-        if (model.geometryKey === 'original-human-v2') applyOriginalHumanColors(geometry, material, placements);
+      } else if (model.geometryKey === 'original-human-v2') {
+        applyOriginalHumanColors(geometry, material, placements, mixedDirect);
+      }
+      if (hasSupportedSeat) {
+        const turns = Float32Array.from(placements, person => supportedPeople.has(person) ? supportedHeadTurn(person.rotY) : 4);
+        applySeatFacing(material, geometry, turns, packed ? 'packed' : mixedDirect ? 'mixed' : 'direct');
       }
       const mesh = new THREE.InstancedMesh(geometry, material, placements.length);
       if (packed) mesh.addEventListener('dispose', () => packed.vertexTexture.dispose());
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       const dummy = new THREE.Mesh(geometry, material);
       const transforms: CrowdBaseTransform[] = [];
-      const packedBounds = packed ? new THREE.Box3() : null;
+      const posedBounds = packed || hasSupportedSeat ? new THREE.Box3() : null;
       const boundCorner = new THREE.Vector3();
       for (const [instanceIndex, person] of placements.entries()) {
         const pose = crowdModel(person.modelId).poses[person.pose];
@@ -1887,6 +2019,7 @@ export function buildVenueArchitecture(
           placementId: person.id, modelId: person.modelId, pose: person.pose,
           pivot: pose.pivot,
           generatorVersion: authoredGeneratorVersion,
+          ...(supportedPeople.has(person) ? { supportedHumanSeat: true as const } : {}),
         };
         transforms.push(transform);
         crowdBaseTransforms.push(transform);
@@ -1901,16 +2034,16 @@ export function buildVenueArchitecture(
         if (!useVertexPalette) mesh.setColorAt(instanceIndex, new THREE.Color(colors[person.paletteIndex]));
         setCrowdObjectMatrix(dummy, transform);
         mesh.setMatrixAt(instanceIndex, dummy.matrix);
-        if (packedBounds) {
-          // Culling must use animated world bounds rather than the zero-filled index template.
+        if (posedBounds) {
+          // Three cannot infer the alternate or texture-backed vertices from its base position attribute.
           const radius = pose.clearanceRadiusM;
-          packedBounds.expandByPoint(boundCorner.set(person.x - radius, person.y - radius, person.z - radius));
-          packedBounds.expandByPoint(boundCorner.set(person.x + radius, person.y + pose.maxHeightM, person.z + radius));
+          posedBounds.expandByPoint(boundCorner.set(person.x - radius, person.y - radius, person.z - radius));
+          posedBounds.expandByPoint(boundCorner.set(person.x + radius, person.y + pose.maxHeightM, person.z + radius));
         }
       }
-      if (packedBounds) {
-        mesh.boundingBox = packedBounds;
-        mesh.boundingSphere = packedBounds.getBoundingSphere(new THREE.Sphere());
+      if (posedBounds) {
+        mesh.boundingBox = posedBounds;
+        mesh.boundingSphere = posedBounds.getBoundingSphere(new THREE.Sphere());
       }
       if (plan.morphTextures) {
         if (!mesh.morphTexture) throw new Error(`crowd model ${modelId} did not allocate its declared morph texture.`);

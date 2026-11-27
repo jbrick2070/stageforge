@@ -33,8 +33,8 @@ export function makeSteamboatMickeyGeometry(wearsCap: boolean = true): THREE.Buf
       add(new THREE.CircleGeometry(0.09, 6).rotateY(side * 0.1).translate(side * 0.14, 1.28, -0.02), black);
 
       add(new THREE.CircleGeometry(0.09, 6).rotateY(Math.PI + side * 0.1).translate(side * 0.14, 1.28, -0.02), black);
-      add(new THREE.PlaneGeometry(0.037, 0.066).rotateY(side * 0.30).translate(side * 0.043, 1.164, 0.127), white);
-      add(new THREE.PlaneGeometry(0.014, 0.034).rotateY(side * 0.30).translate(side * 0.040, 1.16, 0.130), black);
+      add(new THREE.PlaneGeometry(0.037, 0.066).rotateY(side * 0.30).translate(side * 0.043, 1.164, 0.135), white);
+      add(new THREE.PlaneGeometry(0.014, 0.034).rotateY(side * 0.30).translate(side * 0.040, 1.16, 0.1377), black);
 
       // Bare dark arm
       const arm = new THREE.CylinderGeometry(0.028, 0.024, 0.32, 4, 1, true);
@@ -60,7 +60,7 @@ export function makeSteamboatMickeyGeometry(wearsCap: boolean = true): THREE.Buf
       // Brim / visor
       add(new THREE.BoxGeometry(0.14, 0.02, 0.08).rotateX(0.16).translate(0, 1.25, 0.12), black);
       // Cockade / band patch
-      add(new THREE.PlaneGeometry(0.04, 0.05).translate(0, 1.32, 0.115), black);
+      add(new THREE.PlaneGeometry(0.04, 0.05).translate(0, 1.32, 0.124), black);
     }
   });
 }
@@ -95,8 +95,8 @@ export function makeSteamboatMinnieGeometry(withUkulele: boolean = true): THREE.
       add(new THREE.CircleGeometry(0.085, 6).rotateY(side * 0.1).translate(side * 0.135, 1.27, -0.02), black);
 
       add(new THREE.CircleGeometry(0.085, 6).rotateY(Math.PI + side * 0.1).translate(side * 0.135, 1.27, -0.02), black);
-      add(new THREE.PlaneGeometry(0.036, 0.062).rotateY(side * 0.30).translate(side * 0.041, 1.15, 0.124), white);
-      add(new THREE.PlaneGeometry(0.014, 0.032).rotateY(side * 0.30).translate(side * 0.039, 1.146, 0.126), black);
+      add(new THREE.PlaneGeometry(0.036, 0.062).rotateY(side * 0.30).translate(side * 0.041, 1.15, 0.132), white);
+      add(new THREE.PlaneGeometry(0.014, 0.032).rotateY(side * 0.30).translate(side * 0.039, 1.146, 0.1345), black);
 
       // Slender dark bare arm
       const arm = new THREE.CylinderGeometry(0.024, 0.022, 0.30, 4, 1, true);

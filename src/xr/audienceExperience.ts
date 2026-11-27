@@ -1,5 +1,6 @@
 import type { RigConfig, VenueType } from '../types/show';
-import { computeVenueBounds } from '../data/venueBounds';
+import { AUDIENCE_FRONT_RAILS, computeVenueBounds } from '../data/venueBounds';
+import { theatreSeatAnchors, type TheatreSeatAnchor } from '../data/crowdPlacement';
 
 export const XR_STANDING_EYE_HEIGHT_M = 1.6;
 export const XR_SEATED_EYE_HEIGHT_M = 1.2;
@@ -47,6 +48,7 @@ export interface XrViewpoint {
   floorY: number;
   yawRad: number;
   virtualTier: boolean;
+  blocked?: boolean;
 }
 
 export interface XrMenuRect {
@@ -67,6 +69,64 @@ export interface XrMenuHit {
 export interface XrInputEdgeState {
   held: Set<string>;
   claimedFrame: number;
+}
+
+type Landing = Pick<XrViewpoint, 'x' | 'z' | 'floorY'>;
+
+export interface XrAudienceObstacle {
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+  height: number;
+}
+
+const LANDING_RADIUS_M = 0.25;
+const LANDING_HEIGHT_M = XR_STANDING_EYE_HEIGHT_M + 0.25;
+
+function landingClear(landing: Landing, obstacles: readonly XrAudienceObstacle[]): boolean {
+  return obstacles.every(obstacle => {
+    if (obstacle.y + obstacle.height <= landing.floorY || obstacle.y >= landing.floorY + LANDING_HEIGHT_M) return true;
+    const separation = obstacle.radius + LANDING_RADIUS_M;
+    return (obstacle.x - landing.x) ** 2 + (obstacle.z - landing.z) ** 2 >= separation ** 2;
+  });
+}
+
+const LANDING_OFFSETS = (() => {
+  const points: Array<{ x: number; z: number }> = [];
+  for (let z = -6; z <= 6; z++) for (let x = -8; x <= 8; x++) {
+    points.push({ x: x * 0.5, z: z * 0.5 });
+  }
+  points.sort((a, b) => (a.x ** 2 + a.z ** 2) - (b.x ** 2 + b.z ** 2) || a.z - b.z || a.x - b.x);
+  return points;
+})();
+
+function findLanding(
+  preferred: Landing,
+  limits: { minX: number; maxX: number; minZ: number; maxZ: number },
+  obstacles: readonly XrAudienceObstacle[],
+): Landing | undefined {
+  for (const offset of LANDING_OFFSETS) {
+    const x = preferred.x + offset.x, z = preferred.z + offset.z;
+    if (x < limits.minX || x > limits.maxX || z < limits.minZ || z > limits.maxZ) continue;
+    const candidate = { x, z, floorY: preferred.floorY };
+    if (landingClear(candidate, obstacles)) return candidate;
+  }
+  return undefined;
+}
+
+function theatreAisleLandings(seats: readonly TheatreSeatAnchor[], preferred: Landing): Landing[] {
+  const spots: Landing[] = [];
+  for (let index = 1; index < seats.length; index++) {
+    const left = seats[index - 1], right = seats[index];
+    if (left.row === right.row && right.x - left.x >= 1.03) {
+      spots.push({ x: (left.x + right.x) / 2, z: left.z - 0.05, floorY: left.y });
+    }
+  }
+  return spots.sort((a, b) =>
+    (a.x - preferred.x) ** 2 + (a.z - preferred.z) ** 2
+    - (b.x - preferred.x) ** 2 - (b.z - preferred.z) ** 2
+    || a.z - b.z || a.x - b.x);
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -103,7 +163,11 @@ function tierFloorYs(venue: VenueType, ceilingY: number | null): [number, number
  * Derive bounded audience preview viewpoints from the venue envelope. Arena tier heights match
  * the authored five-step bleachers; other mezzanine/balcony entries are explicitly virtual previews.
  */
-export function deriveAudienceViewpoints(rig: Pick<RigConfig, 'venue' | 'stageWidth' | 'stageDepth'>, foh?: XrFohFrame): XrViewpoint[] {
+export function deriveAudienceViewpoints(
+  rig: Pick<RigConfig, 'venue' | 'stageWidth' | 'stageDepth'>,
+  foh?: XrFohFrame,
+  obstacles: readonly XrAudienceObstacle[] = [],
+): XrViewpoint[] {
   const bounds = computeVenueBounds(rig);
   const zone = bounds.audienceZone;
   const minX = -bounds.halfWidth + 0.75;
@@ -127,11 +191,39 @@ export function deriveAudienceViewpoints(rig: Pick<RigConfig, 'venue' | 'stageWi
     return { id, label, x: cx, z: cz, floorY, yawRad: yawToward({ x: cx, z: cz }, stageTarget), virtualTier };
   };
   const side = Math.min(maxX * 0.68, Math.max(0, bounds.halfWidth * 0.55));
+  const limits = { minX, maxX, minZ, maxZ };
+  const rail = rig.venue === 'theatre' ? AUDIENCE_FRONT_RAILS.theatre
+    : rig.venue === 'club' ? undefined : AUDIENCE_FRONT_RAILS.concert;
+  const frontMinZ = rail ? Math.max(minZ, zone.minZ + rail.offset + rail.depth / 2 + LANDING_RADIUS_M) : minZ;
+  // Keep the rail in sight from the standing eye position. Theatre has a much narrower pit aisle.
+  const sightlineMinZ = rail === AUDIENCE_FRONT_RAILS.concert ? frontMinZ + 0.75 : frontMinZ;
+  const front = { x: 0, z: Math.min(maxZ, sightlineMinZ + 0.08), floorY: 0 };
+  const floor = { x: -Math.min(2.2, Math.max(0, maxX * 0.2)), z: zAt(0.34), floorY: 0 };
+  const frontLimits = { ...limits, minZ: sightlineMinZ, maxZ: Math.min(maxZ, frontMinZ + (rig.venue === 'theatre' ? 0.3 : 3)) };
+  const theatreSeats = theatreSeatAnchors(rig);
+  // The existing chair cushion and back occupy x ±0.235, z −0.28 to +0.25 and y up to 1.02 from the seat anchor.
+  const landingObstacles = theatreSeats.length ? [
+    ...obstacles,
+    ...theatreSeats.map(seat => ({ x: seat.x, y: seat.y, z: seat.z - 0.015, radius: 0.36, height: 1.02 })),
+  ] : obstacles;
+  const clearAisle = (preferred: Landing) => theatreAisleLandings(theatreSeats, preferred)
+    .find(spot => spot.x >= minX && spot.x <= maxX && spot.z >= minZ && spot.z <= maxZ && landingClear(spot, landingObstacles));
+  const frontLanding = findLanding(front, frontLimits, landingObstacles);
+  const floorLanding = theatreSeats.length
+    ? clearAisle(floor)
+    : findLanding(floor, { ...limits, minZ: frontMinZ }, landingObstacles);
+  const fromLanding = (id: XrViewpointId, label: string, preferred: Landing, found?: Landing, virtualTier = false): XrViewpoint => {
+    const point = found ?? preferred;
+    return { ...make(id, label, point.x, point.z, point.floorY, virtualTier), ...(found ? {} : { blocked: true }) };
+  };
+  const mezzanine = { x: side, z: zAt(0.62), floorY: mezzFloor };
+  const balcony = { x: -side, z: zAt(0.82), floorY: balconyFloor };
+  const virtualTier = rig.venue !== 'arena';
   const viewpoints: XrViewpoint[] = [
-    make('stage-front', 'Stage front', 0, minZ, 0, false),
-    make('floor', 'Audience floor', -Math.min(2.2, Math.max(0, maxX * 0.2)), zAt(0.34), 0, false),
-    make('mezzanine', 'Mezzanine preview', side, zAt(0.62), mezzFloor, rig.venue !== 'arena'),
-    make('balcony', 'Balcony preview', -side, zAt(0.82), balconyFloor, rig.venue !== 'arena'),
+    fromLanding('stage-front', 'Stage front', front, frontLanding),
+    fromLanding('floor', 'Audience floor', floor, floorLanding),
+    fromLanding('mezzanine', 'Mezzanine preview', mezzanine, landingClear(mezzanine, landingObstacles) ? mezzanine : undefined, virtualTier),
+    fromLanding('balcony', 'Balcony preview', balcony, landingClear(balcony, landingObstacles) ? balcony : undefined, virtualTier),
   ];
   const defaultFoh = { x: 0, y: XR_STANDING_EYE_HEIGHT_M, z: zAt(0.74) };
   const fohPosition = foh?.position ?? defaultFoh;
@@ -141,21 +233,32 @@ export function deriveAudienceViewpoints(rig: Pick<RigConfig, 'venue' | 'stageWi
   const maxFohFloor = bounds.ceilingY === null
     ? Math.max(0, fohPosition.y - XR_STANDING_EYE_HEIGHT_M)
     : Math.max(0, bounds.ceilingY - XR_STANDING_EYE_HEIGHT_M - 0.25);
-  viewpoints.push({
-    id: 'foh',
-    label: 'Front of house',
-    x: fohX,
-    z: fohZ,
+  const preferredFoh = {
+    x: fohX, z: fohZ,
     floorY: clamp(fohPosition.y - XR_STANDING_EYE_HEIGHT_M, 0, maxFohFloor),
-    yawRad: yawToward({ x: fohX, z: fohZ }, fohTarget),
-    virtualTier: false,
-  });
+  };
+  const rearSeat = theatreSeats.at(-1);
+  let fohLanding: Landing | undefined;
+  if (rearSeat && preferredFoh.floorY < rearSeat.y + 1.02) {
+    // Use a supported row aisle or the flat space behind the last riser at low Theatre FOH positions.
+    const rearFloorMinZ = rearSeat.z - 0.05 + 0.95 / 2 + LANDING_RADIUS_M;
+    const rearPreferred = { ...preferredFoh, z: Math.max(preferredFoh.z, rearFloorMinZ), floorY: 0 };
+    const rearFloor = findLanding(rearPreferred, { ...limits, minZ: rearFloorMinZ }, landingObstacles);
+    const aisle = clearAisle(preferredFoh);
+    fohLanding = preferredFoh.z < rearFloorMinZ ? aisle ?? rearFloor : rearFloor ?? aisle;
+  } else {
+    fohLanding = findLanding(preferredFoh, { ...limits, minZ: frontMinZ }, landingObstacles);
+  }
+  const fohViewpoint = fromLanding('foh', 'Front of house', preferredFoh, fohLanding);
+  fohViewpoint.yawRad = yawToward(fohViewpoint, fohTarget);
+  viewpoints.push(fohViewpoint);
   return viewpoints;
 }
 
 export function viewpointHeadPose(viewpoint: XrViewpoint, mode: XrEyeMode, yawOffsetRad = 0): XrPose {
   const yaw = normalizeYaw(viewpoint.yawRad + yawOffsetRad);
-  const half = yaw / 2;
+  // Menu yaw is positive to the viewer's right. With Three's -Z forward, that is a negative Y rotation.
+  const half = -yaw / 2;
   return {
     position: { x: viewpoint.x, y: viewpoint.floorY + eyeHeightForMode(mode), z: viewpoint.z },
     orientation: { x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) },

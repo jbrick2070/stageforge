@@ -2137,6 +2137,7 @@ export const App: React.FC = () => {
       controlLoopHealth: () => engine.getControlLoopHealth(),
       webXr: () => ({ phase: webXrPhaseRef.current, ...engine.webXrDiagnostics() }),
       webXrMenuAction: (action: string) => engine.activateWebXrMenuForTest(action),
+      setCrowdPoseFrozen: (frozen: boolean) => engine.setCrowdPoseFrozenForTest(frozen),
       attemptWebXrDmxListener: () => {
         engine.setDmxFrameListener(() => {});
         return engine.webXrDiagnostics();

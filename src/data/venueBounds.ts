@@ -10,6 +10,11 @@ export const AUDIENCE_KEEPOUT_HEIGHT_M = 3.0;
 /** Floor plane half-extent matching `geometryBuilders.ts` (`PlaneGeometry(140, 140)`). */
 export const VENUE_FLOOR_HALF_EXTENT_M = 70;
 
+export const AUDIENCE_FRONT_RAILS = {
+  concert: { offset: 2.4, depth: 0.45, height: 1.12 },
+  theatre: { offset: 2.1, depth: 0.25, height: 1 },
+} as const;
+
 export interface Vec3Tuple {
   readonly x: number;
   readonly y: number;

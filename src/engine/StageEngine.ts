@@ -64,7 +64,7 @@ import {
   type CrowdPlacementBinding,
   type VenueRoom,
 } from './geometryBuilders';
-import type { CrowdResourceAdmission } from '../data/crowdModels';
+import { crowdModel, type CrowdResourceAdmission } from '../data/crowdModels';
 import { FixtureModelCache, type FixtureMotion } from './fixtureModels';
 import { detectRenderTier, maxPixelRatioForTier, type RenderTier } from './hardwareMaterials';
 import { FocusMark, PAN_LIMIT, TILT_LIMIT, aimAngles, aimTiltOnly, axisDmx, focusMarks, focusPoint, reachablePan } from './focusAim';
@@ -411,7 +411,7 @@ export class StageEngine {
   private neonFrame!: NeonFrameController;
   private crowdLighting!: CrowdLightingController;
   private lastCrowdFrameInputs: CrowdFrameInputs = createCrowdFrameInputs();
-  private environmentTarget: THREE.WebGLRenderTarget;
+  private environmentTarget: THREE.WebGLRenderTarget | null = null;
   private wetDeckEnvironmentStats!: Omit<WetDeckEnvironmentStats, 'sceneOwnsTargetTexture'>;
   private currentRig?: RigConfig;
   private lastRebuildSource?: RigConfig;
@@ -482,6 +482,7 @@ export class StageEngine {
   /** Interior of a small room (theatre, club); null for arena/warehouse/festival framing. */
   private room: VenueRoom | null = null;
   private crowdDummy = new THREE.Object3D();
+  private crowdPoseFrozenForTest = false;
 
   // LED Wall
   private ledWallMats: THREE.ShaderMaterial[] = [];
@@ -673,6 +674,7 @@ export class StageEngine {
   private webXrLastViews = 0;
   private webXrLastCalls = 0;
   private webXrLastTriangles = 0;
+  private webXrLastLayerTargetPreserved = false;
 
   constructor(
     container: HTMLElement,
@@ -722,9 +724,12 @@ export class StageEngine {
     this.renderer.info.autoReset = false;
     container.appendChild(this.renderer.domElement);
 
+    let lostDuringXr = false;
     this.handleContextLostBound = (event: Event) => {
       event.preventDefault();
       this.contextLost = true;
+      lostDuringXr = this.webXrLease !== null;
+      this.releaseLostContextBindings();
       if (this.webXrLease) void this.exitWebXrSession('context-loss');
       if (this.rafId !== null) {
         cancelAnimationFrame(this.rafId);
@@ -749,7 +754,8 @@ export class StageEngine {
       }
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
-      this.restoreStageEnvironment();
+      const wetDeckAfterXr = !this.webXrLease && this.renderSettings.lookWetDeck && this.renderTier === 'high';
+      this.restoreStageEnvironment(lostDuringXr ? wetDeckAfterXr : undefined);
       this.neonFrame?.onContextRestored();
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();
@@ -1226,6 +1232,7 @@ export class StageEngine {
       restored: false,
     };
     this.webXrLease = lease;
+    this.webXrLastLayerTargetPreserved = false;
     this.webXrVisibility = session.visibilityState;
     session.addEventListener('end', lease.endListener);
     session.addEventListener('visibilitychange', lease.visibilityListener);
@@ -1263,7 +1270,9 @@ export class StageEngine {
       }
       const xrCamera = this.renderer.xr.getCamera();
       lease.audience?.update(frame, time / 1000, xrCamera);
+      const layerTarget = this.renderer.getRenderTarget();
       this.runControlTick(time, true, 'xr');
+      this.webXrLastLayerTargetPreserved = layerTarget !== null && this.renderer.getRenderTarget() === layerTarget;
       this.webXrFrames++;
       this.webXrLastViews = xrCamera.cameras.length;
       this.webXrLastCalls = this.renderer.info.render.calls;
@@ -1283,6 +1292,17 @@ export class StageEngine {
       ]);
       if (this.webXrLease !== lease || lease.restored) throw new Error('VR session ended during audience setup.');
       const foh = this.buildWebXrFohFrame();
+      const obstacles = this.crowdBaseTransforms.map((person) => {
+        const pose = crowdModel(person.modelId ?? 'stageforge-human-v1')
+          .poses[person.pose ?? (this.crowdSeated ? 'seated' : 'standing')];
+        const envelopeSafe = person.generatorVersion === 2;
+        return {
+          x: person.x, y: person.y, z: person.z,
+          // Older motion applies hop and roll without the per-pose envelope clamp.
+          radius: envelopeSafe ? pose.clearanceRadiusM : Math.max(pose.clearanceRadiusM, pose.submittedRadiusM) + 0.16,
+          height: envelopeSafe ? pose.maxHeightM : Math.max(pose.maxHeightM, pose.submittedHeightM * person.scaleY) + 0.32,
+        };
+      });
       lease.audience = new WebXrAudienceScene(
         this.renderer,
         this.scene,
@@ -1294,7 +1314,7 @@ export class StageEngine {
             venue: 'arena',
             stageWidth: 22,
             stageDepth: 11,
-          }, foh),
+          }, foh, obstacles),
         },
       );
       lease.audience.setVisible(this.webXrVisibility === 'visible');
@@ -1382,7 +1402,7 @@ export class StageEngine {
     this.syncAtmospherePolicy();
     setWetDeckMaterial(this.mats.stageDeck, this.renderSettings.lookWetDeck && this.renderTier === 'high');
     if (
-      this.renderSettings.lookWetDeck && this.renderTier === 'high' &&
+      !this.contextLost && this.renderSettings.lookWetDeck && this.renderTier === 'high' &&
       this.wetDeckEnvironmentStats.composition !== 'wet-neutral'
     ) {
       this.restoreStageEnvironment(true);
@@ -1412,6 +1432,7 @@ export class StageEngine {
       lastViews: this.webXrLastViews,
       lastCalls: this.webXrLastCalls,
       lastTriangles: this.webXrLastTriangles,
+      lastLayerTargetPreserved: Boolean(lease) && this.webXrLastLayerTargetPreserved,
       sessionListeners: lease ? 2 : 0,
       controlsEnabled: this.controls.enabled,
       rendererPixelRatio: this.renderer.getPixelRatio(),
@@ -1668,11 +1689,13 @@ export class StageEngine {
     const wetDeck: WetDeckEnvironmentStats = {
       ...this.wetDeckEnvironmentStats,
       requested: this.renderSettings.lookWetDeck,
+      persistentTargetCount: this.environmentTarget ? 1 : 0,
       active:
+        this.environmentTarget !== null &&
         this.renderSettings.lookWetDeck &&
         this.renderTier === 'high' &&
         this.wetDeckEnvironmentStats.composition === 'wet-neutral',
-      sceneOwnsTargetTexture: this.scene.environment === this.environmentTarget.texture,
+      sceneOwnsTargetTexture: this.environmentTarget !== null && this.scene.environment === this.environmentTarget.texture,
     };
     const neonFrame: NeonFrameStats = this.neonFrame.getStats();
     const atmosphere = this.atmosphereLook.getStats();
@@ -2073,8 +2096,8 @@ export class StageEngine {
     this.clearStage();
   }
 
-  private clearStage() {
-    this.renderer.setRenderTarget(null);
+  private clearStage(preserveTarget = false) {
+    if (!preserveTarget) this.renderer.setRenderTarget(null);
     this.renderer.setClearColor(0x000000, 1);
     this.renderer.clear();
   }
@@ -2807,6 +2830,10 @@ export class StageEngine {
   }
 
   /** Read-only browser acceptance evidence; authored IDs remain in the pure resolver, not Three userData. */
+  public setCrowdPoseFrozenForTest(frozen: boolean): void {
+    this.crowdPoseFrozenForTest = frozen;
+  }
+
   public crowdDiagnostics() {
     return {
       authored: Boolean(this.currentCrowd),
@@ -3981,7 +4008,7 @@ export class StageEngine {
       }
       this.updateTourTextTexture(this.lastTourText);
       this.deckSheen?.onContextRestored(this.mats?.stageDeck);
-      this.scene.environment = this.environmentTarget.texture;
+      this.scene.environment = this.environmentTarget?.texture ?? null;
       this.neonFrame?.onContextRestored();
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();
@@ -4009,16 +4036,32 @@ export class StageEngine {
       : { beamIntensity: this.cuePreviewBeamIntensity, washIntensity: this.cuePreviewWashIntensity };
   }
 
-  /**
-   * A real WebGL context loss destroys PMREM contents even though Three.js retains the texture
-   * wrapper. Dispose that invalid target before rebuilding the same construction plan into the
-   * single StageEngine-owned environment slot, so two persistent environments never coexist.
-   */
+  private releaseLostContextBindings(): void {
+    this.clearStageEnvironment();
+    // Three recreates its GL managers on restore. Notify the old managers while their context is lost.
+    const geometries = new Set<THREE.BufferGeometry>();
+    this.scene.traverse((object) => {
+      const geometry = (object as THREE.Mesh).geometry;
+      if (geometry) geometries.add(geometry);
+      if (object instanceof THREE.InstancedMesh) {
+        // Keep the CPU instance and morph data available for upload on the next render.
+        object.dispatchEvent({ type: 'dispose' });
+        object.morphTexture?.dispose();
+      }
+    });
+    geometries.forEach(geometry => geometry.dispose());
+  }
+
+  private clearStageEnvironment(): void {
+    this.scene.environment = null;
+    this.environmentTarget?.dispose();
+    this.environmentTarget = null;
+  }
+
   private restoreStageEnvironment(wetDeckOverride?: boolean): void {
     const previousBuildCount = this.wetDeckEnvironmentStats.buildCount;
     const wetDeck = wetDeckOverride ?? this.wetDeckEnvironmentStats.composition === 'wet-neutral';
-    this.scene.environment = null;
-    this.environmentTarget.dispose();
+    this.clearStageEnvironment();
     const environment = buildStageEnvironment(this.renderer, wetDeck);
     this.environmentTarget = environment.target;
     this.wetDeckEnvironmentStats = {
@@ -4184,8 +4227,10 @@ export class StageEngine {
         if (shouldRenderScene) {
           if (renderMode === 'xr') this.renderer.render(this.scene, this.camera);
           else this.composer.render();
+        } else {
+          // Three binds the XR layer before this callback. Keep it bound for the clear-only frame.
+          this.clearStage(renderMode === 'xr');
         }
-        else this.clearStage();
       } finally {
         if (gpuStarted) this.gpuTimer?.endFrame();
       }
@@ -5206,8 +5251,9 @@ export class StageEngine {
     const prof = this.profiler;
     const crowdStart = prof ? performance.now() : 0;
     if (this.crowdBatches.length > 0) {
-      const standingBounceAmp = (s.audioReactive && audio.playing ? 0.06 + audio.bass * 0.16 : 0.045)
-        * (0.5 + previewMaster * 0.5);
+      const standingBounceAmp = this.crowdPoseFrozenForTest ? 0 :
+        (s.audioReactive && audio.playing ? 0.06 + audio.bass * 0.16 : 0.045) * (0.5 + previewMaster * 0.5);
+      const swayAmp = this.crowdPoseFrozenForTest ? 0 : 0.05;
       const bounceFreq = (s.bpm / 60) * Math.PI * 2;
       for (const batch of this.crowdBatches) {
         for (let i = 0; i < batch.transforms.length; i++) {
@@ -5215,7 +5261,7 @@ export class StageEngine {
           const seated = c.pose ? c.pose === 'seated' : this.crowdSeated;
           const bounceAmp = standingBounceAmp * (seated ? 0.12 : 1);
           const hop = Math.abs(Math.sin(t * bounceFreq * 0.5 + c.phase)) * bounceAmp;
-          const sway = Math.sin(t * 2.2 + c.phase) * 0.05;
+          const sway = Math.sin(t * 2.2 + c.phase) * swayAmp;
           setCrowdObjectMatrix(this.crowdDummy, c, hop, sway);
           batch.mesh.setMatrixAt(i, this.crowdDummy.matrix);
         }

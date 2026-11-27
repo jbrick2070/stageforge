@@ -380,6 +380,184 @@ test('v2 seated contact patches fit the model clearance at their saved anchors',
   geometry.disposeSharedMaterials(mats);
 });
 
+const seatedHumanId = 'stageforge-human-v2';
+const chairAnchors = crowd.theatreSeatAnchors(theatre);
+const supportedChair = chairAnchors.find(seat => seat.row === 8);
+const seatEntry = { id: 'a-chair', modelId: seatedHumanId, pose: 'seated', seatId: supportedChair.id, yaw: 150 };
+const floorEntry = { id: 'z-floor', modelId: seatedHumanId, pose: 'standing', yaw: 15,
+  position: { x: -1, y: 0, z: theatre.stageDepth / 2 + 1.4 } };
+const mothEntry = { ...floorEntry, id: 'm-moth', modelId: 'stageforge-moth-v1',
+  position: { ...floorEntry.position, x: 1 } };
+
+function buildSeatedFixture(t, entries) {
+  const layout = { generatorVersion: 2, seed: 249057, zones: [], exclusions: [], placements: entries };
+  const resolved = crowd.resolveCrowdLayout(theatre, layout);
+  const before = structuredClone(resolved);
+  const mats = geometry.createSharedMaterials({ tier: 'high' });
+  const venue = geometry.buildVenueArchitecture('theatre', 0, mats, theatre.stageWidth, theatre.stageDepth, theatre.stageHeight, resolved);
+  assert.deepEqual(resolved, before, 'rendering preserves original placement records and their order');
+  assert.equal(venue.crowdBatches.length, 1);
+  const [batch] = venue.crowdBatches;
+  assert.equal(venue.resourceAdmission.figureBatches, 1);
+  assert.equal(venue.resourceAdmission.submittedDraws, 4, 'one body batch and one footprint batch, in two eyes');
+  assert.deepEqual(venue.placementBindings.map(b => [b.placementId, b.modelId, b.pose, b.batchIndex, b.instanceIndex, b.phase]),
+    [...before.placements].sort((a, b) => a.id.localeCompare(b.id)).map((p, index) => [p.id, p.modelId, p.pose, 0, index, p.phase]));
+  t.after(() => {
+    const materials = new Set();
+    const shared = new Set(Object.values(mats));
+    venue.group.traverse(obj => {
+      if (obj.isInstancedMesh) obj.dispose();
+      obj.geometry?.dispose();
+      for (const material of Array.isArray(obj.material) ? obj.material : [obj.material]) {
+        if (material && !shared.has(material)) materials.add(material);
+      }
+    });
+    for (const material of materials) material.dispose();
+    geometry.disposeSharedMaterials(mats);
+  });
+  return { venue, batch };
+}
+
+function baseCrowdShader(mesh) {
+  const shader = { vertexShader: THREE.ShaderLib.standard.vertexShader,
+    fragmentShader: THREE.ShaderLib.standard.fragmentShader, uniforms: {} };
+  mesh.material.onBeforeCompile(shader);
+  return shader;
+}
+
+test('a seated human bears on the actual cushion and row, clear of the chair through a beat', t => {
+  const { venue, batch } = buildSeatedFixture(t, [seatEntry]);
+  const { mesh } = batch;
+  assert.equal(batch.packed, false);
+  assert.equal(venue.resourceAdmission.rendererTextures, 0);
+  assert.equal(mesh.geometry.index.count, 260 * 3);
+  assert.equal(mesh.geometry.hasAttribute('crowdSeatPosition'), false, 'single-pose direct needs no alternate carrier');
+  const close = (a, b) => Math.abs(a - b) < 1e-5;
+  const seats = venue.group.children.find(child =>
+    !child.isInstancedMesh && child.material?.color?.getHex() === 0x4b1a21);
+  assert.ok(seats, 'theatre chair geometry is merged by its shared material');
+  const positions = seats.geometry.getAttribute('position');
+  const boxVertices = 24;
+  assert.equal(positions.count, chairAnchors.length * 2 * boxVertices);
+  const point = new THREE.Vector3();
+  const centreOfBox = new THREE.Vector3();
+  const size = new THREE.Vector3();
+  const chairBox = (seat, height) => {
+    const box = new THREE.Box3();
+    for (let i = 0; i < positions.count; i += boxVertices) {
+      box.makeEmpty();
+      for (let corner = 0; corner < boxVertices; corner++) box.expandByPoint(point.fromBufferAttribute(positions, i + corner));
+      box.getCenter(centreOfBox);
+      if (close(box.getSize(size).y, height) && close(centreOfBox.x, seat.x) &&
+          close(centreOfBox.y, seat.y + (height === 0.1 ? 0.42 : 0.72)) &&
+          Math.abs(centreOfBox.z - seat.z) < 0.3) return box;
+    }
+    assert.fail('actual theatre chair box exists in the merged geometry');
+  };
+  const cushion = chairBox(supportedChair, 0.1);
+  const back = chairBox(supportedChair, 0.6);
+  const neighbour = chairBox(chairAnchors.find(s => s.row === supportedChair.row && s.id !== supportedChair.id), 0.1);
+  assert.ok(close(cushion.max.y, supportedChair.y + 0.47) && close(cushion.min.z, supportedChair.z - 0.11));
+  assert.ok(close(cushion.max.z, supportedChair.z + 0.18) && close(neighbour.max.z - neighbour.min.z, 0.46));
+  const interiors = [cushion, back].map(box => box.clone().expandByScalar(-0.0001));
+  const matrix = new THREE.Matrix4();
+  mesh.getMatrixAt(0, matrix);
+  const object = new THREE.Object3D();
+  geometry.setCrowdObjectMatrix(object, batch.transforms[0], 0.22, -0.05);
+  assert.ok(object.matrix.elements.every((value, i) => close(value, matrix.elements[i])), 'no hop or roll at the chair');
+  const footprint = venue.group.children.find(child => child.isInstancedMesh && child.geometry.type === 'CircleGeometry');
+  const patchMatrix = new THREE.Matrix4();
+  footprint.getMatrixAt(0, patchMatrix);
+  const patch = new THREE.Vector3().fromBufferAttribute(footprint.geometry.getAttribute('position'), 0).applyMatrix4(patchMatrix);
+  assert.ok(close(patch.x, supportedChair.x) && close(patch.y, supportedChair.y + 0.012) &&
+    close(patch.z, supportedChair.z - 0.149), 'shared footprint follows the two shoes');
+  const position = mesh.geometry.getAttribute('position'), index = mesh.geometry.index;
+  const triangle = new THREE.Triangle(), centre = new THREE.Vector3();
+  const headTurn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0),
+    mesh.geometry.getAttribute('crowdSeatTurn').getX(0));
+  let hips = 0, leftSole = 0, rightSole = 0;
+  for (let i = 0; i < index.count; i += 3) {
+    [triangle.a, triangle.b, triangle.c].forEach((point, corner) => {
+      point.fromBufferAttribute(position, index.getX(i + corner));
+      if (point.y > 0.98) point.applyQuaternion(headTurn);
+      point.applyMatrix4(matrix);
+    });
+    assert.ok(interiors.every(box => !box.intersectsTriangle(triangle)), 'whole triangles clear both chair interiors');
+    const vertices = [triangle.a, triangle.b, triangle.c];
+    assert.ok(vertices.every(point => point.y >= supportedChair.y - 1e-5));
+    triangle.getMidpoint(centre);
+    if (vertices.every(p => close(p.y, cushion.max.y)) &&
+        centre.x >= cushion.min.x && centre.x <= cushion.max.x && centre.z >= cushion.min.z && centre.z <= cushion.max.z) {
+      hips += triangle.getArea();
+    }
+    if (vertices.every(p => close(p.y, supportedChair.y))) {
+      if (centre.x < supportedChair.x) leftSole += triangle.getArea();
+      else rightSole += triangle.getArea();
+    }
+  }
+  assert.ok(hips > 0.02 && leftSole > 0.008 && rightSole > 0.008, 'positive support area in square metres');
+});
+
+test('mixed direct humans share geometry and select complete seated vertices, normals and palette regions', async t => {
+  const { venue, batch } = buildSeatedFixture(t, [floorEntry, seatEntry]);
+  assert.equal(batch.packed, false);
+  assert.equal(venue.resourceAdmission.rendererTextures, 0);
+  assert.equal(batch.mesh.count, 2);
+  assert.equal(batch.mesh.morphTexture, null);
+  const g = batch.mesh.geometry, turns = g.getAttribute('crowdSeatTurn');
+  assert.ok(Math.abs(turns.getX(0) + Math.PI / 6) < 1e-6);
+  assert.equal(turns.getX(1), 4, 'standing person retains the ordinary pose');
+  const originals = await compiler.ssrLoadModule('/src/engine/originalCrowdGeometry.ts');
+  const seated = originals.makeSeatedOriginalHumanGeometry();
+  t.after(() => seated.dispose());
+  assert.equal(g.index.count, 780);
+  for (let i = 0; i < g.index.count; i++) {
+    const source = seated.index.getX(i);
+    assert.equal(g.index.getX(i), i);
+    for (const [base, alternate] of [['position', 'crowdSeatPosition'], ['normal', 'crowdSeatNormal'], ['color', 'crowdSeatColorRegion']]) {
+      for (const get of ['getX', 'getY', 'getZ']) {
+        assert.equal(g.getAttribute(alternate)[get](i), seated.getAttribute(base)[get](source));
+      }
+    }
+    assert.equal(g.getAttribute('crowdSeatColorRegion').getW(i), seated.getAttribute('crowdColorRegion').getX(source));
+  }
+  const shader = baseCrowdShader(batch.mesh).vertexShader;
+  assert.match(shader, /crowdSeatTurn < 3\.0 \? crowdSeatPosition : position/);
+  assert.match(shader, /crowdSeatTurn < 3\.0 \? crowdSeatNormal : normal/);
+  assert.match(shader, /crowdActiveRegion = crowdSeatColorRegion\.a/);
+  assert.match(shader, /objectNormal = crowdSeatFacing/);
+  assert.match(shader, /#include <morphtarget_vertex>/);
+});
+
+test('one packed texture reuses the human slot when seated-only and appends only a second human pose', t => {
+  for (const mixed of [false, true]) {
+    const { venue, batch } = buildSeatedFixture(t, mixed ? [floorEntry, mothEntry, seatEntry] : [mothEntry, seatEntry]);
+    assert.equal(batch.packed, true);
+    assert.equal(venue.resourceAdmission.packedVertexTextures, 1);
+    assert.equal(venue.resourceAdmission.rendererTextures, 1);
+    assert.deepEqual(batch.modelIds, [seatedHumanId, mothEntry.modelId]);
+    const texture = baseCrowdShader(batch.mesh).uniforms.uPackedCrowdVertices.value;
+    const { width, height, data } = texture.image;
+    assert.equal(height, 3 * (mixed ? 3 : 2));
+    const slots = batch.mesh.geometry.getAttribute('crowdGeometrySlot');
+    const turns = batch.mesh.geometry.getAttribute('crowdSeatTurn');
+    const slotOf = id => slots.getX(batch.placementIds.indexOf('explicit:' + id));
+    assert.equal(slotOf('m-moth'), 1);
+    assert.equal(slotOf('a-chair'), mixed ? 2 : 0);
+    assert.ok(Math.abs(turns.getX(batch.placementIds.indexOf('explicit:a-chair')) + Math.PI / 6) < 1e-6);
+    const maxY = slot => {
+      let top = -Infinity;
+      for (let corner = 0; corner < width; corner++) top = Math.max(top, data[(slot * 3 * width + corner) * 4 + 1]);
+      return top;
+    };
+    assert.ok(Math.abs(maxY(slotOf('a-chair')) - 1.328623) < 1e-5, 'slot contains the seated source');
+    if (mixed) {
+      assert.equal(slotOf('z-floor'), 0);
+      assert.ok(Math.abs(maxY(0) - 1.773623) < 1e-5, 'standing source survives alongside the chair pose');
+    }
+  }
+});
+
 test('v12 preserves original model choices in saved JSON and an offline Pitch Viewer bundle', async () => {
   const layout = crowd.withCrowdModelMix(crowd.makeDefaultCrowd(arena), 'original-library');
   assert.equal(crowd.crowdModelMix(layout), 'original-library');

@@ -55,6 +55,125 @@ export function makeOriginalHumanGeometry(): THREE.BufferGeometry {
   });
 }
 
+/** Chair geometry and seated-source measurements in metres at unit scale. */
+export const seatedHumanSupport = Object.freeze({
+  cushionDepth: 0.29,
+  cushionCentreFromRowZ: 0.085,
+  height: 1.175 + 0.154 * Math.cos(0.07),
+  radius: Math.hypot(0.113, 0.205),
+  headJointY: 0.98,
+});
+
+// Three closed contour rings, joined along the hip, knee and ankle. Five faces
+// across each of two spans make 20 triangles. Top and bottom terminate inside
+// the capped torso and shoe. Sharing the bend ring leaves no open knee seam.
+function bentTrouserLeg(side: -1 | 1): THREE.BufferGeometry {
+  const rings = [
+    { x: 0.069, y: 0.530, z: -0.022, rx: 0.056, ry: 0.059, rz: 0 },
+    { x: 0.070, y: 0.509, z:  0.172, rx: 0.043, ry: 0.030, rz: 0.030 },
+    { x: 0.073, y: 0.054, z:  0.160, rx: 0.035, ry: 0,     rz: 0.032 },
+  ];
+  const sides = 5;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  for (const [row, ring] of rings.entries()) {
+    for (let i = 0; i < sides; i++) {
+      const angle = (i / sides) * Math.PI * 2;
+      const cos = Math.cos(angle);
+      positions.push(
+        side * ring.x + ring.rx * Math.sin(angle),
+        ring.y + ring.ry * cos,
+        ring.z + ring.rz * cos,
+      );
+      uvs.push(i / sides, row / (rings.length - 1));
+      if (row === rings.length - 1) continue;
+      const a = row * sides + i;
+      const d = row * sides + (i + 1) % sides;
+      const b = a + sides;
+      const c = d + sides;
+      indices.push(a, b, d, b, c, d);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function lapSleeve(side: -1 | 1): THREE.BufferGeometry {
+  const shoulder = new THREE.Vector3(side * 0.142, 0.900, -0.012);
+  const wrist = new THREE.Vector3(side * 0.146, 0.610, 0.082);
+  const axis = shoulder.clone().sub(wrist);
+  const sleeve = new THREE.CylinderGeometry(0.052, 0.038, axis.length(), 5, 1, true);
+  const orientation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.normalize());
+  const centre = shoulder.add(wrist).multiplyScalar(0.5);
+  return sleeve.applyQuaternion(orientation).translate(centre.x, centre.y, centre.z);
+}
+
+/** Only for authored generator v2, model stageforge-human-v2, pose seated. */
+export function makeSeatedOriginalHumanGeometry(): THREE.BufferGeometry {
+  return makeFigure(add => {
+    // Bottom cap bears directly on the cushion. The 6-sided torso and 4-sided
+    // nose preserve the garment and skin colors and pay for the bent legs.
+    add(new THREE.CylinderGeometry(0.162, 0.143, 0.48, 6)
+      .scale(1, 1, 0.70).translate(0, 0.710, -0.025), 0xdadada, CLOTHING_COLOR);
+    add(new THREE.CylinderGeometry(0.061, 0.068, 0.12, 5, 1, true)
+      .translate(0, 0.993, -0.018), 0xf2f2f2, SKIN_COLOR);
+    add(new THREE.SphereGeometry(0.13, 8, 5)
+      .scale(0.85, 1.15, 0.95).translate(0, 1.145, -0.008), 0xf2f2f2, SKIN_COLOR);
+    const hair = new THREE.SphereGeometry(0.14, 6, 4, 0, Math.PI * 2, 0, Math.PI * 0.55);
+    add(hair.scale(0.92, 1.10, 1.02).rotateZ(-0.07).translate(0, 1.175, -0.028), 0x332923);
+    add(new THREE.ConeGeometry(0.028, 0.058, 4)
+      .scale(0.72, 1, 0.96).rotateX(Math.PI / 2).translate(0, 1.135, 0.118), 0xbfbfbf, SKIN_COLOR);
+
+    for (const side of [-1, 1] as const) {
+      add(new THREE.PlaneGeometry(0.027, 0.012)
+        .rotateY(side * 0.28).translate(side * 0.048, 1.170, 0.112), 0x28262a);
+      add(lapSleeve(side), 0xc8c8c8, CLOTHING_COLOR);
+      add(new THREE.BoxGeometry(0.045, 0.080, 0.035)
+        .rotateX(-0.30).translate(side * 0.146, 0.598, 0.085), 0xeaeaea, SKIN_COLOR);
+      add(bentTrouserLeg(side), 0xa8a8a8, CLOTHING_COLOR);
+      add(new THREE.BoxGeometry(0.080, 0.078, 0.112)
+        .translate(side * 0.073, 0.039, 0.149), 0x33373a);
+    }
+  });
+}
+
+/** Both indexed poses consume 260 triangles but use different vertex layouts. */
+export function makeMixedHumanGeometry(standing: THREE.BufferGeometry, seated: THREE.BufferGeometry) {
+  const count = standing.getIndex()?.count;
+  if (!count || seated.getIndex()?.count !== count) throw new Error('Human pose triangle counts differ.');
+  const base = standing.toNonIndexed();
+  try {
+    const alternate = seated.toNonIndexed();
+    try {
+      base.setIndex(new THREE.BufferAttribute(Uint16Array.from({ length: count }, (_, i) => i), 1));
+      base.setAttribute('crowdSeatPosition', alternate.getAttribute('position'));
+      base.setAttribute('crowdSeatNormal', alternate.getAttribute('normal'));
+      const color = alternate.getAttribute('color');
+      const region = alternate.getAttribute('crowdColorRegion');
+      const values = new Float32Array(count * 4);
+      for (let i = 0; i < count; i++) {
+        values[i * 4] = color.getX(i);
+        values[i * 4 + 1] = color.getY(i);
+        values[i * 4 + 2] = color.getZ(i);
+        values[i * 4 + 3] = region.getX(i);
+      }
+      base.setAttribute('crowdSeatColorRegion', new THREE.BufferAttribute(values, 4));
+      return base;
+    } finally {
+      // Only the carrier is rendered. It retains the selected alternate attributes.
+      alternate.dispose();
+    }
+  } catch (error) {
+    base.dispose();
+    throw error;
+  }
+}
+
 /** Original foxlike stage-goer with a fixed coat, vest and broad tail silhouette. */
 export function makeOriginalFoxGeometry(): THREE.BufferGeometry {
   return makeFigure(add => {
