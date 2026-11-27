@@ -369,6 +369,43 @@ describe('Realism 7: MegaPointe six-facet linear prism', () => {
     assert.equal(pools.group.children[0].material.uniforms.uPrismSuppressed.value, 1);
     pools.dispose();
   });
+
+  it('keeps low-tier overlap suppression on context refill until the lower threshold', () => {
+    const { beam } = buildStageBeamHierarchy({ y: 9 });
+    const optics = fixtureOpticsMod.fixtureOptics('beam');
+    const color = new THREE.Color('white');
+    const makePools = (restoreFrom) => new beamPoolsMod.BeamPools(38, 22, 11, 1.8, undefined, {
+      prism: true, tier: 'low', restoreFrom,
+    });
+    const frame = (pools, count, suppressed) => {
+      pools.begin();
+      for (let i = 0; i < count; i++) {
+        pools.add(beam, 'beam', false, color, 1, optics, 1, 0.75, undefined, prismMod.SIX_FACET_LINEAR_PRISM);
+      }
+      pools.finish();
+      const stats = pools.getStats();
+      assert.equal(stats.maxReceiverPrismInstances, count);
+      assert.equal(stats.suppressedReason, suppressed ? 'low-tier-overlap' : null);
+      assert.equal(stats.active, !suppressed);
+      for (const receiver of pools.group.children) {
+        assert.equal(receiver.material.uniforms.uPrismSuppressed.value, suppressed ? 1 : 0);
+      }
+    };
+
+    const initial = makePools();
+    frame(initial, 37, true);
+    frame(initial, 30, true);
+    initial.dispose();
+
+    const restored = makePools(initial);
+    frame(restored, 30, true);
+    frame(restored, 28, false);
+    restored.dispose();
+
+    const fresh = makePools();
+    frame(fresh, 30, false);
+    fresh.dispose();
+  });
 });
 
 describe('Sprint 16: BeamPools flag-off parity, <0.1 MiB cap, upload bytes, low-tier guard & preview flash limiter', () => {

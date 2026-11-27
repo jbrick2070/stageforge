@@ -206,6 +206,8 @@ export interface BeamPoolsOptions {
   tier?: RenderTier;
   /** True when fragment derivatives (`dFdx`/`dFdy`) are available on the active GL context (default true). */
   derivativesSupported?: boolean;
+  /** Prior pool for the same rig on WebGL context restore. Its overlap latch seeds the next refill. */
+  restoreFrom?: BeamPools;
 }
 
 export type PrismSuppressionReason =
@@ -441,6 +443,9 @@ export class BeamPools {
     const admitted = this.prismRequested && this.derivativesSupported && canAdmitPrismBuffers(capacity, receiverCount);
     this.prismAllocated = admitted;
     this.extraBufferBytes = admitted ? prismExtraBufferBytes(capacity, receiverCount) : 0;
+    const prior = options?.restoreFrom;
+    this.prismOverlapSuppressed = Boolean(admitted && prior?.prismAllocated && prior.tier === this.tier &&
+      prior.capacity === capacity && prior.receivers.length === receiverCount && prior.prismOverlapSuppressed);
 
     this.receivers = platforms.map((platform, index) => {
       // A coplanar overlap belongs to the first module. Higher modules can

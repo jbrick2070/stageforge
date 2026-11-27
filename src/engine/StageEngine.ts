@@ -765,7 +765,7 @@ export class StageEngine {
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();
       this.bakedIlda?.onContextRestored();
-      if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
+      if (this.currentRig && this.beamPools) this.rebuildBeamPools(true, this.beamPools);
       this.onContextLossChange?.(false);
       if (!this.disposed && !this.webXrLease && this.rafId === null) this.startLoop();
     };
@@ -1119,7 +1119,7 @@ export class StageEngine {
    * When `refill` is true (e.g. toggling `prismPools` at a frozen frame), synchronously
    * repopulates pool instances from the committed fixture state without advancing simulation time.
    */
-  private rebuildBeamPools(refill: boolean) {
+  private rebuildBeamPools(refill: boolean, restoreFrom?: BeamPools) {
     this.beamPools?.dispose();
     const rig = this.currentRig;
     if (!rig) return;
@@ -1137,6 +1137,7 @@ export class StageEngine {
         prism: this.renderSettings.prismPools,
         tier: this.renderTier,
         derivativesSupported,
+        restoreFrom,
       },
     );
     this.scene.add(this.beamPools.group);
@@ -4070,7 +4071,7 @@ export class StageEngine {
       this.crowdLighting?.onContextRestored();
       this.particles?.onContextRestored();
       this.bakedIlda?.onContextRestored();
-      if (this.currentRig && this.beamPools) this.rebuildBeamPools(true);
+      if (this.currentRig && this.beamPools) this.rebuildBeamPools(true, this.beamPools);
       this.onContextLossChange?.(false);
       if (!this.disposed && !this.webXrLease && this.rafId === null) this.startLoop();
     }
