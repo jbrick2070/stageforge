@@ -94,6 +94,7 @@ import { encodeLaserDmxChannels, ildaScanTangents, LASER_ILDA_ROLL_SCALE, LASER_
 import { flickerIntensityMultiplier, laserRefreshHz } from '../data/laserScan';
 import { DEFAULT_LASER_COLORS, DEFAULT_LASER_RESOLUTION, laserProjectorKey } from '../data/laserProjectors';
 import { BeamPools, type BeamPoolsStats } from './beamPools';
+import { applyPreviewDimmerCurve, usesSquareLawPreviewDimmer } from './fixtureDimmer';
 import { prismPhase, resolvePrismTopology, type PrismTopology } from './prismPattern';
 import {
   aerialGain, beamZoomScale, createCalibratedFrustum, evaluateCalibratedZoom, resolveMovingFixtureOptics,
@@ -211,6 +212,7 @@ interface MovingFixtureInstance {
   optics: ReturnType<typeof resolveMovingFixtureOptics>['optics'];
   frustum?: CalibratedFrustum;
   prismTopology: PrismTopology;
+  squareLawPreviewDimmer: boolean;
   lensOffsetY: number;
   appliedDimmer: number;
   lastZoomScale: number;
@@ -1826,8 +1828,9 @@ export class StageEngine {
    * Deterministic presentation-step + post-bloom luminance readback hook (`?probe` only).
    * Advances simulation by `dtMs`, renders synchronously through the full output chain,
    * and returns an 8×8 WCAG luminance/red grid alongside current physical DMX bytes.
+   * The development probe can supply a deterministic audio frame to the same scene evaluator.
    */
-  public stepAndReadLuminance(dtMs: number): {
+  public stepAndReadLuminance(dtMs: number, audioFrame?: AudioMetrics): {
     elapsedMs: number;
     grid: FrameLuminanceGrid;
     previewFlashLimiting: boolean;
@@ -1838,7 +1841,7 @@ export class StageEngine {
     const safeDtMs = Math.max(1, Math.min(250, Number.isFinite(dtMs) ? dtMs : 16.667));
     const dt = safeDtMs / 1000;
     this.elapsed += dt;
-    const audio = this.audioGetter(dt);
+    const audio = audioFrame ?? this.audioGetter(dt);
     this.renderer.info.reset();
     if (this.updateScene(dt, audio, dt)) this.composer.render(0);
     else this.clearStage();
@@ -2414,6 +2417,18 @@ export class StageEngine {
       topology: Number(fx.beamMat.uniforms.uPrismTopology.value),
       mix: Number(fx.beamMat.uniforms.uPrism.value),
       phase: prismPhase(Number(fx.beamMat.uniforms.uTime.value), Number(fx.beamMat.uniforms.uSeed.value)),
+    }));
+  }
+
+  public beamLevelsForTest() {
+    return this.movingFixtures.map((fx) => ({
+      unitId: fx.unitId,
+      squareLaw: fx.squareLawPreviewDimmer,
+      preview: fx.lastPreviewIntensity,
+      aerial: Number(fx.beamMat.uniforms.uIntensity.value),
+      pool: fx.lastPoolIntensity,
+      lens: fx.lensMat.color.toArray(),
+      visible: fx.beamMesh.visible,
     }));
   }
 
@@ -3705,6 +3720,7 @@ export class StageEngine {
       optics,
       frustum,
       prismTopology,
+      squareLawPreviewDimmer: usesSquareLawPreviewDimmer(hardwareType, catalogId),
       lensOffsetY: parts.lensOffsetY,
       appliedDimmer: 0,
       lastZoomScale: 1,
@@ -4771,8 +4787,9 @@ export class StageEngine {
       const previewDimmer = manualMix < 1 ? THREE.MathUtils.lerp(fx.directedDimmer, previewBaseInt, manualMix) : previewBaseInt;
       this.atmosphereLook.addFixture(tempCol.r, tempCol.g, tempCol.b, dimmer, master);
       const finalInt = Math.min(1.6, dimmer * master * groupStrobeGate * (1.0 + audioBoost * 0.48)) * composedBrightScale;
+      const previewLevel = applyPreviewDimmerCurve(previewDimmer * previewMaster, fx.squareLawPreviewDimmer);
       const rawPreviewFinalInt =
-        Math.min(1.6, previewDimmer * previewMaster * previewGroupStrobeGate * (1.0 + audioBoost * 0.48)) *
+        Math.min(1.6, previewLevel * previewGroupStrobeGate * (1.0 + audioBoost * 0.48)) *
         (previewLimited ? composedBrightScale : 1);
       const previewFinalInt = stepPreviewFixtureUnit(
         this.previewFlashState,

@@ -2029,6 +2029,7 @@ export const App: React.FC = () => {
       beamAxes: () => engine.beamAxes(),
       beamFrusta: () => engine.beamFrustaForTest(),
       beamPrisms: () => engine.beamPrismsForTest(),
+      beamLevels: () => engine.beamLevelsForTest(),
       poolFrusta: () => engine.poolFrustaForTest(),
       measureSnapshot: () => engine.getMeasureSnapshot(false),
       preflightReport: () => preflightRef.current,
@@ -2072,7 +2073,9 @@ export const App: React.FC = () => {
         engine.setFullRateStrobePreview(eff);
       },
       resetParticles: (seed?: number) => engine.resetParticles(seed),
-      stepAndReadLuminance: (dtMs: number) => engine.stepAndReadLuminance(dtMs),
+      stepAndReadLuminance: (dtMs: number, audioFrame?: AudioMetrics) => import.meta.env.DEV
+        ? engine.stepAndReadLuminance(dtMs, audioFrame)
+        : engine.stepAndReadLuminance(dtMs),
       patchShowState: (patch: Partial<ShowState>) => {
         const prev = showStateRef.current;
         const next: ShowState = {

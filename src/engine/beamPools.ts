@@ -598,12 +598,13 @@ export class BeamPools {
   /** Active GPU instance inputs for the latest tick or restoration refill. */
   frustaForTest() {
     return this.receivers.flatMap(({ mesh, surfaceY }) => {
-      const { lens, axis, optics, bounds, prismU, prismV } = mesh.geometry.attributes;
+      const { lens, axis, optics, bounds, tint, prismU, prismV } = mesh.geometry.attributes;
       return Array.from({ length: mesh.geometry.instanceCount }, (_, i) => ({
         surfaceY,
         lens: [lens.getX(i), lens.getY(i), lens.getZ(i)],
         axis: [axis.getX(i), axis.getY(i), axis.getZ(i)],
         optics: [optics.getX(i), optics.getY(i), optics.getZ(i)],
+        tint: [tint.getX(i), tint.getY(i), tint.getZ(i)],
         bounds: [bounds.getX(i), bounds.getY(i), bounds.getZ(i), bounds.getW(i)],
         ...(prismU && prismV && { prism: { phase: prismU.getW(i), signedMix: prismV.getW(i) } }),
       }));

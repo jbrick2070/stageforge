@@ -9,6 +9,7 @@ const {
   fixtureOptics, aerialGain, resolveMovingFixtureOptics, resolveCalibratedZoom,
   createCalibratedFrustum, evaluateCalibratedZoom,
 } = await compiler.ssrLoadModule('/src/data/fixtureOptics.ts');
+const { applyPreviewDimmerCurve, usesSquareLawPreviewDimmer } = await compiler.ssrLoadModule('/src/engine/fixtureDimmer.ts');
 
 test('opted-in aerial beams conserve relative luminous flux through zoom while legacy beams keep their exposure', () => {
   for (const angle of [0.1, 4, 35.3, 179]) {
@@ -78,4 +79,21 @@ test('calibrated finite frustum changes slope monotonically around a fixed apert
     const dark = resolveMovingFixtureOptics({ type, catalogId, optics: { lumens: 0 } });
     assert.equal(evaluateCalibratedZoom(dark.calibration, dark.optics, 0.5, createCalibratedFrustum(dark.optics, nearRadius)).gain, 0);
   }
+});
+
+test('only explicitly catalogued MegaPointe beam types use the normalized square-law preview response', () => {
+  assert.equal(usesSquareLawPreviewDimmer('beam', 'robe-megapointe'), true);
+  assert.equal(usesSquareLawPreviewDimmer('floor_beam', 'robe-megapointe'), true);
+  assert.equal(usesSquareLawPreviewDimmer('wash', 'robe-megapointe'), false);
+  assert.equal(usesSquareLawPreviewDimmer('wash', 'chauvet-rogue-r1-beamwash'), false);
+  assert.equal(usesSquareLawPreviewDimmer('beam', 'claypaky-sharpy'), false);
+  assert.equal(usesSquareLawPreviewDimmer('floor_beam'), false);
+  assert.equal(usesSquareLawPreviewDimmer('beam', 'MegaPointe'), false);
+
+  const levels = [0, 0.25, 0.5, 0.75, 1];
+  assert.deepEqual(levels.map((x) => applyPreviewDimmerCurve(x, true)), [0, 0.0625, 0.25, 0.5625, 1]);
+  assert.deepEqual(levels.map((x) => applyPreviewDimmerCurve(x, false)), levels);
+  assert.equal(applyPreviewDimmerCurve(0.999, true), 0.999 * 0.999);
+  assert.equal(applyPreviewDimmerCurve(1.001, true), 1.001);
+  assert.equal(applyPreviewDimmerCurve(1.6, true), 1.6);
 });

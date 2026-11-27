@@ -452,3 +452,287 @@ test('Realism 7 MegaPointe linear prism agrees in aerial, receiver and restored 
   });
   expect(reopened).toEqual({ linear: 4, beams: 0, pools: 0 });
 });
+
+function dimmerRehearsal() {
+  const file = rehearsal();
+  const fixtures = file.rig.trussPods[0].fixtures;
+  Object.assign(fixtures.find(({ id }) => id === 'robe'), { dmxMode: 'Mode 1 (Standard 16-bit)', dmxChannels: 39 });
+  fixtures.find(({ id }) => id === 'generic').modelName = 'Robe MegaPointe';
+  Object.assign(file.look, { masterDimmer: 1, beamZoom: 1, beamIntensity: 1, washIntensity: 0.65 });
+  return file;
+}
+
+// Baseline-compatible: only established probe methods and legal show settings are used here.
+test('Realism 7 deterministic six-buffer dimmer DMX observation', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  await freeze(page);
+  await openRehearsal(page, dimmerRehearsal());
+  const ticks = [];
+  const tick = async (name, beamIntensity, masterDimmer, blackout = false) => {
+    const buffers = await page.evaluate(({ beamIntensity, masterDimmer, blackout }) => {
+      const p = window.stageforgeProbe;
+      p.patchShowState({ beamIntensity, masterDimmer, blackout });
+      for (let i = 0; i < 3; i++) p.stepAndReadLuminance(200);
+      return { simulated: p.dmxSnapshot(), physical: p.physicalDmxSnapshot(), serial: p.serialDmxSnapshot() };
+    }, { beamIntensity, masterDimmer, blackout });
+    for (const output of Object.values(buffers)) {
+      expect(output.u1).toHaveLength(512);
+      expect(output.u2).toHaveLength(512);
+    }
+    const byte = Math.round((blackout ? 0 : beamIntensity * masterDimmer) * 255);
+    expect(buffers.simulated.u1[2]).toBe(byte);
+    expect(buffers.simulated.u1[41]).toBe(byte);
+    expect(buffers.simulated.u2[121]).toBe(byte);
+    for (const output of [buffers.physical, buffers.serial]) {
+      if (blackout || masterDimmer === 0) {
+        expect(output.u1.every((x) => x === 0)).toBe(true);
+        expect(output.u2.every((x) => x === 0)).toBe(true);
+      } else {
+        expect(output.u1.slice(179, 182).every((x) => x > 0)).toBe(true);
+        expect(output.u2.slice(169, 172).every((x) => x > 0)).toBe(true);
+      }
+    }
+    ticks.push({ name, ...buffers });
+  };
+  for (const level of [0, 0.25, 0.5, 0.75, 1]) await tick(`dimmer-${level}`, level, 1);
+  await tick('half-master', 1, 0.5);
+  await tick('zero-master', 1, 0);
+  await tick('blackout', 1, 1, true);
+  await tick('restore', 1, 1);
+  await info.attach('realism7-dmx-bytes', { body: Buffer.from(JSON.stringify(ticks)), contentType: 'application/json' });
+});
+
+async function openDimmerPreview(page) {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.clock.install();
+  await page.goto('/?probe');
+  const file = dimmerRehearsal();
+  file.look.focusMarkId = 'platform:main-deck';
+  await openRehearsal(page, file);
+  await page.evaluate(() => {
+    const p = window.stageforgeProbe;
+    p.setCameraPose([0, 5.4, 14], [0, 4, 0]);
+    p.setRenderSettings({ bloom: 'off', litPuffs: false });
+    p.setFullRateStrobePreview(true);
+  });
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.beamAxes().filter((beam) => beam.optics.emitted > 0.001).length)).toBe(9);
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+  return file;
+}
+
+test('Realism 7 MegaPointe square-law preview reaches aerial, lens and receiver without changing Measure intent', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  const file = await openDimmerPreview(page);
+  const read = (level, master = 1) => page.evaluate(async ({ level, master, look }) => {
+    const { evaluateStaticHeadMeasures } = await import('/src/data/measure.ts');
+    const p = window.stageforgeProbe;
+    const patch = { beamIntensity: level, washIntensity: level, masterDimmer: master };
+    p.patchShowState(patch);
+    p.stepAndReadLuminance(200);
+    return { levels: p.beamLevels(), units: p.measureSnapshot().units, pools: p.poolFrusta(),
+      cold: evaluateStaticHeadMeasures(p.rig(), { ...look, ...patch }) };
+  }, { level, master, look: file.look });
+  const catalogued = ['robe', 'robe-floor', 'authored'];
+  const poolAt = (pools, { x, y, z }) => pools.find(({ lens }) => Math.hypot(lens[0] - x, lens[1] - y, lens[2] - z) < 1e-5);
+  const full = await read(1);
+  for (const level of [0, 0.25, 0.5, 0.75, 1]) {
+    const frame = await read(level);
+    for (const unit of frame.units) {
+      const isMegaPointe = catalogued.includes(unit.groupId);
+      const expected = isMegaPointe ? level ** 2 : level;
+      const actual = frame.levels.find(({ unitId }) => unitId === unit.unitId);
+      const reference = full.levels.find(({ unitId }) => unitId === unit.unitId);
+      expect(actual.squareLaw).toBe(isMegaPointe);
+      expect(actual.preview).toBeCloseTo(expected, 8);
+      expect(actual.aerial).toBeCloseTo(reference.aerial * expected, 7);
+      expect(actual.pool).toBeCloseTo(reference.pool * expected, 7);
+      for (const [i, channel] of actual.lens.entries()) expect(channel).toBeCloseTo(reference.lens[i] * expected, 7);
+      const received = poolAt(frame.pools, unit.lensOrigin);
+      const referencePool = poolAt(full.pools, unit.lensOrigin);
+      if (level === 0) {
+        expect(actual.visible).toBe(false);
+        expect(received).toBeUndefined();
+      } else if (unit.type === 'beam') {
+        expect(received).toBeDefined();
+        for (const [i, channel] of received.tint.entries()) expect(channel).toBeCloseTo(referencePool.tint[i] * expected, 6);
+      }
+      if (isMegaPointe) {
+        const cold = frame.cold.find(({ unitId }) => unitId === unit.unitId);
+        const fullLive = full.units.find(({ unitId }) => unitId === unit.unitId);
+        const fullCold = full.cold.find(({ unitId }) => unitId === unit.unitId);
+        expect(unit.luxLiveEst).toBeCloseTo(unit.luxFullEst * level, 6);
+        expect(cold.luxLiveEst).toBeCloseTo(cold.luxFullEst * level, 6);
+        expect(unit.warnings).toEqual(fullLive.warnings);
+        expect(cold.warnings).toEqual(fullCold.warnings);
+        // The saved optical override keeps its legacy lens estimate in cold Measure.
+        if (unit.groupId !== 'authored') {
+          expect(unit.luxLiveEst).toBeCloseTo(cold.luxLiveEst, 6);
+          expect(unit.warnings).toEqual(cold.warnings);
+        }
+      }
+    }
+  }
+  const halfDimmer = await read(0.5);
+  const halfMaster = await read(1, 0.5);
+  expect(halfMaster.levels).toEqual(halfDimmer.levels);
+  expect(halfMaster.pools).toEqual(halfDimmer.pools);
+  const zeroMaster = await read(1, 0);
+  expect(zeroMaster.levels.every(({ preview, visible }) => preview === 0 && !visible)).toBe(true);
+  expect(zeroMaster.pools).toEqual([]);
+
+  const pixels = await page.evaluate(async () => {
+    const p = window.stageforgeProbe;
+    const decode = async (source) => {
+      const image = new Image();
+      image.src = source;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(image, 0, 0);
+      return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    };
+    const captures = [];
+    for (const level of [0.5, 1]) {
+      p.patchShowState({ masterDimmer: 1, beamIntensity: level, washIntensity: level });
+      p.stepAndReadLuminance(200);
+      p.setBatching(true);
+      const batched = p.redrawAndCapture();
+      const on = p.renderStats();
+      const hidden = p.redrawAndCapture({ hideBeams: true });
+      p.setBatching(false);
+      const ordinary = p.redrawAndCapture();
+      p.setBatching(true);
+      const [a, b, c] = await Promise.all([batched, hidden, ordinary].map(decode));
+      const diff = (x, y) => x.reduce((sum, value, i) => sum + Math.abs(value - y[i]), 0) / (x.length * 255);
+      captures.push({ level, batched, on, signal: diff(a, b), parity: diff(a, c) });
+    }
+    return captures;
+  });
+  for (const { level, batched, on, signal, parity } of pixels) {
+    await info.attach(`square-law-${level}`, { body: Buffer.from(batched.split(',')[1], 'base64'), contentType: 'image/png' });
+    expect(signal).toBeGreaterThan(0.0001);
+    expect(parity).toBeLessThan(signal * 0.15);
+    expect(on.batching.proxied).toBe(6);
+    expect(on.batching.released).toBe(0);
+  }
+  expect(pixels[0].on.calls).toBe(pixels[1].on.calls);
+  expect(pixels[0].on.textures).toBe(pixels[1].on.textures);
+
+  const cache = await page.evaluate(() => {
+    const p = window.stageforgeProbe;
+    const restore = () => {
+      p.simulateContextLoss(true);
+      p.simulateContextLoss(false);
+      return p.poolFrusta();
+    };
+    const before = p.poolFrusta();
+    p.setRenderSettings({ prismPools: true });
+    const rebuilt = p.poolFrusta();
+    const after = restore();
+    p.patchShowState({ beamIntensity: 0.01, washIntensity: 0 });
+    p.stepAndReadLuminance(200);
+    const lowLevels = p.beamLevels().filter(({ squareLaw }) => squareLaw);
+    const lowPools = p.poolFrusta();
+    const lowRestored = restore();
+    p.patchShowState({ beamIntensity: 1, washIntensity: 1, blackout: true });
+    p.stepAndReadLuminance(200);
+    const dark = p.beamLevels();
+    const darkPools = restore();
+    return { before, rebuilt, after, lowLevels, lowPools, lowRestored, dark, darkPools };
+  });
+  expect(cache.rebuilt.map(({ prism, ...entry }) => entry)).toEqual(cache.before);
+  expect(cache.after).toEqual(cache.rebuilt);
+  expect(cache.lowLevels).toHaveLength(4);
+  for (const unit of cache.lowLevels) {
+    expect(unit.preview).toBeCloseTo(0.0001, 8);
+    expect(unit.visible).toBe(false);
+    expect(unit.pool).toBeLessThan(0.001);
+  }
+  expect(cache.lowPools).toHaveLength(1);
+  expect(cache.lowRestored).toEqual(cache.lowPools);
+  expect(cache.dark.every(({ preview, aerial, pool, lens, visible }) =>
+    preview === 0 && aerial === 0 && pool === 0 && lens.every((x) => x === 0) && !visible)).toBe(true);
+  expect(cache.darkPools).toEqual([]);
+});
+
+test('Realism 7 MegaPointe square-law preview keeps mapped audio, demo and flash composition in order', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1000, height: 700 });
+  await openDimmerPreview(page);
+  const effects = await page.evaluate(async () => {
+    const { getDemoPosition } = await import('/src/data/demoShow.ts');
+    const p = window.stageforgeProbe;
+    const audio = { playing: true, source: 'synth', trackName: 'Deterministic audio frame', energy: 1, bass: 1,
+      mid: 0, high: 0, beat: true, beatPulse: 1, drop: false, spectrum: new Float32Array(32) };
+    const id = p.measureSnapshot().units.find(({ groupId }) => groupId === 'robe').unitId;
+    const preview = () => p.beamLevels().find(({ unitId }) => unitId === id).preview;
+    const level = () => p.fixtureParams().beam.dimmer;
+    p.patchShowState({ beamIntensity: 0.5, audioReactive: false, movingGroups: { beam: { primaryColor: '#00ffff' } } });
+    p.stepAndReadLuminance(200);
+    const addressed = { level: preview(), color: p.beamAxes()[p.measureSnapshot().units.findIndex(({ unitId }) => unitId === id)].rgb };
+    p.patchShowState({ audioReactive: true, audioMap: { mappings: [] } });
+    p.stepAndReadLuminance(200, audio);
+    const amplified = { preview: preview(), boost: p.fixtureParams().legacyBoost };
+
+    const strobePeak = (beamIntensity) => {
+      p.patchShowState({ beamIntensity, strobeRate: 0.2 });
+      let max = 0;
+      for (let i = 0; i < 16; i++) {
+        p.stepAndReadLuminance(16, audio);
+        max = Math.max(max, preview());
+      }
+      return max;
+    };
+    const halfStrobe = strobePeak(0.5);
+    const fullStrobe = strobePeak(1);
+    p.patchShowState({ beamIntensity: 0.25, strobeRate: 0, audioMap: { mappings: [{
+      id: 'test-energy', name: 'Energy', enabled: true, source: 'energy', target: { group: 'beam', param: 'dimmer' },
+      amount: 0.25, attackMs: 10, releaseMs: 10, threshold: 0, curve: 'linear',
+    }] } });
+    p.stepAndReadLuminance(220, audio);
+    p.stepAndReadLuminance(220, audio);
+    const mapped = { command: level(), preview: preview(), active: p.audioModulation().active, boost: p.fixtureParams().legacyBoost };
+    p.patchShowState({ beamIntensity: 0.05, audioReactive: false, autoDirector: true });
+    p.stepAndReadLuminance(200, { ...audio, demo: getDemoPosition(192) });
+    const directed = { command: level(), preview: preview() };
+
+    p.setFullRateStrobePreview(false);
+    p.setRenderSettings({ reducedEffects: true });
+    p.patchShowState({ autoDirector: false, beamIntensity: 0.7 });
+    for (let i = 0; i < 6; i++) p.stepAndReadLuminance(250);
+    const reducedSteady = preview();
+    const rises = [];
+    let limited = false;
+    let prev = preview();
+    for (let i = 0; i < 40; i++) {
+      p.patchShowState({ beamIntensity: i % 2 === 0 ? 1 : 0.7 });
+      const frame = p.stepAndReadLuminance(50);
+      const next = preview();
+      if (next - prev > 0.1) rises.push(frame.elapsedMs);
+      prev = next;
+      limited ||= frame.previewFlashLimiting;
+    }
+    return { addressed, amplified, halfStrobe, fullStrobe, mapped, directed, reducedSteady, limited, rises };
+  });
+  expect(effects.addressed.color).toBe('00ffff');
+  expect(effects.addressed.level).toBeCloseTo(0.25, 8);
+  expect(effects.amplified.boost).toBeCloseTo(0.8, 8);
+  const gain = 1 + 0.48 * effects.amplified.boost;
+  expect(effects.amplified.preview).toBeCloseTo(0.25 * gain, 8);
+  expect(effects.halfStrobe).toBeCloseTo(0.25 * 1.35 * gain, 8);
+  expect(effects.fullStrobe).toBeCloseTo(1.6, 8);
+  expect(effects.mapped.active).toBe(true);
+  expect(effects.mapped.boost).toBe(0);
+  expect(effects.mapped.command).toBeCloseTo(0.5, 7);
+  expect(effects.mapped.preview).toBeCloseTo(effects.mapped.command ** 2, 7);
+  expect(effects.directed.command).toBeGreaterThan(0.3);
+  expect(effects.directed.preview).toBeCloseTo(effects.directed.command ** 2, 7);
+  expect(effects.reducedSteady).toBeCloseTo(0.49, 7);
+  expect(effects.limited).toBe(true);
+  expect(effects.rises.length).toBeGreaterThan(0);
+  for (const rise of effects.rises) {
+    expect(effects.rises.filter((time) => time >= rise && time < rise + 1000).length).toBeLessThanOrEqual(3);
+  }
+});
