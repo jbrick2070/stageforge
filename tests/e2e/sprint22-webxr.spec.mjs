@@ -558,7 +558,10 @@ test('the packed monochrome crowd keeps all render budgets and survives context 
       return context.getImageData(0, 0, canvas.width, canvas.height);
     };
     for (const id of ['stageforge-moth-v1', 'stageforge-ticket-taker-v1']) {
-      const person = transforms.filter(item => item.modelId === id).sort((a, b) => a.z - b.z || Math.abs(a.x) - Math.abs(b.x))[0];
+      const people = transforms.filter(item => item.modelId === id).sort((a, b) => a.z - b.z || Math.abs(a.x) - Math.abs(b.x));
+      // Frame a central floor row beyond the rail. The foremost side slot can be hidden by the stage structure.
+      const person = people.find(item => item.z > people[0].z + 5 && Math.abs(item.x) < 7);
+      if (!person) throw new Error(`No unobstructed capture position for ${id}`);
       const forwardX = Math.sin(person.rotY), forwardZ = Math.cos(person.rotY);
       probe.setCameraPose(
         [person.x + forwardX * 2.0 + forwardZ * 0.25, person.y + 1.26, person.z + forwardZ * 2.0 - forwardX * 0.25],
@@ -584,8 +587,8 @@ test('the packed monochrome crowd keeps all render budgets and survives context 
   });
   const captures = await captureCrowd();
   for (const { id, image, changedPixels } of captures) {
-    expect(changedPixels, id).toBeGreaterThan(100);
     await info.attach(id, { body: Buffer.from(image.split(',')[1], 'base64'), contentType: 'image/png' });
+    expect(changedPixels, id).toBeGreaterThan(100);
   }
   const texturesBefore = await page.evaluate(() => window.stageforgeProbe.graphicsProbe().stats.textures);
 
