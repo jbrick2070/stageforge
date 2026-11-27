@@ -33,6 +33,8 @@ export interface CrowdModelSpec {
   family: CrowdModelFamily;
   label: string;
   geometryKey: CrowdGeometryKey;
+  /** Measured highest local-space vertex across the base geometry and all morph targets. */
+  geometryHeightM: number;
   provenance: {
     creator: string;
     source: string;
@@ -58,6 +60,9 @@ export const CROWD_PLACEMENT_ENVELOPE = Object.freeze({
   seated: Object.freeze({ clearanceRadiusM: 0.26, maxHeightM: 1.42 }),
 });
 export const CROWD_XR_EYE_VIEWS = 2;
+/** Exact shared accessory geometry contributions measured in geometryBuilders.ts. */
+export const CROWD_FOOTPRINT_TRIANGLES = 10;
+export const CROWD_HANDSET_TRIANGLES = 2;
 export const CROWD_XR_AGGREGATE_BUDGET = Object.freeze({
   ceiling: { draws: 270, triangles: 760_000, textures: 26 },
   measuredArena: { draws: 262, triangles: 745_712, textures: 25 },
@@ -81,6 +86,7 @@ const alienBudget: CrowdModelBudget = {
  */
 export const STAGEFORGE_HUMAN_V1: CrowdModelSpec = Object.freeze({
   id: 'stageforge-human-v1', family: 'human', label: 'StageForge human', geometryKey: 'legacy-human-v1',
+  geometryHeightM: 1.918,
   provenance: {
     creator: 'StageForge', source: 'Built-in procedural legacy instanced human', license: 'StageForge original' as const,
   },
@@ -98,6 +104,7 @@ export const STAGEFORGE_HUMAN_V1: CrowdModelSpec = Object.freeze({
 /** First contract-exercising original creature: matte, texture-free and deliberately low-poly. */
 export const STAGEFORGE_ROBOT_V1: CrowdModelSpec = Object.freeze({
   id: 'stageforge-robot-v1', family: 'robot', label: 'StageForge robot', geometryKey: 'original-robot-v1',
+  geometryHeightM: 1.8,
   provenance: {
     creator: 'StageForge', source: 'Built-in original procedural service robot', license: 'StageForge original' as const,
   },
@@ -112,6 +119,7 @@ export const STAGEFORGE_ROBOT_V1: CrowdModelSpec = Object.freeze({
 /** Second contract-exercising original creature with a distinct head and limb silhouette. */
 export const STAGEFORGE_ALIEN_V1: CrowdModelSpec = Object.freeze({
   id: 'stageforge-alien-v1', family: 'alien', label: 'StageForge alien', geometryKey: 'original-alien-v1',
+  geometryHeightM: 1.9096,
   provenance: {
     creator: 'StageForge', source: 'Built-in original procedural long-headed alien', license: 'StageForge original' as const,
   },
@@ -124,6 +132,12 @@ export const STAGEFORGE_ALIEN_V1: CrowdModelSpec = Object.freeze({
 } as CrowdModelSpec);
 
 const SAFE_MODEL_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const CROWD_POSE_MAX_SCALE = Object.freeze({ standing: 1.12, seated: 0.74 });
+const EXPECTED_MODEL_KIND: Readonly<Record<CrowdModelId, readonly [CrowdModelFamily, CrowdGeometryKey]>> = Object.freeze({
+  'stageforge-human-v1': ['human', 'legacy-human-v1'],
+  'stageforge-robot-v1': ['robot', 'original-robot-v1'],
+  'stageforge-alien-v1': ['alien', 'original-alien-v1'],
+});
 
 function finiteTuple(value: readonly number[], path: string): void {
   if (value.length !== 3 || value.some((item) => !Number.isFinite(item))) {
@@ -135,6 +149,13 @@ function finiteTuple(value: readonly number[], path: string): void {
 export function validateCrowdModelSpec(spec: CrowdModelSpec): void {
   if (!SAFE_MODEL_ID.test(spec.id) || !CROWD_MODEL_IDS.includes(spec.id)) {
     throw new Error(`crowd model id "${spec.id}" is not a registered safe ID.`);
+  }
+  const expectedKind = EXPECTED_MODEL_KIND[spec.id];
+  if (spec.family !== expectedKind[0] || spec.geometryKey !== expectedKind[1]) {
+    throw new Error(`crowd model ${spec.id} has an invalid family or geometry key.`);
+  }
+  if (!Number.isFinite(spec.geometryHeightM) || spec.geometryHeightM <= 0) {
+    throw new Error(`crowd model ${spec.id} geometry height must be positive and finite.`);
   }
   for (const [path, value] of [
     ['label', spec.label],
@@ -154,6 +175,10 @@ export function validateCrowdModelSpec(spec: CrowdModelSpec): void {
       throw new Error(`crowd model ${spec.id} ${pose} clearance exceeds the shared envelope.`);
     }
     finiteTuple(value.pivot, `crowd model ${spec.id} ${pose} pivot`);
+    const staticHeight = (spec.geometryHeightM - value.pivot[1]) * CROWD_POSE_MAX_SCALE[pose];
+    if (staticHeight > value.maxHeightM + 1e-6) {
+      throw new Error(`crowd model ${spec.id} ${pose} geometry exceeds its declared height.`);
+    }
     if (value.handset) {
       finiteTuple(value.handset.translation, `crowd model ${spec.id} ${pose} handset translation`);
       finiteTuple(value.handset.rotation, `crowd model ${spec.id} ${pose} handset rotation`);
@@ -192,6 +217,27 @@ export function crowdModel(modelId: string): CrowdModelSpec {
   return model;
 }
 
+/** Shared motion calculation used by renderer matrices and admission tests. */
+export function crowdMotionEnvelope(
+  modelId: CrowdModelId,
+  pose: CrowdPose,
+  authoredScaleY: number,
+  hop: number,
+  envelopeSafe: boolean,
+): { scaleY: number; heightM: number } {
+  if (!Number.isFinite(authoredScaleY) || authoredScaleY <= 0 || !Number.isFinite(hop) || hop < 0) {
+    throw new Error('crowd motion scale must be positive and hop must be non-negative; both must be finite.');
+  }
+  const model = crowdModel(modelId);
+  const pivotY = model.poses[pose].pivot[1];
+  const localTop = model.geometryHeightM - pivotY;
+  const legacyScaleY = authoredScaleY + hop * 0.25;
+  const scaleY = envelopeSafe
+    ? Math.min(legacyScaleY, Math.max(0, (model.poses[pose].maxHeightM - hop) / localTop))
+    : legacyScaleY;
+  return { scaleY, heightM: hop + localTop * scaleY };
+}
+
 export interface CrowdResourcePlacement {
   modelId: CrowdModelId;
   phone: boolean;
@@ -205,6 +251,9 @@ export interface CrowdResourceAdmission {
   sceneDraws: number;
   submittedDraws: number;
   instanceTriangles: number;
+  footprintTriangles: number;
+  handsetTriangles: number;
+  sceneTriangles: number;
   submittedTriangles: number;
   materialTextures: number;
   morphTextures: number;
@@ -244,20 +293,27 @@ export function crowdResourceAdmission(
     figureBatches += budget.figureBatches;
   }
   const phoneBatches = phoneModels.size;
+  const phoneInstances = placements.reduce((total, placement) => total + Number(placement.phone), 0);
   const footprintBatches = placements.length ? 1 : 0;
   const sceneDraws = figureBatches + phoneBatches + footprintBatches;
   const submittedDraws = sceneDraws * eyeViews;
-  const submittedTriangles = instanceTriangles * eyeViews;
+  const footprintTriangles = placements.length * CROWD_FOOTPRINT_TRIANGLES;
+  const handsetTriangles = phoneInstances * CROWD_HANDSET_TRIANGLES;
+  const sceneTriangles = instanceTriangles + footprintTriangles + handsetTriangles;
+  const submittedTriangles = sceneTriangles * eyeViews;
   const baselineBudget = STAGEFORGE_HUMAN_V1.budgets[tier];
   const baselineSceneDraws = placements.length ? 2 + (phoneBatches ? 1 : 0) : 0;
+  const baselineSceneTriangles = placements.length * (baselineBudget.trianglesPerInstance + CROWD_FOOTPRINT_TRIANGLES)
+    + handsetTriangles;
   const arenaDelta = {
     draws: Math.max(0, (sceneDraws - baselineSceneDraws) * eyeViews),
-    triangles: Math.max(0, submittedTriangles - placements.length * baselineBudget.trianglesPerInstance * eyeViews),
+    triangles: Math.max(0, submittedTriangles - baselineSceneTriangles * eyeViews),
     textures: Math.max(0, materialTextures + morphTextures - (placements.length ? baselineBudget.materialTextures + baselineBudget.morphTextures : 0)),
   };
   return {
     eyeViews, figureBatches, phoneBatches, footprintBatches, sceneDraws, submittedDraws,
-    instanceTriangles, submittedTriangles, materialTextures, morphTextures,
+    instanceTriangles, footprintTriangles, handsetTriangles, sceneTriangles, submittedTriangles,
+    materialTextures, morphTextures,
     rendererTextures: materialTextures + morphTextures,
     arenaDelta,
     admitted:

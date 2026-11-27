@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { after, test } from 'node:test';
+import * as THREE from 'three';
 import { createServer } from 'vite';
 
 const compiler = await createServer({
@@ -183,6 +184,48 @@ test('generator v1 is frozen, human-only, and v2 closes the zone-edge jitter def
   assert.equal(v2.phase, v1.phase);
 });
 
+test('generator v2 applies the shared seated envelope at authored zone edges', () => {
+  const seat = crowd.theatreSeatAnchors(theatre).find((item) => item.row === 4 && item.x > 0);
+  const layout = {
+    generatorVersion: 1, seed: 249057,
+    zones: [{
+      id: 'edge-seat', kind: 'seated',
+      rect: { minX: seat.x, minZ: seat.z, maxX: seat.x + 1, maxZ: seat.z + 1 },
+      occupancy: 1, modelWeights: [{ modelId: 'stageforge-human-v1', weight: 1 }],
+    }],
+    exclusions: [], placements: [],
+  };
+  const legacy = crowd.resolveCrowdLayout(theatre, layout);
+  assert.ok(legacy.placements.some((person) => person.candidateId === seat.id), 'v1 seat-center behavior remains frozen');
+  layout.generatorVersion = 2;
+  const safe = crowd.resolveCrowdLayout(theatre, layout);
+  assert.ok(!safe.placements.some((person) => person.candidateId === seat.id));
+  const radius = models.CROWD_PLACEMENT_ENVELOPE.seated.clearanceRadiusM;
+  assert.ok(safe.placements.every((person) =>
+    person.x - radius >= layout.zones[0].rect.minX && person.x + radius <= layout.zones[0].rect.maxX
+    && person.z - radius >= layout.zones[0].rect.minZ && person.z + radius <= layout.zones[0].rect.maxZ));
+});
+
+test('v1 animation keeps released roll while v2 motion stays inside declared pose heights', () => {
+  const object = new THREE.Object3D();
+  const legacy = {
+    x: 1, y: 0, z: 2, scaleY: 1.12, phase: 0, rotY: 0.2,
+    modelId: 'stageforge-human-v1', pose: 'standing', pivot: [0, 0, 0], generatorVersion: 1,
+  };
+  geometry.setCrowdObjectMatrix(object, legacy, 0.045, 0.05);
+  assert.equal(object.rotation.y, legacy.rotY);
+  assert.equal(object.rotation.z, 0.05);
+  assert.equal(object.scale.y, legacy.scaleY + 0.045 * 0.25);
+
+  for (const modelId of models.CROWD_MODEL_IDS) for (const pose of ['standing', 'seated']) {
+    const motion = models.crowdMotionEnvelope(
+      modelId, pose, models.CROWD_POSE_MAX_SCALE[pose], 0.22, true,
+    );
+    assert.ok(motion.heightM <= models.crowdModel(modelId).poses[pose].maxHeightM + 1e-9,
+      `${modelId} ${pose} runtime motion fits its declared height`);
+  }
+});
+
 test('generator v2 keeps placement identity and motion stable across deterministic model mixes', () => {
   const a = crowd.withCrowdModelMix(crowd.makeDefaultCrowd(arena), 'original-trio');
   a.zones[0].occupancy = 0.04;
@@ -224,7 +267,13 @@ test('the current venue builder renders authored placements with the existing fi
   assert.equal(mixed.placementBindings.length, mixedResolved.placed);
   assert.equal(new Set(mixed.placementBindings.map((binding) => binding.placementId)).size, mixedResolved.placed);
   assert.deepEqual(mixed.resourceAdmission.arenaDelta, { draws: 4, triangles: 0, textures: 0 });
-  assert.equal(mixed.resourceAdmission.submittedTriangles, 7760, 'resource accounting includes both submitted eye views');
+  const phoneCount = mixedResolved.placements.filter((person) => person.phone).length;
+  const expectedSceneTriangles = 3880
+    + mixedResolved.placed * models.CROWD_FOOTPRINT_TRIANGLES
+    + phoneCount * models.CROWD_HANDSET_TRIANGLES;
+  assert.equal(mixed.resourceAdmission.sceneTriangles, expectedSceneTriangles);
+  assert.equal(mixed.resourceAdmission.submittedTriangles, expectedSceneTriangles * 2,
+    'resource accounting includes figures, contact patches, handsets, and both submitted eye views');
   assert.equal(mixed.resourceAdmission.admitted, true);
   for (const batch of mixed.crowdBatches) {
     const measured = geometry.validateCrowdGeometryAdmission(batch.modelId, 'high', batch.mesh.geometry, batch.mesh.material);
@@ -246,6 +295,18 @@ test('the current venue builder renders authored placements with the existing fi
   controller.setEnabled(true);
   assert.equal(controller.getStats().spectatorCount, mixedResolved.placed);
   assert.equal(controller.getStats().phoneCount, expectedPhones.length);
+  assert.ok(mixed.crowdBatches.every((batch, index) => batch.mesh.material !== baseMaterials[index]));
+  const firstLitMaterials = mixed.crowdBatches.map((batch) => batch.mesh.material);
+  const versions = firstLitMaterials.map((material) => material.version);
+  controller.onContextRestored();
+  assert.deepEqual(firstLitMaterials.map((material) => material.version), versions.map((version) => version + 1));
+  let disposedLitMaterials = 0;
+  firstLitMaterials.forEach((material) => material.addEventListener('dispose', () => disposedLitMaterials++));
+  controller.bindVenue({
+    crowdMesh: mixed.crowdMesh, phonesMesh: mixed.phonesMesh, batches: mixed.crowdBatches,
+    transforms: mixed.crowdBaseTransforms, seated: false, stageDepth: arena.stageDepth,
+  });
+  assert.equal(disposedLitMaterials, firstLitMaterials.length, 'rig rebuild disposes every prior lit batch material');
   assert.ok(mixed.crowdBatches.every((batch, index) => batch.mesh.material !== baseMaterials[index]));
   controller.setEnabled(false);
   assert.ok(mixed.crowdBatches.every((batch, index) => batch.mesh.material === baseMaterials[index]));

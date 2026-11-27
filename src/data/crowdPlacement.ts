@@ -96,6 +96,7 @@ export interface CrowdZoneResult {
 }
 
 export interface ResolvedCrowdLayout {
+  generatorVersion: typeof CROWD_GENERATOR_VERSION_1 | typeof CROWD_GENERATOR_VERSION_2;
   placements: ResolvedCrowdPlacement[];
   zones: CrowdZoneResult[];
   attempted: number;
@@ -362,7 +363,10 @@ export function resolveCrowdLayout(rig: Pick<RigConfig, 'venue' | 'stageWidth' |
     type Candidate = { id: string; x: number; y: number; z: number };
     const candidates: Candidate[] = [];
     if (zone.kind === 'seated') {
-      for (const seat of seats) if (pointInRect(seat.x, seat.z, zone.rect)) candidates.push(seat);
+      const radius = layout.generatorVersion === CROWD_GENERATOR_VERSION_2
+        ? CROWD_PLACEMENT_ENVELOPE.seated.clearanceRadiusM
+        : 0;
+      for (const seat of seats) if (pointInRect(seat.x, seat.z, zone.rect, radius)) candidates.push(seat);
     } else {
       const radius = STAGEFORGE_HUMAN_V1.poses.standing.clearanceRadiusM;
       const pitch = radius * 2 + 0.04;
@@ -424,6 +428,7 @@ export function resolveCrowdLayout(rig: Pick<RigConfig, 'venue' | 'stageWidth' |
   }
   placements.sort((a, b) => a.id.localeCompare(b.id));
   return {
+    generatorVersion: layout.generatorVersion,
     placements,
     zones: zoneResults,
     attempted: zoneResults.reduce((sum, zone) => sum + zone.requested, layout.placements.length),

@@ -10,7 +10,10 @@ import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles
 import type { SpeakerHang } from '../data/studioGeometry';
 import { theatreSeatAnchors, type ResolvedCrowdLayout, type TheatreSeatAnchor } from '../data/crowdPlacement';
 import {
+  CROWD_FOOTPRINT_TRIANGLES,
+  CROWD_HANDSET_TRIANGLES,
   crowdModel,
+  crowdMotionEnvelope,
   crowdResourceAdmission,
   type CrowdModelId,
   type CrowdPose,
@@ -1019,6 +1022,7 @@ export interface CrowdBaseTransform {
   modelId?: CrowdModelId;
   pose?: CrowdPose;
   pivot?: readonly [number, number, number];
+  generatorVersion?: 1 | 2;
 }
 
 export interface CrowdRenderBatch {
@@ -1050,6 +1054,8 @@ export interface CrowdGeometryAdmission {
   standingHeightM: number;
   seatedHeightM: number;
 }
+
+const CROWD_ORIGIN_PIVOT = Object.freeze([0, 0, 0] as const);
 
 function materialTextureCount(material: THREE.MeshStandardMaterial) {
   const maps = [
@@ -1090,6 +1096,9 @@ export function validateCrowdGeometryAdmission(
     seatedHeightM: maxY * 0.74,
   };
   const model = crowdModel(modelId);
+  if (Math.abs(maxY - model.geometryHeightM) > 1e-5) {
+    throw new Error(`crowd model ${modelId} geometry height measured ${maxY}, expected ${model.geometryHeightM}.`);
+  }
   const budget = model.budgets[tier];
   for (const key of ['trianglesPerInstance', 'materialSlots', 'materialTextures', 'morphTextures'] as const) {
     if (actual[key] !== budget[key]) {
@@ -1107,19 +1116,22 @@ export function validateCrowdGeometryAdmission(
 }
 
 export function setCrowdObjectMatrix(object: THREE.Object3D, transform: CrowdBaseTransform, hop = 0, sway = 0) {
-  const pivot = transform.pivot ?? [0, 0, 0];
-  const sin = Math.sin(transform.rotY + sway);
-  const cos = Math.cos(transform.rotY + sway);
+  const pivot = transform.pivot ?? CROWD_ORIGIN_PIVOT;
+  const modelId = transform.modelId ?? 'stageforge-human-v1';
+  const pose = transform.pose ?? 'standing';
+  const motion = crowdMotionEnvelope(modelId, pose, transform.scaleY, hop, transform.generatorVersion === 2);
+  const sin = Math.sin(transform.rotY);
+  const cos = Math.cos(transform.rotY);
   const px = pivot[0];
-  const py = pivot[1] * transform.scaleY;
+  const py = pivot[1] * motion.scaleY;
   const pz = pivot[2];
   object.position.set(
     transform.x - (px * cos + pz * sin),
     transform.y + hop - py,
     transform.z - (-px * sin + pz * cos),
   );
-  object.scale.set(1, transform.scaleY + hop * 0.25, 1);
-  object.rotation.set(0, transform.rotY + sway, 0);
+  object.scale.set(1, motion.scaleY, 1);
+  object.rotation.set(0, transform.rotY, sway);
   object.updateMatrix();
 }
 
@@ -1586,6 +1598,7 @@ export function buildVenueArchitecture(
   // Instanced crowd: the absent-authored branch below is the frozen legacy allocation path.
   const density = THREE.MathUtils.clamp(crowdDensity, 0, 1);
   const authoredPlacements = authoredCrowd ? [...authoredCrowd.placements] : null;
+  const authoredGeneratorVersion = authoredCrowd?.generatorVersion ?? 1;
   const maxCrowd = authoredPlacements?.length ?? Math.floor((seats ? seats.length : standingFloor ? 300 : 680) * density);
   let crowdMesh: THREE.InstancedMesh | null = null;
   let phonesMesh: THREE.InstancedMesh | null = null;
@@ -1606,6 +1619,9 @@ export function buildVenueArchitecture(
     const phoneCount = seats ? 0 : Math.floor(maxCrowd * 0.09);
     // A feathered contact patch anchors feet to the floor even without shadow maps.
     const footprint = new THREE.CircleGeometry(1, 10);
+    if ((footprint.getIndex()?.count ?? 0) / 3 !== CROWD_FOOTPRINT_TRIANGLES) {
+      throw new Error('crowd footprint geometry no longer matches resource admission.');
+    }
     footprint.rotateX(-Math.PI / 2).scale(0.42, 1, 0.32).translate(0, 0.012, 0);
     const opacity = new Float32Array(footprint.attributes.position.count * 4);
     opacity[3] = 0.68;
@@ -1672,6 +1688,9 @@ export function buildVenueArchitecture(
     // the buffer are drawn, with owners already scattered throughout the room.
     if (phoneCount > 0) {
       const screen = new THREE.PlaneGeometry(0.073, 0.13);
+      if ((screen.getIndex()?.count ?? 0) / 3 !== CROWD_HANDSET_TRIANGLES) {
+        throw new Error('crowd handset geometry no longer matches resource admission.');
+      }
       screen.rotateY(Math.PI).translate(0.37, 1.90, 0.145);
       const screenMat = new THREE.MeshBasicMaterial({ color: 0x94a9c6 });
       practicals.push(screenMat);
@@ -1690,6 +1709,9 @@ export function buildVenueArchitecture(
     }
     const colors = [0x5c6579, 0x5e5156, 0x87939e, 0x858079, 0x666e62, 0x755d64, 0x688491];
     const footprint = new THREE.CircleGeometry(1, 10);
+    if ((footprint.getIndex()?.count ?? 0) / 3 !== CROWD_FOOTPRINT_TRIANGLES) {
+      throw new Error('crowd footprint geometry no longer matches resource admission.');
+    }
     footprint.rotateX(-Math.PI / 2).scale(0.42, 1, 0.32).translate(0, 0.012, 0);
     const opacity = new Float32Array(footprint.attributes.position.count * 4);
     opacity[3] = 0.68;
@@ -1702,6 +1724,7 @@ export function buildVenueArchitecture(
         x: person.x, y: person.y, z: person.z, scaleY: person.scaleY, phase: person.phase, rotY: person.rotY,
         placementId: person.id, modelId: person.modelId, pose: person.pose,
         pivot: crowdModel(person.modelId).poses[person.pose].pivot,
+        generatorVersion: authoredGeneratorVersion,
       };
       setCrowdObjectMatrix(footprintDummy, transform);
       footprints.setMatrixAt(index, footprintDummy.matrix);
@@ -1727,6 +1750,7 @@ export function buildVenueArchitecture(
           x: person.x, y: person.y, z: person.z, scaleY: person.scaleY, phase: person.phase, rotY: person.rotY,
           placementId: person.id, modelId: person.modelId, pose: person.pose,
           pivot: model.poses[person.pose].pivot,
+          generatorVersion: authoredGeneratorVersion,
         };
         transforms.push(transform);
         crowdBaseTransforms.push(transform);
@@ -1757,6 +1781,9 @@ export function buildVenueArchitecture(
         const socket = model.poses.standing.handset;
         if (!socket) throw new Error(`crowd model ${modelId} has phone owners without a handset socket.`);
         const screen = new THREE.PlaneGeometry(0.073, 0.13);
+        if ((screen.getIndex()?.count ?? 0) / 3 !== CROWD_HANDSET_TRIANGLES) {
+          throw new Error('crowd handset geometry no longer matches resource admission.');
+        }
         screen.applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(...socket.rotation)));
         screen.translate(...socket.translation);
         const screenMat = new THREE.MeshBasicMaterial({ color: 0x94a9c6 });
