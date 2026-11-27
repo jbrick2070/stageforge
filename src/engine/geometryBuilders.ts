@@ -14,6 +14,7 @@ import {
   CROWD_HANDSET_TRIANGLES,
   crowdModel,
   crowdMotionScaleY,
+  crowdMotionScaleXZ,
   crowdResourceAdmission,
   type CrowdModelId,
   type CrowdPose,
@@ -1055,6 +1056,11 @@ export interface CrowdGeometryAdmission {
   seatedHeightM: number;
 }
 
+export interface CrowdAccessoryAdmission {
+  maxHeightM: number;
+  maxRadiusM: number;
+}
+
 const CROWD_ORIGIN_PIVOT = Object.freeze([0, 0, 0] as const);
 
 function materialTextureCount(material: THREE.MeshStandardMaterial) {
@@ -1120,22 +1126,45 @@ export function validateCrowdGeometryAdmission(
   return actual;
 }
 
+/** Measure a registered handset after its socket transform, before sharing the owner's matrix. */
+export function validateCrowdHandsetAdmission(
+  modelId: CrowdModelId,
+  geometry: THREE.BufferGeometry,
+): CrowdAccessoryAdmission {
+  const pose = crowdModel(modelId).poses.standing;
+  if (!pose.handset) throw new Error(`crowd model ${modelId} does not declare a handset socket.`);
+  const position = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+  if (!position) throw new Error(`crowd model ${modelId} handset has no position attribute.`);
+  let maxHeightM = -Infinity;
+  let maxRadiusM = 0;
+  for (let index = 0; index < position.count; index++) {
+    maxHeightM = Math.max(maxHeightM, position.getY(index));
+    maxRadiusM = Math.max(maxRadiusM, Math.hypot(position.getX(index), position.getZ(index)));
+  }
+  if (maxHeightM > pose.submittedHeightM + 1e-6 || maxRadiusM > pose.submittedRadiusM + 1e-6) {
+    throw new Error(`crowd model ${modelId} handset exceeds its submitted bounds.`);
+  }
+  return { maxHeightM, maxRadiusM };
+}
+
 export function setCrowdObjectMatrix(object: THREE.Object3D, transform: CrowdBaseTransform, hop = 0, sway = 0) {
   const pivot = transform.pivot ?? CROWD_ORIGIN_PIVOT;
   const modelId = transform.modelId ?? 'stageforge-human-v1';
   const pose = transform.pose ?? 'standing';
-  const motionScaleY = crowdMotionScaleY(modelId, pose, transform.scaleY, hop, sway, transform.generatorVersion === 2);
+  const envelopeSafe = transform.generatorVersion === 2;
+  const motionScaleY = crowdMotionScaleY(modelId, pose, transform.scaleY, hop, sway, envelopeSafe);
+  const motionScaleXZ = crowdMotionScaleXZ(modelId, pose, motionScaleY, sway, envelopeSafe);
   const sin = Math.sin(transform.rotY);
   const cos = Math.cos(transform.rotY);
-  const px = pivot[0];
+  const px = pivot[0] * motionScaleXZ;
   const py = pivot[1] * motionScaleY;
-  const pz = pivot[2];
+  const pz = pivot[2] * motionScaleXZ;
   object.position.set(
     transform.x - (px * cos + pz * sin),
     transform.y + hop - py,
     transform.z - (-px * sin + pz * cos),
   );
-  object.scale.set(1, motionScaleY, 1);
+  object.scale.set(motionScaleXZ, motionScaleY, motionScaleXZ);
   object.rotation.set(0, transform.rotY, sway);
   object.updateMatrix();
 }
@@ -1791,6 +1820,7 @@ export function buildVenueArchitecture(
         }
         screen.applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(...socket.rotation)));
         screen.translate(...socket.translation);
+        validateCrowdHandsetAdmission(modelId, screen);
         const screenMat = new THREE.MeshBasicMaterial({ color: 0x94a9c6 });
         practicals.push(screenMat);
         modelPhones = new THREE.InstancedMesh(screen, screenMat, phoneCount);

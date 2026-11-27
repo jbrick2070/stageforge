@@ -43,10 +43,14 @@ export interface CrowdModelSpec {
     license: 'StageForge original';
   };
   poses: Readonly<Record<CrowdPose, {
-    /** Maximum top in stage metres after the largest authored motion scale. */
+    /** Maximum top in stage metres after the v2 motion envelope is applied. */
     maxHeightM: number;
     /** Deterministic horizontal placement clearance for this pose. */
     clearanceRadiusM: number;
+    /** Highest submitted local vertex, including shared accessories such as a handset. */
+    submittedHeightM: number;
+    /** Largest submitted local XZ radius, including shared accessories. */
+    submittedRadiusM: number;
     /** Model-local point that is placed on the floor or seat anchor. */
     pivot: readonly [number, number, number];
     handset: CrowdHandsetSocket | null;
@@ -96,9 +100,13 @@ export const STAGEFORGE_HUMAN_V1: CrowdModelSpec = Object.freeze({
   poses: {
     standing: {
       maxHeightM: 2.15, clearanceRadiusM: 0.47, pivot: [0, 0, 0],
+      submittedHeightM: 1.965, submittedRadiusM: 0.464082,
       handset: { translation: [0.37, 1.90, 0.145], rotation: [0, Math.PI, 0] },
     },
-    seated: { maxHeightM: 1.42, clearanceRadiusM: 0.26, pivot: [0, 0, 0], handset: null },
+    seated: {
+      maxHeightM: 1.42, clearanceRadiusM: 0.26, submittedHeightM: 1.918, submittedRadiusM: 0.464082,
+      pivot: [0, 0, 0], handset: null,
+    },
   },
   budgets: { high: humanBudget, low: humanBudget, xr: humanBudget },
   legacyCompatible: true,
@@ -113,8 +121,14 @@ export const STAGEFORGE_ROBOT_V1: CrowdModelSpec = Object.freeze({
     creator: 'StageForge', source: 'Built-in original procedural service robot', license: 'StageForge original' as const,
   },
   poses: {
-    standing: { maxHeightM: 2.08, clearanceRadiusM: 0.43, pivot: [0, 0, 0], handset: null },
-    seated: { maxHeightM: 1.38, clearanceRadiusM: 0.25, pivot: [0, 0, 0], handset: null },
+    standing: {
+      maxHeightM: 2.08, clearanceRadiusM: 0.43, submittedHeightM: 1.8, submittedRadiusM: 0.341761,
+      pivot: [0, 0, 0], handset: null,
+    },
+    seated: {
+      maxHeightM: 1.38, clearanceRadiusM: 0.25, submittedHeightM: 1.8, submittedRadiusM: 0.341761,
+      pivot: [0, 0, 0], handset: null,
+    },
   },
   budgets: { high: robotBudget, low: robotBudget, xr: robotBudget },
   legacyCompatible: false,
@@ -129,8 +143,14 @@ export const STAGEFORGE_ALIEN_V1: CrowdModelSpec = Object.freeze({
     creator: 'StageForge', source: 'Built-in original procedural long-headed alien', license: 'StageForge original' as const,
   },
   poses: {
-    standing: { maxHeightM: 2.14, clearanceRadiusM: 0.42, pivot: [0, 0, 0], handset: null },
-    seated: { maxHeightM: 1.42, clearanceRadiusM: 0.25, pivot: [0, 0, 0], handset: null },
+    standing: {
+      maxHeightM: 2.14, clearanceRadiusM: 0.42, submittedHeightM: 1.9096, submittedRadiusM: 0.388805,
+      pivot: [0, 0, 0], handset: null,
+    },
+    seated: {
+      maxHeightM: 1.42, clearanceRadiusM: 0.25, submittedHeightM: 1.9096, submittedRadiusM: 0.388805,
+      pivot: [0, 0, 0], handset: null,
+    },
   },
   budgets: { high: alienBudget, low: alienBudget, xr: alienBudget },
   legacyCompatible: false,
@@ -184,9 +204,12 @@ export function validateCrowdModelSpec(spec: CrowdModelSpec): void {
       throw new Error(`crowd model ${spec.id} ${pose} clearance exceeds the shared envelope.`);
     }
     finiteTuple(value.pivot, `crowd model ${spec.id} ${pose} pivot`);
-    const staticHeight = (spec.geometryHeightM - value.pivot[1]) * CROWD_POSE_MAX_SCALE[pose];
-    if (staticHeight > value.maxHeightM + 1e-6) {
-      throw new Error(`crowd model ${spec.id} ${pose} geometry exceeds its declared height.`);
+    if (!Number.isFinite(value.submittedHeightM) || value.submittedHeightM < spec.geometryHeightM
+      || !Number.isFinite(value.submittedRadiusM) || value.submittedRadiusM < spec.geometryRadiusM) {
+      throw new Error(`crowd model ${spec.id} ${pose} submitted bounds must contain its figure geometry.`);
+    }
+    if (value.submittedHeightM - value.pivot[1] <= 0) {
+      throw new Error(`crowd model ${spec.id} ${pose} submitted height must extend above its pivot.`);
     }
     if (value.handset) {
       finiteTuple(value.handset.translation, `crowd model ${spec.id} ${pose} handset translation`);
@@ -242,13 +265,32 @@ export function crowdMotionScaleY(
   if (!envelopeSafe) return legacyScaleY;
   const model = crowdModel(modelId);
   const pivotY = model.poses[pose].pivot[1];
-  const localTop = model.geometryHeightM - pivotY;
+  const localTop = model.poses[pose].submittedHeightM - pivotY;
   const rollCos = Math.max(1e-6, Math.abs(Math.cos(sway)));
   // Clearance is a conservative measured horizontal bound. Its roll contribution must be
   // reserved before scaling the local top or a raised hand can cross the height envelope.
-  const rollLift = Math.abs(Math.sin(sway)) * model.geometryRadiusM;
+  const rollLift = Math.abs(Math.sin(sway)) * model.poses[pose].submittedRadiusM;
   const admittedScaleY = Math.max(0, (model.poses[pose].maxHeightM - hop - rollLift) / (localTop * rollCos));
   return Math.min(legacyScaleY, admittedScaleY);
+}
+
+/** Allocation-free horizontal scale that keeps a moving v2 figure inside its pose clearance. */
+export function crowdMotionScaleXZ(
+  modelId: CrowdModelId,
+  pose: CrowdPose,
+  motionScaleY: number,
+  sway: number,
+  envelopeSafe: boolean,
+): number {
+  if (!Number.isFinite(motionScaleY) || motionScaleY <= 0 || !Number.isFinite(sway)) {
+    throw new Error('crowd horizontal motion scale and sway must be finite; scale must be positive.');
+  }
+  if (!envelopeSafe) return 1;
+  const model = crowdModel(modelId);
+  const poseSpec = model.poses[pose];
+  const localTop = poseSpec.submittedHeightM - poseSpec.pivot[1];
+  const rollReach = localTop * motionScaleY * Math.abs(Math.sin(sway));
+  return Math.min(1, Math.max(0, (poseSpec.clearanceRadiusM - rollReach) / poseSpec.submittedRadiusM));
 }
 
 export interface CrowdResourcePlacement {

@@ -139,6 +139,7 @@ test('the validated built-in model contract is measurable and preserves legacy p
   assert.deepEqual(human.poses.seated.pivot, [0, 0, 0]);
   assert.equal(human.poses.standing.maxHeightM, 2.15);
   assert.equal(human.poses.standing.clearanceRadiusM, 0.47);
+  assert.equal(human.poses.standing.submittedHeightM, 1.965);
   assert.deepEqual(human.poses.standing.handset.translation, [0.37, 1.9, 0.145]);
   assert.equal(human.poses.seated.handset, null);
   for (const tier of ['low', 'high', 'xr']) {
@@ -216,10 +217,14 @@ test('v1 animation keeps released roll and the v2 motion helper is allocation-fr
   assert.equal(object.rotation.y, legacy.rotY);
   assert.equal(object.rotation.z, 0.05);
   assert.equal(object.scale.y, legacy.scaleY + 0.045 * 0.25);
+  assert.equal(object.scale.x, 1, 'generator v1 retains its released horizontal scale');
 
   assert.equal(typeof models.crowdMotionScaleY(
     'stageforge-human-v1', 'standing', 1.12, 0.22, 0.05, true,
   ), 'number', 'the hot motion helper returns a scalar instead of allocating a result object');
+  assert.equal(typeof models.crowdMotionScaleXZ(
+    'stageforge-human-v1', 'standing', 1.08, 0.05, true,
+  ), 'number', 'the horizontal hot motion helper also returns a scalar');
 });
 
 test('generator v2 keeps placement identity and motion stable across deterministic model mixes', () => {
@@ -285,14 +290,22 @@ test('the current venue builder renders authored placements with the existing fi
       const object = new THREE.Object3D();
       geometry.setCrowdObjectMatrix(object, transform, 0.22, sway);
       let worldMaxY = -Infinity;
+      let worldMaxRadius = 0;
       const point = new THREE.Vector3();
-      const positions = [batch.mesh.geometry.getAttribute('position'), ...(batch.mesh.geometry.morphAttributes.position ?? [])];
+      const positions = [
+        batch.mesh.geometry.getAttribute('position'),
+        ...(batch.mesh.geometry.morphAttributes.position ?? []),
+        ...(pose === 'standing' && batch.phonesMesh ? [batch.phonesMesh.geometry.getAttribute('position')] : []),
+      ];
       for (const position of positions) for (let index = 0; index < position.count; index++) {
         point.fromBufferAttribute(position, index).applyMatrix4(object.matrix);
         worldMaxY = Math.max(worldMaxY, point.y);
+        worldMaxRadius = Math.max(worldMaxRadius, Math.hypot(point.x, point.z));
       }
       assert.ok(worldMaxY <= models.crowdModel(batch.modelId).poses[pose].maxHeightM + 1e-6,
         `${batch.modelId} ${pose} transformed vertices fit at sway ${sway}`);
+      assert.ok(worldMaxRadius <= models.crowdModel(batch.modelId).poses[pose].clearanceRadiusM + 1e-6,
+        `${batch.modelId} ${pose} transformed figure and accessories fit their XZ clearance at sway ${sway}`);
     }
   }
   const humanBatch = mixed.crowdBatches.find((batch) => batch.modelId === 'stageforge-human-v1');
