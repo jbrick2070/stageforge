@@ -1839,7 +1839,7 @@ export class StageEngine {
   }
 
   /** Render the current scene state without advancing simulation time and capture the canvas PNG (probe only). */
-  public redrawAndCapture(options?: { hideBeams?: boolean; hidePools?: boolean; hideParticles?: boolean }): string {
+  public redrawAndCapture(options?: { hideBeams?: boolean; hidePools?: boolean; hideParticles?: boolean; hidePackedCrowd?: boolean }): string {
     if (this.standby) throw new Error('redrawAndCapture called while StageEngine is in standby');
     const savedVisibility = options?.hideBeams
       ? this.movingFixtures.map((fx) => {
@@ -1856,11 +1856,16 @@ export class StageEngine {
     if (options?.hideParticles) {
       this.particles.group.visible = false;
     }
+    const hiddenCrowd = options?.hidePackedCrowd
+      ? this.crowdBatches.filter(batch => batch.packed).map(({ mesh }) => ({ mesh, visible: mesh.visible }))
+      : [];
+    hiddenCrowd.forEach(({ mesh }) => { mesh.visible = false; });
     try {
       this.renderer.info.reset();
       this.composer.render(0);
       return this.renderer.domElement.toDataURL('image/png');
     } finally {
+      hiddenCrowd.forEach(({ mesh, visible }) => { mesh.visible = visible; });
       if (savedVisibility) {
         this.movingFixtures.forEach((fx, i) => {
           fx.beamMesh.visible = savedVisibility[i];

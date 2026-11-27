@@ -537,24 +537,57 @@ test('the packed monochrome crowd keeps all render budgets and survives context 
     admitted: true, packedVertexTextures: 1, arenaDelta: { draws: 6, triangles: 0, textures: 1 },
   });
 
-  const captures = await page.evaluate(() => {
+  await page.evaluate(() => {
     const probe = window.stageforgeProbe;
     probe.setRenderSettings({ crowdLighting: true });
     probe.patchShowState({ autoDirector: false, blackout: false, primaryColor: '#ffffff', accentColor: '#ffffff' });
-    return ['stageforge-moth-v1', 'stageforge-ticket-taker-v1'].map(id => {
-      const person = crowdPlacement(probe.crowd().transforms, id);
-      probe.setCameraPose([person.x + 0.32, person.y + 1.26, person.z + 2.1], [person.x, person.y + 0.91, person.z]);
-      return { id, image: probe.redrawAndCapture({ hideBeams: true, hidePools: true }) };
-    });
-
-    function crowdPlacement(transforms, modelId) {
-      return transforms.filter(item => item.modelId === modelId).sort((a, b) => a.z - b.z || Math.abs(a.x) - Math.abs(b.x))[0];
-    }
   });
-  for (const { id, image } of captures) {
-    expect(image).toMatch(/^data:image\/png;base64,/);
+  const captureCrowd = () => page.evaluate(async () => {
+    const probe = window.stageforgeProbe;
+    const transforms = probe.crowd().transforms;
+    const shots = [];
+    const decode = async (url) => {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext('2d');
+      context.drawImage(image, 0, 0);
+      return context.getImageData(0, 0, canvas.width, canvas.height);
+    };
+    for (const id of ['stageforge-moth-v1', 'stageforge-ticket-taker-v1']) {
+      const person = transforms.filter(item => item.modelId === id).sort((a, b) => a.z - b.z || Math.abs(a.x) - Math.abs(b.x))[0];
+      const forwardX = Math.sin(person.rotY), forwardZ = Math.cos(person.rotY);
+      probe.setCameraPose(
+        [person.x + forwardX * 2.0 + forwardZ * 0.25, person.y + 1.26, person.z + forwardZ * 2.0 - forwardX * 0.25],
+        [person.x, person.y + 0.91, person.z],
+      );
+      const settings = { hideBeams: true, hidePools: true, hideParticles: true };
+      const image = probe.redrawAndCapture(settings);
+      const hidden = probe.redrawAndCapture({ ...settings, hidePackedCrowd: true });
+      const [shown, absent] = await Promise.all([decode(image), decode(hidden)]);
+      let changedPixels = 0;
+      for (let y = Math.floor(shown.height * 0.32); y < shown.height * 0.68; y++) {
+        for (let x = Math.floor(shown.width * 0.38); x < shown.width * 0.62; x++) {
+          const i = (y * shown.width + x) * 4;
+          const delta = Math.abs(shown.data[i] - absent.data[i])
+            + Math.abs(shown.data[i + 1] - absent.data[i + 1])
+            + Math.abs(shown.data[i + 2] - absent.data[i + 2]);
+          if (delta > 24) changedPixels++;
+        }
+      }
+      shots.push({ id, image, changedPixels });
+    }
+    return shots;
+  });
+  const captures = await captureCrowd();
+  for (const { id, image, changedPixels } of captures) {
+    expect(changedPixels, id).toBeGreaterThan(100);
     await info.attach(id, { body: Buffer.from(image.split(',')[1], 'base64'), contentType: 'image/png' });
   }
+  const texturesBefore = await page.evaluate(() => window.stageforgeProbe.graphicsProbe().stats.textures);
 
   await page.evaluate(() => {
     const gl = document.querySelector('canvas').getContext('webgl2');
@@ -566,6 +599,10 @@ test('the packed monochrome crowd keeps all render budgets and survives context 
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.graphicsProbe().contextLost)).toBe(true);
   await page.evaluate(() => window.__crowdContext.restoreContext());
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.graphicsProbe().contextLost)).toBe(false);
+  // First read the surviving geometry, then rebuild to exercise texture ownership separately.
+  for (const { id, changedPixels } of await captureCrowd()) expect(changedPixels, id).toBeGreaterThan(100);
+  const restoredTextures = await page.evaluate(() => window.stageforgeProbe.graphicsProbe().stats.textures);
+  expect(restoredTextures).toBeLessThanOrEqual(texturesBefore);
   await page.evaluate(() => {
     delete window.__crowdContext;
     window.stageforgeProbe.rebuildRig();
