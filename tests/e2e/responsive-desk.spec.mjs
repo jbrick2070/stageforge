@@ -146,11 +146,11 @@ async function installMockOutput(page) {
     window.stageforgeDesktop = {
       onRigCommand: () => () => {},
       onDmxStatus: listener => { notify = listener; return () => { notify = undefined; }; },
-      dmxControl: async ({ type }) => {
+      dmxControl: async ({ type, authority }) => {
         if (type === 'listInterfaces') {
           return [{ name: 'Loopback', address: '127.0.0.1', netmask: '255.0.0.0', broadcast: null, internal: true }];
         }
-        if (type === 'enable') status = { ...status, enabled: true, state: 'live' };
+        if (type === 'enable') status = { ...status, authority, enabled: true, state: 'running' };
         if (type === 'disable') {
           window.mockDmxDisableCount++;
           status = { ...status, enabled: false, state: 'idle' };

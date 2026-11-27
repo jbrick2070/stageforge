@@ -10,6 +10,9 @@ import { createServer } from 'vite';
 const require = createRequire(import.meta.url);
 const packets = require('../desktop/dmx-packets.cjs');
 const sender = require('../desktop/dmx-sender.cjs');
+const { createDmxIpcHandlers } = require('../desktop/dmx-ipc.cjs');
+const { createAiBridgeIpcHandlers } = require('../desktop/ai-bridge-ipc.cjs');
+const { createOutputInterlock } = require('../desktop/output-interlock.cjs');
 
 const compiler = await createServer({
   configFile: false,
@@ -783,6 +786,141 @@ test('QA regressions: mid-bind shutdown (H1), concurrent enable (H2), blackout t
       await receiver.close();
     }
   }
+});
+
+test('P2 authenticated Arm and Go bind the current window, configuration and eligibility generation before UDP sends', async (t) => {
+  const mockDgram = createMockDgram({ bindDelayMs: 30 });
+  const statuses = [];
+  const controller = sender.createDmxController({ dgramModule: mockDgram, onStatus: status => statuses.push(status) });
+  t.after(() => controller.shutdown('test-end'));
+  const interlock = createOutputInterlock({ requireDmxAuthority: true, isDmxActive: () => controller.active });
+  const { onControl, onEligibility, onFrame, onHeartbeat } = createDmxIpcHandlers(() => controller, { interlock, requireArmedClaim: true });
+  const { onOutputClaim } = createAiBridgeIpcHandlers(() => null, () => interlock);
+  const testWindow = id => {
+    const frame = { url: 'stageforge://app/' };
+    return { senderFrame: frame, sender: { id, mainFrame: frame, isDestroyed: () => false, getURL: () => frame.url } };
+  };
+  const win = testWindow(4);
+  const other = testWindow(8);
+  const authority = (generation, revision = 'config-a') => ({ revision, generation });
+  const eligible = (window, token, allowed) => onEligibility(window, { authority: token, eligible: allowed });
+  const arm = (window, token) => onOutputClaim(window, { type: 'claim', kind: 'armed', authority: token });
+  const release = token => onOutputClaim(win, { type: 'release', kind: 'armed', authority: token });
+  const go = (window, token) => onControl(window, { type: 'enable', authority: token, config: {
+    protocol: 'sacn', iface: '127.0.0.1', rateHz: 30,
+    sacn: { mode: 'unicast', universes: [3, 4], priority: 100, ttl: 1, targets: ['127.0.0.1'] },
+  } });
+
+  const a = authority(1);
+  assert.equal((await arm(win, a)).ok, false);
+  assert.equal(eligible(win, a, true), true);
+  assert.equal((await arm(other, a)).ok, false);
+  assert.equal((await arm(win, authority(1, 'wrong config'))).ok, false);
+  await assert.rejects(go(win, a), /current pre-flight revision/);
+  assert.equal((await arm(win, a)).ok, true);
+  await assert.rejects(go(other, a), /current pre-flight revision/);
+  const pending = go(win, a);
+  assert.equal(controller.ownerId, 4);
+  assert.equal(mockDgram.sockets[0].sent.length, 0);
+  const fence = authority(2);
+  assert.equal(eligible(win, fence, false), true);
+  assert.equal(eligible(win, fence, true), false, 'same-revision restoration must advance generation');
+  assert.equal(eligible(win, a, true), false, 'old affirmative update cannot undo revocation');
+  await assert.rejects(pending, /cancelled|changed/);
+  assert.equal(mockDgram.sockets[0].sent.length, 0);
+  assert.equal(mockDgram.sockets[0].closed, true);
+
+  const b = authority(3);
+  assert.equal(eligible(win, b, true), true);
+  assert.equal((await arm(win, b)).ok, true);
+  await release(a);
+  const startingB = go(win, b);
+  await release(b); // Go consumed the arm. This UI release cannot cancel the accepted lease.
+  const running = await startingB;
+  assert.deepEqual(running.authority, b);
+  assert.ok(statuses.some(status => status.state === 'running' && status.authority.generation === b.generation));
+  assert.equal(controller.isRunning(), true);
+  assert.ok(mockDgram.sockets[1].sent.length > 0, 'logical U1 mapped to wire U3 starts the normal mock sender');
+  const slots = new Uint8Array(512).fill(128);
+  assert.equal(onFrame(win, 1, slots, a), false);
+  assert.equal(onHeartbeat(win, a), false);
+  assert.equal(onFrame(other, 1, slots, b), false);
+  assert.equal(onHeartbeat(other, b), false);
+  assert.equal(onFrame(win, 1, slots, b), true);
+  assert.equal(onHeartbeat(win, b), true);
+  await onControl(win, { type: 'disable' });
+  assert.equal((await arm(win, b)).ok, false, 'Stop invalidates the old eligibility even after physical shutdown');
+
+  const c = authority(4, 'config-c');
+  assert.equal(eligible(win, c, true), true);
+  assert.equal((await arm(win, c)).ok, true);
+  const serial = token => onOutputClaim(win, { type: 'claim', kind: 'serial', authority: token });
+  assert.equal((await serial(b)).ok, false);
+  assert.equal((await serial(c)).ok, true);
+  assert.deepEqual(interlock.currentSerialAuthority(4), c);
+  assert.equal(interlock.currentSerialAuthority(8), null);
+  assert.equal(eligible(win, authority(5, 'config-c'), false), true);
+  assert.equal(interlock.currentSerialAuthority(4), null);
+  assert.match(interlock.canEnableBridge(), /Disconnect Enttec/);
+  const sibling = authority(1, 'config-sibling');
+  assert.equal(eligible(other, sibling, true), true);
+  assert.equal((await arm(other, sibling)).ok, true);
+  assert.equal((await onOutputClaim(other, { type: 'claim', kind: 'serial', authority: sibling })).ok, false);
+  await onOutputClaim(win, { type: 'release', kind: 'serial', authority: c });
+  assert.equal((await onOutputClaim(other, { type: 'claim', kind: 'serial', authority: sibling })).ok, true);
+  await onOutputClaim(win, { type: 'release', kind: 'serial', authority: c });
+  assert.deepEqual(interlock.currentSerialAuthority(8), sibling);
+});
+
+test('P2 Enttec rejects canceled eligibility before the chooser, after the chooser, and after pending port open', async (t) => {
+  let current = false;
+  let chooserCalls = 0;
+  let opens = 0;
+  let closes = 0;
+  let writes = 0;
+  let choose;
+  let open;
+  let deferOpen = false;
+  const port = {
+    writable: new WritableStream({ write: () => { writes++; } }),
+    open: () => { opens++; return deferOpen ? new Promise(resolve => { open = resolve; }) : Promise.resolve(); },
+    close: async () => { closes++; },
+  };
+  const transport = new enttec.EnttecProTransport(() => {}, () => ({ requestPort() {
+    chooserCalls++;
+    return new Promise(resolve => { choose = resolve; });
+  } }));
+  t.after(() => transport.disable());
+  const enable = () => transport.enable({ universe: 2, rateHz: 30, isEligible: () => current });
+  await assert.rejects(enable(), /cancelled/);
+  assert.equal(chooserCalls, 0);
+  current = true;
+  const chooser = enable();
+  current = false;
+  choose(port);
+  await assert.rejects(chooser, /cancelled/);
+  assert.equal(opens, 0);
+
+  current = true;
+  deferOpen = true;
+  const opening = enable();
+  choose(port);
+  await waitFor(() => opens === 1);
+  current = false;
+  open();
+  await assert.rejects(opening, /cancelled/);
+  assert.equal(closes, 1);
+  assert.equal(writes, 0);
+  assert.equal(transport.isRunning(), false);
+
+  current = true;
+  deferOpen = false;
+  const fresh = enable();
+  choose(port);
+  assert.equal((await fresh).universe, 2);
+  await waitFor(() => writes > 0);
+  await transport.disable();
+  assert.equal(closes, 2);
 });
 
 test('QA regression (M5): Enttec Pro disable() resolves cleanly and aborts writer even when write() and close() hang', async () => {

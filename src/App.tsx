@@ -54,7 +54,8 @@ import {
   type DemoTrackMap,
 } from './data/demoTrack';
 import { normalizeDesign } from './data/stageDesign';
-import { downloadRig, downloadStageFile, parseRigJson } from './data/rigImport';
+import { downloadRig, downloadStageFile, parseRigJson, standaloneRigExportIssue } from './data/rigImport';
+import { makeDesignRecoveryShow, readSavedDesign, writeSavedDesign, type SavedDesignRecord } from './data/savedDesign';
 import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange, type ShowTimeline } from './data/showFile';
 import { resolveCrowdLayout, type CrowdLayout } from './data/crowdPlacement';
 import { hasCatalogFixtures } from './data/equipmentCatalog';
@@ -240,7 +241,6 @@ function webXrBlocksPhysicalOutput(phase: WebXrPhase): boolean {
 
 const REPLAY_BUMP_SOURCE = 'replay';
 
-const SAVED_DESIGN_KEY = 'stageforge.design.v1';
 const NO_MUSIC: MusicRef = { kind: 'none', name: '', playing: false };
 const NO_SCREEN: ScreenRef = { target: 'main-led', kind: 'none', name: '', playing: false };
 
@@ -257,15 +257,6 @@ const INITIAL_DISCRETE_AUDIO = {
   openingTotalBars: undefined as number | undefined,
   openingBeforeDownbeat: false,
 };
-
-function readSavedDesign(): RigConfig | null {
-  try {
-    const json = localStorage.getItem(SAVED_DESIGN_KEY);
-    return json ? parseRigJson(json) : null;
-  } catch {
-    return null;
-  }
-}
 
 interface DeskSessionSnapshot {
   rig: RigConfig;
@@ -464,13 +455,17 @@ export const App: React.FC = () => {
   const deskSnapshotRef = useRef<DeskSessionSnapshot | null>(null);
 
   const [savedDesign, setSavedDesign] = useState(readSavedDesign);
+  const savedDesignRef = useRef(savedDesign);
+  const initialDesign = !viewerMode && savedDesign.status === 'ready' ? savedDesign.record.current : undefined;
+  const localDesignMode = useRef<'attached' | 'document' | 'preset'>(initialDesign ? 'attached' : 'preset');
+  const [designSaveFailed, setDesignSaveFailed] = useState(false);
   const stopLiveOutputSyncRef = useRef<(reason: string) => void>(() => {});
-  const nativeStage = useRef<NativeStage | undefined>(undefined);
-  const crowdRef = useRef<CrowdLayout | undefined>(undefined);
+  const nativeStage = useRef<NativeStage | undefined>(initialDesign?.stage);
+  const crowdRef = useRef<CrowdLayout | undefined>(initialDesign?.crowd);
   const interchangeRef = useRef<ShowInterchange | undefined>(undefined);
   const mvrResourcesRef = useRef<Map<string, Uint8Array> | undefined>(undefined);
-  const [studioStage, setStudioStage] = useState<NativeStage>();
-  const [studioCrowd, setStudioCrowd] = useState<CrowdLayout>();
+  const [studioStage, setStudioStage] = useState<NativeStage | undefined>(initialDesign?.stage);
+  const [studioCrowd, setStudioCrowd] = useState<CrowdLayout | undefined>(initialDesign?.crowd);
   const setStageDirect = (stage?: NativeStage) => {
     nativeStage.current = stage;
     setStudioStage(stage);
@@ -511,7 +506,7 @@ export const App: React.FC = () => {
     return window.confirm(`Replacing the rig discards ${parts.length ? parts.join(', ') : 'the authored stage layout'}. Continue?`);
   };
   const [rig, setRig] = useState<RigConfig>(() =>
-    viewerMode ? structuredClone(RIG_TEMPLATES.arena_mainstage) : (savedDesign ?? structuredClone(RIG_TEMPLATES.arena_mainstage))
+    initialDesign?.rig ?? structuredClone(RIG_TEMPLATES.arena_mainstage)
   );
   const rigRef = useRef(rig);
   rigRef.current = rig;
@@ -783,6 +778,8 @@ export const App: React.FC = () => {
   activeCueIdRef.current = activeCueId;
   const clockModeRef = useRef<ClockMode>('master');
   const [designerRig, setDesignerRig] = useState<RigConfig | null>(null);
+  const [designerSavedDraft, setDesignerSavedDraft] = useState<SavedDesignRecord['current'] | null>(null);
+  const closeDesigner = () => { setDesignerSavedDraft(null); setDesignerRig(null); };
   const designerOpenRef = useRef(false);
   designerOpenRef.current = !!designerRig;
   const openRequestRef = useRef(0);
@@ -810,7 +807,7 @@ export const App: React.FC = () => {
   const replayScreen = useRef<ScreenRef>(NO_SCREEN);
   const replayScreenClock = useRef(0);
   const replayMusicClock = useRef(0);
-  const pendingDesign = useRef<RigConfig | null>(null);
+  const pendingDesign = useRef<SavedDesignRecord | null>(null);
   const saveTimer = useRef<number | undefined>(undefined);
   const [cinemaMode, setCinemaMode] = useState(() =>
     window.matchMedia('(pointer: coarse) and (max-width: 700px), (pointer: coarse) and (max-height: 500px)').matches
@@ -833,6 +830,7 @@ export const App: React.FC = () => {
     live.dmx.set({
       u1: new Uint8Array(engine.dmxUniverse1),
       u2: new Uint8Array(engine.dmxUniverse2),
+      extended: engine.copyExtendedSimDmx(),
       physU1: new Uint8Array(engine.physicalDmxU1),
       physU2: new Uint8Array(engine.physicalDmxU2),
     });
@@ -888,7 +886,7 @@ export const App: React.FC = () => {
       }
       const rep = preflightRef.current;
       if (!rep) return { allowed: false, reason: 'Run pre-flight check before starting live DMX output.' };
-      return { allowed: rep.canArm, reason: rep.blockingReasons[0] };
+      return { allowed: rep.canArm, reason: rep.blockingReasons[0], revision: rep.configRevision };
     },
     rigRef,
   );
@@ -1055,12 +1053,12 @@ export const App: React.FC = () => {
   const stopLiveOutputBeforeStructuralChange = useCallback(
     (reason: string) => {
       const dmx = liveDmxRef.current;
-      if (dmx.isLive) {
+      if (dmx.isLive || dmx.busy) {
         setLiveSafetyViolation(reason);
         clearAllBumps();
         engineRef.current?.setDmxFrameListener(undefined);
         void dmx.emergencyStopOnFault(`Output stopped: ${reason}`);
-      } else if (dmx.armed) {
+      } else {
         dmx.disarm();
       }
     },
@@ -1512,19 +1510,52 @@ export const App: React.FC = () => {
 
   const flushDesign = useCallback(() => {
     window.clearTimeout(saveTimer.current);
-    if (!capabilitiesRef.current.autosave) {
-      pendingDesign.current = null;
+    if (!capabilitiesRef.current.autosave || !pendingDesign.current) return;
+    const design = pendingDesign.current;
+    // Preserve opaque data even if a different tab changed the slot after this desk opened.
+    const disk = readSavedDesign();
+    if (disk.status !== 'ready' && disk.status !== 'missing') {
+      savedDesignRef.current = disk;
+      setSavedDesign(disk);
       return;
     }
-    const design = pendingDesign.current;
-    if (!design) return;
-    pendingDesign.current = null;
     try {
-      localStorage.setItem(SAVED_DESIGN_KEY, JSON.stringify(design));
+      writeSavedDesign(design);
+      pendingDesign.current = null;
+      const saved = { status: 'ready' as const, record: design };
+      savedDesignRef.current = saved;
+      setSavedDesign(saved);
+      setDesignSaveFailed(false);
     } catch {
-      showToast('Design applied. Export the rig to keep a copy on this device.');
+      // setItem is atomic. Keep the previous record and this exact queued revision.
+      setDesignSaveFailed(true);
     }
-  }, [showToast]);
+  }, []);
+
+  const queueDesign = useCallback((next: RigConfig, immediate = false, adopt = false) => {
+    if (!capabilitiesRef.current.autosave) return;
+    const saved = savedDesignRef.current;
+    if (saved.status === 'corrupt' || saved.status === 'newer') return;
+    const base = pendingDesign.current ?? (saved.status === 'ready' ? saved.record : undefined);
+    const current = { rig: next, stage: pruneNativeStage(nativeStage.current), crowd: crowdRef.current };
+    const previous = adopt || localDesignMode.current !== 'attached' ? base?.current : base?.previous;
+    pendingDesign.current = { current, previous };
+    localDesignMode.current = 'attached';
+    window.clearTimeout(saveTimer.current);
+    if (immediate) flushDesign();
+    else saveTimer.current = window.setTimeout(flushDesign, 250);
+  }, [flushDesign]);
+
+  useEffect(() => {
+    const stage = nativeStage.current;
+    if (stage?.screenEvents.length) {
+      const duration = stage.screenEvents.at(-1)!.atMs;
+      wallClock.set(0, false, duration);
+      timeline.syncWallDuration(duration, true);
+    }
+    // Hydrate the wall-only take exactly once, before any editor action can replace it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -2085,6 +2116,9 @@ export const App: React.FC = () => {
           ? engine.resolvedPatchForTest()
           : buildDmxPatch(rigRef.current).units.map((unit) => ({ ...unit, scope: [...unit.scope] })),
       }),
+      ...(import.meta.env.DEV && { simulatedDmxSnapshot: () => Object.fromEntries(
+        Object.entries(engine.copyExtendedSimDmx()).map(([universe, bytes]) => [universe, Array.from(bytes)]),
+      ) }),
       physicalDmxSnapshot: () => ({ u1: Array.from(engine.physicalDmxU1), u2: Array.from(engine.physicalDmxU2) }),
       ...(import.meta.env.DEV && { serialDmxSnapshot: () => ({ u1: Array.from(engine.serialPhysicalDmxU1), u2: Array.from(engine.serialPhysicalDmxU2) }) }),
       cuePreview: () => engine.getCuePreviewLevels(),
@@ -2781,21 +2815,22 @@ export const App: React.FC = () => {
     autoDirRef.current = false;
     setShowState(s => s.autoDirector ? { ...s, autoDirector: false } : s);
   };
-  const applyRig = useCallback((next: RigConfig, saveNow = false) => {
+  const applyRig = useCallback((
+    next: RigConfig, saveNow = false, mode: 'edit' | 'document' | 'preset' | 'replace' = 'edit',
+  ) => {
     if (!capabilitiesRef.current.edit) return;
     cancelDemoTrackLoad();
     stopLiveOutputBeforeStructuralChange('Rig or patch changed while live output was active — re-run pre-flight.');
-    // Loading a preset leaves storage alone, but the first edit to one becomes the saved design,
-    // as long as that doesn't replace a design already saved in the single slot.
-    if (next.schemaVersion !== 1 && !savedDesign && !isPristinePreset(next)) next = { ...next, schemaVersion: 1 };
+    if (mode === 'document' || mode === 'preset') {
+      flushDesign();
+      localDesignMode.current = mode;
+    } else {
+      if (next.schemaVersion !== 1 && !isPristinePreset(next)) next = { ...next, schemaVersion: 1 };
+      queueDesign(next, saveNow, mode === 'replace');
+    }
+    rigRef.current = next;
     setRig(next);
-    if (!capabilitiesRef.current.autosave || next.schemaVersion !== 1) return;
-    setSavedDesign(next);
-    pendingDesign.current = next;
-    window.clearTimeout(saveTimer.current);
-    if (saveNow) flushDesign();
-    else saveTimer.current = window.setTimeout(flushDesign, 250);
-  }, [savedDesign, flushDesign, cancelDemoTrackLoad, stopLiveOutputBeforeStructuralChange]);
+  }, [flushDesign, queueDesign, cancelDemoTrackLoad, stopLiveOutputBeforeStructuralChange]);
 
   // Always-fresh ref mirror for snapshot fields so async viewer entry never captures stale render-closure state (H1).
   const deskLiveStateRef = useRef({
@@ -3060,7 +3095,7 @@ export const App: React.FC = () => {
       setMeasureOptions(DEFAULT_MEASURE_OVERLAY_OPTIONS);
       setFilesOpen(false);
       setCueEditor(false);
-      setDesignerRig(null);
+      closeDesigner();
       setPendingMvr(null);
       setViewingMvrReport(false);
       setCinemaMode(false);
@@ -3118,15 +3153,19 @@ export const App: React.FC = () => {
     mediaUrls.current = new Set();
     setLinkedVersion(v => v + 1);
     const stored = readSavedDesign();
+    savedDesignRef.current = stored;
     setSavedDesign(stored);
-    const nextRig = stored ?? structuredClone(RIG_TEMPLATES.arena_mainstage);
+    const design = stored.status === 'ready' ? stored.record.current : undefined;
+    localDesignMode.current = design ? 'attached' : 'preset';
+    const nextRig = design?.rig ?? structuredClone(RIG_TEMPLATES.arena_mainstage);
     const freshLook = structuredClone(INITIAL_SHOW_STATE);
-    setStageDirect(undefined);
-    setCrowdDirect(undefined);
+    setStageDirect(design?.stage);
+    setCrowdDirect(design?.crowd);
     installInterchange(undefined, undefined);
     expectedMusic.current = NO_MUSIC;
-    timeline.replace(undefined);
-    wallClock.set(0, false);
+    const wallEnd = design?.stage?.screenEvents.at(-1)?.atMs ?? 0;
+    timeline.replace(wallEnd ? { durationMs: wallEnd, events: [] } : undefined);
+    wallClock.set(0, false, wallEnd || Infinity);
     setFollow(null);
     replaying.current = false;
     directorArmed.current = true;
@@ -3174,7 +3213,7 @@ export const App: React.FC = () => {
       wallClock.set(0, false);
       timeline.stop();
       timeline.syncWallDuration(0, false, true);
-      applyRig(next, true); previewRig(); showToast(`Opened ${next.name}.`); return;
+      applyRig(next, true, 'replace'); previewRig(); showToast(`Opened ${next.name}.`); return;
     }
     // Parse and normalize everything fallible before mutating any live desk state or assets.
     const file = parseShowFile(json);
@@ -3208,7 +3247,7 @@ export const App: React.FC = () => {
     setAudioDiscrete(INITIAL_DISCRETE_AUDIO);
     clearAllBumps();
     expectedMusic.current = file.media?.music ?? NO_MUSIC;
-    applyRig(nextRig, true);
+    applyRig(nextRig, false, 'document');
     setCues(file.cues); setActiveCueId(file.activeCueId);
     setCueModified(differsFromCue(look, file.cues.find(c => c.id === file.activeCueId), wall));
     setShowState(look); autoDirRef.current = look.autoDirector;
@@ -3233,6 +3272,46 @@ export const App: React.FC = () => {
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
     openDocument(JSON.stringify(bundle.show), bundle.files);
   };
+  const restoreLocalDesign = (which: 'current' | 'previous') => {
+    if (!capabilitiesRef.current.edit || designerOpenRef.current) return;
+    const saved = savedDesignRef.current;
+    const content = saved.status === 'ready' ? saved.record[which] : undefined;
+    if (!content) return;
+    const json = JSON.stringify(makeDesignRecoveryShow(content));
+    pendingDesign.current = null;
+    setDesignSaveFailed(false);
+    openRequestRef.current++;
+    openDocument(json);
+    if (which === 'previous') queueDesign(rigRef.current, true, true);
+    else localDesignMode.current = 'attached';
+    showToast(`Restored ${content.rig.name}. Linked media can be relinked in Show files.`);
+  };
+
+  const rigExportIssue = standaloneRigExportIssue(rig);
+  useEffect(() => {
+    window.stageforgeDesktop?.setRigExportState?.(Boolean(rigExportIssue));
+  }, [rigExportIssue]);
+  const recoveryExports = {
+    onExportRig: () => downloadRig(rig),
+    rigExportIssue,
+    onExportShow: () => {
+      const file = makeDesignRecoveryShow({ rig, stage: nativeStage.current, crowd: crowdRef.current });
+      downloadStageFile(rig.name, 'stageforge.show.json', new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' }));
+    },
+  };
+  const localDesignNotice = designSaveFailed ? 'Could not save the latest design. The previous save remains intact.'
+    : savedDesign.status === 'corrupt' ? 'The local design is unreadable and has been preserved.'
+    : savedDesign.status === 'newer' ? 'The local design was saved by a newer version and has been preserved.'
+    : savedDesign.status === 'inaccessible' ? 'Local design storage is unavailable. Save Show JSON or a Show Bundle.'
+    : undefined;
+  const localDesignControls = {
+    notice: localDesignNotice,
+    restore: savedDesign.status === 'ready' && (localDesignMode.current !== 'attached' || designSaveFailed) ? () => restoreLocalDesign('current') : undefined,
+    previous: savedDesign.status === 'ready' && savedDesign.record.previous ? () => restoreLocalDesign('previous') : undefined,
+    adopt: localDesignMode.current !== 'attached' && (savedDesign.status === 'ready' || savedDesign.status === 'missing')
+      ? () => queueDesign(rigRef.current, true, true) : undefined,
+    retry: designSaveFailed ? flushDesign : undefined,
+  };
   // MVR (DIN SPEC 15801) rigs from StageForge or other tools. Parse purely first; clean
   // StageForge round trips commit directly, while foreign MVRs or StageForge MVRs with
   // merge/loss findings open the preflight dialog so nothing changes silently.
@@ -3256,7 +3335,7 @@ export const App: React.FC = () => {
     timeline.stop();
     const lastWallMs = stage?.screenEvents.at(-1)?.atMs ?? 0;
     timeline.syncWallDuration(lastWallMs, (stage?.screenEvents.length ?? 0) > 0, true);
-    applyRig(pending.normalized, true); previewRig();
+    applyRig(pending.normalized, true, 'replace'); previewRig();
     setLastMvrReport({
       fileName: pending.fileName,
       rigName: next.name,
@@ -3727,6 +3806,7 @@ export const App: React.FC = () => {
     if (candidate.kind === 'propose_wall_cue' && candidate.stage) {
       const nextStage = structuredClone(candidate.stage);
       installStage(nextStage);
+      queueDesign(rigRef.current);
       const nextEvents = nextStage.screenEvents ?? [];
       if (candidate.timeline) {
         cancelDemoLoads();
@@ -3748,7 +3828,7 @@ export const App: React.FC = () => {
       return true;
     }
     return false;
-  }, [applyRig, cancelDemoLoads, clearAllBumps, installInterchange, installStage, previewRig, takeDesk, wallClock]);
+  }, [applyRig, cancelDemoLoads, clearAllBumps, installInterchange, installStage, previewRig, queueDesign, takeDesk, wallClock]);
 
   const restoreAiRevertSnapshot = useCallback((snap: AiRevertSnapshot) => {
     if (!capabilitiesRef.current.edit) return;
@@ -4144,7 +4224,7 @@ export const App: React.FC = () => {
       {missing.length > 0 && <button type="button" className="media-relink-alert" onClick={() => setFilesOpen(true)}>
         {missing.length} missing media {missing.length === 1 ? 'file' : 'files'} · Relink
       </button>}
-      {filesOpen && <ErrorBoundary label="Show files" onReset={() => setFilesOpen(false)} onExportRig={() => downloadRig(rig)}><ShowFiles name={rig.name} media={media} stage={studioStage} timeline={timeline.timeline} missing={missing} cueNames={new Map(cues.map(c => [c.id, c.name]))}
+      {filesOpen && <ErrorBoundary label="Show files" onReset={() => setFilesOpen(false)} {...recoveryExports}><ShowFiles name={rig.name} rigExportIssue={rigExportIssue} localDesign={localDesignControls} media={media} stage={studioStage} timeline={timeline.timeline} missing={missing} cueNames={new Map(cues.map(c => [c.id, c.name]))}
         lastMvrSummary={lastMvrReport ? {
           fileName: lastMvrReport.fileName,
           warnings: lastMvrReport.report.findings.filter(f => f.severity === 'warn').length,
@@ -4152,7 +4232,7 @@ export const App: React.FC = () => {
         } : undefined}
         onViewMvrReport={() => setViewingMvrReport(true)}
         onOpen={openFile} onOpenInViewer={openViewerPayload} onExample={openExample} onSave={saveDocument} onRelink={onRelink} onError={showToast} onClose={() => setFilesOpen(false)}/></ErrorBoundary>}
-      {pendingMvr && !filesOpen && <ErrorBoundary label="MVR import preflight" onReset={() => setPendingMvr(null)} onExportRig={() => downloadRig(rig)}><MvrImportReportDialog
+      {pendingMvr && !filesOpen && <ErrorBoundary label="MVR import preflight" onReset={() => setPendingMvr(null)} {...recoveryExports}><MvrImportReportDialog
         key={pendingMvr.request}
         mode="preflight"
         fileName={pendingMvr.fileName}
@@ -4160,14 +4240,14 @@ export const App: React.FC = () => {
         report={pendingMvr.result.report}
         onImport={() => commitMvr(pendingMvr)}
         onCancel={() => setPendingMvr(null)}/></ErrorBoundary>}
-      {viewingMvrReport && lastMvrReport && !pendingMvr && !filesOpen && <ErrorBoundary label="MVR import report" onReset={() => setViewingMvrReport(false)} onExportRig={() => downloadRig(rig)}><MvrImportReportDialog
+      {viewingMvrReport && lastMvrReport && !pendingMvr && !filesOpen && <ErrorBoundary label="MVR import report" onReset={() => setViewingMvrReport(false)} {...recoveryExports}><MvrImportReportDialog
         mode="view"
         fileName={lastMvrReport.fileName}
         rigName={lastMvrReport.rigName}
         report={lastMvrReport.report}
         importedAt={lastMvrReport.importedAt}
         onClose={() => setViewingMvrReport(false)}/></ErrorBoundary>}
-      {cueEditor && <ErrorBoundary label="Cue list editor" onReset={() => setCueEditor(false)} onExportRig={() => downloadRig(rig)}><CueListEditor cues={cues} capture={() => ({ id: crypto.randomUUID(), name: 'New look',
+      {cueEditor && <ErrorBoundary label="Cue list editor" onReset={() => setCueEditor(false)} {...recoveryExports}><CueListEditor cues={cues} capture={() => ({ id: crypto.randomUUID(), name: 'New look',
         tag: 'USER', accent: showState.primaryColor, state: structuredClone(showState), screen: cueScreen() })}
         onApply={next => {
           if (!capabilitiesRef.current.edit) return;
@@ -4333,7 +4413,7 @@ export const App: React.FC = () => {
 
       {/* Lazy Measure & Safety Zones HUD (mounted only while Measure or a zone toggle is active) */}
       {!cinemaMode && isMeasureOverlayActive(measureOptions) && (
-        <ErrorBoundary label="Measure overlay" onReset={() => setMeasureOptions(DEFAULT_MEASURE_OVERLAY_OPTIONS)} onExportRig={() => downloadRig(rig)}>
+        <ErrorBoundary label="Measure overlay" onReset={() => setMeasureOptions(DEFAULT_MEASURE_OVERLAY_OPTIONS)} {...recoveryExports}>
           <MeasureOverlayHud
             options={measureOptions}
             measureStore={live.measure}
@@ -4346,7 +4426,7 @@ export const App: React.FC = () => {
 
       {/* Visible Pre-flight Safety Gate Panel */}
       {preflightOpen && (
-        <ErrorBoundary label="Pre-flight check" onReset={() => setPreflightOpen(false)} onExportRig={() => downloadRig(rig)}>
+        <ErrorBoundary label="Pre-flight check" onReset={() => setPreflightOpen(false)} {...recoveryExports}>
           <PreflightPanel
             open={preflightOpen}
             report={preflightReport}
@@ -4363,7 +4443,7 @@ export const App: React.FC = () => {
 
       {/* Slide-Over Rig Builder */}
       {!cinemaMode && rigDrawerOpen && (
-        <ErrorBoundary label="Rig Builder" onReset={() => setRigDrawerOpen(false)} onExportRig={() => downloadRig(rig)}>
+        <ErrorBoundary label="Rig Builder" onReset={() => setRigDrawerOpen(false)} {...recoveryExports}>
           <RigBuilderDrawer
             open={rigDrawerOpen}
             rig={rig}
@@ -4373,7 +4453,11 @@ export const App: React.FC = () => {
             onOpenInventory={() => setCostModalOpen(true)}
             onClose={() => setRigDrawerOpen(false)}
             onDesignStage={() => setDesignerRig(rig)}
-            onOpenSavedDesign={savedDesign ? () => setDesignerRig(savedDesign) : undefined}
+            onOpenSavedDesign={savedDesign.status === 'ready' ? () => {
+              const draft = savedDesign.record.current;
+              setDesignerSavedDraft(draft);
+              setDesignerRig(draft.rig);
+            } : undefined}
             onNotify={showToast}
             onModelChanged={(podId, groupId) => {
               if (!capabilitiesRef.current.edit) return;
@@ -4399,12 +4483,13 @@ export const App: React.FC = () => {
                 installCrowd();
                 installInterchange();
               }
-              applyRig(next);
+              applyRig(next, replacing && !isPristinePreset(next), replacing ? (isPristinePreset(next) ? 'preset' : 'replace') : 'edit');
             }}
             onChangeStage={(next) => {
               if (!capabilitiesRef.current.edit) return;
               const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
               installStage(next);
+              queueDesign(rigRef.current);
               const nextEvents = next?.screenEvents ?? [];
               if (hadEvents || nextEvents.length) timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
               previewRig();
@@ -4415,7 +4500,7 @@ export const App: React.FC = () => {
 
       {/* Slide-Over DMX512 Live Monitor */}
       {!cinemaMode && dmxDrawerOpen && (
-        <ErrorBoundary label="DMX Monitor" onReset={() => setDmxDrawerOpen(false)} onExportRig={() => downloadRig(rig)}>
+        <ErrorBoundary label="DMX Monitor" onReset={() => setDmxDrawerOpen(false)} {...recoveryExports}>
           <DmxMonitorDrawer
             open={dmxDrawerOpen}
             rig={rig}
@@ -4433,7 +4518,7 @@ export const App: React.FC = () => {
 
       {/* Slide-Over Show Control & Sync Drawer */}
       {!cinemaMode && showControlOpen && (
-        <ErrorBoundary label="Show Control" onReset={() => setShowControlOpen(false)} onExportRig={() => downloadRig(rig)}>
+        <ErrorBoundary label="Show Control" onReset={() => setShowControlOpen(false)} {...recoveryExports}>
           <ShowControlDrawer
             open={showControlOpen}
             control={showControl}
@@ -4448,22 +4533,24 @@ export const App: React.FC = () => {
 
       {/* Real-World Production Cost & Crew Labor Estimator Modal */}
       {designerRig && (
-        <ErrorBoundary label="Stage Designer" onReset={() => setDesignerRig(null)} onExportRig={() => downloadRig(rig)}>
-          <StageDesigner rig={designerRig} stage={studioStage} crowd={studioCrowd} laserState={showState.laser} ildaClip={ildaClip} onClose={() => setDesignerRig(null)} onChange={(next, stage, crowd, replacing) => {
+        <ErrorBoundary label="Stage Designer" onReset={closeDesigner} {...recoveryExports}>
+          <StageDesigner rig={designerRig} stage={designerSavedDraft ? designerSavedDraft.stage : studioStage}
+            crowd={designerSavedDraft ? designerSavedDraft.crowd : studioCrowd} laserState={showState.laser} ildaClip={ildaClip} onClose={closeDesigner} onChange={(next, stage, crowd, replacing) => {
             if (!capabilitiesRef.current.edit) return;
             // A new blank design replaces the authored overlay and its wall cues, even if the user then
             // drew new screens or hangs; ask first, and keep the designer open if they decline.
-            if (replacing && !confirmDiscardStage()) return false;
-            if (replacing) installInterchange();
+            const replacingDesign = replacing || Boolean(designerSavedDraft);
+            if (replacingDesign && !confirmDiscardStage()) return false;
+            if (replacingDesign) installInterchange();
             // The designer edits walls, hangs and layout alongside the rig; its stage keeps existing wall cues.
             const hadEvents = (nativeStage.current?.screenEvents.length ?? 0) > 0;
             installStage(stage);
             installCrowd(crowd);
             const nextEvents = stage?.screenEvents ?? [];
             if (hadEvents || nextEvents.length) timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
-            applyRig(next, true);
+            applyRig(next, true, replacingDesign || localDesignMode.current === 'preset' ? 'replace' : 'edit');
             previewRig();
-            setDesignerRig(null);
+            closeDesigner();
           }} />
         </ErrorBoundary>
       )}
@@ -4474,7 +4561,7 @@ export const App: React.FC = () => {
             setCostModalRetry((n) => n + 1);
             setCostModalOpen(false);
           }}
-          onExportRig={() => downloadRig(rig)}
+          {...recoveryExports}
         >
           <Suspense fallback={null}>
             <CostEstimatorModal
@@ -4591,6 +4678,7 @@ export const App: React.FC = () => {
             if (!nextStage.screenEvents.some(e => e.target === event.target && e.atMs === clampedAtMs)) return;
             if (file && event.kind !== 'none') registerAsset(event.kind, file);
             installStage(nextStage);
+            queueDesign(rigRef.current);
             const lastWallMs = nextStage.screenEvents.at(-1)?.atMs ?? 0;
             timeline.syncWallDuration(lastWallMs, nextStage.screenEvents.length > 0);
             previewRig();
@@ -4604,6 +4692,7 @@ export const App: React.FC = () => {
             if (!capabilitiesRef.current.edit) return;
             const nextStage = removeSecondaryScreenEvent(rig, nativeStage.current, target, atMs);
             installStage(nextStage);
+            queueDesign(rigRef.current);
             const nextEvents = nextStage?.screenEvents ?? [];
             timeline.syncWallDuration(nextEvents.at(-1)?.atMs ?? 0, nextEvents.length > 0, true);
             wallClock.refresh();

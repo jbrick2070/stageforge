@@ -3,7 +3,10 @@ import { readFile } from 'node:fs/promises';
 
 const button = (scope, name) => scope.getByRole('button', { name, exact: true });
 const rig = page => page.evaluate(() => window.stageforgeProbe.rig());
-const savedRig = page => page.evaluate(() => JSON.parse(localStorage.getItem('stageforge.design.v1')));
+const savedRig = page => page.evaluate(() => {
+  const record = JSON.parse(localStorage.getItem('stageforge.design.v1'));
+  return record?.current?.rig ?? record;
+});
 const crowd = page => page.evaluate(() => window.stageforgeProbe.crowd());
 
 async function openFiles(page) {
@@ -65,8 +68,8 @@ async function mockOutput(page) {
           measuredHz: 0, packetsSent: 0, degraded: false, lastError: null, universes: [1, 2], nodes: [],
         };
       },
-      outputClaim: async (request) => {
-        audit.claims.push(request);
+      outputClaim: async ({ type, kind }) => {
+        audit.claims.push({ type, kind });
         return { ok: true, reason: null };
       },
       sendDmxFrame: () => { audit.frames++; return true; },
@@ -150,7 +153,7 @@ test('the Club venue rejection preserves the Steamboat Willie desk, saved rig an
   expect((await dmxAudit(page)).claims).toEqual([armedClaim]);
   await button(drawer, 'festival').click();
   await expect(button(drawer, 'festival')).toHaveClass(/border-cyan-400/);
-  await expect.poll(async () => (await savedRig(page)).venue).toBe('festival');
+  await expect.poll(async () => (await savedRig(page))?.venue).toBe('festival');
   await expect.poll(async () => (await dmxAudit(page)).claims).toEqual([armedClaim, armedRelease]);
   await expect(page.getByTestId('dmx-output-go-live')).toHaveCount(0);
   const afterFestival = await dmxAudit(page);

@@ -1,5 +1,6 @@
 import type { SpeakerProfileId } from '../data/speakerProfiles';
 import type { DemoPosition } from '../data/demoShow';
+import type { LogicalDmxUniverse } from '../data/dmxUniverses';
 
 export type VenueType = 'arena' | 'warehouse' | 'festival' | 'theatre' | 'club';
 
@@ -172,7 +173,7 @@ export interface MountedFixtureGroup {
   dmxChannels?: number;
   optics?: FixtureOptics;
   count: number;
-  dmxUniverse: 1 | 2;
+  dmxUniverse: LogicalDmxUniverse;
   dmxStartChannel: number;
   /** Optional dimmer/relay/power circuit group label (Show v7, max 32 chars). */
   circuitGroup?: string;
@@ -214,7 +215,7 @@ export interface FloorFxUnit {
   x: number;
   z: number;
   spread: number;
-  dmxUniverse: 1 | 2;
+  dmxUniverse: LogicalDmxUniverse;
   dmxStartChannel: number;
   /** Optional dimmer/relay/power circuit group label (Show v7, max 32 chars). */
   circuitGroup?: string;

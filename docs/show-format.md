@@ -28,6 +28,10 @@ Version 13 adds the original monochrome moth and ticket taker. It is selected wh
 
 Version 14 adds the built-in 1928 film cast. A show uses v14 when a zone weight or a deliberate placement references a new cast model ID. Earlier crowds continue to save at their minimum supported version. [Version 14 schema](../src/schemas/show-v14.schema.json)
 
+Version 15 adds logical DMX universes U3–U16 for Show JSON, Show Bundle and simulated playback. Add or change a universe in Rig Builder and inspect its simulated slots in DMX Monitor. A show uses v15 when its authored patch includes any U3–U16 group. Current physical transports still use logical U1–U2, and pre-flight blocks arming while the authored patch uses an extended universe. A StageForge MVR carries those logical addresses in its independent native payload v2. [Version 15 schema](../src/schemas/show-v15.schema.json)
+
+The local design keeps the current rig, stage layout, wall cues and authored crowd, with one previous design available in Show files. Opening a Show or example leaves that local design available until you edit or choose **Save as local design**. Use **Restore saved design** or **Restore previous design** to return to it and relink any named media. Save Show JSON or a Show Bundle for the complete desk and take. Standalone Rig JSON remains available for U1–U2 designs.
+
 ## Opening the examples
 
 Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay take**. The example starts a club rig in blackout. Its first cue follows after 2.5 seconds and brings four moving heads up in amber. The second cue holds until the operator advances. The six-second recording starts the built-in score, starts the main-wall video at the reveal, pauses the wall at five seconds and pauses the score at six seconds. The app bundles the [amber screen clip](../public/examples/amber-clouds.mp4). When opening the JSON directly on another machine, select the matching clip in **Files → Relink media files**.
@@ -40,10 +44,10 @@ Choose **Files → Open Amber Walk-on example**, then **Show cues → Replay tak
 
 | Field | Meaning |
 | --- | --- |
-| `$schema` | The public schema URL ending in `show-v1.schema.json` through `show-v14.schema.json`, matching the version. |
+| `$schema` | The public schema URL ending in `show-v1.schema.json` through `show-v15.schema.json`, matching the version. |
 | `format`, `version` | The string `"stageforge-show"` and an integer from `1` through `14`. |
-| `stage` | Required in v3, optional in v4–v14. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
-| `interchange` | Required in v4, optional in v5–v14. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
+| `stage` | Required in v3, optional in v4–v15. Wall IDs connect the native stage geometry to its timed secondary-screen media events. Local media references contain filenames. |
+| `interchange` | Required in v4, optional in v5–v15. Stores persistent MVR object UUIDs (`mvr.uuids`), importer-synthesized position-bar IDs (`mvr.synthetic`), imported GDTF spec/mode references (`mvr.fixtureSpecs`) and bounded unrecognised MVR XML passthrough fragments (`mvr.passthrough`: `userData`, `auxData`, `sceneNodes`, `objectExtras`, capped at 8 MiB UTF-8 total with DTDs and processing instructions rejected). |
 | `rig` | Stage dimensions and venue, optional platforms and scenic props, trusses with their fixtures, floor effects, sound system and LED wall (in v6: `catalogId`/`dmxMode`/`dmxChannels`, `cabinetId`; in v7: `trussProfileId`/`hoistId`/`hoistCount`, `circuitGroup`/`phase`, and `rig.power`). Positions and lengths use metres. |
 | `cues` | Array in playback order. Each cue has a unique `id`, a display `name`, `tag`, hex `accent` and a partial desk `state`. Optional `screen` sets the main-wall media. |
 | `look`, `activeCueId` | Complete current desk settings and the current cue ID, or `null`. Desk changes made after calling a cue belong in `look`. |

@@ -12,9 +12,11 @@ import schemaV11 from '../schemas/show-v11.schema.json';
 import schemaV12 from '../schemas/show-v12.schema.json';
 import schemaV13 from '../schemas/show-v13.schema.json';
 import schemaV14 from '../schemas/show-v14.schema.json';
+import schemaV15 from '../schemas/show-v15.schema.json';
 import type { BumpState, CameraPreset, MusicRef, RigConfig, ScreenRef, ShowCue, ShowState } from '../types/show';
 import type { CueFadeDescriptor } from './cueFade';
 import { parseRigJson } from './rigImport';
+import { hasExtendedDmx, MAX_LOGICAL_DMX_UNIVERSE } from './dmxUniverses';
 import { focusMarks } from '../engine/focusAim';
 import { laserProjectors } from './laserProjectors';
 import {
@@ -43,6 +45,7 @@ export const V11_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/s
 export const V12_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v12.schema.json';
 export const V13_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v13.schema.json';
 export const V14_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v14.schema.json';
+export const V15_SCHEMA_URL = 'https://jbrick2070.github.io/stageforge/schemas/show-v15.schema.json';
 
 export type SmpteFrameRate = 24 | 25 | 29.97 | 30;
 
@@ -124,9 +127,9 @@ export function referencedFiles(media: ShowMedia | undefined, cues: ShowCue[], t
 }
 
 export interface StageForgeShowFile {
-  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL | typeof V4_SCHEMA_URL | typeof V5_SCHEMA_URL | typeof V6_SCHEMA_URL | typeof V7_SCHEMA_URL | typeof V8_SCHEMA_URL | typeof V9_SCHEMA_URL | typeof V10_SCHEMA_URL | typeof V11_SCHEMA_URL | typeof V12_SCHEMA_URL | typeof V13_SCHEMA_URL | typeof V14_SCHEMA_URL;
+  $schema: typeof SHOW_SCHEMA_URL | typeof V2_SCHEMA_URL | typeof V3_SCHEMA_URL | typeof V4_SCHEMA_URL | typeof V5_SCHEMA_URL | typeof V6_SCHEMA_URL | typeof V7_SCHEMA_URL | typeof V8_SCHEMA_URL | typeof V9_SCHEMA_URL | typeof V10_SCHEMA_URL | typeof V11_SCHEMA_URL | typeof V12_SCHEMA_URL | typeof V13_SCHEMA_URL | typeof V14_SCHEMA_URL | typeof V15_SCHEMA_URL;
   format: 'stageforge-show';
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
   rig: RigConfig;
   cues: ShowCue[];
   look: ShowState;
@@ -181,6 +184,7 @@ const versions = {
   12: schemaV12 as ShowSchema,
   13: schemaV13 as ShowSchema,
   14: schemaV14 as ShowSchema,
+  15: schemaV15 as ShowSchema,
 };
 const compiledPatterns = new Map<string, RegExp>();
 
@@ -477,13 +481,50 @@ export function pruneInterchangeFixtureSpecs(
   });
 }
 
+function checkNativeStage(stage: NativeStage, durationMs: number) {
+  const walls = new Set<string>();
+  for (const wall of stage.walls) {
+    if (walls.has(wall.id)) invalid('show.stage.walls', 'contains a duplicate wall ID');
+    walls.add(wall.id);
+  }
+  let previous = 0;
+  for (const [i, event] of stage.screenEvents.entries()) {
+    const path = 'show.stage.screenEvents[' + i + ']';
+    if (!walls.has(event.target) || event.target === 'main-led') invalid(path + '.target', 'must identify a secondary wall');
+    if (event.atMs < previous || event.atMs > durationMs) invalid(path + '.atMs', 'falls outside the ordered timeline');
+    previous = event.atMs;
+  }
+}
+
+export interface DesignContent {
+  rig: RigConfig;
+  stage?: NativeStage;
+  crowd?: CrowdLayout;
+}
+
+export function parseDesignContent(value: unknown): DesignContent {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !('rig' in value) ||
+      Object.keys(value).some(key => !['rig', 'stage', 'crowd'].includes(key))) invalid('design', 'is invalid');
+  const { rig: rawRig, ...layout } = value;
+  const schema = versions[15];
+  const design = read(layout, {
+    type: 'object', properties: {
+      stage: { $ref: '#/$defs/nativeStage' }, crowd: { $ref: '#/$defs/crowd' },
+    }, additionalProperties: false,
+  }, 'design', false, schema) as Omit<DesignContent, 'rig'>;
+  const rig = parseRigJson(JSON.stringify(rawRig), MAX_LOGICAL_DMX_UNIVERSE);
+  if (design.stage) checkNativeStage(design.stage, design.stage.screenEvents.at(-1)?.atMs ?? 0);
+  if (design.crowd) resolveCrowdLayout(rig, design.crowd);
+  return { ...design, rig };
+}
+
 function decode(value: unknown, writing: boolean): StageForgeShowFile {
   const version = value && typeof value === 'object' && 'version' in value ? value.version : undefined;
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14) invalid('show.version', 'has an unsupported value');
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15) invalid('show.version', 'has an unsupported value');
   const schema = versions[version];
   const show = read(value, schema, 'show', writing, schema) as StageForgeShowFile;
   // Share ID, geometry, patch count and motor-range checks with the legacy rig reader.
-  const rig = parseRigJson(JSON.stringify(show.rig));
+  const rig = parseRigJson(JSON.stringify(show.rig), version === 15 ? MAX_LOGICAL_DMX_UNIVERSE : 2);
   show.rig = read(rig, schema.$defs.rig, 'show.rig', false, schema) as RigConfig;
   const refs = rigReferences(show.rig);
   const ids = new Set<string>();
@@ -503,20 +544,7 @@ function decode(value: unknown, writing: boolean): StageForgeShowFile {
       last = event.atMs;
     }
   }
-  if (show.stage) {
-    const walls = new Set<string>();
-    for (const wall of show.stage.walls) {
-      if (walls.has(wall.id)) invalid('show.stage.walls', 'contains a duplicate wall ID');
-      walls.add(wall.id);
-    }
-    let previous = 0;
-    for (const [i, event] of show.stage.screenEvents.entries()) {
-      const path = 'show.stage.screenEvents[' + i + ']';
-      if (!walls.has(event.target) || event.target === 'main-led') invalid(path + '.target', 'must identify a secondary wall');
-      if (event.atMs < previous || event.atMs > (show.timeline?.durationMs ?? 0)) invalid(path + '.atMs', 'falls outside the ordered timeline');
-      previous = event.atMs;
-    }
-  }
+  if (show.stage) checkNativeStage(show.stage, show.timeline?.durationMs ?? 0);
   if (show.interchange) checkInterchange(show.interchange, 'show.interchange');
   if (show.crowd) {
     try {
@@ -583,7 +611,8 @@ export function makeShowFile(
     rig.floorFx.some((f) => f.catalogId !== undefined || f.dmxMode !== undefined || f.dmxChannels !== undefined) ||
     rig.ledWall.cabinets?.cabinetId !== undefined;
   const hasV5Timeline = cleanTimeline?.frameRate !== undefined || cleanTimeline?.timecodeOffsetMs !== undefined;
-  const version = crowd ? crowdShowVersion(crowd) : hasV9 ? 9 : hasV8 ? 8 : hasV7 ? 7 : hasV6 ? 6 : hasV5Timeline ? 5 : cleanInterchange ? 4 : stage ? 3 : 2;
+  const extendedPatch = hasExtendedDmx(rig);
+  const version = extendedPatch ? 15 : crowd ? crowdShowVersion(crowd) : hasV9 ? 9 : hasV8 ? 8 : hasV7 ? 7 : hasV6 ? 6 : hasV5Timeline ? 5 : cleanInterchange ? 4 : stage ? 3 : 2;
   const $schema = versions[version].properties!.$schema.const as StageForgeShowFile['$schema'];
   const show = decode({
     $schema, format: 'stageforge-show', version, rig, stage, crowd, interchange: cleanInterchange,
@@ -592,7 +621,7 @@ export function makeShowFile(
     timeline: cleanTimeline,
     media: media && { music: portableMedia(media.music), screen: portableMedia(media.screen) },
   }, true);
-  if (crowd || hasV9 || hasV8 || hasV7 || hasV6 || hasV5Timeline || cleanInterchange || stage) return show;
+  if (extendedPatch || crowd || hasV9 || hasV8 || hasV7 || hasV6 || hasV5Timeline || cleanInterchange || stage) return show;
   // Emit the oldest schema that represents every field, including saved cues and takes.
   const legacy = { ...show, version: 1 as const, $schema: SHOW_SCHEMA_URL as typeof SHOW_SCHEMA_URL };
   try {
@@ -624,21 +653,21 @@ export function parseShowFile(source: string): StageForgeShowFile {
  * so unknown keys, out-of-range numbers, and invalid references are rejected rather than stripped.
  */
 export function validateLookFragmentForRig(value: unknown, rig: RigConfig, path = 'patch'): Partial<ShowState> {
-  const schema = versions[14];
+  const schema = versions[15];
   const parsed = read(value, schema.$defs.cueState, path, false, schema) as Partial<ShowState>;
   checkLook(parsed, rigReferences(rig), path);
   return parsed;
 }
 
 export function validateFullLookForRig(value: unknown, rig: RigConfig, path = 'look'): ShowState {
-  const schema = versions[14];
+  const schema = versions[15];
   const parsed = read(value, schema.$defs.look, path, false, schema) as ShowState;
   checkLook(parsed, rigReferences(rig), path);
   return parsed;
 }
 
 export function validateCueListForRig(value: unknown, rig: RigConfig, path = 'cues'): ShowCue[] {
-  const schema = versions[14];
+  const schema = versions[15];
   const parsed = read(value, { type: 'array', maxItems: 500, items: { $ref: '#/$defs/cue' } }, path, false, schema) as ShowCue[];
   const refs = rigReferences(rig);
   const ids = new Set<string>();
@@ -656,7 +685,7 @@ export function validateTimelineForRig(
   stage?: NativeStage,
   path = 'timeline',
 ): ShowTimeline {
-  const schema = versions[14];
+  const schema = versions[15];
   const parsed = read(value, schema.$defs.timeline, path, false, schema) as ShowTimeline;
   const refs = rigReferences(rig);
   let last = 0;
@@ -678,7 +707,7 @@ export function validateAudioMapForRig(
   rig: RigConfig,
   path = 'audioMap',
 ): NonNullable<ShowState['audioMap']> {
-  const schema = versions[14];
+  const schema = versions[15];
   const parsed = read(value, schema.$defs.audioMap, path, false, schema) as NonNullable<ShowState['audioMap']>;
   checkLook({ audioMap: parsed }, rigReferences(rig), path);
   return parsed;
@@ -689,7 +718,7 @@ export function validateSecondaryScreenEventForStage(
   stage: NativeStage | undefined,
   path = 'event',
 ) {
-  const schema = versions[14];
+  const schema = versions[15];
   const parsed = read(value, schema.$defs.secondaryScreenEvent, path, false, schema) as NativeStage['screenEvents'][number];
   const walls = new Set((stage?.walls ?? []).map((w) => w.id));
   if (!walls.has(parsed.target) || parsed.target === 'main-led') {

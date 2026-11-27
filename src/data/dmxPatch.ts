@@ -1,9 +1,10 @@
 import type { FixtureType, FloorFxType, FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show';
 import { FIXTURE_CATALOG, FLOOR_FX_CATALOG } from './presets';
+import { isLogicalDmxUniverse, isPhysicalDmxUniverse, PHYSICAL_DMX_UNIVERSES, type LogicalDmxUniverse } from './dmxUniverses';
 
 type Group = MountedFixtureGroup | FloorFxUnit;
 type Hardware = FixtureType | FloorFxType;
-type Universe = 1 | 2;
+type Universe = LogicalDmxUniverse;
 export type FootprintTarget = Hardware | { type: Hardware; dmxChannels?: number };
 
 export type FixtureScope = readonly ['pod', string] | readonly ['floor'];
@@ -33,6 +34,7 @@ export interface FixturePatchUnit {
   readonly end: number;
   readonly conflict: boolean;
   readonly overflow: boolean;
+  readonly unsupportedUniverse?: true;
   readonly effectiveStart: number;
 }
 
@@ -62,7 +64,7 @@ export const DMX_CHANNELS: Record<Hardware, string[]> = {
 };
 
 /** Format a DMX universe and 1-based channel as the canonical StageForge patch label (e.g. `U1.001`). */
-export function formatDmxLabel(universe: 1 | 2, address: number): string {
+export function formatDmxLabel(universe: Universe, address: number): string {
   return `U${universe}.${String(address).padStart(3, '0')}`;
 }
 
@@ -135,15 +137,19 @@ export function buildDmxPatch(rig: RigConfig, exclude?: Group, excludeScope?: Fi
         end: group.dmxStartChannel + width * group.count - 1,
       };
     });
-  const claimed = { 1: new Uint16Array(513), 2: new Uint16Array(513) };
+  const claimed: Partial<Record<Universe, Uint16Array>> = { 1: new Uint16Array(513), 2: new Uint16Array(513) };
+  const universes = new Set<Universe>(PHYSICAL_DMX_UNIVERSES);
   for (const row of groups) {
-    const slots = claimed[row.group.dmxUniverse];
+    const universe = row.group.dmxUniverse;
+    if (!isLogicalDmxUniverse(universe)) continue;
+    universes.add(universe);
+    const slots = claimed[universe] ??= new Uint16Array(513);
     for (let n = Math.max(1, Math.ceil(row.start)); n <= Math.min(512, row.end); n++) slots[n]++;
   }
   const makeRows = () => groups.map((row) => {
     const slots = claimed[row.group.dmxUniverse];
     const conflicts: number[] = [];
-    for (let n = Math.max(1, Math.ceil(row.start)); n <= Math.min(512, row.end); n++) if (slots[n] > 1) conflicts.push(n);
+    if (slots) for (let n = Math.max(1, Math.ceil(row.start)); n <= Math.min(512, row.end); n++) if (slots[n] > 1) conflicts.push(n);
     return { ...row, groupKey: fixtureGroupKey(row.scope, row.group.id), conflicts };
   });
   let rows: ReturnType<typeof makeRows> | undefined;
@@ -151,6 +157,8 @@ export function buildDmxPatch(rig: RigConfig, exclude?: Group, excludeScope?: Fi
   function occupancy(universe: Universe, start: number, end: number) {
     const overflow = !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end > 512 || end < start;
     const slots = claimed[universe];
+    if (!isLogicalDmxUniverse(universe)) return { conflict: false, overflow, effectiveStart: 0, unsupportedUniverse: true as const };
+    if (!slots) return { conflict: false, overflow, effectiveStart: 0 };
     let conflict = false;
     let unclaimed = false;
     for (let n = Math.max(1, Math.ceil(start)); n <= Math.min(512, end); n++) {
@@ -187,7 +195,7 @@ export function buildDmxPatch(rig: RigConfig, exclude?: Group, excludeScope?: Fi
   }
 
   return {
-    rig, claimed, exclusionIssue,
+    rig, claimed, universes: [...universes].sort((a, b) => a - b), exclusionIssue,
     get rows() { return rows ??= makeRows(); },
     get units(): readonly FixturePatchUnit[] { return resolvedRecords().units; },
     unitFor(group: Group, ordinal: number, scope?: FixtureScope): FixturePatchUnit | undefined {
@@ -214,7 +222,7 @@ export function allocateDmx(
   exclude?: Group,
   excludeScope?: FixtureScope,
 ) {
-  if (!Number.isSafeInteger(count) || count <= 0) return;
+  if (!isLogicalDmxUniverse(preferred) || !Number.isSafeInteger(count) || count <= 0) return;
   const type = typeof target === 'string' ? target : target.type;
   const width = typeof target === 'string' ? equipment[target].dmxFootprint : groupFootprint(target);
   if (!Number.isSafeInteger(width) || width < 1 || width > 512) return;
@@ -229,18 +237,22 @@ export function allocateDmx(
     groupFootprint(extend) === width &&
     extend.dmxUniverse === preferred;
   const next = canExtend ? extend.dmxStartChannel + extend.count * groupFootprint(extend) : undefined;
-  if (next && next >= 1 && next + needed <= 513 && !claimed[preferred].subarray(next, next + needed).some(Boolean)) {
+  if (next && next >= 1 && next + needed <= 513 && isFreePatch(claimed, preferred, next, needed)) {
     return { dmxUniverse: preferred, dmxStartChannel: next, extendsGroup: true };
   }
   return firstFreePatch(claimed, preferred, needed);
 }
 
+function isFreePatch(claimed: DmxPatch['claimed'], universe: Universe, start: number, width: number): boolean {
+  return !claimed[universe]?.subarray(start, start + width).some(Boolean);
+}
+
 function firstFreePatch(claimed: DmxPatch['claimed'], preferred: Universe, needed: number) {
-  const order: Universe[] = [preferred, preferred === 1 ? 2 : 1];
+  const order: readonly Universe[] = isPhysicalDmxUniverse(preferred) ? [preferred, preferred === 1 ? 2 : 1] : [preferred];
   for (const dmxUniverse of order) {
     let consecutive = 0;
     for (let n = 1; n <= 512; n++) {
-      consecutive = claimed[dmxUniverse][n] ? 0 : consecutive + 1;
+      consecutive = claimed[dmxUniverse]?.[n] ? 0 : consecutive + 1;
       if (consecutive === needed)
         return { dmxUniverse, dmxStartChannel: n - needed + 1, extendsGroup: false };
     }
@@ -329,24 +341,25 @@ export function repatchGroup<G extends Group>(
   update: GroupModelUpdate,
   scope?: FixtureScope,
 ): RepatchResult<G> {
+  if (!isLogicalDmxUniverse(group.dmxUniverse)) return { ok: false, reason: 'Unsupported DMX universe.' };
   const width = groupFootprint({ type: group.type, dmxChannels: update.dmxChannels });
   if (!Number.isSafeInteger(width) || width < 1 || width > 512) {
     return { ok: false, reason: 'Invalid DMX channel footprint.' };
   }
   const needed = width * group.count;
   if (needed > 512) {
-    return { ok: false, reason: `Not enough free channels in U1–U2 (${width} ch × ${group.count} exceeds 512).` };
+    return { ok: false, reason: `Not enough free channels (${width} ch × ${group.count} exceeds 512).` };
   }
   const { claimed, exclusionIssue } = buildDmxPatch(rig, group, scope);
   if (exclusionIssue) return { ok: false, reason: exclusionIssue };
   const start = group.dmxStartChannel;
   const end = start + needed - 1;
-  if (start >= 1 && end <= 512 && !claimed[group.dmxUniverse].subarray(start, end + 1).some(Boolean)) {
+  if (start >= 1 && end <= 512 && isFreePatch(claimed, group.dmxUniverse, start, needed)) {
     return { ok: true, moved: false, group: withModelUpdate(group, update), width };
   }
   const relocated = firstFreePatch(claimed, group.dmxUniverse, needed);
   if (!relocated) {
-    return { ok: false, reason: 'Not enough free channels in U1–U2.' };
+    return { ok: false, reason: `Not enough free channels in ${isPhysicalDmxUniverse(group.dmxUniverse) ? 'U1–U2' : `U${group.dmxUniverse}`}.` };
   }
   return {
     ok: true,
@@ -358,4 +371,24 @@ export function repatchGroup<G extends Group>(
     },
     width,
   };
+}
+
+/** Move an existing group only to the universe explicitly selected by the operator. */
+export function repatchGroupUniverse<G extends Group>(
+  rig: RigConfig, group: G, scope: FixtureScope, universe: Universe,
+): RepatchResult<G> {
+  const width = groupFootprint(group);
+  const span = width * group.count;
+  if (!isLogicalDmxUniverse(universe) || !Number.isSafeInteger(span) || span < 1 || span > 512) {
+    return { ok: false, reason: 'This group does not fit in the selected universe.' };
+  }
+  if (universe === group.dmxUniverse) return { ok: true, moved: false, group, width };
+  const { claimed, exclusionIssue } = buildDmxPatch(rig, group, scope);
+  if (exclusionIssue) return { ok: false, reason: exclusionIssue };
+  const preferred = group.dmxStartChannel;
+  const fits = preferred >= 1 && preferred + span <= 513 && isFreePatch(claimed, universe, preferred, span);
+  let start = fits ? preferred : 0;
+  for (let i = 1; !start && i + span <= 513; i++) if (isFreePatch(claimed, universe, i, span)) start = i;
+  if (!start) return { ok: false, reason: `Not enough free channels in U${universe}.` };
+  return { ok: true, moved: true, width, group: { ...group, dmxUniverse: universe, dmxStartChannel: start } };
 }

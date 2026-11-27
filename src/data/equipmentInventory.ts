@@ -387,15 +387,14 @@ export function computeInventory(
       };
     });
 
-  // 3. Per-universe DMX channel usage (uses number universe IDs so R6 can widen past U2 cleanly).
-  const universeIds = [1, 2] as const;
-  const universes: UniverseUsage[] = universeIds.map((u) => {
+  // 3. Per-universe DMX channel usage.
+  const universes: UniverseUsage[] = patch.universes.map((u) => {
     const slots = patch.claimed[u];
     let usedSlots = 0;
     let conflictSlots = 0;
     for (let ch = 1; ch <= 512; ch++) {
-      if (slots[ch] >= 1) usedSlots++;
-      if (slots[ch] > 1) conflictSlots++;
+      if ((slots?.[ch] ?? 0) >= 1) usedSlots++;
+      if ((slots?.[ch] ?? 0) > 1) conflictSlots++;
     }
     let overflowChannels = 0;
     for (const row of patch.rows) {

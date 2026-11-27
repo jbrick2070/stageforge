@@ -1,14 +1,20 @@
 import React from 'react';
+import { downloadStageFile } from '../data/rigImport';
+import { makeDesignRecoveryShow, readSavedDesign } from '../data/savedDesign';
+import { isViewerUrlSearch } from '../viewer/capabilities';
 
 interface ErrorBoundaryProps {
   label?: string;
   onReset?: () => void;
   onExportRig?: () => void;
+  rigExportIssue?: string;
+  onExportShow?: () => void;
   children: React.ReactNode;
 }
 
 interface ErrorBoundaryState {
   error: Error | null;
+  exportError?: string;
 }
 
 /**
@@ -26,13 +32,26 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   }
 
   private reset = () => {
-    this.setState({ error: null });
+    this.setState({ error: null, exportError: undefined });
     this.props.onReset?.();
+  };
+
+  private exportShow = () => {
+    try {
+      if (this.props.onExportShow) return this.props.onExportShow();
+      const saved = readSavedDesign();
+      if (saved.status !== 'ready') throw new Error('No readable local design is available for recovery.');
+      const file = makeDesignRecoveryShow(saved.record.current);
+      downloadStageFile(file.rig.name, 'stageforge.show.json', new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' }));
+    } catch (error) {
+      this.setState({ exportError: error instanceof Error ? error.message : 'Could not export the recovery show.' });
+    }
   };
 
   render() {
     if (!this.state.error) return this.props.children;
-    const { label, onReset, onExportRig } = this.props;
+    const { label, onReset, onExportRig, rigExportIssue, onExportShow } = this.props;
+    const canExportShow = onExportShow || (!label && !isViewerUrlSearch(window.location.search));
     return (
       <div
         role="alert"
@@ -45,6 +64,8 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
           <p className="text-xs text-zinc-300 break-words">
             {this.state.error.message || 'An unhandled render error occurred.'}
           </p>
+          {rigExportIssue && <p className="text-xs text-zinc-300">{rigExportIssue}</p>}
+          {this.state.exportError && <p className="text-xs text-rose-300">{this.state.exportError}</p>}
           <div className="flex flex-wrap gap-2 pt-1">
             {onReset && (
               <button
@@ -55,7 +76,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
                 Recover panel
               </button>
             )}
-            {onExportRig && (
+            {onExportRig && !rigExportIssue && (
               <button
                 type="button"
                 onClick={onExportRig}
@@ -64,6 +85,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
                 Export rig JSON
               </button>
             )}
+            {canExportShow && <button type="button" onClick={this.exportShow} className="transport-btn">Export recovery Show JSON</button>}
             <button
               type="button"
               onClick={() => window.location.reload()}

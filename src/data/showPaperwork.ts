@@ -1,3 +1,4 @@
+import { absoluteDmxAddress, type LogicalDmxUniverse } from './dmxUniverses';
 import type {
   FixtureType,
   FloorFxType,
@@ -54,7 +55,7 @@ export interface PaperworkUnit {
   manufacturer: string;
   type: FixtureType | FloorFxType;
   catalogId?: string;
-  universe: 1 | 2;
+  universe: LogicalDmxUniverse;
   address: number;
   dmxEnd: number;
   footprint: number;
@@ -95,7 +96,7 @@ export interface PositionSummary {
 }
 
 export interface UniverseSummary {
-  universe: 1 | 2;
+  universe: LogicalDmxUniverse;
   unitCount: number;
   usedChannels: number;
   freeChannels: number;
@@ -231,7 +232,7 @@ function formatOpticsNote(group: AnyGroup): string {
   return parts.length ? parts.join(' · ') : '—';
 }
 
-function formatDmxRange(universe: 1 | 2, address: number, footprint: number): string {
+function formatDmxRange(universe: LogicalDmxUniverse, address: number, footprint: number): string {
   const start = formatDmxLabel(universe, address);
   if (footprint <= 1) return start;
   const end = address + footprint - 1;
@@ -449,7 +450,7 @@ export function buildShowPaperwork(
     const circuit = meta ? lookupCircuit(meta.posKey, p.index) : undefined;
     const dmxEnd = p.patch.end;
     const status: PaperworkUnitStatus = p.patch.overflow ? 'overflow' : p.patch.conflict ? 'conflict' : 'ok';
-    const absoluteAddress = p.patched ? (p.universe - 1) * 512 + p.address : null;
+    const absoluteAddress = p.patched ? absoluteDmxAddress(p.universe, p.address) : null;
 
     return {
       fixtureNumber: n + 1,
@@ -553,14 +554,14 @@ export function buildShowPaperwork(
     });
   }
 
-  // Universe summaries (U1, U2).
-  const universes: UniverseSummary[] = ([1, 2] as const).map((u) => {
+  // Summarize the resolved logical patch.
+  const universes: UniverseSummary[] = patch.universes.map((u) => {
     const slots = patch.claimed[u];
     let usedChannels = 0;
     let conflictChannels = 0;
     for (let ch = 1; ch <= 512; ch++) {
-      if (slots[ch] > 0) usedChannels++;
-      if (slots[ch] > 1) conflictChannels++;
+      if ((slots?.[ch] ?? 0) > 0) usedChannels++;
+      if ((slots?.[ch] ?? 0) > 1) conflictChannels++;
     }
     const uUnits = units.filter((item) => item.universe === u);
     const overflowUnits = uUnits.filter((item) => item.status === 'overflow').length;

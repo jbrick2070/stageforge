@@ -58,13 +58,15 @@ export function DeskDialog({ title, onClose, className, children }: {title: stri
 
 export type ShowExample = 'amber-walk-on' | 'split-rig' | 'steamboat-willie';
 
-export function ShowFiles({ name, media, stage, timeline, missing, cueNames, lastMvrSummary, onViewMvrReport, onOpen, onOpenInViewer, onExample, onSave, onRelink, onError, onClose }: {
+export function ShowFiles({ name, media, stage, timeline, missing, cueNames, lastMvrSummary, onViewMvrReport, onOpen, onOpenInViewer, onExample, onSave, onRelink, onError, onClose, rigExportIssue, localDesign }: {
   name: string; media: ShowMedia; stage?: NativeStage; timeline?: ShowTimeline; missing: string[]; cueNames: Map<string, string>;
   lastMvrSummary?: { fileName: string; warnings: number; blocks: number };
   onViewMvrReport?: () => void;
   onOpen: (file: File) => Promise<void>; onOpenInViewer?: (file: File) => Promise<void>; onSave: (action: FileAction) => Promise<void>;
   onExample: (name: ShowExample) => Promise<void>;
   onRelink: (files: File[]) => string; onError?: (message: string) => void; onClose: () => void;
+  rigExportIssue?: string;
+  localDesign?: { notice?: string; restore?: () => void; previous?: () => void; adopt?: () => void; retry?: () => void };
 }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -105,6 +107,16 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, las
         onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void job(async () => { await onOpenInViewer(f); onClose(); }); }}/>}
     </div>
     <p>The show bundle includes the rig, cues and linked media for offline playback.</p>
+    {localDesign && <>
+      <h3>Local design</h3>
+      {localDesign.notice && <p role="status">{localDesign.notice}</p>}
+      <div className="file-actions">
+        {localDesign.restore && <button disabled={busy} onClick={() => void job(async () => { localDesign.restore?.(); onClose(); })}>Restore saved design</button>}
+        {localDesign.previous && <button disabled={busy} onClick={() => void job(async () => { localDesign.previous?.(); onClose(); })}>Restore previous design</button>}
+        {localDesign.adopt && <button disabled={busy} onClick={localDesign.adopt}>Save as local design</button>}
+        {localDesign.retry && <button disabled={busy} onClick={localDesign.retry}>Retry local design save</button>}
+      </div>
+    </>}
     <div className="file-actions">
       <button disabled={busy} onClick={() => void job(async () => { await onExample('amber-walk-on'); onClose(); })}>Open Amber Walk-on example</button>
       <button disabled={busy} onClick={() => void job(async () => { await onExample('split-rig'); onClose(); })}>Open Split Rig rehearsal</button>
@@ -134,7 +146,8 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, las
     </details>}
     <h3>Exchange formats</h3>
     <div className="file-formats">{([['mvr','Rig for consoles and visualizers','MVR'],['dxf','CAD plan','DXF'],['glb','3D scene','GLB'],['csv','DMX channel patch','CSV'],['patchSheetCsv','Patch sheet (per unit)','CSV'],['instrumentScheduleCsv','Instrument schedule','CSV'],['channelHookupCsv','Channel hookup','CSV'],['cueSheetCsv','Cue sheet','CSV'],['inventoryCsv','Equipment list','CSV'],['riggingPowerCsv','Rigging & power report','CSV'],['rig','Rig only','JSON']] as const).map(([kind, label, extension]) =>
-      <button key={kind} disabled={busy} onClick={() => void job(() => onSave(kind))}>{label} <small>{extension}</small></button>)}</div>
+      <button key={kind} disabled={busy || (kind === 'rig' && Boolean(rigExportIssue))} onClick={() => void job(() => onSave(kind))}>{label} <small>{extension}</small></button>)}</div>
+    {rigExportIssue && <p>{rigExportIssue}</p>}
     {lastMvrSummary && onViewMvrReport && (
       <div className="file-actions mvr-last-report-row">
         <button type="button" onClick={() => { onClose(); onViewMvrReport(); }}>

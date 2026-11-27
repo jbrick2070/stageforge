@@ -144,6 +144,9 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
   }
   assert.ok(exposedApi && typeof exposedApi.onRigCommand === 'function');
   assert.deepEqual(Object.keys(exposedApi), [
+    'setRigExportState',
+    'setDmxEligibility',
+    'onDmxAuthorityRevoked',
     'onRigCommand',
     'sendDmxFrame',
     'sendDmxHeartbeat',
@@ -221,10 +224,15 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
   assert.equal(sentMessages.length, 0);
   const validFrame = new Uint8Array(512);
   validFrame[0] = 123;
-  assert.equal(exposedApi.sendDmxFrame(1, validFrame), true);
-  assert.equal(exposedApi.sendDmxFrame(2, validFrame), true);
-  assert.equal(sentMessages.length, 2);
+  const authority = { revision: 'config-1', generation: 1 };
+  assert.equal(exposedApi.sendDmxFrame(1, validFrame), false);
+  assert.equal(exposedApi.sendDmxFrame(1, validFrame, authority), true);
+  assert.equal(exposedApi.sendDmxFrame(2, validFrame, authority), true);
+  assert.equal(exposedApi.sendDmxHeartbeat(authority), true);
+  assert.equal(sentMessages.length, 3);
   assert.equal(sentMessages[0][0], 'stageforge:dmx-frame');
+  assert.deepEqual(sentMessages[0][3], authority);
+  assert.deepEqual(sentMessages[2], ['stageforge:dmx-heartbeat', authority]);
 
   // DMX control whitelist
   await assert.rejects(() => exposedApi.dmxControl({ type: 'exec' }), TypeError);

@@ -176,9 +176,8 @@ test('a foreign MVR becomes trusses, typed fixtures, screens and props with its 
   assert.equal(pod.width, 8);
   assert.ok(Math.abs(pod.baseY - 7) < 0.001 && Math.abs(pod.z + 2) < 0.001, 'MVR (0, 2000, 7000) mm → StageForge (0, 7, −2) m');
   assert.deepEqual(pod.fixtures.map((g) => g.type), ['beam', 'beam', 'beam']);
-  // Ordered along the truss: x = −1 m (513 → U2.1), 0 m (1537 is universe 4 → next free, U2.33), +1 m ("2.17").
-  assert.deepEqual(pod.fixtures.map((g) => [g.dmxUniverse, g.dmxStartChannel]), [[2, 1], [2, 33], [2, 17]]);
-  assert.match(report.notes.join(' '), /outside universes 1–2/);
+  // Ordered along the truss: x = −1 m (513 → U2.1), 0 m (1537 → U4.1), +1 m ("2.17").
+  assert.deepEqual(pod.fixtures.map((g) => [g.dmxUniverse, g.dmxStartChannel]), [[2, 1], [4, 1], [2, 17]]);
   assert.match(report.notes.join(' '), /focus point/);
   const wall = stage.walls.find((w) => w.label === 'IMAG L');
   assert.ok(wall && Math.abs(wall.yaw - 25) < 0.05 && Math.abs(wall.width - 3) < 0.001 && Math.abs(wall.height - 2) < 0.001);
@@ -1077,7 +1076,7 @@ test('Sprint 7: synthetic MVRs cover every finding code, transform-delta thresho
   const gdtfMissing = nestedRes.report.findings.find((f) => f.code === 'gdtf-missing');
   assert.ok(gdtfMissing && gdtfMissing.count === 1 && gdtfMissing.fixtureIds[0].includes('Missing Profile Spot'));
   assert.ok(codes.has('gdtf-unparsed'), 'corrupt GDTF emits gdtf-unparsed');
-  assert.ok(codes.has('universe-repatched'), 'universe 3 fixture emits universe-repatched');
+  assert.ok(nestedRes.rig.trussPods.some(pod => pod.fixtures.some(fixture => fixture.dmxUniverse === 3)), 'supported U3 patch is retained');
   assert.ok(codes.has('address-assigned'), 'unpatched fixture emits address-assigned');
   assert.ok(codes.has('break-dropped'), 'multi-break fixture emits break-dropped');
   assert.ok(codes.has('fixture-number-lost'), 'custom FixtureID 101 / A7 emits fixture-number-lost');

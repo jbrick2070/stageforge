@@ -133,8 +133,28 @@ const upper = (id: string) => id.toUpperCase();
 const ident = '{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}';
 const offsetZ = (z: number) => `{1,0,0,0}{0,1,0,0}{0,0,1,${z}}{0,0,0,1}`;
 
-export function profileFor(type: Hardware): Profile {
-  return PROFILES[type];
+export function profileFor(type: Hardware, width = PROFILES[type].channels.length): Profile {
+  const profile = PROFILES[type];
+  if (!Number.isSafeInteger(width) || width < 1 || width > 512) throw new Error(`Cannot export a GDTF mode reserving ${width} channels.`);
+  if (width === profile.channels.length) return profile;
+  const reservationOnly = width < profile.channels.length;
+  const channels = reservationOnly ? [] : profile.channels.slice();
+  for (let offset = channels.length + 1; offset <= width; offset++) {
+    channels.push({ attribute: `Reserved_${offset}`, geometry: 'Base', default: 0, from: 0, to: 0 });
+  }
+  return {
+    ...profile,
+    file: profile.file.replace(/\.gdtf$/i, `_${width}ch.gdtf`),
+    name: `${profile.name} ${width}ch`,
+    description: `Generic ${profile.name}, ${width} reserved slots${reservationOnly ? ' (reservation only)' : ', unused offsets unmapped'}.`,
+    moving: !reservationOnly && profile.moving,
+    beam: reservationOnly ? null : profile.beam,
+    channels,
+  };
+}
+
+function attributeFeature(name: string): typeof FEATURES[string] {
+  return FEATURES[name] ?? { feature: 'Control.Reserved', pretty: name.replace('_', ' ') };
 }
 
 /** description.xml for a generic profile (validated against the official GDTF 1.2 XSD in development). */
@@ -145,7 +165,7 @@ export function profileDescription(profile: Profile): string {
   const features = new Map<string, Set<string>>();
   const activations = new Set<string>();
   for (const name of attributes) {
-    const meta = FEATURES[name];
+    const meta = attributeFeature(name);
     const [group, feature] = meta.feature.split('.');
     if (!features.has(group)) features.set(group, new Set());
     features.get(group)!.add(feature);
@@ -196,7 +216,7 @@ export function profileDescription(profile: Profile): string {
           FeatureGroups: { FeatureGroup: [...features].map(([group, set]) => ({
             '@_Name': group, '@_Pretty': group, Feature: [...set].map((name) => ({ '@_Name': name })) })) },
           Attributes: { Attribute: attributes.map((name) => {
-            const meta = FEATURES[name];
+            const meta = attributeFeature(name);
             return { '@_Name': name, '@_Pretty': meta.pretty, ...(meta.activation ? { '@_ActivationGroup': meta.activation } : {}),
               ...(meta.main ? { '@_MainAttribute': meta.main } : {}), '@_Feature': meta.feature,
               ...(meta.unit ? { '@_PhysicalUnit': meta.unit } : {}) };
@@ -270,6 +290,12 @@ export interface GdtfSummary {
   beamAngle?: number;
   hasLaser: boolean;
   emitters?: GdtfEmitterColor[];
+}
+
+/** A single supported break is required to reserve or export one physical address span. */
+export function singleBreakGdtfMode(summary: GdtfSummary, modeName?: string): GdtfModeSummary | undefined {
+  const mode = modeName ? summary.modes.find(candidate => candidate.name === modeName) : summary.modes[0];
+  if (mode?.name && !mode.flags?.length && mode.breaks.length === 1 && mode.breaks[0].dmxBreak === 1 && mode.footprint > 0) return mode;
 }
 
 const MAX_DMX_BREAK = 64;

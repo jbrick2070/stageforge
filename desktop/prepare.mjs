@@ -170,6 +170,7 @@ async function main() {
     copyFile(path.join(root, 'src', 'schemas', 'show-v12.schema.json'), path.join(app, 'show-v12.schema.json')),
     copyFile(path.join(root, 'src', 'schemas', 'show-v13.schema.json'), path.join(app, 'show-v13.schema.json')),
     copyFile(path.join(root, 'src', 'schemas', 'show-v14.schema.json'), path.join(app, 'show-v14.schema.json')),
+    copyFile(path.join(root, 'src', 'schemas', 'show-v15.schema.json'), path.join(app, 'show-v15.schema.json')),
     copyFile(path.join(source, 'preload.cjs'), path.join(app, 'preload.cjs')),
     copyFile(path.join(source, 'resources', 'icon.png'), path.join(app, 'icon.png')),
     copyFile(path.join(root, 'LICENSE'), path.join(app, 'LICENSE')),

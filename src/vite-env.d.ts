@@ -21,8 +21,14 @@ interface ArtNetDiscoveredNodeBridge {
   bindIndex: number;
 }
 
+interface DmxAuthorityBridge {
+  revision: string;
+  generation: number;
+}
+
 interface DmxStatusBridge {
   enabled: boolean;
+  authority?: DmxAuthorityBridge;
   state: 'idle' | 'running' | 'stopping';
   protocol: 'sacn' | 'artnet' | null;
   iface: string | null;
@@ -46,6 +52,7 @@ type DmxControlCommandBridge =
   | { type: 'discover'; iface: string }
   | {
       type: 'enable';
+      authority: DmxAuthorityBridge;
       config: {
         protocol: 'sacn' | 'artnet';
         iface: string;
@@ -170,6 +177,7 @@ type AiBridgeControlCommandBridge =
 type OutputClaimCommandBridge = {
   type: 'claim' | 'release';
   kind: 'armed' | 'serial';
+  authority: DmxAuthorityBridge;
 };
 
 interface OutputClaimResultBridge {
@@ -184,9 +192,12 @@ interface Window {
     webXrPageLatch(): unknown;
   };
   stageforgeDesktop?: {
+    setRigExportState(hasExtendedPatch: boolean): void;
+    setDmxEligibility(command: { authority: DmxAuthorityBridge; eligible: boolean }): Promise<boolean>;
+    onDmxAuthorityRevoked(listener: (authority: DmxAuthorityBridge, reason: string) => void): () => void;
     onRigCommand(listener: (command: 'open' | 'openBundle' | 'openMvr' | 'openViewer' | 'export' | 'show' | 'bundle' | 'dxf' | 'glb' | 'csv' | 'mvr', source?: string | Uint8Array) => void): () => void;
-    sendDmxFrame(universe: 1 | 2, data: Uint8Array): boolean;
-    sendDmxHeartbeat(): boolean;
+    sendDmxFrame(universe: 1 | 2, data: Uint8Array, authority: DmxAuthorityBridge): boolean;
+    sendDmxHeartbeat(authority: DmxAuthorityBridge): boolean;
     dmxControl(command: { type: 'listInterfaces' }): Promise<DmxNetworkInterfaceBridge[]>;
     dmxControl(command: { type: 'getStatus' }): Promise<DmxStatusBridge>;
     dmxControl(command: { type: 'disable' }): Promise<DmxStatusBridge>;

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, RefreshCw, Search, ShieldAlert, ShieldCheck, Square, Zap } from 'lucide-react';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
 import { formatArtNetAddress, parseTargetList, type DmxOutputMode } from '../dmx/liveDmx';
@@ -78,14 +78,16 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
     }
   }, [advancedOpen, hasDesktopBridge, refreshInterfaces]);
 
-  // Automatically disarm if output goes live, Advanced collapses, AI bridge activates, or pre-flight stops allowing arming.
+  // Collapse or loss of pre-flight cancels an outstanding arm. The live lease is separate.
   const canArmByPreflight = (preflight ? preflight.canArm : true) && !aiBridgeBlocking && !webXrBlocking;
+  const liveRef = useRef(isLive);
+  liveRef.current = isLive;
   useEffect(() => {
-    if (isLive || !advancedOpen || !canArmByPreflight) disarm();
+    if (!isLive && (!advancedOpen || !canArmByPreflight)) disarm();
   }, [isLive, advancedOpen, canArmByPreflight, disarm]);
 
   // Disarm cleanly if the DMX drawer unmounts while armed.
-  useEffect(() => () => disarm(), [disarm]);
+  useEffect(() => () => { if (!liveRef.current) disarm(); }, [disarm]);
 
   const patchSettings = (patch: Parameters<typeof updateSettings>[0]) => {
     disarm();
@@ -203,7 +205,7 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
           const next = e.currentTarget.open;
           setAdvancedOpen(next);
           saveAdvancedOpen(next);
-          if (!next) disarm();
+          if (!next && !liveRef.current) disarm();
         }}
         className="border-t border-white/10"
       >

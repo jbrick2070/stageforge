@@ -108,6 +108,7 @@ export class EnttecProTransport {
   private statsTimerId: ReturnType<typeof setInterval> | null = null;
   private writing = false;
   private enabled = false;
+  private stillEligible: () => boolean = () => true;
   private universe: 1 | 2 = 1;
   private rateHz = 35;
   private measuredHz = 0;
@@ -154,9 +155,10 @@ export class EnttecProTransport {
     this.slots.set(data);
   }
 
-  public async enable(options: { universe: 1 | 2; rateHz: number; allowAllDevices?: boolean }): Promise<SerialTransportStatus> {
+  public async enable(options: { universe: 1 | 2; rateHz: number; allowAllDevices?: boolean; isEligible?: () => boolean }): Promise<SerialTransportStatus> {
     if (this.enabled || this.port) await this.disable();
     const gen = ++this.sessionGen;
+    const isCurrent = () => this.sessionGen === gen && (options.isEligible?.() ?? true);
     const serial = this.serialProvider();
     if (!serial) {
       throw new Error('Web Serial is not available in this browser. Use Chromium/Edge or the StageForge desktop app.');
@@ -167,6 +169,7 @@ export class EnttecProTransport {
       : [{ usbVendorId: FTDI_VENDOR_ID, usbProductId: FTDI_PRODUCT_ID }, { usbVendorId: FTDI_VENDOR_ID }];
 
     let port: WebSerialPortLike;
+    if (!isCurrent()) throw new Error('USB DMX startup was cancelled.');
     try {
       port = await serial.requestPort(filters ? { filters } : undefined);
     } catch (err) {
@@ -176,7 +179,7 @@ export class EnttecProTransport {
       throw new Error(err instanceof Error ? err.message : 'Could not select serial port.');
     }
 
-    if (this.sessionGen !== gen) {
+    if (!isCurrent()) {
       throw new Error('USB DMX startup was cancelled.');
     }
 
@@ -192,8 +195,8 @@ export class EnttecProTransport {
       throw new Error(`Could not open serial port: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    if (this.sessionGen !== gen) {
-      try { await port.close(); } catch { /* ignore */ }
+    if (!isCurrent()) {
+      if (this.port !== port) try { await port.close(); } catch { /* ignore */ }
       throw new Error('USB DMX startup was cancelled.');
     }
 
@@ -220,6 +223,7 @@ export class EnttecProTransport {
     this.universe = options.universe;
     this.rateHz = clampedHz;
     this.enabled = true;
+    this.stillEligible = options.isEligible ?? (() => true);
     this.writing = false;
     this.error = null;
     this.deviceLabel = label;
@@ -332,7 +336,7 @@ export class EnttecProTransport {
     if (this.sessionGen !== expectedGen || this.port !== expectedPort || this.writer !== expectedWriter) {
       return;
     }
-    this.sessionGen++;
+    const closedGeneration = ++this.sessionGen;
     this.enabled = false;
     this.writing = false;
     this.clearTimers();
@@ -351,7 +355,7 @@ export class EnttecProTransport {
     if (port) {
       try { await port.close(); } catch { /* ignore */ }
     }
-    this.emit();
+    if (this.sessionGen === closedGeneration) this.emit();
   }
 
   private clearTimers(): void {
@@ -378,6 +382,7 @@ export class EnttecProTransport {
 
   private async tick(gen: number): Promise<void> {
     if (this.sessionGen !== gen || !this.enabled || !this.writer || !this.port) return;
+    if (!this.stillEligible()) { await this.disable(); return; }
     if (this.writing) {
       this.scheduleLoop(gen);
       return;

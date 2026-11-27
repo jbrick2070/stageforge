@@ -10,7 +10,8 @@ import {
 import type { FloorFxUnit, MountedFixtureGroup, RigConfig, TrussPodConfig } from '../../types/show';
 import { createBlankDesign, normalizeDesign } from '../../data/stageDesign';
 import { parseRigJson } from '../../data/rigImport';
-import { allocateDmx } from '../../data/dmxPatch';
+import { isLogicalDmxUniverse, MAX_LOGICAL_DMX_UNIVERSE, type LogicalDmxUniverse } from '../../data/dmxUniverses';
+import { allocateDmx, groupFootprint } from '../../data/dmxPatch';
 import { finalizeStage, MAX_LAYOUT_ITEMS, setLayoutProps } from '../../data/stagePlan';
 import { MAX_STAGE_WALLS, resolveStudioGeometry, upsertStageWall, type LayoutProp } from '../../data/studioGeometry';
 import { placeFixtures } from '../../data/fixturePlacement';
@@ -27,7 +28,7 @@ import {
   readPose,
   type MvrMatrix,
 } from './coords';
-import { classifyGdtf, readGdtf, type GdtfSummary, type Hardware } from './gdtf';
+import { classifyGdtf, readGdtf, singleBreakGdtfMode, type GdtfSummary, type Hardware } from './gdtf';
 import { glbBounds } from './glb';
 import { attr, buildXmlFragment, child, list, parseXml, text, type XmlNode } from './xml';
 import {
@@ -48,7 +49,8 @@ export type MvrFindingSeverity = 'info' | 'warn' | 'block';
 export type MvrFindingCode =
   | 'fixture-number-lost'
   | 'uuid-changed'
-  | 'universe-repatched'
+  | 'universe-unsupported'
+  | 'gdtf-generic-reserve'
   | 'address-assigned'
   | 'break-dropped'
   | 'patch-overlap'
@@ -366,35 +368,41 @@ function sceneItems(root: XmlNode | undefined, recorder?: PassthroughRecorder): 
  * (and mapped to GDTF 1-based DMXBreak = mvrBreak + 1).
  */
 export function readAddresses(node: XmlNode): MvrAddress[] {
-  const raw = child(node, 'Addresses')?.['Address'];
-  const entries = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
   const byBreak = new Map<number, MvrAddress>();
-  for (const entry of entries.slice(0, MAX_ADDRESS_BREAKS)) {
-    const rawBreak = entry && typeof entry === 'object' ? attr(entry, 'break') : undefined;
-    const rawValue = entry && typeof entry === 'object'
-      ? String((entry as XmlNode)['#text'] ?? '').replace(CONTROL_CHARS, '').trim()
-      : String(entry ?? '').replace(CONTROL_CHARS, '').trim();
+  for (const { rawBreak, rawValue } of addressEntries(node)) {
     if (!rawValue) continue;
     const mvrBreak = rawBreak === undefined || rawBreak.trim() === '' ? 0 : Number(rawBreak);
     if (!Number.isInteger(mvrBreak) || mvrBreak < 0 || mvrBreak >= MAX_ADDRESS_BREAKS) continue;
     if (byBreak.has(mvrBreak)) continue;
 
-    let universe: number, channel: number, absolute: number;
-    if (/^\d+\.\d+$/.test(rawValue)) {
-      [universe, channel] = rawValue.split('.').map(Number);
-      if (universe < 1 || universe > 32768 || channel < 1 || channel > 512) continue;
-      absolute = (universe - 1) * 512 + channel;
-    } else if (/^\d+$/.test(rawValue)) {
-      absolute = Number(rawValue);
-      if (!Number.isSafeInteger(absolute) || absolute < 1 || absolute > 32768 * 512) continue;
-      universe = Math.floor((absolute - 1) / 512) + 1;
-      channel = ((absolute - 1) % 512) + 1;
-    } else {
-      continue;
-    }
-    byBreak.set(mvrBreak, { mvrBreak, dmxBreak: mvrBreak + 1, universe, channel, absolute });
+    const parsed = parseDmxAddress(rawValue);
+    if (parsed) byBreak.set(mvrBreak, { mvrBreak, dmxBreak: mvrBreak + 1, ...parsed });
   }
   return [...byBreak.values()].sort((a, b) => a.mvrBreak - b.mvrBreak);
+}
+
+function addressEntries(node: XmlNode) {
+  const raw = child(node, 'Addresses')?.['Address'];
+  const entries = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+  return entries.slice(0, MAX_ADDRESS_BREAKS).map(entry => {
+    const rawBreak = entry && typeof entry === 'object' ? attr(entry, 'break') : undefined;
+    const rawValue = entry && typeof entry === 'object'
+      ? String((entry as XmlNode)['#text'] ?? '').replace(CONTROL_CHARS, '').trim()
+      : String(entry ?? '').replace(CONTROL_CHARS, '').trim();
+    return { rawBreak, rawValue };
+  });
+}
+
+function parseDmxAddress(rawValue: string) {
+  if (/^\d+\.\d+$/.test(rawValue)) {
+    const [universe, channel] = rawValue.split('.').map(Number);
+    if (universe >= 1 && universe <= 32768 && channel >= 1 && channel <= 512) return { universe, channel, absolute: (universe - 1) * 512 + channel };
+  } else if (/^\d+$/.test(rawValue)) {
+    const absolute = Number(rawValue);
+    if (Number.isSafeInteger(absolute) && absolute >= 1 && absolute <= 32768 * 512) return {
+      absolute, universe: Math.floor((absolute - 1) / 512) + 1, channel: ((absolute - 1) % 512) + 1,
+    };
+  }
 }
 
 /** First (lowest-break) DMX address of a fixture: an absolute integer, or the legacy "universe.channel" text. */
@@ -596,7 +604,8 @@ function restore(
   maxResourceBytes: number,
   unsupportedResources: string[],
 ): MvrImport {
-  const source = parseRigJson(JSON.stringify(payload.rig));
+  const maxUniverse = payload.version === 2 ? MAX_LOGICAL_DMX_UNIVERSE : 2;
+  const source = parseRigJson(JSON.stringify(payload.rig), maxUniverse);
   const collector = createFindings();
   recordUnreadable(items, 'ignored', collector);
 
@@ -659,7 +668,7 @@ function restore(
       trussTransformIgnored,
     );
   }
-  const rig = parseRigJson(JSON.stringify({ ...source, trussPods: pods }));
+  const rig = parseRigJson(JSON.stringify({ ...source, trussPods: pods }), maxUniverse);
   // The payload is untrusted too: a damaged stage overlay is left out rather than failing the open.
   let stage: NativeStage | undefined;
   let stageReadable = true;
@@ -879,6 +888,7 @@ function restore(
 interface Unit {
   type: Hardware; model: string; x: number; y: number; z: number; standing: boolean;
   address?: { universe: number; channel: number }; parentTruss?: number;
+  unsupportedAddress?: string; width?: number;
   uuid?: string; rawUuid: string; itemName: string; spec?: string; mode?: string; node: XmlNode; matrix: MvrMatrix;
 }
 
@@ -943,8 +953,9 @@ export function importMvr(bytes: Uint8Array, options?: ImportMvrOptions): MvrImp
     } catch {
       payload = undefined;
     }
-    if (payload?.format === 'stageforge-mvr' && payload.version === 1 && payload.rig) {
-      return restore(payload, root, sceneItems(root), provider, resources, droppedResources, maxResourceBytes, unsupportedResources);
+    if (payload?.format === 'stageforge-mvr') {
+      if (payload.version !== 1 && payload.version !== 2) throw new Error('Unsupported embedded StageForge MVR version.');
+      if (payload.rig) return restore(payload, root, sceneItems(root), provider, resources, droppedResources, maxResourceBytes, unsupportedResources);
     }
     payloadFallbackNote = 'The embedded StageForge payload was unreadable; the scene was imported as a generic MVR.';
   } else if (marked && !payloadFile) {
@@ -1112,6 +1123,10 @@ export function importMvr(bytes: Uint8Array, options?: ImportMvrOptions): MvrImp
     else if (entry.status === 'capped') gdtfCappedIds.push(itemLabel(item.node, item.name, item.uuid, 'Fixture'));
 
     const addresses = readAddresses(item.node);
+    const unsupportedAddress = addressEntries(item.node).find(({ rawValue }) =>
+      rawValue && !isLogicalDmxUniverse(parseDmxAddress(rawValue)?.universe),
+    )?.rawValue;
+    const mode = summary && singleBreakGdtfMode(summary, modeName);
     const modeBreaks = summary ? (summary.modes.find((m) => m.name === modeName) ?? summary.modes[0])?.breaks.length ?? 0 : 0;
     if (addresses.length > 1 || modeBreaks > 1) {
       const countLabel = Math.max(addresses.length, modeBreaks);
@@ -1125,6 +1140,8 @@ export function importMvr(bytes: Uint8Array, options?: ImportMvrOptions): MvrImp
     units.push({
       type, model: name(model, 256) || 'MVR fixture', ...pose.position, standing: pose.standing,
       address: addresses[0] ? { universe: addresses[0].universe, channel: addresses[0].channel } : undefined,
+      unsupportedAddress,
+      width: mode?.footprint,
       parentTruss: item.parentTruss,
       uuid: canonicalUuid(item.uuid),
       rawUuid: item.uuid,
@@ -1232,8 +1249,9 @@ export function importMvr(bytes: Uint8Array, options?: ImportMvrOptions): MvrImp
   }
 
   const synthetic = [...clusters.values()].map((p) => p.id);
-  const toPatch: Array<{ group: MountedFixtureGroup | FloorFxUnit; type: Hardware; key: string; unit: Unit }> = [];
+  const toPatch: Array<{ group: MountedFixtureGroup | FloorFxUnit; key: string; unit: Unit }> = [];
   const sourceByKey = new Map<string, Unit>();
+  const genericReserveIds: string[] = [];
   const captureFixtureExtras = (fKey: string, unitNode: XmlNode) => {
     const extras: string[] = [];
     for (const [tag, value] of Object.entries(unitNode)) {
@@ -1256,17 +1274,22 @@ export function importMvr(bytes: Uint8Array, options?: ImportMvrOptions): MvrImp
 
   const groupOf = (unit: Unit, index: number, podId: string | undefined, extra: Partial<FloorFxUnit> = {}) => {
     const group = { id: `mvr-${index + 1}`, type: unit.type, modelName: unit.model, count: 1,
-      dmxUniverse: 1 as 1 | 2, dmxStartChannel: 513, ...extra };
+      dmxUniverse: 1 as LogicalDmxUniverse, dmxStartChannel: 513,
+      ...(unit.width === undefined ? {} : { dmxChannels: unit.width }), ...extra };
     const fKey = fixtureKey({ podId, group: group as MountedFixtureGroup | FloorFxUnit, index: 0 });
     sourceByKey.set(fKey, unit);
     if (unit.spec) fixtureSpecs[fKey] = { spec: unit.spec, mode: unit.mode ?? '' };
     captureFixtureExtras(fKey, unit.node);
-    if (unit.address && unit.address.universe <= 2) {
-      group.dmxUniverse = unit.address.universe as 1 | 2;
+    if (unit.width === undefined && !unit.unsupportedAddress) {
+      const width = groupFootprint(group);
+      genericReserveIds.push(itemLabel(unit.node, unit.itemName, unit.rawUuid, 'Fixture', `${width} reserved slots`));
+    }
+    if (!unit.unsupportedAddress && unit.address && isLogicalDmxUniverse(unit.address.universe)) {
+      group.dmxUniverse = unit.address.universe;
       group.dmxStartChannel = unit.address.channel;
     } else {
       // Off the end of the universe until re-patched below, so it claims no channels meanwhile.
-      toPatch.push({ group: group as MountedFixtureGroup | FloorFxUnit, type: unit.type, key: fKey, unit });
+      toPatch.push({ group: group as MountedFixtureGroup | FloorFxUnit, key: fKey, unit });
     }
     return group;
   };
@@ -1280,27 +1303,31 @@ export function importMvr(bytes: Uint8Array, options?: ImportMvrOptions): MvrImp
   rig.trussPods = allPods;
   rig.floorFx = floor.map((unit) => groupOf(unit, n++, undefined, { x: round3(unit.x), z: round3(unit.z), spread: 0 }) as FloorFxUnit);
 
-  // Units outside StageForge's two universes (or unpatched) take the next free addresses.
-  for (const { group, type } of toPatch) {
-    const patch = allocateDmx(rig, type, 1, 2);
+  // Unpatched fixtures retain the legacy auto-allocation behavior. Explicit unsupported addresses are never reassigned.
+  for (const { group, unit } of toPatch) {
+    if (unit.unsupportedAddress) continue;
+    const patch = allocateDmx(rig, group, 1, 2);
     if (patch) {
       group.dmxUniverse = patch.dmxUniverse;
       group.dmxStartChannel = patch.dmxStartChannel;
     }
   }
-  const repatchedUniverse = toPatch.filter(({ group, unit }) => group.dmxStartChannel <= 512 && unit.address !== undefined);
-  const assignedUnpatched = toPatch.filter(({ group, unit }) => group.dmxStartChannel <= 512 && unit.address === undefined);
-  if (repatchedUniverse.length) {
+  const unsupported = toPatch.filter(({ unit }) => unit.unsupportedAddress);
+  const assignedUnpatched = toPatch.filter(({ group, unit }) => group.dmxStartChannel <= 512 && !unit.unsupportedAddress);
+  if (unsupported.length) {
     collector.add(
-      'warn',
-      'universe-repatched',
-      `${plural(repatchedUniverse.length, 'fixture')} outside universes 1–2 took free addresses.`,
-      repatchedUniverse.length,
-      repatchedUniverse.map(({ unit, group }) =>
-        itemLabel(unit.node, unit.itemName, unit.rawUuid, 'Fixture', `U${unit.address!.universe}.${unit.address!.channel} → U${group.dmxUniverse}.${group.dmxStartChannel}`),
-      ),
+      'block',
+      'universe-unsupported',
+      `${plural(unsupported.length, 'fixture')} had a DMX address outside the supported U1–U16 range or an invalid channel. Correct the patch in the source MVR and import again.`,
+      unsupported.length,
+      unsupported.map(({ unit }) => itemLabel(unit.node, unit.itemName, unit.rawUuid, 'Fixture',
+        `Unsupported address ${name(unit.unsupportedAddress ?? '', 80)}`,
+      )),
     );
   }
+  if (genericReserveIds.length) collector.add('warn', 'gdtf-generic-reserve',
+    `${plural(genericReserveIds.length, 'fixture')} used a generic StageForge reservation because no supported GDTF mode was available. Reserved widths are listed below.`,
+    genericReserveIds.length, genericReserveIds);
   if (assignedUnpatched.length) {
     collector.add(
       'info',
@@ -1324,16 +1351,17 @@ export function importMvr(bytes: Uint8Array, options?: ImportMvrOptions): MvrImp
     }
     rig.trussPods = rig.trussPods.map((pod) => ({ ...pod, fixtures: pod.fixtures.filter((g) => !drop.has(g)) }));
     rig.floorFx = rig.floorFx.filter((g) => !drop.has(g));
-    collector.add(
-      noteFixtureDrops(unplaced.length),
+    const noRoom = unplaced.filter(({ unit }) => !unit.unsupportedAddress);
+    if (noRoom.length) collector.add(
+      noteFixtureDrops(noRoom.length),
       'fixture-dropped',
-      `${plural(unplaced.length, 'fixture')} did not fit in two universes and ${unplaced.length === 1 ? 'was' : 'were'} left out.`,
-      unplaced.length,
-      unplaced.map(({ unit }) => itemLabel(unit.node, unit.itemName, unit.rawUuid, 'Fixture')),
+      `${plural(noRoom.length, 'fixture')} did not fit in two universes and ${noRoom.length === 1 ? 'was' : 'were'} left out.`,
+      noRoom.length,
+      noRoom.map(({ unit }) => itemLabel(unit.node, unit.itemName, unit.rawUuid, 'Fixture')),
     );
   }
 
-  const finalRig = parseRigJson(JSON.stringify(rig));
+  const finalRig = parseRigJson(JSON.stringify(rig), MAX_LOGICAL_DMX_UNIVERSE);
   const normalizedRig = normalizeDesign(finalRig);
   const placedUnits = placeFixtures(normalizedRig);
   const exportedNumbers = fixtureNumbers(normalizedRig);

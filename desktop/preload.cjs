@@ -6,6 +6,7 @@ const showControlEventListeners = new Set();
 const showControlStatusListeners = new Set();
 const aiBridgeStatusListeners = new Set();
 const aiBridgeRequestListeners = new Set();
+const dmxRevocationListeners = new Set();
 let pending;
 let latestDmxStatus;
 let latestShowControlStatus;
@@ -15,6 +16,7 @@ let latestAiBridgeStatus;
 const isBytes = value => ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Uint8Array]';
 const isBuffer = value => Object.prototype.toString.call(value) === '[object ArrayBuffer]';
 const isUniverse = value => value === 1 || value === 2;
+const isAuthority = value => value && typeof value.revision === 'string' && Number.isSafeInteger(value.generation);
 const DMX_CONTROL_TYPES = new Set(['listInterfaces', 'getStatus', 'enable', 'disable', 'discover']);
 const SHOW_CONTROL_TYPES = new Set(['getStatus', 'configure', 'stop', 'send']);
 const AI_BRIDGE_CONTROL_TYPES = new Set(['getStatus', 'enable', 'disable', 'quiesced']);
@@ -51,6 +53,11 @@ ipcRenderer.on('stageforge:dmx-status', (_event, status) => {
   for (const listener of [...dmxStatusListeners]) deliver(listener, [status]);
 });
 
+ipcRenderer.on('stageforge:dmx-authority-revoked', (_event, authority, reason) => {
+  if (!isAuthority(authority) || typeof reason !== 'string') return;
+  for (const listener of [...dmxRevocationListeners]) deliver(listener, [authority, reason]);
+});
+
 ipcRenderer.on('stageforge:show-control-event', (_event, payload) => {
   if (!payload || typeof payload !== 'object') return;
   if (payload.kind !== 'trigger' && payload.kind !== 'timecode') return;
@@ -76,6 +83,17 @@ ipcRenderer.on('stageforge:ai-bridge-request', (_event, request) => {
 });
 
 contextBridge.exposeInMainWorld('stageforgeDesktop', {
+  setRigExportState(hasExtendedPatch) {
+    if (typeof hasExtendedPatch === 'boolean') ipcRenderer.send('stageforge:rig-export-state', hasExtendedPatch);
+  },
+  setDmxEligibility(command) {
+    return ipcRenderer.invoke('stageforge:dmx-eligibility', command);
+  },
+  onDmxAuthorityRevoked(listener) {
+    if (typeof listener !== 'function') throw new TypeError('Expected an output revocation listener');
+    dmxRevocationListeners.add(listener);
+    return () => dmxRevocationListeners.delete(listener);
+  },
   onRigCommand(listener) {
     if (typeof listener !== 'function') throw new TypeError('Expected a rig command listener');
     listeners.add(listener);
@@ -86,13 +104,14 @@ contextBridge.exposeInMainWorld('stageforgeDesktop', {
     }
     return () => listeners.delete(listener);
   },
-  sendDmxFrame(universe, data) {
-    if (!isUniverse(universe) || !isBytes(data) || data.byteLength !== 512) return false;
-    ipcRenderer.send('stageforge:dmx-frame', universe, data);
+  sendDmxFrame(universe, data, authority) {
+    if (!isUniverse(universe) || !isBytes(data) || data.byteLength !== 512 || !isAuthority(authority)) return false;
+    ipcRenderer.send('stageforge:dmx-frame', universe, data, authority);
     return true;
   },
-  sendDmxHeartbeat() {
-    ipcRenderer.send('stageforge:dmx-heartbeat');
+  sendDmxHeartbeat(authority) {
+    if (!isAuthority(authority)) return false;
+    ipcRenderer.send('stageforge:dmx-heartbeat', authority);
     return true;
   },
   dmxControl(command) {

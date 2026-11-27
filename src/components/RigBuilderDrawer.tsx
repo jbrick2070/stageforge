@@ -7,7 +7,8 @@ import { SpeakerHangsEditor } from './SpeakerHangsEditor';
 import { ScreenWallsEditor } from './ScreenWallsEditor';
 import type { NativeStage } from '../data/showFile';
 import { isCustomMainWall } from '../data/studioGeometry';
-import { addPatchedUnits, allocateDmx, fixtureScope, FLOOR_FIXTURE_SCOPE, repatchGroup, type GroupModelUpdate } from '../data/dmxPatch';
+import { addPatchedUnits, allocateDmx, fixtureScope, FLOOR_FIXTURE_SCOPE, repatchGroup, repatchGroupUniverse, type GroupModelUpdate } from '../data/dmxPatch';
+import { countRigFixtureUnits, isLogicalDmxUniverse, LOGICAL_DMX_UNIVERSES, MAX_RIG_FIXTURE_UNITS, type LogicalDmxUniverse } from '../data/dmxUniverses';
 import { checkCatalogChannelDrift } from '../data/equipmentCatalog';
 import { hoistPoints } from '../data/hoistPoints';
 import {
@@ -25,7 +26,7 @@ import {
   stockViolations,
   type ShopStockState,
 } from '../data/shopStock';
-import { downloadRig, MAX_RIG_JSON_BYTES, parseRigJson } from '../data/rigImport';
+import { downloadRig, MAX_RIG_JSON_BYTES, parseRigJson, standaloneRigExportIssue } from '../data/rigImport';
 import { GRID_HEIGHT, ledPlacement } from '../data/stageEquipment';
 import { normalizeDesign } from '../data/stageDesign';
 import { SPEAKER_PROFILES, type SpeakerProfileId } from '../data/speakerProfiles';
@@ -43,7 +44,9 @@ import {
 } from 'lucide-react';
 import {
   FixtureType,
+  FloorFxUnit,
   FloorFxType,
+  MountedFixtureGroup,
   PhaseId,
   RigConfig,
   TrussPodConfig,
@@ -66,6 +69,21 @@ interface RigBuilderDrawerProps {
   onOpenSavedDesign?: () => void;
   onNotify?: (message: string) => void;
   onModelChanged?: (podId: string | undefined, groupId: string) => void;
+}
+
+function FixtureUniverseSelect({ group, location, onChange }: {
+  group: MountedFixtureGroup | FloorFxUnit;
+  location: string;
+  onChange: (universe: LogicalDmxUniverse) => void;
+}) {
+  return <select aria-label={`DMX universe for ${group.modelName} on ${location}`} value={group.dmxUniverse}
+    className="rounded border border-white/15 bg-zinc-900 px-1 text-[9px] text-zinc-300"
+    onChange={event => {
+      const universe = Number(event.target.value);
+      if (isLogicalDmxUniverse(universe)) onChange(universe);
+    }}>
+    {LOGICAL_DMX_UNIVERSES.map(universe => <option key={universe} value={universe}>U{universe}</option>)}
+  </select>;
 }
 
 function TrussDimension({ label, value, low, high, minimum, increment, onChange }: {
@@ -251,8 +269,24 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
   const speakerProfile = SPEAKER_PROFILES[profileId];
   const gridHeight = GRID_HEIGHT[rig.venue];
   const wall = ledPlacement(rig);
+  const rigExportIssue = standaloneRigExportIssue(rig);
+
+  const changeUniverse = <G extends MountedFixtureGroup | FloorFxUnit>(
+    group: G, universe: LogicalDmxUniverse, apply: (next: G) => void, podId?: string,
+  ) => {
+    const result = repatchGroupUniverse(rig, group, fixtureScope(podId), universe);
+    if (!result.ok) { setPatchError(result.reason); return; }
+    if (!result.moved) return;
+    setPatchError('');
+    apply(result.group);
+  };
 
   const commitRigEdit = (next: RigConfig): string | undefined => {
+    if (countRigFixtureUnits(next) > MAX_RIG_FIXTURE_UNITS) {
+      const message = 'This rig exceeds the 1,024 fixture limit.';
+      setPatchError(message);
+      return message;
+    }
     const violations = stockViolations(rig, next, shopStock);
     if (violations.length > 0) {
       const message = formatStockBlockMessage(violations);
@@ -450,8 +484,9 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
         <div className="flex items-center gap-1">
           <button
             onClick={() => downloadRig(rig)}
+            disabled={Boolean(rigExportIssue)}
             className="p-1.5 rounded bg-white/5 hover:bg-white/15 text-zinc-300 cursor-pointer"
-            title="Export Custom Rig JSON"
+            title={rigExportIssue ?? 'Export Custom Rig JSON'}
           >
             <Download className="w-3.5 h-3.5" />
           </button>
@@ -515,6 +550,7 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
         </div>
       )}
       {patchError && <p role="alert" className="px-3 py-1.5 text-xs text-amber-300 bg-amber-950/50 border-b border-amber-400/30">{patchError}</p>}
+      {rigExportIssue && <p className="px-3 py-1.5 text-xs text-zinc-300">{rigExportIssue}</p>}
       <p role="status" aria-live="polite" className="sr-only">{loadAnnouncement}</p>
       {/* Scrollable Builder Sections */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3.5 text-xs">
@@ -873,6 +909,9 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                         <span className="font-mono-tech text-[9px] text-zinc-500 shrink-0">
                           U{fg.dmxUniverse}.{String(fg.dmxStartChannel).padStart(3, '0')}
                         </span>
+                        <FixtureUniverseSelect group={fg} location={pod.name} onChange={universe => changeUniverse(
+                          fg, universe, group => updatePod(pod.id, { fixtures: pod.fixtures.map(item => item === fg ? group : item) }), pod.id,
+                        )} />
                       </div>
                       <div className="flex items-center gap-1.5 font-mono-tech shrink-0">
                         <button
@@ -989,6 +1028,9 @@ export const RigBuilderDrawer: React.FC<RigBuilderDrawerProps> = ({
                   <span className="font-mono-tech text-[9px] text-zinc-500 shrink-0">
                     U{fx.dmxUniverse}.{String(fx.dmxStartChannel).padStart(3, '0')}
                   </span>
+                  <FixtureUniverseSelect group={fx} location="Stage floor" onChange={universe => changeUniverse(
+                    fx, universe, group => onChangeRig({ ...rig, floorFx: rig.floorFx.map(item => item === fx ? group : item) }),
+                  )} />
                 </div>
                 <div className="flex items-center gap-1.5 font-mono-tech shrink-0">
                   <button

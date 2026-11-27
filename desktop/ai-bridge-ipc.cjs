@@ -6,6 +6,7 @@
 
 const { isAppPage } = require('./protocol.cjs');
 const { isAuthorizedDmxSender } = require('./dmx-ipc.cjs');
+const { isDmxAuthority } = require('./output-interlock.cjs');
 
 function createAiBridgeIpcHandlers(getBridge, getInterlock, options = {}) {
   const isRestricted = typeof options.isRestricted === 'function' ? options.isRestricted : () => false;
@@ -97,7 +98,8 @@ function createAiBridgeIpcHandlers(getBridge, getInterlock, options = {}) {
       throw new Error('Invalid output claim command.');
     }
     const keys = Object.keys(command);
-    if (keys.length !== 2 || (command.type !== 'claim' && command.type !== 'release')) {
+    if (keys.length !== (interlock.requireDmxAuthority ? 3 : 2) || (command.type !== 'claim' && command.type !== 'release') ||
+      (interlock.requireDmxAuthority && !isDmxAuthority(command.authority))) {
       throw new Error('Invalid output claim command shape.');
     }
     if (!interlock.VALID_CLAIM_KINDS.has(command.kind)) {
@@ -107,9 +109,9 @@ function createAiBridgeIpcHandlers(getBridge, getInterlock, options = {}) {
       if (isRestricted(event.sender.id)) {
         return { ok: false, reason: 'Live DMX output is disabled in pitch viewer mode.' };
       }
-      return interlock.claimOutput(event.sender.id, command.kind);
+      return interlock.claimOutput(event.sender.id, command.kind, command.authority);
     }
-    interlock.releaseOutput(event.sender.id, command.kind);
+    interlock.releaseOutput(event.sender.id, command.kind, command.authority);
     return { ok: true, reason: null };
   }
 

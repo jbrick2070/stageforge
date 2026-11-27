@@ -60,11 +60,11 @@ function loadMcpSdk(options = {}) {
 }
 
 function loadCanonicalShowSchema() {
-  const preparedPath = path.join(__dirname, 'show-v14.schema.json');
+  const preparedPath = path.join(__dirname, 'show-v15.schema.json');
   if (fs.existsSync(preparedPath)) {
     return fs.readFileSync(preparedPath, 'utf8');
   }
-  const sourcePath = path.resolve(__dirname, '..', 'src', 'schemas', 'show-v14.schema.json');
+  const sourcePath = path.resolve(__dirname, '..', 'src', 'schemas', 'show-v15.schema.json');
   return fs.readFileSync(sourcePath, 'utf8');
 }
 

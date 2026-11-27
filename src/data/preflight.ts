@@ -3,6 +3,7 @@ import type { IldaClip } from './ilda';
 import type { NativeStage } from './showFile';
 import { formatCsv, type CsvValue } from './csv';
 import { buildDmxPatch, fixtureGroupKey, fixtureScope } from './dmxPatch';
+import { isPhysicalDmxUniverse } from './dmxUniverses';
 import { getCatalogEntry } from './equipmentCatalog';
 import { cueLook } from './cueLook';
 import {
@@ -458,6 +459,21 @@ export function evaluatePreflight(input: PreflightInput): PreflightReport {
   }
 
   const rows: PreflightRow[] = [];
+
+  // Transport eligibility covers the authored patch, including rows omitted by the resolved plan.
+  const authoredPatch = rig === input.rig ? patch : buildDmxPatch(input.rig);
+  for (const row of authoredPatch.rows) {
+    if (isPhysicalDmxUniverse(row.group.dmxUniverse)) continue;
+    const id = `dmx-transport:${row.groupKey}`;
+    const summary = `Logical U${row.group.dmxUniverse} is unsupported by current physical DMX transports (U1–U2).`;
+    const findings: PreflightFinding[] = [{ code: 'dmx_universe_unsupported', outcome: 'fail', message: summary }];
+    rows.push({
+      id, kind: 'fixture', label: `${row.group.modelName} ×${row.group.count} (DMX transport)`, location: row.location,
+      groupId: row.group.id, groupKey: row.groupKey, podId: row.scope[1] ?? null,
+      outcome: 'fail', hardBlock: true, canAcknowledge: false, isLaser: false, requiresLaserInhibit: false,
+      canInhibitLaser: false, rowFingerprint: fnv1aHex(JSON.stringify({ id, findings })), summary, findings,
+    });
+  }
 
   // 1. Per-fixture-group rows (non-laser groups; lasers get dedicated per-projector rows below)
   for (const row of patch.rows) {

@@ -256,6 +256,9 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
   }, CSP_PROBE);
   expect(world).toEqual({
     bridge: [
+      'setRigExportState',
+      'setDmxEligibility',
+      'onDmxAuthorityRevoked',
       'onRigCommand',
       'sendDmxFrame',
       'sendDmxHeartbeat',
@@ -601,6 +604,7 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
         try {
           await window.stageforgeDesktop.dmxControl({
             type: 'enable',
+            authority: { revision: 'unclaimed', generation: 1 },
             config: { protocol: 'sacn', iface: '127.0.0.1', rateHz: 30, sacn: { mode: 'unicast', universes: [1, 2], priority: 100, ttl: 1, targets: [`127.0.0.1:${p}`] } },
           });
           return null;
@@ -608,7 +612,7 @@ test('live DMX output stays off by default, streams on enable, stays visible in 
           return String(e?.message ?? e);
         }
       }, port);
-      expect(unarmedEnableErr).toMatch(/arm live dmx output/i);
+      expect(unarmedEnableErr).toMatch(/arm at the current pre-flight revision/i);
 
       // 4c. Sprint 24 (review-06 R1): WebGL context loss while live DMX is active MUST send paced blackout + Stream_Terminated,
       //     surface the stopped notice, and NEVER auto-resume when WebGL context is restored without fresh two-step arming.
@@ -1499,7 +1503,7 @@ test('AI bridge boots off, blocks live DMX arming, serves MCP tools/proposals/re
       jsonrpc: '2.0', id: 21, method: 'tools/call', params: { name: 'get_schema', arguments: {} },
     }, sid);
     const packagedSchema = JSON.parse(schemaRes.json.result.content[0].text);
-    expect(packagedSchema.$id).toBe('https://jbrick2070.github.io/stageforge/schemas/show-v14.schema.json');
+    expect(packagedSchema.$id).toBe('https://jbrick2070.github.io/stageforge/schemas/show-v15.schema.json');
     expect(packagedSchema.properties.version.const).toBe(14);
 
     const stateBefore = await postMcp(aiPort, token, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_state', arguments: {} } }, sid);

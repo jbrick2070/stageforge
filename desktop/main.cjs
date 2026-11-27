@@ -4,11 +4,11 @@ const path = require('node:path');
 const { isAppPage, createRendererHandler, serialDeviceKey, selectVisibleSerialPorts } = require('./protocol.cjs');
 const { createArtNetRxMux } = require('./artnet-rx.cjs');
 const { createDmxController } = require('./dmx-sender.cjs');
-const { createDmxIpcHandlers } = require('./dmx-ipc.cjs');
+const { createDmxIpcHandlers, isAuthorizedDmxSender } = require('./dmx-ipc.cjs');
 const { createShowControlService } = require('./show-control-service.cjs');
 const { createShowControlIpcHandlers } = require('./show-control-ipc.cjs');
 const { createViewerModeTracker, createViewerIpcHandler } = require('./viewer-ipc.cjs');
-const { createOutputInterlock } = require('./output-interlock.cjs');
+const { createOutputInterlock, sameAuthority } = require('./output-interlock.cjs');
 const { createAiBridgeService } = require('./ai-bridge-service.cjs');
 const { createAiBridgeIpcHandlers } = require('./ai-bridge-ipc.cjs');
 
@@ -75,7 +75,17 @@ let aiBridge = null;
 let quittingAfterShutdown = false;
 const viewerTracker = createViewerModeTracker();
 // Serial device grants live only in memory for this session (never persisted across launches).
-const grantedSerialDevices = new Set();
+const grantedSerialDevices = new Map();
+const extendedPatchWindows = new Set();
+
+function revokeDesktopDmxForLifecycle(reason) {
+  outputInterlock?.invalidateAllDmxEligibility((wcId, authority) => {
+    const contents = webContents.fromId(wcId);
+    if (contents && !contents.isDestroyed() && isAppPage(contents.getURL())) {
+      contents.send('stageforge:dmx-authority-revoked', authority, reason);
+    }
+  });
+}
 
 function syncMenuForWindow(win) {
   const menu = Menu.getApplicationMenu();
@@ -87,6 +97,12 @@ function syncMenuForWindow(win) {
     target && !target.isDestroyed() && viewerTracker.isViewerWindow(target.webContents.id)
   );
   viewerTracker.applyMenuRestrictions(menu, restricted);
+  const rigExport = menu.getMenuItemById('file-export-rig');
+  if (rigExport) {
+    const extended = Boolean(target && !target.isDestroyed() && extendedPatchWindows.has(target.webContents.id));
+    rigExport.enabled = !restricted && !extended;
+    rigExport.label = extended ? 'Export rig… (use Show JSON or Bundle)' : 'Export rig…';
+  }
 }
 
 function restoreBackgroundThrottling(wcId) {
@@ -113,6 +129,7 @@ function createWindow() {
   });
   wc.on('did-start-navigation', (details) => {
     if (details && details.isMainFrame && !details.isSameDocument) {
+      extendedPatchWindows.delete(wcId);
       viewerTracker.clearWindow(wcId);
       syncMenuForWindow();
       if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
@@ -122,6 +139,7 @@ function createWindow() {
     }
   });
   wc.on('render-process-gone', () => {
+    extendedPatchWindows.delete(wcId);
     viewerTracker.clearWindow(wcId);
     syncMenuForWindow();
     if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
@@ -133,6 +151,7 @@ function createWindow() {
     if (dmx && dmx.ownerId === wcId && dmx.active) void dmx.shutdown('heartbeat-timeout');
   });
   wc.on('destroyed', () => {
+    extendedPatchWindows.delete(wcId);
     viewerTracker.clearWindow(wcId);
     syncMenuForWindow();
     if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
@@ -149,6 +168,7 @@ function createWindow() {
     if (aiBridge && aiBridge.ownerId === wcId) void aiBridge.disable('window-closed', { skipQuiesceWait: true });
   });
   win.on('session-end', () => {
+    revokeDesktopDmxForLifecycle('desktop session ended');
     if (dmx && dmx.active) void dmx.shutdown('session-end');
     if (showControl && showControl.active) void showControl.shutdown();
     if (aiBridge && aiBridge.active) void aiBridge.disable('session-end', { skipQuiesceWait: true });
@@ -245,7 +265,7 @@ async function runRigCommand(command) {
 
 function registerDmxIpc() {
   const isRestricted = (wcId) => viewerTracker.isViewerWindow(wcId);
-  const { onFrame, onHeartbeat, onControl } = createDmxIpcHandlers(() => dmx, {
+  const { onFrame, onHeartbeat, onControl, onEligibility } = createDmxIpcHandlers(() => dmx, {
     isRestricted,
     interlock: outputInterlock,
     requireArmedClaim: true,
@@ -253,6 +273,13 @@ function registerDmxIpc() {
   ipcMain.on('stageforge:dmx-frame', onFrame);
   ipcMain.on('stageforge:dmx-heartbeat', onHeartbeat);
   ipcMain.handle('stageforge:dmx-control', onControl);
+  ipcMain.handle('stageforge:dmx-eligibility', onEligibility);
+  ipcMain.on('stageforge:rig-export-state', (event, hasExtendedPatch) => {
+    if (!isAuthorizedDmxSender(event) || typeof hasExtendedPatch !== 'boolean') return;
+    if (hasExtendedPatch) extendedPatchWindows.add(event.sender.id);
+    else extendedPatchWindows.delete(event.sender.id);
+    syncMenuForWindow();
+  });
   const { onControl: onShowControl } = createShowControlIpcHandlers(() => showControl, {
     isRestricted,
     interlock: outputInterlock,
@@ -320,6 +347,9 @@ if (!hasLock) {
       artnetRx,
       onStatus: (status, targetOwnerId) => {
         if (status.state === 'idle') {
+          if (typeof targetOwnerId === 'number' && status.lastStopReason && status.authority) {
+            outputInterlock?.invalidateDmxEligibility(targetOwnerId, status.authority);
+          }
           restoreBackgroundThrottling(targetOwnerId);
         }
         if (typeof targetOwnerId === 'number') {
@@ -353,6 +383,7 @@ if (!hasLock) {
     });
     outputInterlock = createOutputInterlock({
       isDmxActive: () => Boolean(dmx && dmx.active),
+      requireDmxAuthority: true,
     });
     aiBridge = createAiBridgeService({
       isPackaged: app.isPackaged,
@@ -381,11 +412,13 @@ if (!hasLock) {
     registerDmxIpc();
 
     powerMonitor.on('suspend', () => {
+      revokeDesktopDmxForLifecycle('the computer suspended');
       if (dmx && dmx.active) void dmx.shutdown('suspend');
       if (showControl && showControl.active) void showControl.shutdown();
       if (aiBridge && aiBridge.active) void aiBridge.disable('suspend', { skipQuiesceWait: true });
     });
     powerMonitor.on('shutdown', () => {
+      revokeDesktopDmxForLifecycle('the computer is shutting down');
       if (dmx && dmx.active) void dmx.shutdown('os-shutdown');
       if (showControl && showControl.active) void showControl.shutdown();
       if (aiBridge && aiBridge.active) void aiBridge.disable('os-shutdown', { skipQuiesceWait: true });
@@ -395,6 +428,10 @@ if (!hasLock) {
     ses.on('will-download', (_event, item, contents) => {
       const choice = exportsBySuffix.find(([suffix]) => item.getFilename().endsWith(suffix));
       if (!contents || !isAppPage(contents.getURL()) || viewerTracker.isViewerWindow(contents.id) || !choice) {
+        item.cancel();
+        return;
+      }
+      if (choice[0] === '.stageforge.json' && extendedPatchWindows.has(contents.id)) {
         item.cancel();
         return;
       }
@@ -417,8 +454,7 @@ if (!hasLock) {
         return !details?.mediaType || details.mediaType === 'audio';
       }
       if (permission === 'serial') {
-        if (outputInterlock && outputInterlock.isBridgeHoldingAuthority()) return false;
-        return true;
+        return Boolean(contents && !contents.isDestroyed() && outputInterlock?.currentSerialAuthority(contents.id));
       }
       if (permission === 'midi' || permission === 'midiSysex') {
         return true;
@@ -426,23 +462,25 @@ if (!hasLock) {
       return false;
     });
 
-    // Note: Electron's setDevicePermissionHandler receives no WebContents, so serial denial in
-    // viewer mode is enforced by setPermissionCheckHandler, select-serial-port, and renderer liveOutput: false.
+    // The device callback has no WebContents. A cache hit needs the exact originating claim,
+    // and the permission check above independently requires its authenticated renderer.
     ses.setDevicePermissionHandler((details) => {
       if (details.deviceType !== 'serial' || !isAppPage(details.origin)) return false;
       if (outputInterlock && outputInterlock.isBridgeHoldingAuthority()) return false;
       const key = serialDeviceKey(details.device);
-      return Boolean(key && grantedSerialDevices.has(key));
+      const grant = key && grantedSerialDevices.get(key);
+      return Boolean(grant && sameAuthority(grant.authority, outputInterlock?.currentSerialAuthority(grant.wcId)));
     });
 
     ses.on('select-serial-port', (event, portList, contents, callback) => {
       event.preventDefault();
+      const authority = contents && outputInterlock?.currentSerialAuthority(contents.id);
       if (
         !contents ||
         contents.isDestroyed() ||
         !isAppPage(contents.getURL()) ||
         viewerTracker.isViewerWindow(contents.id) ||
-        (outputInterlock && outputInterlock.isBridgeHoldingAuthority())
+        !authority || (outputInterlock && outputInterlock.isBridgeHoldingAuthority())
       ) {
         callback('');
         return;
@@ -473,6 +511,7 @@ if (!hasLock) {
           contents.isDestroyed() ||
           !isAppPage(contents.getURL()) ||
           viewerTracker.isViewerWindow(contents.id) ||
+          !sameAuthority(authority, outputInterlock?.currentSerialAuthority(contents.id)) ||
           (outputInterlock && outputInterlock.isBridgeHoldingAuthority())
         ) {
           callback('');
@@ -481,7 +520,7 @@ if (!hasLock) {
         if (response >= 0 && response < visible.length) {
           const chosen = visible[response];
           const key = serialDeviceKey(chosen);
-          if (key) grantedSerialDevices.add(key);
+          if (key) grantedSerialDevices.set(key, { wcId: contents.id, authority });
           callback(chosen.portId);
         } else {
           callback('');

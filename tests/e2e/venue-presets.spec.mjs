@@ -2,7 +2,10 @@
 import { expect, test } from '@playwright/test';
 
 const KEY = 'stageforge.design.v1';
-const saved = (page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? 'null'), KEY);
+const saved = (page) => page.evaluate((k) => {
+  const record = JSON.parse(localStorage.getItem(k) ?? 'null');
+  return record?.current?.rig ?? record;
+}, KEY);
 
 test('the desktop plan fills the window and a blank club keeps the club room', async ({ page }) => {
   await page.setViewportSize({ width: 1728, height: 1050 });
@@ -60,7 +63,7 @@ test('a first-time user edits the small theatre preset and keeps it after reload
   await expect(reopened.getByRole('button', { name: 'theatre', exact: true })).toHaveClass(/border-cyan-400/);
 });
 
-test('editing a preset never overwrites a design that is already saved', async ({ page }) => {
+test('editing a preset retains the prior saved design as bounded recovery', async ({ page }) => {
   await page.goto('/');
   await page.evaluate(async (k) => {
     const { createBlankDesign } = await import('/src/data/stageDesign.ts');
@@ -71,6 +74,7 @@ test('editing a preset never overwrites a design that is already saved', async (
   const drawer = await openRigBuilder(page);
   await drawer.getByRole('button', { name: /Club Stage \(300 Cap\)/ }).click();
   await drawer.getByText('Main LED Wall').click();
-  await page.waitForTimeout(600); // past the 250 ms save debounce
-  expect((await saved(page)).name).toBe('My club night');
+  await expect.poll(async () => (await saved(page)).venue).toBe('club');
+  const record = await page.evaluate(k => JSON.parse(localStorage.getItem(k)), KEY);
+  expect(record.previous.rig.name).toBe('My club night');
 });

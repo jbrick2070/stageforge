@@ -272,6 +272,8 @@ function createDmxController({
   let sessionGen = 0;
   let ownerId = null;
   let activeConfig = null;
+  let authority;
+  let lastStopAuthority;
   let socket = null;
   let loopTimer = null;
   let statsTimer = null;
@@ -304,6 +306,7 @@ function createDmxController({
   function getStatus() {
     return {
       enabled: state === 'running',
+      ...(authority || lastStopAuthority ? { authority: authority ?? lastStopAuthority } : {}),
       state: state === 'starting' ? 'idle' : state,
       protocol: activeConfig ? activeConfig.protocol : null,
       iface: activeConfig ? activeConfig.iface : null,
@@ -478,7 +481,7 @@ function createDmxController({
     if (typeof loopTimer.unref === 'function') loopTimer.unref();
   }
 
-  async function enable(rawConfig, windowOwnerId) {
+  async function enable(rawConfig, windowOwnerId, mayStart = () => true, requestedAuthority) {
     // Reject overlapping start attempts so two callers can never bind sockets concurrently.
     if (state === 'starting') {
       throw new Error('DMX output is already starting.');
@@ -502,12 +505,14 @@ function createDmxController({
     if (state !== 'idle') {
       throw new Error('DMX output is busy; try again.');
     }
+    if (!mayStart()) throw new Error('DMX output startup was cancelled.');
 
     // Reserve ownership & session generation synchronously BEFORE any await so navigation/crash/
     // close/shutdown during bindSocket can cancel this enable cleanly.
     const myGen = ++sessionGen;
     state = 'starting';
     ownerId = windowOwnerId ?? null;
+    authority = requestedAuthority;
 
     const sock = dgramModule.createSocket({ type: 'udp4' });
     sock.on('error', (err) => {
@@ -518,8 +523,7 @@ function createDmxController({
 
     try {
       await bindSocket(sock, { port: 0, address: config.iface });
-      if (state !== 'starting' || sessionGen !== myGen) {
-        await closeSocket(sock);
+      if (state !== 'starting' || sessionGen !== myGen || !mayStart()) {
         throw new Error('DMX output startup was cancelled.');
       }
       if (config.protocol === 'sacn' && config.sacn.mode === 'multicast') {
@@ -534,6 +538,7 @@ function createDmxController({
       if (state === 'starting' && sessionGen === myGen) {
         state = 'idle';
         ownerId = null;
+        authority = undefined;
       }
       if (err instanceof Error && err.message === 'DMX output startup was cancelled.') throw err;
       throw new Error(`Could not bind UDP socket on ${config.iface}: ${err instanceof Error ? err.message : String(err)}`);
@@ -546,6 +551,7 @@ function createDmxController({
     lastHeartbeatNs = nowNs();
     lastStopReason = null;
     lastStopOwnerId = null;
+    lastStopAuthority = undefined;
     nextDeadlineMs = 0;
     packetsSent = 0;
     consecutiveSuccessSends = 0;
@@ -602,6 +608,8 @@ function createDmxController({
       sessionGen++;
       state = 'idle';
       ownerId = null;
+      lastStopAuthority = authority;
+      authority = undefined;
       lastHeartbeatNs = null;
       lastStopReason = reason;
       lastStopOwnerId = prevOwner;
@@ -617,6 +625,7 @@ function createDmxController({
     lastHeartbeatNs = null;
     lastStopReason = reason;
     lastStopOwnerId = ownerId;
+    lastStopAuthority = authority;
     stopEventId++;
     if (loopTimer) {
       clearTimeout(loopTimer);
@@ -696,6 +705,7 @@ function createDmxController({
     const timed = Promise.race([runBlackout(), timeoutGuard]).finally(() => {
       cancelled = true;
       ownerId = null;
+      authority = undefined;
       measuredHz = 0;
       ticksInWindow = 0;
       consecutiveSuccessSends = 0;
@@ -836,6 +846,7 @@ function createDmxController({
   return {
     get cid() { return cid.uuid; },
     get ownerId() { return ownerId; },
+    get authority() { return authority; },
     get active() { return state === 'starting' || state === 'running' || state === 'stopping'; },
     isRunning() { return state === 'running'; },
     listInterfaces: () => listNetworkInterfaces(osModule),

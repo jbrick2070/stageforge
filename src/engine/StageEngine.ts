@@ -77,6 +77,7 @@ import {
   type PhysicalUnitState,
 } from '../dmx/physicalDmx';
 import { floorUnitX, hungUnits, mountSlotIndex, resolvedPatchSnapshot } from '../data/fixturePlacement';
+import { isPhysicalDmxUniverse, type LogicalDmxUniverse } from '../data/dmxUniverses';
 import { stageSurfaceHeight } from '../data/stageDesign';
 import type { NativeStage } from '../data/showFile';
 import { resolveCrowdLayout, type CrowdLayout } from '../data/crowdPlacement';
@@ -244,7 +245,7 @@ interface MovingFixtureInstance {
   mountYaw: number;
   currentPan: number;
   currentTilt: number;
-  dmxUniverse: 1 | 2;
+  dmxUniverse: LogicalDmxUniverse;
   dmxStart: number;
   dmxWidth: number;
   physicalClass: PhysicalGroupClassification;
@@ -281,7 +282,7 @@ interface LaserUnitInstance {
   singleColor?: THREE.Color;
   resolvedMode?: CatalogDmxMode;
   dmxScratch: number[];
-  dmxUniverse: 1 | 2;
+  dmxUniverse: LogicalDmxUniverse;
   dmxStart: number;
   dmxWidth: number;
   physicalClass: PhysicalGroupClassification;
@@ -531,6 +532,28 @@ export class StageEngine {
   // - serialPhysicalDmxU1/U2 hold Web Serial wire buffers (strictly passive non-strobing LED personalities only; atmospherics/blinders/lasers = 0).
   public dmxUniverse1 = new Uint8Array(512);
   public dmxUniverse2 = new Uint8Array(512);
+  private readonly extendedSimDmx = new Map<LogicalDmxUniverse, Uint8Array>();
+  private readonly unavailableDmx = new Uint8Array(0);
+
+  private simulatedDmxBuffer(universe: LogicalDmxUniverse): Uint8Array {
+    if (universe === 1) return this.dmxUniverse1;
+    if (universe === 2) return this.dmxUniverse2;
+    return this.extendedSimDmx.get(universe) ?? this.unavailableDmx;
+  }
+
+  private physicalDmxBuffer(universe: LogicalDmxUniverse, serial = false): Uint8Array {
+    if (universe === 1) return serial ? this.serialPhysicalDmxU1 : this.physicalDmxU1;
+    if (universe === 2) return serial ? this.serialPhysicalDmxU2 : this.physicalDmxU2;
+    return this.unavailableDmx;
+  }
+
+  public copyExtendedSimDmx(): Partial<Record<LogicalDmxUniverse, Uint8Array>> {
+    return Object.fromEntries([...this.extendedSimDmx].map(([universe, bytes]) => [universe, bytes.slice()]));
+  }
+
+  private clearExtendedSimDmx() {
+    for (const bytes of this.extendedSimDmx.values()) bytes.fill(0);
+  }
   public physicalDmxU1 = new Uint8Array(512);
   public physicalDmxU2 = new Uint8Array(512);
   public serialPhysicalDmxU1 = new Uint8Array(512);
@@ -759,6 +782,7 @@ export class StageEngine {
     };
     this.handleContextRestoredBound = () => {
       this.contextLost = false;
+      this.clearExtendedSimDmx();
       if (this.gpuTimer) {
         this.gpuTimer.onContextRestored(this.renderer.getContext());
       } else {
@@ -2147,6 +2171,7 @@ export class StageEngine {
       this.clearPhysicalDmxBuffers();
       this.dmxUniverse1.fill(0);
       this.dmxUniverse2.fill(0);
+      this.clearExtendedSimDmx();
     }
   }
 
@@ -2408,7 +2433,7 @@ export class StageEngine {
       fx.head.getWorldPosition(origin);
       tip.set(0, fx.isFloor ? 1 : -1, 0).applyMatrix4(fx.head.matrixWorld);
       const dir = tip.sub(origin).normalize();
-      const buffer = fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
+      const buffer = this.simulatedDmxBuffer(fx.dmxUniverse);
       return { origin: origin.toArray(), dir: dir.toArray(), isFloor: fx.isFloor, group: fx.type,
         rgb: fx.beamMat.uniforms.uColor.value.getHexString(),
         optics: { lumens: fx.optics.lumens, farRadius: fx.optics.farRadius,
@@ -2989,6 +3014,11 @@ export class StageEngine {
     this.blinders = [];
     this.atmosphereDmx = [];
     const patch = this.resolvedDmxPatch = buildDmxPatch(rig);
+    this.clearExtendedSimDmx();
+    this.extendedSimDmx.clear();
+    for (const universe of patch.universes) {
+      if (!isPhysicalDmxUniverse(universe)) this.extendedSimDmx.set(universe, new Uint8Array(512));
+    }
     this.ledWallMats = [];
     this.allLedMaterials = [];
     this.djStripMat = null;
@@ -3325,8 +3355,8 @@ export class StageEngine {
         if (!slot) return;
 
         const { effectiveStart: start, width, universe, unitId, groupKey } = patch.unitFor(fg, i, scope)!;
-        const buffer = universe === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
-        const physBuffer = universe === 1 ? this.physicalDmxU1 : this.physicalDmxU2;
+        const buffer = this.simulatedDmxBuffer(universe);
+        const physBuffer = this.physicalDmxBuffer(universe);
         const physicalClass = classifyPhysicalGroup(fg);
         if (fg.type === 'beam' || fg.type === 'wash') {
           const lateral = slot.pos.x * Math.cos(pod.rotationY) + slot.pos.z * Math.sin(pod.rotationY);
@@ -3422,8 +3452,8 @@ export class StageEngine {
             type: fx.type,
             start,
             width,
-            buffer: universe === 1 ? this.dmxUniverse1 : this.dmxUniverse2,
-            physBuffer: universe === 1 ? this.physicalDmxU1 : this.physicalDmxU2,
+            buffer: this.simulatedDmxBuffer(universe),
+            physBuffer: this.physicalDmxBuffer(universe),
             physicalClass,
           });
         }
@@ -3610,7 +3640,7 @@ export class StageEngine {
     isFloor: boolean,
     index: number,
     fanPosition: number,
-    dmxUniverse: 1 | 2,
+    dmxUniverse: LogicalDmxUniverse,
     dmxStart: number,
     dmxWidth: number,
     physicalClass: PhysicalGroupClassification,
@@ -3804,7 +3834,7 @@ export class StageEngine {
     key: string,
     index: number,
     isFloor: boolean,
-    dmxUniverse: 1 | 2,
+    dmxUniverse: LogicalDmxUniverse,
     dmxStart: number,
     dmxWidth: number,
     physicalClass: PhysicalGroupClassification,
@@ -4104,6 +4134,7 @@ export class StageEngine {
     } else {
       if (!this.contextLost) return;
       this.contextLost = false;
+      this.clearExtendedSimDmx();
       if (this.gpuTimer) {
         this.gpuTimer.onContextRestored(this.renderer.getContext());
       } else {
@@ -4890,9 +4921,9 @@ export class StageEngine {
 
       // Invalid or conflicting fixture footprints have start 0 and make no writes.
       // Clamp writes strictly to fx.dmxWidth so narrow catalogue modes (e.g. 1–6 ch PARs) never overwrite neighbours.
-      const uBuf = fx.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
-      const physBuf = fx.dmxUniverse === 1 ? this.physicalDmxU1 : this.physicalDmxU2;
-      const serialPhysBuf = fx.dmxUniverse === 1 ? this.serialPhysicalDmxU1 : this.serialPhysicalDmxU2;
+      const uBuf = this.simulatedDmxBuffer(fx.dmxUniverse);
+      const physBuf = this.physicalDmxBuffer(fx.dmxUniverse);
+      const serialPhysBuf = this.physicalDmxBuffer(fx.dmxUniverse, true);
       if (fx.dmxStart > 0) {
         writeDmxChannels(uBuf, fx.dmxStart, fx.dmxWidth, [
           axisDmx(fx.currentPan, PAN_LIMIT),
@@ -5168,8 +5199,8 @@ export class StageEngine {
 
       // Write Laser DMX Universe channels using unscaled authored unitBaseLaserInt & authored colors
       // (never preview flash slew or visual power presence), clamped strictly to l.dmxWidth.
-      const uBuf = l.dmxUniverse === 1 ? this.dmxUniverse1 : this.dmxUniverse2;
-      const physBuf = l.dmxUniverse === 1 ? this.physicalDmxU1 : this.physicalDmxU2;
+      const uBuf = this.simulatedDmxBuffer(l.dmxUniverse);
+      const physBuf = this.physicalDmxBuffer(l.dmxUniverse);
       if (l.dmxStart > 0) {
         const dmxColorMode = this.applyLaserColors(
           l.singleColor,
@@ -5527,6 +5558,7 @@ export class StageEngine {
     ap.atmo.co2 = effCo2;
 
     this.refreshMeasureOverlayAndSnapshot(performance.now());
+    if (blackoutActive || darkOpening) this.clearExtendedSimDmx();
     return previewMaster > 0;
   }
 

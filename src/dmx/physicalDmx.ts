@@ -1,6 +1,7 @@
 import type { FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show';
 import { buildDmxPatch, groupFootprint, writeDmxChannels } from '../data/dmxPatch';
 import { getCatalogEntry, getCatalogMode } from '../data/equipmentCatalog';
+import { hasExtendedDmx, isPhysicalDmxUniverse, type LogicalDmxUniverse } from '../data/dmxUniverses';
 
 export type PhysicalDriveStatus = 'implemented' | 'simulation-only';
 
@@ -49,7 +50,7 @@ export interface PhysicalGroupReport {
   readonly count: number;
   readonly location: string;
   readonly dmxMode?: string;
-  readonly universe: 1 | 2;
+  readonly universe: LogicalDmxUniverse;
   readonly start: number;
   readonly end: number;
   readonly width: number;
@@ -206,8 +207,11 @@ export function listImplementedPhysicalPersonalities(): readonly PhysicalPersona
  * NEVER on physical wire (`SF-H1` / `N1`).
  */
 export function classifyPhysicalGroup(
-  group: Pick<PhysicalGroup, 'catalogId' | 'dmxMode' | 'dmxChannels' | 'type'>,
+  group: Pick<PhysicalGroup, 'catalogId' | 'dmxMode' | 'dmxChannels' | 'type'> & Partial<Pick<PhysicalGroup, 'dmxUniverse'>>,
 ): PhysicalGroupClassification {
+  if (group.dmxUniverse !== undefined && !isPhysicalDmxUniverse(group.dmxUniverse)) {
+    return { status: 'simulation-only', label: SIMULATION_ONLY_LABEL, reason: 'Current physical transports support logical U1–U2 only.' };
+  }
   if (!group.catalogId) {
     return {
       status: 'simulation-only',
@@ -274,6 +278,13 @@ export function checkSerialTransportSafety(rig: RigConfig): {
   blockingGroupIds: string[];
 } {
   const blockingGroupIds: string[] = [];
+  if (hasExtendedDmx(rig)) {
+    const groups = [...rig.trussPods.flatMap(pod => pod.fixtures), ...rig.floorFx];
+    return {
+      allowed: false, reason: 'USB Serial DMX supports logical U1–U2 only.',
+      blockingGroupIds: groups.filter(group => !isPhysicalDmxUniverse(group.dmxUniverse)).map(group => group.id),
+    };
+  }
   for (const pod of rig.trussPods) {
     for (const g of pod.fixtures) {
       if (g.count > 0 && isSerialBlockedFixtureGroup(g)) blockingGroupIds.push(g.id);
@@ -378,6 +389,7 @@ export function buildPhysicalUniverses(
   const scratch: number[] = [];
 
   for (const row of patch.rows) {
+    if (!isPhysicalDmxUniverse(row.group.dmxUniverse)) continue;
     const classification = classifyPhysicalGroup(row.group);
     const simBuf = row.group.dmxUniverse === 1 ? simU1 : simU2;
     const physBuf = row.group.dmxUniverse === 1 ? outU1 : outU2;

@@ -126,11 +126,14 @@ test('a third-party MVR opens preflight, imports on confirm, and keeps UUIDs and
 
 test('a blocking MVR opens preflight, Cancel leaves rig and saved design byte-identical, and accept-anyway imports and keeps report viewable', async ({ page }, info) => {
   await page.goto('/?probe');
-  // Load a known v3 show so localStorage has a saved design and the desk has real authored state.
+  // Adopt a known v3 show so the desk and prior local recovery have real authored state.
   let dialog = await files(page);
   await dialog.getByLabel('Open show file').setInputFiles(showFile);
   await expect(dialog).toBeHidden();
   await expect.poll(async () => (await page.evaluate(() => window.stageforgeProbe.hangs())).length).toBe(2);
+  dialog = await files(page);
+  await dialog.getByRole('button', { name: 'Save as local design', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Close Show files', exact: true }).click();
 
   // Snapshot localStorage and live probe state before opening the blocking MVR.
   const beforeStorage = await page.evaluate(() => {
@@ -242,8 +245,10 @@ test('a blocking MVR opens preflight, Cancel leaves rig and saved design byte-id
 
   await expect(page.getByText(/Opened Feet Block Rig from MVR · 4 fixtures · 1 truss/)).toBeVisible();
   await expect.poll(async () => (await page.evaluate(() => window.stageforgeProbe.beamAxes())).length).toBe(4);
-  const importedDesignName = await page.evaluate(() => JSON.parse(localStorage.getItem('stageforge.design.v1') ?? '{}').name);
-  expect(importedDesignName).toBe('Feet Block Rig');
+  const importedDesign = await page.evaluate(() => JSON.parse(localStorage.getItem('stageforge.design.v1') ?? '{}'));
+  const priorDesign = JSON.parse(JSON.parse(beforeStorage)['stageforge.design.v1']).current;
+  expect(importedDesign.current.rig.name).toBe('Feet Block Rig');
+  expect(importedDesign.previous).toEqual(priorDesign);
 
   const filesAfter = await files(page);
   await filesAfter.getByRole('button', { name: /Last MVR import report.*feet-block\.mvr/ }).click();

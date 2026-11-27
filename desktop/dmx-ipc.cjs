@@ -4,6 +4,7 @@
 // Extracted so Node security tests can exercise sender/frame/owner validation directly.
 
 const { isAppPage } = require('./protocol.cjs');
+const { isDmxAuthority, sameAuthority } = require('./output-interlock.cjs');
 
 function isAuthorizedDmxSender(event) {
   const frame = event && event.senderFrame;
@@ -24,23 +25,38 @@ function createDmxIpcHandlers(getDmx, options = {}) {
   const isRestricted = typeof options.isRestricted === 'function' ? options.isRestricted : () => false;
   const interlock = options.interlock || null;
 
-  function onFrame(event, universe, data) {
+  function onFrame(event, universe, data, authority) {
     const dmx = getDmx();
     if (!dmx || !isAuthorizedDmxSender(event)) return false;
     if (isRestricted(event.sender.id)) return false;
     if (event.sender.id !== dmx.ownerId) return false;
     if (!dmx.isRunning()) return false;
+    if (interlock?.requireDmxAuthority && (!isDmxAuthority(authority) || !sameAuthority(dmx.authority, authority) ||
+      !interlock.isCurrentDmxAuthority(event.sender.id, authority))) return false;
     if ((universe !== 1 && universe !== 2) || !isExactUint8Array512(data)) return false;
     return dmx.update(universe, data);
   }
 
-  function onHeartbeat(event) {
+  function onHeartbeat(event, authority) {
     const dmx = getDmx();
     if (!dmx || !isAuthorizedDmxSender(event)) return false;
     if (isRestricted(event.sender.id)) return false;
     if (event.sender.id !== dmx.ownerId) return false;
     if (!dmx.isRunning()) return false;
+    if (interlock?.requireDmxAuthority && (!isDmxAuthority(authority) || !sameAuthority(dmx.authority, authority) ||
+      !interlock.isCurrentDmxAuthority(event.sender.id, authority))) return false;
     return dmx.heartbeat();
+  }
+
+  function onEligibility(event, command) {
+    const dmx = getDmx();
+    if (!dmx || !interlock || !isAuthorizedDmxSender(event) || !command || typeof command !== 'object' ||
+        Array.isArray(command) || Object.keys(command).length !== 2 || !isDmxAuthority(command.authority) ||
+        typeof command.eligible !== 'boolean' || (command.eligible && isRestricted(event.sender.id))) return false;
+    const wcId = event.sender.id;
+    const result = interlock.updateDmxEligibility(wcId, command.authority, command.eligible);
+    if (result.changed && dmx.ownerId === wcId && dmx.active) void dmx.shutdown('eligibility-changed');
+    return result.ok;
   }
 
   async function onControl(event, command) {
@@ -74,6 +90,7 @@ function createDmxIpcHandlers(getDmx, options = {}) {
         if (dmx.ownerId !== null && dmx.ownerId !== event.sender.id) {
           throw new Error('Live DMX output is owned by another StageForge window.');
         }
+        interlock?.invalidateDmxEligibility(event.sender.id);
         return dmx.shutdown('disable');
       case 'discover':
         if (restricted) throw new Error('DMX output is disabled in pitch viewer mode.');
@@ -83,22 +100,35 @@ function createDmxIpcHandlers(getDmx, options = {}) {
         return dmx.discover(command.iface);
       case 'enable': {
         if (restricted) throw new Error('DMX output is disabled in pitch viewer mode.');
-        if (keys.length !== 2 || !command.config || typeof command.config !== 'object') {
+        const strict = Boolean(interlock?.requireDmxAuthority);
+        if (keys.length !== (strict ? 3 : 2) || !command.config || typeof command.config !== 'object' ||
+          (strict && !isDmxAuthority(command.authority))) {
           throw new Error('Invalid DMX enable command.');
         }
         if (dmx.active && dmx.ownerId !== null && dmx.ownerId !== event.sender.id) {
           throw new Error('Live DMX output is already active in another StageForge window.');
         }
+        let lease;
         if (interlock) {
           const check = interlock.tryBeginDmxEnable(event.sender.id, {
             requireArmedClaim: Boolean(options.requireArmedClaim),
+            authority: command.authority,
           });
           if (!check.ok) {
             throw new Error(check.reason);
           }
+          lease = check.lease;
         }
+        const eligible = () => isAuthorizedDmxSender(event) && !isRestricted(event.sender.id) &&
+          !(interlock?.isBridgeHoldingAuthority()) && (!strict || interlock.dmxEnableIsCurrent(lease));
         try {
-          const status = await dmx.enable(command.config, event.sender.id);
+          const status = strict
+            ? await dmx.enable(command.config, event.sender.id, eligible, command.authority)
+            : await dmx.enable(command.config, event.sender.id);
+          if (strict && !eligible()) {
+            if (dmx.ownerId === event.sender.id && sameAuthority(dmx.authority, command.authority)) await dmx.shutdown('disarmed');
+            throw new Error('Physical DMX eligibility changed before startup completed.');
+          }
           // Re-verify the owning renderer is still alive, on an app page, and not restricted after the async bind.
           if (event.sender.isDestroyed() || !isAppPage(event.sender.getURL())) {
             await dmx.shutdown('owner-gone');
@@ -112,14 +142,14 @@ function createDmxIpcHandlers(getDmx, options = {}) {
             await dmx.shutdown('ai-bridge-active');
             throw new Error('Disable the AI bridge before enabling live DMX output.');
           }
-          if (interlock && options.requireArmedClaim && !interlock.hasWindowClaim(event.sender.id, 'armed')) {
+          if (!strict && interlock && options.requireArmedClaim && !interlock.hasWindowClaim(event.sender.id, 'armed')) {
             await dmx.shutdown('disarmed');
             throw new Error('Arm live DMX output before enabling it.');
           }
           try { event.sender.setBackgroundThrottling(false); } catch { /* ignore */ }
           return status;
         } finally {
-          if (interlock) interlock.finishDmxEnableAttempt();
+          if (interlock) interlock.finishDmxEnableAttempt(lease);
         }
       }
       default:
@@ -127,7 +157,7 @@ function createDmxIpcHandlers(getDmx, options = {}) {
     }
   }
 
-  return { onFrame, onHeartbeat, onControl };
+  return { onFrame, onHeartbeat, onControl, onEligibility };
 }
 
 module.exports = {

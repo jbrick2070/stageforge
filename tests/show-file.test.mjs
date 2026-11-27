@@ -283,6 +283,8 @@ test('legacy fixtures load cleanly and published v1-v13 schema hashes stay pinne
     11: '3a628624280cbebd5c6e003d6b05558e3a8261545ea4b692223a13657f5d920d',
     12: '1b590eed165d55ba87193cb053b04d62db64694ea85278857332d10ed008160d',
     13: 'c4bbd9a0e0ed3c8cb6975d83125894102f4fe9f2951b8e24541acf9b6fc385aa',
+    14: 'b67cb840476bb9f7a52cc2107a6f15e9dd0a232c0be3e944c78abe59bf0fee95',
+    15: '9f5e30bb1551a724d7d1939e2dec4a6796296d338d0d03e0081c3cc63f813c59',
   };
   for (const [ver, hash] of Object.entries(expectedHashes)) {
     const raw = await readFile(new URL(`../src/schemas/show-v${ver}.schema.json`, import.meta.url));

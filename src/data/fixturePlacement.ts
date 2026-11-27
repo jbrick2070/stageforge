@@ -1,3 +1,4 @@
+import type { LogicalDmxUniverse } from './dmxUniverses';
 import type { FloorFxUnit, MountedFixtureGroup, RigConfig } from '../types/show';
 import { buildDmxPatch, fixtureScope, FLOOR_FIXTURE_SCOPE, type DmxPatch, type FixturePatchUnit, type FixtureScope } from './dmxPatch';
 import { getTrussProfile, trussMountY } from './rigCatalog';
@@ -16,7 +17,7 @@ export interface FixturePlacement {
   /** Rotation about +Y in radians, as StageEngine sets it (pod rotation plus mount bearing). */
   yaw: number;
   floor: boolean;
-  universe: 1 | 2;
+  universe: LogicalDmxUniverse;
   /** First DMX channel of this unit within its universe. */
   address: number;
   /** DMX footprint in channels. */

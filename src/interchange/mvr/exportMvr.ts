@@ -10,10 +10,11 @@ import { getPlatforms, stageSurfaceHeight } from '../../data/stageDesign';
 import { resolveStudioGeometry } from '../../data/studioGeometry';
 import { effectiveHangs, planWalls } from '../../data/stagePlan';
 import { placeFixtures, type FixturePlacement } from '../../data/fixturePlacement';
+import { absoluteDmxAddress, hasExtendedDmx } from '../../data/dmxUniverses';
 import { focusMarks } from '../../engine/focusAim';
-import { isRootName, writeArchive, utf8, type ArchiveEntry } from './archive';
+import { isRootName, MAX_ARCHIVE_BYTES, MAX_ENTRIES, writeArchive, utf8, type ArchiveEntry } from './archive';
 import { IDENTITY, matrixText, poseMatrix, toMvrPoint, type MvrMatrix } from './coords';
-import { MODE_NAME, profileArchive, profileFor, PROFILES } from './gdtf';
+import { MODE_NAME, profileArchive, profileFor, PROFILES, readGdtf, singleBreakGdtfMode, type GdtfSummary } from './gdtf';
 import { boxGlb } from './glb';
 import { uuidV5 } from './uuid';
 import { attr, buildXml, child, list, parseXml, text, type XmlNode } from './xml';
@@ -29,7 +30,7 @@ export const PAYLOAD_FILE = 'StageForge_show.json';
 
 export interface MvrPayload {
   format: 'stageforge-mvr';
-  version: 1;
+  version: 1 | 2;
   rig: RigConfig;
   stage?: NativeStage;
   interchange?: ShowInterchange;
@@ -259,6 +260,7 @@ export function exportMvrDocument(
   interchange?: ShowInterchange,
   resources?: ReadonlyMap<string, Uint8Array>,
 ): MvrExportResult {
+  const payloadVersion = hasExtendedDmx(sourceRig) ? 2 : 1;
   const { rig, props: layoutProps } = resolveStudioGeometry(sourceRig, stage?.layout);
   const files = new Map<string, Uint8Array>();
   const filesLower = new Map<string, string>();
@@ -293,7 +295,7 @@ export function exportMvrDocument(
     if (!hit) return undefined;
     const hitLower = hit.name.toLowerCase();
     const existingName = filesLower.get(hitLower);
-    const reservedGeneric = GENERIC_GDTF_FILES.has(hitLower);
+    const reservedGeneric = GENERIC_GDTF_FILES.has(hitLower) || /^stageforge@.*_\d+ch\.gdtf$/.test(hitLower);
     if (!existingName && !reservedGeneric) return addFile(hit.name, hit.data);
     if (existingName && sameBytes(files.get(existingName)!, hit.data)) return existingName;
     // Collision with a StageForge-generated file or reserved generic profile name: store under a unique prefix.
@@ -392,7 +394,32 @@ export function exportMvrDocument(
       glb(file, () => boxGlb(frame.width, frame.height, 0.12, { color: [0.05, 0.08, 0.12] }))));
   }
 
-  const usedGeneric = new Set<string>();
+  const usedGeneric = new Map<string, ReturnType<typeof profileFor>>();
+  const genericFallbacks = new Map<string, number>();
+  const importedProfiles = new Map<string, GdtfSummary | undefined>();
+  const profileBudget = { remaining: 128 * 1024 * 1024, opsRemaining: 1_000_000 };
+  const importedMode = (spec: MvrFixtureSpec, width: number) => {
+    const base = spec.spec.trim().split(/[\\/]/).pop()?.toLowerCase() ?? '';
+    const hit = resourceIndex.get(base) ?? resourceIndex.get(`${base}.gdtf`);
+    if (!hit) return;
+    const key = hit.name.toLowerCase();
+    if (!importedProfiles.has(key) && importedProfiles.size < 64 && profileBudget.remaining > 0) {
+      let summary: GdtfSummary | undefined;
+      try { summary = readGdtf(hit.data, profileBudget); } catch { /* use a bounded generic reserve */ }
+      importedProfiles.set(key, summary);
+    }
+    const summary = importedProfiles.get(key);
+    const mode = summary && singleBreakGdtfMode(summary, spec.mode);
+    if (mode?.footprint === width) return { file: hit.name, mode: mode.name };
+  };
+  const useGeneric = (type: Parameters<typeof profileFor>[0], width?: number) => {
+    const profile = profileFor(type, width);
+    if (!usedGeneric.has(profile.file) && usedGeneric.size === 64) {
+      throw new Error('This MVR needs more than 64 distinct generic DMX profiles. Reduce the number of fixture footprints before export.');
+    }
+    usedGeneric.set(profile.file, profile);
+    return profile.file;
+  };
   let droppedFragments = 0;
   let missingResourceCount = 0;
 
@@ -409,20 +436,19 @@ export function exportMvrDocument(
     const specPref = interchange?.mvr?.fixtureSpecs?.[key];
     let gdtfSpec: string;
     let gdtfMode: string;
-    const bundledSpec = specPref ? (bundleResource(specPref.spec) ?? bundleResource(`${specPref.spec}.gdtf`)) : undefined;
-    if (specPref && bundledSpec) {
+    const width = unit.patch.width;
+    const validated = specPref && importedMode(specPref, width);
+    const bundledSpec = validated && bundleResource(validated.file);
+    if (validated && bundledSpec) {
       gdtfSpec = bundledSpec;
-      gdtfMode = specPref.mode || MODE_NAME;
+      gdtfMode = validated.mode;
       keptSpecs[key] = { spec: bundledSpec, mode: gdtfMode };
     } else {
-      const profile = profileFor(unit.group.type);
-      usedGeneric.add(unit.group.type);
-      gdtfSpec = profile.file;
+      gdtfSpec = useGeneric(unit.group.type, width);
       gdtfMode = MODE_NAME;
-      if (specPref) {
-        keptSpecs[key] = specPref;
-        missingResourceCount++;
-      }
+      if (specPref) keptSpecs[key] = specPref;
+      const label = `${unit.group.type}, ${width} ${width === 1 ? 'slot' : 'slots'}`;
+      genericFallbacks.set(label, (genericFallbacks.get(label) ?? 0) + 1);
     }
 
     const baseFields: Record<string, unknown> = {
@@ -433,7 +459,7 @@ export function exportMvrDocument(
       FixtureID: numbers.fixtureId,
       FixtureIDNumeric: String(numbers.fixtureIdNumeric),
       UnitNumber: String(numbers.unitNumber),
-      ...(unit.patched ? { Addresses: { Address: [{ '@_break': '0', '#text': String((unit.universe - 1) * 512 + unit.address) }] } } : {}),
+      ...(unit.patched ? { Addresses: { Address: [{ '@_break': '0', '#text': String(absoluteDmxAddress(unit.universe, unit.address)) }] } } : {}),
       CustomIdType: '1',
       CustomId: numbers.customId,
     };
@@ -467,12 +493,11 @@ export function exportMvrDocument(
   });
 
   const ensureGenericFallback = () => {
-    usedGeneric.add('blinder');
-    return { spec: profileFor('blinder').file, mode: MODE_NAME };
+    return { spec: useGeneric('blinder'), mode: MODE_NAME };
   };
 
   // Merge validated passthrough UserData, AUXData and SceneNodes.
-  const userDataEntries: XmlNode[] = [{ '@_provider': PAYLOAD_PROVIDER, '@_ver': '1' }];
+  const userDataEntries: XmlNode[] = [{ '@_provider': PAYLOAD_PROVIDER, '@_ver': String(payloadVersion) }];
   const keptUserData: string[] = [];
   for (const fragment of interchange?.mvr?.passthrough?.userData ?? []) {
     const parsed = parseSingleFragment(fragment);
@@ -527,8 +552,7 @@ export function exportMvrDocument(
     keptSceneNodes.push(fragment);
   }
 
-  for (const type of usedGeneric) {
-    const profile = profileFor(type as Parameters<typeof profileFor>[0]);
+  for (const profile of usedGeneric.values()) {
     const data = profileArchive(profile);
     const existing = filesLower.get(profile.file.toLowerCase());
     if (!existing) {
@@ -542,6 +566,9 @@ export function exportMvrDocument(
   if (droppedFragments) notes.push(`Skipped ${droppedFragments} invalid passthrough XML ${droppedFragments === 1 ? 'fragment' : 'fragments'}.`);
   if (remappedUuids) notes.push(`Remapped ${remappedUuids} colliding passthrough ${remappedUuids === 1 ? 'UUID' : 'UUIDs'}.`);
   if (missingResourceCount) notes.push(`${missingResourceCount} passthrough resource ${missingResourceCount === 1 ? 'file was' : 'files were'} not available in this session.`);
+  for (const [label, count] of genericFallbacks) {
+    notes.push(`${count} × generic StageForge profile (${label}). No manufacturer mode is claimed.`);
+  }
 
   const passthrough: MvrPassthrough = {};
   if (keptUserData.length) passthrough.userData = keptUserData;
@@ -560,7 +587,7 @@ export function exportMvrDocument(
 
   const payload: MvrPayload = {
     format: 'stageforge-mvr',
-    version: 1,
+    version: payloadVersion,
     rig: sourceRig,
     ...(stage ? { stage } : {}),
     interchange: nextInterchange,
@@ -581,6 +608,9 @@ export function exportMvrDocument(
     { name: PAYLOAD_FILE, data: utf8.encode(JSON.stringify(payload)) },
   ];
   for (const [name, data] of files) entries.push({ name, data });
+  if (entries.length > MAX_ENTRIES || entries.reduce((size, entry) => size + entry.data.byteLength, 0) > MAX_ARCHIVE_BYTES) {
+    throw new Error('This MVR would exceed the archive size or entry limit. Remove unused resources before export.');
+  }
   return { bytes: writeArchive(entries), interchange: nextInterchange, notes };
 }
 

@@ -7,6 +7,7 @@ import { SPEAKER_PROFILES } from './speakerProfiles';
 import { requestedWallSize } from './stageEquipment';
 import { isStageProp } from './stageProps';
 import { MAX_PLATFORMS, MAX_PATH_POINTS, MIN_TRUSS_SPAN, normalizeDesign } from './stageDesign';
+import { hasExtendedDmx, MAX_LOGICAL_DMX_UNIVERSE, MAX_RIG_FIXTURE_UNITS } from './dmxUniverses';
 
 export const MAX_RIG_JSON_BYTES = 32 * 1024 * 1024;
 const MAX_TRUSS_PODS = 256;
@@ -82,7 +83,6 @@ const equipment = {
   circuitGroup: optional(circuitGroupCheck),
   phase: optional(phaseCheck),
   count: integer(1, 512),
-  dmxUniverse: integer(1, 2),
   dmxStartChannel: integer(1, 512),
 };
 
@@ -124,8 +124,9 @@ function checkOptics(item: Fields, path: string) {
   }
 }
 
-function checkRig(value: unknown): asserts value is RigConfig {
+function checkRig(value: unknown, maxUniverse: number): asserts value is RigConfig {
   let fixtureCount = 0;
+  const patchFields = { ...equipment, dmxUniverse: integer(1, maxUniverse) };
   checkFields(value, 'rig', {
     schemaVersion: optional((v) => v === 1),
     name: text,
@@ -216,15 +217,15 @@ function checkRig(value: unknown): asserts value is RigConfig {
       });
     }
     checkList(pod.fixtures, `${path}.fixtures`, (fixture, fixturePath) => {
-      checkFields(fixture, fixturePath, { ...equipment, type: catalogKey(FIXTURE_CATALOG) });
+      checkFields(fixture, fixturePath, { ...patchFields, type: catalogKey(FIXTURE_CATALOG) });
       checkCatalogMetadata(fixture, fixturePath);
       checkOptics(fixture, fixturePath);
       fixtureCount += Number(fixture.count);
-    }, 1024);
+    }, MAX_RIG_FIXTURE_UNITS);
   }, MAX_TRUSS_PODS);
   checkList(value.floorFx, 'floorFx', (unit, path) => {
     checkFields(unit, path, {
-      ...equipment,
+      ...patchFields,
       type: catalogKey(FLOOR_FX_CATALOG),
       x: coord,
       z: coord,
@@ -233,9 +234,9 @@ function checkRig(value: unknown): asserts value is RigConfig {
     checkCatalogMetadata(unit, path);
     checkOptics(unit, path);
     fixtureCount += Number(unit.count);
-  }, 1024);
-  if (fixtureCount > 1024)
-    throw new Error('This rig exceeds the 1,024 fixtures supported across two universes.');
+  }, MAX_RIG_FIXTURE_UNITS);
+  if (fixtureCount > MAX_RIG_FIXTURE_UNITS)
+    throw new Error('This rig exceeds the 1,024 fixture limit.');
   if (value.props !== undefined) {
     checkList(value.props, 'props', (prop, path) => {
       if (!isStageProp(prop)) throw new Error(`Invalid scenery settings at ${path}.`);
@@ -273,7 +274,7 @@ function checkRig(value: unknown): asserts value is RigConfig {
   }
 }
 
-export function parseRigJson(source: string): RigConfig {
+export function parseRigJson(source: string, maxUniverse: 2 | typeof MAX_LOGICAL_DMX_UNIVERSE = 2): RigConfig {
   const clean = source.charCodeAt(0) === 0xfeff ? source.slice(1) : source;
   if (clean.length > MAX_RIG_JSON_BYTES || new TextEncoder().encode(clean).length > MAX_RIG_JSON_BYTES) {
     throw new Error('This rig JSON file exceeds the 32 MiB limit.');
@@ -284,14 +285,20 @@ export function parseRigJson(source: string): RigConfig {
   } catch {
     throw new Error('Choose a valid JSON file.');
   }
-  checkRig(rig);
+  checkRig(rig, maxUniverse);
   if (rig.ledWall.cabinets) Object.assign(rig.ledWall, requestedWallSize(rig.ledWall.cabinets));
   return rig.platforms !== undefined || rig.trussPods.some((pod) => pod.shape === 'path')
     ? normalizeDesign(rig)
     : rig;
 }
 
+export function standaloneRigExportIssue(rig: RigConfig): string | undefined {
+  if (hasExtendedDmx(rig)) return 'This design uses U3–U16. Export Show JSON or a Show Bundle to keep its patch.';
+}
+
 export function downloadRig(rig: RigConfig) {
+  const issue = standaloneRigExportIssue(rig);
+  if (issue) throw new Error(issue);
   downloadStageFile(rig.name, 'stageforge.json', new Blob([JSON.stringify(rig, null, 2)], { type: 'application/json' }));
 }
 

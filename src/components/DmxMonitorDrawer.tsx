@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { X, Radio } from 'lucide-react';
 import { buildDmxPatch, DMX_CHANNELS, type FixturePatchUnit } from '../data/dmxPatch';
+import { isLogicalDmxUniverse, isPhysicalDmxUniverse, LOGICAL_DMX_UNIVERSES, type LogicalDmxUniverse } from '../data/dmxUniverses';
 import { getCatalogEntry, getCatalogMode, hasCatalogFixtures, type LaserChannelRole } from '../data/equipmentCatalog';
 import { classifyPhysicalGroup } from '../dmx/physicalDmx';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
@@ -12,6 +13,7 @@ import { DmxOutputSection } from './DmxOutputSection';
 export interface DmxSnapshot {
   u1: Uint8Array;
   u2: Uint8Array;
+  extended?: Partial<Record<LogicalDmxUniverse, Uint8Array>>;
   physU1?: Uint8Array;
   physU2?: Uint8Array;
 }
@@ -65,7 +67,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   onOpenPreflight,
   onClose,
 }) => {
-  const [universe, setUniverse] = useState<1 | 2>(1);
+  const [universe, setUniverse] = useState<LogicalDmxUniverse>(1);
   const [view, setView] = useState<'grid' | 'patch'>('grid');
   const [bufferMode, setBufferMode] = useState<'simulated' | 'physical'>('simulated');
   const [bank, setBank] = useState(0);
@@ -123,8 +125,8 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   const catalogPatched = hasCatalogFixtures(rig);
 
   const data = bufferMode === 'physical'
-    ? (universe === 1 ? (dmx.physU1 ?? EMPTY_UNIVERSE) : (dmx.physU2 ?? EMPTY_UNIVERSE))
-    : (universe === 1 ? dmx.u1 : dmx.u2);
+    ? (universe === 1 ? dmx.physU1 : universe === 2 ? dmx.physU2 : undefined) ?? EMPTY_UNIVERSE
+    : (universe === 1 ? dmx.u1 : universe === 2 ? dmx.u2 : dmx.extended?.[universe]) ?? EMPTY_UNIVERSE;
 
   return (
     <aside aria-label="DMX monitor" className="dmx-monitor-panel fixed top-16 bottom-[270px] left-2.5 w-[370px] z-35 glass-panel rounded-xl shadow-2xl flex flex-col overflow-hidden">
@@ -180,6 +182,14 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
           >
             UNIVERSE 2
           </button>
+          <select aria-label="Extended DMX universe" value={isPhysicalDmxUniverse(universe) ? '' : universe}
+            onChange={event => {
+              const selected = Number(event.target.value);
+              if (isLogicalDmxUniverse(selected)) setUniverse(selected);
+            }} className="rounded border border-white/15 bg-zinc-900 px-1 text-[10px] text-zinc-200">
+            <option value="" disabled>U3–U16</option>
+            {LOGICAL_DMX_UNIVERSES.filter(u => !isPhysicalDmxUniverse(u)).map(u => <option key={u} value={u}>Universe {u}</option>)}
+          </select>
         </div>
         <div className="flex gap-1">
           <button
@@ -244,6 +254,10 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
         </div>
       )}
       <div key={`${view}-${bank}-${universe}`} className="flex-1 overflow-y-auto p-2.5">
+        {!isPhysicalDmxUniverse(universe) && bufferMode === 'physical' && (
+          <p className="pb-2 text-xs text-amber-300">U{universe} is unavailable on current physical transports.</p>
+        )}
+        {!rows.length && <p className="pb-2 text-xs text-zinc-400">U{universe} has no patch.</p>}
         {view === 'grid' ? (
           <div className="grid grid-cols-8 gap-1">
             {Array.from({ length: 128 }).map((_, offset) => {
