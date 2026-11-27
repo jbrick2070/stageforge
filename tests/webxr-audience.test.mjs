@@ -47,6 +47,12 @@ test('front sightlines, theatre aisles and elevated lookouts reject occupied lan
   assert.ok(!displaced.blocked);
   assert.ok(Math.hypot(displaced.x - stageFront.x, displaced.z - stageFront.z) >= 0.75);
 
+  const nearby = { x: stageFront.x, y: 0, z: stageFront.z - 0.87, radius: 0.63, height: 2 };
+  const refined = mod.deriveAudienceViewpoints(arena, undefined, [nearby]).find(seat => seat.id === 'stage-front');
+  assert.ok(!refined.blocked);
+  assert.ok(Math.hypot(refined.x - nearby.x, refined.z - nearby.z) >= nearby.radius + 0.25);
+  assert.ok(Math.hypot(refined.x - stageFront.x, refined.z - stageFront.z) <= 0.11);
+
   const { theatreSeatAnchors } = await loader.ssrLoadModule('/src/data/crowdPlacement.ts');
   const chairs = theatreSeatAnchors(theatre);
   const chair = chairs.find(seat => seat.row === 7);

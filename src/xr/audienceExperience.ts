@@ -93,12 +93,16 @@ function landingClear(landing: Landing, obstacles: readonly XrAudienceObstacle[]
 }
 
 const LANDING_OFFSETS = (() => {
-  const points: Array<{ x: number; z: number }> = [];
-  for (let z = -6; z <= 6; z++) for (let x = -8; x <= 8; x++) {
-    points.push({ x: x * 0.5, z: z * 0.5 });
+  const decimetres: Array<{ x: number; z: number }> = [];
+  // Check small gaps near each preferred landing and keep the wider search bounded.
+  for (let z = -5; z <= 5; z++) for (let x = -5; x <= 5; x++) {
+    decimetres.push({ x, z });
   }
-  points.sort((a, b) => (a.x ** 2 + a.z ** 2) - (b.x ** 2 + b.z ** 2) || a.z - b.z || a.x - b.x);
-  return points;
+  for (let z = -30; z <= 30; z += 5) for (let x = -40; x <= 40; x += 5) {
+    if (Math.abs(x) > 5 || Math.abs(z) > 5) decimetres.push({ x, z });
+  }
+  decimetres.sort((a, b) => (a.x ** 2 + a.z ** 2) - (b.x ** 2 + b.z ** 2) || a.z - b.z || a.x - b.x);
+  return decimetres.map(({ x, z }) => ({ x: x / 10, z: z / 10 }));
 })();
 
 function findLanding(
