@@ -199,7 +199,7 @@ export function stepGovernedScalar(
   threshold = DEFAULT_SCALAR_EXCURSION,
   minSpacingFallbackMs = 334,
   out: ScalarStepResult = SCALAR_SCRATCH,
-  observeDelivered = false,
+  risePolicy: 'ramp' | 'strict' | 'observed' = 'ramp',
 ): ScalarStepResult {
   const safeDesired = Number.isFinite(desired) ? Math.max(0, desired) : 0;
   const minSpacing = sharedClock ? sharedClock.minSpacingMs : minSpacingFallbackMs;
@@ -329,7 +329,7 @@ export function stepGovernedScalar(
   }
 
   // Upward move (`safeDesired > ch.delivered`)
-  if (ch.lastDir === 1 && safeDesired >= ch.peak - threshold) {
+  if (risePolicy !== 'strict' && ch.lastDir === 1 && safeDesired >= ch.peak - threshold) {
     // Monotonic upward continuation of an already-admitted rise (smooth fade / ramp).
     ch.delivered = safeDesired;
     if (safeDesired > ch.peak) ch.peak = safeDesired;
@@ -343,7 +343,8 @@ export function stepGovernedScalar(
     return out;
   }
 
-  if (safeDesired - ch.anchor < threshold) {
+  const riseFrom = risePolicy === 'strict' ? Math.min(ch.anchor, ch.delivered) : ch.anchor;
+  if (safeDesired - riseFrom < threshold) {
     // Sub-threshold upward drift (< threshold above trough anchor); anchor stays pinned at trough!
     ch.delivered = safeDesired;
     out.value = safeDesired;
@@ -351,14 +352,14 @@ export function stepGovernedScalar(
     return out;
   }
 
-  // Significant rise from trough (`safeDesired - ch.anchor >= threshold`)
+  // Strict final lenses must admit every significant rise, including a jump after preheat.
   ch.revCount = pruneTimestamps(ch.revTimes, ch.revCount, tMs);
   const localOk =
     tMs - ch.lastRiseMs >= minSpacing &&
     (ch.lastDir !== -1 || ch.revCount <= MAX_REVERSALS_BEFORE_ADMIT);
   const globalOk = sharedClock ? canAdmitFlashRise(sharedClock, tMs) : true;
 
-  if (observeDelivered || (localOk && globalOk)) {
+  if (risePolicy === 'observed' || (localOk && globalOk)) {
     if (ch.lastDir === -1) {
       ch.revCount = pushTimestamp(ch.revTimes, ch.revCount, tMs);
     }
@@ -383,7 +384,13 @@ export function stepGovernedScalar(
 
 /** Account for a value already delivered by another path without applying a second clamp. */
 export function observeScalarDelivery(ch: ScalarGovernorState, clock: FlashBudgetClock | null, tMs: number, delivered: number): void {
-  stepGovernedScalar(ch, clock, tMs, delivered, false, true, DEFAULT_SCALAR_EXCURSION, undefined, SCALAR_SCRATCH, true);
+  stepGovernedScalar(ch, clock, tMs, delivered, false, true, DEFAULT_SCALAR_EXCURSION, undefined, SCALAR_SCRATCH, 'observed');
+}
+
+/** Final independently addressed lenses share one room clock without per-lens ramp allowances. */
+export function stepFinalPreviewScalar(ch: ScalarGovernorState, clock: FlashBudgetClock, tMs: number,
+  desired: number, blackout: boolean): ScalarStepResult {
+  return stepGovernedScalar(ch, clock, tMs, desired, blackout, true, DEFAULT_SCALAR_EXCURSION, undefined, SCALAR_SCRATCH, 'strict');
 }
 
 /** Check both the local and room refractory before handing a lens back to passthrough. */

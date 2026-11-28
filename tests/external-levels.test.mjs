@@ -42,7 +42,7 @@ function bankHarness(bindings, input = incoming()) {
   bank.reconcile(bindings, input, state, 0);
   const frame = (clock, rawDesk = 0, { master = 1, limited = true, blackout = false, now = clock } = {}) => {
     state.clockMs = state.budgetClock.clockMs = clock;
-    const visible = bank.prepare(input, state);
+    const visible = bank.prepare(input, state, clock, limited);
     const spill = bank.deliver(input, state, now, visible && !blackout ? rawDesk : 0, rawDesk, master, blackout, limited);
     return { spill, visible };
   };
@@ -200,5 +200,57 @@ test('P4 alternating external lamps share the existing room ceiling at each tick
     }
     assert.ok(rises.length >= 4);
     assert.ok(rises.every(at => rises.filter(other => other >= at && other < at + 1000).length <= 3));
+  }
+});
+
+test('P4 preheated External lenses and Desk handoff spend both local and room rise history', () => {
+  for (const limited of [true, false]) {
+    const h = bankHarness([bind('left', 1), bind('right', 2)]);
+    h.input.source = 'external';
+    const trace = [[1, 7, 7], [21, 255, 7], [61, 7, 7], [101, 7, 255], [141, 7, 7], [161, 0, 0]];
+    const rises = [[], [], []];
+    let previous = [0, 0, 0];
+    let seq = 0;
+    for (let cycle = 0; cycle < 5; cycle++) {
+      for (const [offset, left, right] of trace) {
+        const at = cycle * 480 + offset;
+        feed(h.input, at, ++seq, slots(left, right));
+        const { spill } = h.frame(at, 1, { limited });
+        const delivered = [h.bank.level('left'), h.bank.level('right'), spill];
+        if (cycle === 0 && [1, 21, 101].includes(offset)) assert.deepEqual(delivered, [7 / 255, 7 / 255, 7 / 255]);
+        delivered.forEach((value, unit) => { if (value - previous[unit] >= 0.02) rises[unit].push(at); });
+        previous = delivered;
+      }
+    }
+    assert.ok(rises[2].length >= 3, 'the room admits valid low rises in the real chase');
+    assert.ok(rises.every(times => times.every(at => times.filter(t => t >= at && t < at + 1000).length <= 3)));
+    feed(h.input, 3500, ++seq, slots(7, 7));
+    assert.equal(h.frame(3500, 1, { limited }).spill, 7 / 255);
+    h.input.source = 'desk';
+    h.input.end();
+    assert.equal(h.frame(3520, 1, { limited }).spill, 7 / 255, 'the Desk handoff cannot promote either live preheated lens');
+    assert.deepEqual([h.bank.level('left'), h.bank.level('right')], [7 / 255, 7 / 255]);
+    assert.equal(h.frame(4700, 1, { limited }).spill, 1);
+    assert.deepEqual([h.bank.level('left'), h.bank.level('right')], [1, 1]);
+  }
+});
+
+test('P4 new stock siblings start from visible darkness even when the hidden Desk target is unchanged', () => {
+  for (const limited of [true, false]) {
+    const eligible = bind('external', 1);
+    const h = bankHarness([eligible]);
+    assert.equal(h.frame(20, 1, { limited }).spill, 1);
+    h.input.source = 'external';
+    h.frame(40, 1, { limited });
+    feed(h.input, 800, 1, slots(255));
+    assert.equal(h.frame(800, 1, { limited }).spill, 1);
+    feed(h.input, 820, 2, slots(0));
+    assert.equal(h.frame(820, 1, { limited }).spill, 0);
+    h.bank.reconcile([eligible, { unitId: 'new-stock', address: null }], h.input, h.state, 830);
+    assert.deepEqual(h.frame(840, 1, { limited }), { spill: limited ? 0 : 1, visible: !limited });
+    assert.equal(h.bank.level('new-stock'), limited ? 0 : 1);
+    assert.equal(h.bank.level('external'), 0);
+    assert.equal(h.frame(1840, 1, { limited }).spill, 1, 'a legitimate steady Desk target eventually survives the handoff');
+    assert.equal(h.bank.level('new-stock'), 1);
   }
 });

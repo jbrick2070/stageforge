@@ -1949,29 +1949,42 @@ export class StageEngine {
     }
   }
 
-  /** Probe only. Sample the installed lamps on the compositor's presented framebuffer. */
-  public blinderLensPixelsForTest() {
+  /** Probe only. Sample the installed lamps and optional deck spill on the presented framebuffer. */
+  public blinderPreviewPixelsForTest(includeRoom = false) {
     if (this.standby) throw new Error('Blinder pixels are unavailable in standby.');
     this.composer.render(0);
     const gl = this.renderer.getContext();
     const { width, height } = this.renderer.domElement;
     const projected = new THREE.Vector3();
-    const pixels = new Uint8Array(3 * 3 * 4);
-    return this.blinders.map(blinder => ({
+    const pixels = new Uint8Array(9 * 9 * 4);
+    const samplePixel = (radius: number) => {
+      if (projected.z < -1 || projected.z > 1) return [];
+      const x = Math.floor((1 + projected.x) * width / 2);
+      const y = Math.floor((1 + projected.y) * height / 2);
+      if (x < radius || x >= width - radius || y < radius || y >= height - radius) return [];
+      const size = radius * 2 + 1;
+      gl.readPixels(x - radius, y - radius, size, size, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      let sum = 0;
+      for (let i = 0; i < size * size * 4; i += 4) sum += pixels[i] * 0.2126 + pixels[i + 1] * 0.7152 + pixels[i + 2] * 0.0722;
+      return [{ x, y: height - 1 - y, luminance: sum / (size * size * 255) }];
+    };
+    const lenses = this.blinders.map(blinder => ({
       unitId: blinder.binding.unitId,
       address: blinder.binding.address,
       lenses: blinder.lenses.flatMap(lens => {
         lens.getWorldPosition(projected).project(this.camera);
-        if (projected.z < -1 || projected.z > 1) return [];
-        const x = Math.floor((1 + projected.x) * width / 2);
-        const y = Math.floor((1 + projected.y) * height / 2);
-        if (x <= 0 || x >= width - 1 || y <= 0 || y >= height - 1) return [];
-        gl.readPixels(x - 1, y - 1, 3, 3, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-        let sum = 0;
-        for (let i = 0; i < pixels.length; i += 4) sum += (pixels[i] * 0.2126 + pixels[i + 1] * 0.7152 + pixels[i + 2] * 0.0722);
-        return [{ x, y: height - 1 - y, luminance: sum / (9 * 255) }];
+        return samplePixel(1);
       }),
     }));
+    const rig = includeRoom ? this.currentRig : undefined;
+    const room = rig ? [-0.30, -0.14, 0.02].flatMap(depth =>
+      [-0.13, -0.06, 0, 0.06, 0.13].flatMap(widthRatio => {
+        const x = rig.stageWidth * widthRatio;
+        const z = rig.stageDepth * depth;
+        projected.set(x, stageSurfaceHeight(rig, x, z) + 0.015, z).project(this.camera);
+        return samplePixel(4);
+      })) : [];
+    return { lenses, room, spillLevel: this.blinderLight.intensity / 75 };
   }
 
   private captureCanvas: HTMLCanvasElement | null = null;
@@ -4586,7 +4599,7 @@ export class StageEngine {
     const rawLedHigh = s.audioReactive && audio.playing ? audio.high : 0.28 + 0.2 * Math.sin(t * 4.5);
     const artNetPreview = this.artNetPreview;
     const deskBlinderVisible = artNetPreview ? this.blinderPreview.prepare(artNetPreview, this.previewFlashState,
-      this.previewFlashState.clockMs + audioDt * 1000) : true;
+      this.previewFlashState.clockMs + audioDt * 1000, previewLimited) : true;
     const previewFlash = evaluatePreviewFlash(
       this.previewFlashState,
       {

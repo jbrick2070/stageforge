@@ -199,6 +199,7 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
   max-width: calc(100% - 24px); margin: 8px 12px; pointer-events: none;
 }
 .stage-status-stack > * { position: relative; z-index: 39; pointer-events: auto; }
+.stage-status-stack > .preview-level-source { z-index: 34; }
 /* Keep the output stop and notice reachable above desk popovers and narrow drawers. */
 .stage-status-stack > .stage-output-status { z-index: 50; }
 .stage-top-center { grid-area: stage; align-self: start; justify-self: center; position: relative; margin: 8px 12px; max-width: calc(100% - 24px); }

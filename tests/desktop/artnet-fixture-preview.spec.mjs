@@ -36,7 +36,7 @@ async function openShow(page, show) {
     window.stageforgeProbe.setRenderSettings({ bloom: 'half', trueColour: false });
     window.stageforgeProbe.setCameraPose(...camera);
   }, P4_CAMERA);
-  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.renderStats().bloomActive)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.graphicsProbe().bloomActive)).toBe(true);
 }
 
 async function openInput(page) {
@@ -54,8 +54,8 @@ const readLenses = page => page.evaluate(() => {
 });
 
 test('P4 packaged desktop opens on Desk with External Levels unavailable until listening', async () => {
-  const packaged = process.env.STAGEFORGE_DESKTOP_EXE;
-  test.skip(!packaged, 'Supply STAGEFORGE_DESKTOP_EXE for the packaged cold-start proof.');
+  const packaged = process.env.STAGEFORGE_CAST_DESKTOP_EXE ?? process.env.STAGEFORGE_DESKTOP_EXE;
+  test.skip(!packaged, 'Supply the installed StageForge executable for the packaged cold-start proof.');
   const temp = await mkdtemp(path.join(os.tmpdir(), 'stageforge-p4-offline-'));
   let app;
   try {

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { LOGICAL_DMX_UNIVERSES } from '../data/dmxUniverses';
 import type { ArtNetInputApi } from '../dmx/useArtNetInput';
 import { useLive } from '../state/liveTelemetry';
+import { LevelSourceControl } from './LevelSourceControl';
 
 const DEFAULT_CONFIG: ArtNetInputConfigBridge = {
   binding: 'loopback', address: '127.0.0.1',
@@ -76,6 +77,7 @@ export function ArtNetInputSection({ input }: { input: ArtNetInputApi }) {
         </button>
       </div>
 
+      <LevelSourceControl input={input} />
       <fieldset disabled={!canConfigure} className="space-y-1.5 rounded border border-white/10 p-2 disabled:opacity-70">
         <legend className="px-1 text-zinc-300">Receive settings</legend>
         <label className="flex items-center justify-between gap-2">

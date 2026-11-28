@@ -694,6 +694,7 @@ export const App: React.FC = () => {
   activeCameraRef.current = activeCamera;
   const [rigDrawerOpen, setRigDrawerOpen] = useState(false);
   const [dmxDrawerOpen, setDmxDrawerOpen] = useState(false);
+  const [dmxInputView, setDmxInputView] = useState(false);
   const [showControlOpen, setShowControlOpen] = useState(false);
   const [costModalOpen, setCostModalOpen] = useState(false);
   const [costModalRetry, setCostModalRetry] = useState(0);
@@ -839,6 +840,9 @@ export const App: React.FC = () => {
   const [cinemaMode, setCinemaMode] = useState(() =>
     window.matchMedia('(pointer: coarse) and (max-width: 700px), (pointer: coarse) and (max-height: 500px)').matches
   );
+  useEffect(() => {
+    if (!dmxDrawerOpen || cinemaMode) setDmxInputView(false);
+  }, [dmxDrawerOpen, cinemaMode]);
   const [toast, setToast] = useState<string | null>(null);
 
   const dmxOpenRef = useRef(false);
@@ -2240,7 +2244,8 @@ export const App: React.FC = () => {
       beamFrusta: () => engine.beamFrustaForTest(),
       beamPrisms: () => engine.beamPrismsForTest(),
       beamLevels: () => engine.beamLevelsForTest(),
-      blinderLensPixels: () => engine.blinderLensPixelsForTest(),
+      blinderLensPixels: () => engine.blinderPreviewPixelsForTest().lenses,
+      blinderPreviewPixels: () => engine.blinderPreviewPixelsForTest(true),
       poolFrusta: () => engine.poolFrustaForTest(),
       measureSnapshot: () => engine.getMeasureSnapshot(false),
       preflightReport: () => preflightRef.current,
@@ -4437,7 +4442,8 @@ export const App: React.FC = () => {
           }}
         />
 
-        {artNetInput.available && <LevelSourceControl input={artNetInput} />}
+        {artNetInput.available && (cinemaMode || !dmxDrawerOpen || !dmxInputView) &&
+          <LevelSourceControl input={artNetInput} />}
 
         {webXrPhase === 'ready' && (
           <button
@@ -4663,6 +4669,8 @@ export const App: React.FC = () => {
             dmxStore={live.dmx}
             liveOutput={liveDmx}
             artNetInput={artNetInput}
+            inputView={dmxInputView}
+            onToggleInputView={() => setDmxInputView(value => !value)}
             preflight={preflightReport}
             liveViolationMessage={liveSafetyViolation}
             aiBridgeBlocking={aiBridgeBlocking}

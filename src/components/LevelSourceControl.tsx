@@ -34,7 +34,7 @@ export function LevelSourceControl({ input }: { input: ArtNetInputApi }) {
   const [source, locked, status] = useSyncExternalStore(subscribe, read, read).split('|');
 
   return (
-    <section aria-label="Preview level source" className="rounded-lg border border-white/20 bg-zinc-950/90 px-2.5 py-1.5 text-xs">
+    <section aria-label="Preview level source" className="preview-level-source rounded-lg border border-white/20 bg-zinc-950/90 px-2.5 py-1.5 text-xs">
       <label className="flex items-center justify-between gap-2 text-zinc-200">
         <span>Level source</span>
         <select value={source} className="rounded border border-white/20 bg-zinc-900 px-1 py-0.5"

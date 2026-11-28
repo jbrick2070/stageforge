@@ -7,6 +7,7 @@ import {
   createScalarGovernorState,
   observeScalarDelivery,
   recordFlashFall,
+  stepFinalPreviewScalar,
   stepGovernedScalar,
   type ScalarGovernorState,
 } from './flashGovernor';
@@ -30,7 +31,7 @@ export function resolveBlinderPreviewBinding(
 
 interface BlinderPreviewUnit extends BlinderPreviewBinding {
   governor: ScalarGovernorState;
-  route: 'desk' | 'external' | 'returning';
+  route: 'desk' | 'external' | 'returning' | 'joiningDesk';
   changedAt: number;
   generation: number | null;
   seenSequence: number;
@@ -50,6 +51,7 @@ export class BlinderPreviewBank {
   reconcile(bindings: readonly BlinderPreviewBinding[], input: ArtNetPreviewLevels, state: PreviewFlashState, now: number): void {
     const previous = this.units;
     const next = new Map<string, BlinderPreviewUnit>();
+    const mixedDelivery = input.source === 'external' || this.hasExternalOrHandoff();
     for (const binding of bindings) {
       const old = previous.get(binding.unitId);
       if (old && sameAddress(old.address, binding.address)) {
@@ -61,7 +63,9 @@ export class BlinderPreviewBank {
       governor.initialized = true;
       if (old && old.route !== 'desk') this.darken(old, state);
       next.set(binding.unitId, {
-        ...binding, governor, route: old?.route ?? 'desk', changedAt: now,
+        ...binding, governor,
+        route: old?.route ?? (mixedDelivery && !binding.address ? 'joiningDesk' : 'desk'),
+        changedAt: now,
         generation: input.authority?.generation ?? null,
         seenSequence: binding.address ? input.latestSequence(binding.address.universe) : 0,
       });
@@ -72,7 +76,7 @@ export class BlinderPreviewBank {
     this.units = next;
   }
 
-  prepare(input: ArtNetPreviewLevels, state: PreviewFlashState, nextClockMs = state.clockMs): boolean {
+  prepare(input: ArtNetPreviewLevels, state: PreviewFlashState, nextClockMs = state.clockMs, deskLimited = true): boolean {
     const newDocument = input.documentEpoch !== this.documentEpoch;
     this.documentEpoch = input.documentEpoch;
     this.hasDeskLens = this.units.size === 0;
@@ -80,6 +84,7 @@ export class BlinderPreviewBank {
       if (newDocument && unit.route !== 'desk') this.darken(unit, state);
       if (input.source === 'external' && unit.address) unit.route = 'external';
       else if (unit.route === 'external') unit.route = 'returning';
+      else if (unit.route === 'joiningDesk' && !deskLimited) unit.route = 'desk';
       if (unit.route === 'desk') this.hasDeskLens = true;
     }
     if (this.pendingFall) {
@@ -117,10 +122,10 @@ export class BlinderPreviewBank {
         dark ||= !newer;
         target = newer ? sample.data[address.start - 1] / 255 * master : 0;
       }
-      const governed = stepGovernedScalar(unit.governor, clock, t, target, dark);
+      const governed = stepFinalPreviewScalar(unit.governor, clock, t, target, dark);
       room = Math.max(room, governed.value);
       this.limited ||= governed.limited;
-      if (unit.route === 'returning') {
+      if (unit.route === 'returning' || unit.route === 'joiningDesk') {
         if (!returning || unit.governor.lastRiseMs > returning.lastRiseMs) returning = unit.governor;
         if (Math.abs(governed.value - (dark ? 0 : target)) > 1e-6 ||
             !canReleaseScalarHandoff(unit.governor, clock, t)) canReturn = false;
@@ -128,7 +133,7 @@ export class BlinderPreviewBank {
     }
     if (returning && canReturn) {
       if (!this.hasDeskLens) copyScalarGovernorState(state.blinderGov, returning);
-      for (const unit of this.units.values()) if (unit.route === 'returning') unit.route = 'desk';
+      for (const unit of this.units.values()) if (unit.route === 'returning' || unit.route === 'joiningDesk') unit.route = 'desk';
     }
     return room;
   }

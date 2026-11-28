@@ -26,6 +26,8 @@ interface DmxMonitorDrawerProps {
   dmxStore: LiveStore<DmxSnapshot>;
   liveOutput: LiveDmxControllerApi;
   artNetInput: ArtNetInputApi;
+  inputView: boolean;
+  onToggleInputView: () => void;
   preflight?: PreflightReport;
   liveViolationMessage?: string | null;
   aiBridgeBlocking?: boolean;
@@ -64,6 +66,8 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   dmxStore,
   liveOutput,
   artNetInput,
+  inputView,
+  onToggleInputView,
   preflight,
   liveViolationMessage,
   aiBridgeBlocking,
@@ -72,7 +76,6 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   onClose,
 }) => {
   const [universe, setUniverse] = useState<LogicalDmxUniverse>(1);
-  const [inputView, setInputView] = useState(false);
   const showInput = artNetInput.available && inputView;
   const [view, setView] = useState<'grid' | 'patch'>('grid');
   const [bufferMode, setBufferMode] = useState<'simulated' | 'physical'>('simulated');
@@ -147,7 +150,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
           </p>
         </div>
         <div className="flex items-center gap-1.5">
-          {artNetInput.available && <button type="button" aria-pressed={showInput} onClick={() => setInputView(value => !value)}
+          {artNetInput.available && <button type="button" aria-pressed={showInput} onClick={onToggleInputView}
             className="rounded border border-white/15 px-1.5 py-1 text-[10px] text-zinc-100 cursor-pointer">
             Art-Net input
           </button>}

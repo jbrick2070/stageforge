@@ -85,7 +85,7 @@ async function openShow(page, show) {
     window.stageforgeProbe.setRenderSettings({ bloom: 'half', trueColour: false });
     window.stageforgeProbe.setCameraPose(...camera);
   }, P4_CAMERA);
-  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.renderStats().bloomActive)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.graphicsProbe().bloomActive)).toBe(true);
 }
 
 async function openInput(page) {
@@ -115,6 +115,32 @@ async function freezeAfterFirstFrame(page, show) {
   await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 500);
 }
 const contrast = 0.07;
+
+function calibratedRoom(dark, lit) {
+  const coordinates = sample => sample.room.map(({ x, y }) => [x, y]);
+  expect(dark.room.length).toBeGreaterThan(0);
+  expect(coordinates(lit)).toEqual(coordinates(dark));
+  const deltas = lit.room.map((pixel, index) => pixel.luminance - dark.room[index].luminance);
+  const span = Math.max(...deltas);
+  const index = deltas.indexOf(span);
+  expect(span, 'admitted blinder visibly lights the deck after bloom').toBeGreaterThan(0.004);
+  return {
+    span,
+    read(sample) {
+      expect(coordinates(sample)).toEqual(coordinates(dark));
+      return sample.room[index].luminance - dark.room[index].luminance;
+    },
+  };
+}
+
+async function readPreview(page, steps = [20]) {
+  return page.evaluate(durations => {
+    const p = window.stageforgeProbe;
+    for (const dt of durations) p.stepAndReadLuminance(dt);
+    return p.blinderPreviewPixels();
+  }, steps);
+}
+const lensPeak = unit => Math.max(...unit.lenses.map(pixel => pixel.luminance));
 
 test('P4 Art-Net External Levels renders independently while Desk buffers and cue ownership remain separate', async ({ page }, info) => {
   test.setTimeout(120_000);
@@ -261,6 +287,116 @@ test('P4 Reduced renders anti-phase input within the shared flash ceiling and ho
   const blackout = await frame(page, 1, 1);
   expect(blackout.levels[1]).toBeLessThan(lit.levels[1] - contrast);
   await info.attach('p4-reduced-lens-edges', { body: JSON.stringify(wins), contentType: 'application/json' });
+});
+
+test('P4 preheated External lamps and Desk handoff govern the post-bloom lenses and room spill', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  await mockP3(page);
+  const show = p4Rehearsal();
+  show.look.blinderLevel = 1;
+  await freezeAfterFirstFrame(page, show);
+  const rx = await openInput(page);
+  await button(rx, 'Start listening').press('Enter');
+  await source(page).selectOption('external');
+  await page.clock.runFor(20);
+  const settle = [250, 250, 250, 250, 250];
+  const dark = await readPreview(page, settle);
+  await emit(page, { 3: [255, 0] });
+  const lit = await readPreview(page, settle);
+  expect(lensPeak(lit.lenses[0]) - lensPeak(dark.lenses[0])).toBeGreaterThan(contrast);
+  const room = calibratedRoom(dark, lit);
+  await emit(page, { 3: [0, 0] });
+  await readPreview(page, settle);
+
+  const pulse = [[1, [7, 7]], [21, [255, 7]], [61, [7, 7]], [101, [7, 255]], [141, [7, 7]], [161, [0, 0]]];
+  const trace = await page.evaluate(program => {
+    const p = window.stageforgeProbe;
+    const result = [];
+    let previousAt = 0;
+    for (let cycle = 0; cycle < 4; cycle++) {
+      for (const [offset, values] of program) {
+        const at = cycle * 480 + offset;
+        let dt = at - previousAt;
+        while (dt > 250) { p.stepAndReadLuminance(250); dt -= 250; }
+        window.p4Input.emit({ 3: values });
+        p.stepAndReadLuminance(dt);
+        result.push({ at, sample: p.blinderPreviewPixels() });
+        previousAt = at;
+      }
+    }
+    return result;
+  }, pulse);
+  const fullRises = trace.filter(({ sample }, index) => {
+    const now = room.read(sample);
+    const prior = index ? room.read(trace[index - 1].sample) : 0;
+    return now - prior > room.span / 2;
+  });
+  for (const { sample } of [trace[1], trace[3]]) {
+    expect(sample.spillLevel).toBeCloseTo(7 / 255);
+    expect(room.read(sample)).toBeLessThan(room.span / 2);
+    sample.lenses.forEach((unit, index) => expect(lensPeak(unit) - lensPeak(dark.lenses[index])).toBeLessThan(contrast));
+  }
+  expect(fullRises.every(({ at }) => fullRises.filter(other => other.at >= at && other.at < at + 1000).length <= 3)).toBe(true);
+
+  await emit(page, { 3: [0, 0] });
+  await readPreview(page, settle);
+  await emit(page, { 3: [7, 7] });
+  const warm = await readPreview(page, [1]);
+  await button(rx, 'Stop listening').press('Enter');
+  await expect(source(page)).toHaveValue('desk');
+  const handoff = await readPreview(page, [20]);
+  expect(handoff.spillLevel).toBeCloseTo(7 / 255);
+  expect(Math.abs(room.read(handoff) - room.read(warm))).toBeLessThan(room.span / 2);
+  handoff.lenses.forEach((unit, index) => expect(Math.abs(lensPeak(unit) - lensPeak(warm.lenses[index]))).toBeLessThan(contrast));
+  const steadyDesk = await readPreview(page, settle);
+  expect(room.read(steadyDesk)).toBeGreaterThan(room.span / 2);
+  steadyDesk.lenses.forEach((unit, index) => expect(lensPeak(unit) - lensPeak(handoff.lenses[index])).toBeGreaterThan(contrast));
+  await info.attach('p4-preheated-post-bloom', { body: JSON.stringify({ dark, lit, trace, warm, handoff, steadyDesk }), contentType: 'application/json' });
+});
+
+test('P4 adding a stock Desk bank cannot relight a dark room during External refractory', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await mockP3(page);
+  const show = p4Rehearsal();
+  show.look.blinderLevel = 1;
+  await freezeAfterFirstFrame(page, show);
+  const desk = await readPreview(page, [250, 250, 250]);
+  expect(desk.spillLevel).toBe(1);
+  const rx = await openInput(page);
+  await button(rx, 'Start listening').press('Enter');
+  await source(page).selectOption('external');
+  await page.clock.runFor(20);
+  const externalDark = await readPreview(page, [250, 250, 250]);
+  await emit(page, { 3: [255, 0] });
+  const externalLit = await readPreview(page, [20]);
+  expect(lensPeak(externalLit.lenses[0]) - lensPeak(externalDark.lenses[0])).toBeGreaterThan(contrast);
+  const room = calibratedRoom(externalDark, externalLit);
+  await emit(page, { 3: [0, 0] });
+  const fell = await readPreview(page, [20]);
+  expect(fell.spillLevel).toBe(0);
+
+  await button(monitor(page), 'Close DMX monitor').click();
+  await button(page, 'Rig builder').click();
+  const rig = page.getByRole('complementary', { name: 'Rig Builder', exact: true });
+  const add = rig.getByRole('button', { name: '+blinder', exact: true });
+  await expect(add).toHaveCount(2);
+  await add.first().click(); // The authored preview truss is first.
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe.rig().trussPods[0].fixtures
+    .find(group => group.type === 'blinder' && group.id !== 'preview-blinders')?.count)).toBe(4);
+  await button(rig, 'Close Rig Builder').click();
+  await expect(source(page)).toHaveValue('external');
+  const blocked = await readPreview(page, [20]);
+  const stock = blocked.lenses.filter(unit => unit.address === null);
+  expect(stock).toHaveLength(4);
+  expect(blocked.spillLevel).toBe(0);
+  const resumed = await readPreview(page, [250, 250, 250, 250, 250]);
+  expect(resumed.spillLevel).toBe(1);
+  const rebuiltRoom = calibratedRoom(blocked, resumed);
+  const steadyStock = resumed.lenses.filter(unit => unit.address === null);
+  stock.forEach((unit, index) => expect(lensPeak(steadyStock[index]) - lensPeak(unit)).toBeGreaterThan(contrast));
+  expect(rebuiltRoom.read(resumed)).toBeGreaterThan(room.span / 2);
+  await info.attach('p4-new-stock-post-bloom', { body: JSON.stringify({ desk, externalDark, externalLit, fell, blocked, resumed }), contentType: 'application/json' });
 });
 
 test('P4 a co-timed full-rate Desk sibling cannot exempt a newly External lens from its local history', async ({ page }) => {
