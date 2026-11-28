@@ -56,7 +56,7 @@ import {
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson, standaloneRigExportIssue } from './data/rigImport';
 import { makeDesignRecoveryShow, readSavedDesign, SAVED_DESIGN_KEY, writeSavedDesign, type SavedDesignRecord } from './data/savedDesign';
-import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange, type ShowTimeline } from './data/showFile';
+import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type DesignContent, type NativeStage, type ShowInterchange, type ShowTimeline } from './data/showFile';
 import { resolveCrowdLayout, type CrowdLayout } from './data/crowdPlacement';
 import { hasCatalogFixtures } from './data/equipmentCatalog';
 import { summarizePhysicalDrive } from './dmx/physicalDmx';
@@ -830,6 +830,7 @@ export const App: React.FC = () => {
   const replayScreenClock = useRef(0);
   const replayMusicClock = useRef(0);
   const pendingDesign = useRef<PendingLocalDesign | null>(null);
+  const [recoverableLocalDesigns, setRecoverableLocalDesigns] = useState<DesignContent[]>([]);
   const saveTimer = useRef<number | undefined>(undefined);
   const [cinemaMode, setCinemaMode] = useState(() =>
     window.matchMedia('(pointer: coarse) and (max-width: 700px), (pointer: coarse) and (max-height: 500px)').matches
@@ -1538,8 +1539,12 @@ export const App: React.FC = () => {
     let source: string | null = null;
     const disk = readSavedDesign({ getItem: (key) => (source = localStorage.getItem(key)) });
     if ('restore' in pending && disk.status !== 'inaccessible' && source !== pending.expected) {
-      // A later write owns the slot. Retrying this undo would replace someone else's design.
+      // The later save owns the slot. Keep the original unsaved edit available for export.
       pendingDesign.current = null;
+      let followUp = pending.followUp;
+      while (followUp && 'restore' in followUp) followUp = followUp.followUp;
+      const unsaved = followUp?.current;
+      if (unsaved) setRecoverableLocalDesigns((designs) => [...designs, unsaved]);
       savedDesignRef.current = disk;
       setSavedDesign(disk);
       setDesignSaveFailed(false);
@@ -3409,13 +3414,14 @@ export const App: React.FC = () => {
   useEffect(() => {
     window.stageforgeDesktop?.setRigExportState?.(Boolean(rigExportIssue));
   }, [rigExportIssue]);
+  const downloadDesignRecovery = (design: DesignContent) => {
+    const file = makeDesignRecoveryShow(design);
+    downloadStageFile(design.rig.name, 'stageforge.show.json', new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' }));
+  };
   const recoveryExports = {
     onExportRig: () => downloadRig(rig),
     rigExportIssue,
-    onExportShow: () => {
-      const file = makeDesignRecoveryShow({ rig, stage: nativeStage.current, crowd: crowdRef.current });
-      downloadStageFile(rig.name, 'stageforge.show.json', new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' }));
-    },
+    onExportShow: () => downloadDesignRecovery({ rig, stage: nativeStage.current, crowd: crowdRef.current }),
   };
   const localDesignNotice = savedDesign.status === 'corrupt' ? 'The local design is unreadable and has been preserved.'
     : savedDesign.status === 'newer' ? 'The local design was saved by a newer version and has been preserved.'
@@ -3429,6 +3435,7 @@ export const App: React.FC = () => {
     adopt: localDesignMode.current !== 'attached' && (savedDesign.status === 'ready' || savedDesign.status === 'missing')
       ? () => queueDesign(rigRef.current, true, true) : undefined,
     retry: designSaveFailed ? flushDesign : undefined,
+    recoveryDownloads: recoverableLocalDesigns.map((design) => ({ name: design.rig.name, download: () => downloadDesignRecovery(design) })),
   };
   // MVR (DIN SPEC 15801) rigs from StageForge or other tools. Parse purely first; clean
   // StageForge round trips commit directly, while foreign MVRs or StageForge MVRs with

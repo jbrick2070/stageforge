@@ -490,6 +490,55 @@ test('P2 AI Revert retry leaves a later saved design untouched', async ({ page }
   expect((await exportOpenShow(page)).rig.name).toBe(show.rig.name);
 });
 
+test('P2 AI Revert conflicts keep the earlier unsaved edit available for download', async ({ page }) => {
+  const saved = { rig: { ...legacyShow().rig, name: 'Protected design before AI' } };
+  const raw = designEnvelope(saved);
+  await installMockAi(page, raw);
+  await page.goto('/?probe');
+  const draft = p2Rehearsal();
+  draft.rig.name = 'Earlier unsaved edit';
+  await openShow(page, draft);
+  await page.evaluate(() => { window.p2AiWriteDenied = true; });
+  const builder = await openRigBuilder(page);
+  await builder.getByLabel('DMX universe for Wash One on Main truss').selectOption('4');
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  expect(await savedRaw(page)).toBe(raw);
+  await button(builder, 'Close Rig Builder').press('Enter');
+
+  const show = p2Rehearsal();
+  show.rig.name = 'Detached before AI';
+  await openShow(page, show);
+  await enableAi(page);
+  await page.evaluate(() => { window.p2AiWriteDenied = false; });
+  const candidate = p2Rehearsal();
+  await acceptAiProposal(page, 'propose_show', { show: candidate });
+  expect(JSON.parse(await savedRaw(page))).toMatchObject({ current: { rig: { name: candidate.rig.name } }, previous: saved });
+  await page.evaluate(() => { window.p2AiWriteDenied = true; });
+  await revertAi(page);
+  await button(page, 'Show files').press('Enter');
+  const retry = button(files(page), 'Retry local design save');
+  await expect(retry).toBeEnabled();
+
+  const later = designEnvelope({ rig: { ...legacyShow().rig, name: 'Later saved design' } }, saved);
+  await page.evaluate(({ key, later }) => {
+    window.p2AiWriteDenied = false;
+    localStorage.setItem(key, later);
+  }, { key, later });
+  await retry.press('Enter');
+  await expect(retry).toHaveCount(0);
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  expect(await savedRaw(page)).toBe(later);
+  expect((await exportOpenShow(page)).rig.name).toBe(show.rig.name);
+
+  const downloading = page.waitForEvent('download');
+  await button(files(page), 'Download unsaved design JSON · Earlier unsaved edit').press('Enter');
+  const recovered = JSON.parse(await readFile(await (await downloading).path(), 'utf8'));
+  expect(recovered.version).toBe(15);
+  expect(recovered.rig.name).toBe(draft.rig.name);
+  expect(recovered.rig.trussPods[0].fixtures[0].dmxUniverse).toBe(4);
+  expect(await savedRaw(page)).toBe(later);
+});
+
 async function installMockDmx(page, order) {
   await page.addInitScript(order => {
     let listener;
