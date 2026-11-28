@@ -273,14 +273,22 @@ test('P2 Retry rotates in the disk design when the initial local read was denied
   expect(saved.previous).toEqual(prior);
 });
 
-test('P2 AI whole-show approval rotates local designs and Revert restores the pre-AI desk', async ({ page }) => {
-  const prior = { rig: { ...legacyShow().rig, name: 'Prior live design' } };
-  const older = { rig: { ...legacyShow().rig, name: 'Older recovery design' } };
-  const raw = JSON.stringify({ format: 'stageforge-local-design', version: 1, current: prior, previous: older });
+const designEnvelope = (current, previous) => JSON.stringify({ format: 'stageforge-local-design', version: 1, current, previous });
+
+async function installMockAi(page, raw) {
   await page.addInitScript(({ key, raw }) => {
-    localStorage.setItem(key, raw);
+    if (!sessionStorage.getItem('seeded-p2-ai')) {
+      localStorage.setItem(key, raw);
+      sessionStorage.setItem('seeded-p2-ai', '1');
+    }
+    const setItem = Storage.prototype.setItem;
+    window.p2AiWriteDenied = false;
+    Storage.prototype.setItem = function (name, value) {
+      if (this === localStorage && name === key && window.p2AiWriteDenied) throw new DOMException('Quota', 'QuotaExceededError');
+      return setItem.call(this, name, value);
+    };
     let request;
-    let reply;
+    const replies = new Map();
     let status = { enabled: false, state: 'off', generation: 0, port: null, token: null, url: null,
       activeSessions: 0, activeToolCalls: 0, lastError: null };
     window.stageforgeDesktop = {
@@ -291,58 +299,95 @@ test('P2 AI whole-show approval rotates local designs and Revert restores the pr
       },
       onAiBridgeStatus: () => () => {},
       onAiBridgeRequest: handler => { request = handler; return () => { request = undefined; }; },
-      replyAiBridgeRequest: async response => { reply?.(response); return true; },
+      replyAiBridgeRequest: async response => {
+        const reply = replies.get(response.requestId);
+        replies.delete(response.requestId);
+        reply?.(response);
+        return true;
+      },
     };
     window.sendP2Ai = (tool, args) => new Promise(resolve => {
-      reply = resolve;
-      request({ requestId: crypto.randomUUID(), bridgeGeneration: status.generation,
+      const requestId = crypto.randomUUID();
+      replies.set(requestId, resolve);
+      request({ requestId, bridgeGeneration: status.generation,
         deadlineMs: Date.now() + 15000, tool, arguments: args });
     });
   }, { key, raw });
-  await page.goto('/?probe');
-  await button(page, 'Show files').press('Enter');
-  const preAiDesk = await exportOpenShow(page);
-  expect(preAiDesk.rig.name).toBe('Prior live design');
-  await button(files(page), 'Close Show files').press('Enter');
+}
+
+async function enableAi(page) {
   await button(page, 'Show control').press('Enter');
   await page.getByTestId('ai-bridge-enable').press('Enter');
   await expect(page.getByTestId('ai-bridge-status')).toContainText('ON');
   await button(page, 'Close show control').press('Enter');
+}
+
+async function callAi(page, tool, args) {
+  const response = await page.evaluate(([tool, args]) => window.sendP2Ai(tool, args), [tool, args]);
+  expect(response.ok, `${tool}: ${response.error ?? 'request failed'}`).toBe(true);
+  return response.result;
+}
+
+async function sendAiProposal(page, tool, args) {
+  expect(await callAi(page, tool, args)).toMatchObject({ status: 'pending' });
+  await expect(page.getByTestId('ai-proposal-banner')).toBeVisible();
+}
+
+async function acceptAiProposal(page, tool, args) {
+  await sendAiProposal(page, tool, args);
+  await page.getByTestId('ai-proposal-accept').press('Enter');
+  await expect(page.getByTestId('ai-proposal-banner')).toBeHidden();
+}
+
+async function revertAi(page) {
+  await button(page, 'Show control').press('Enter');
+  await page.getByTestId('ai-bridge-revert').press('Enter');
+  await expect(page.getByTestId('ai-bridge-revert')).toHaveCount(0);
+  await button(page, 'Close show control').press('Enter');
+}
+
+test('P2 AI whole-show approval rotates local designs and Revert restores the pre-AI desk', async ({ page }) => {
+  const baseShow = p2Rehearsal();
+  baseShow.rig = { ...legacyShow().rig, name: 'Prior live design' };
+  const older = { rig: { ...baseShow.rig, name: 'Older recovery design' } };
+  await installMockAi(page, designEnvelope(older));
+  await page.goto('/?probe');
+  await openShow(page, baseShow);
+  await button(page, 'Show files').press('Enter');
+  await button(files(page), 'Save as local design').press('Enter');
+  await expect(button(files(page), 'Save as local design')).toHaveCount(0);
+  const raw = await savedRaw(page);
+  const saved = JSON.parse(raw);
+  const prior = saved.current;
+  expect(saved.previous).toEqual(older);
+  const preAiDesk = await exportOpenShow(page);
+  expect(preAiDesk.rig.name).toBe('Prior live design');
+  await button(files(page), 'Close Show files').press('Enter');
+  await enableAi(page);
 
   const proposal = p2Rehearsal();
   const authored = JSON.parse(await readFile(new URL('../fixtures/native-authoring-v3.stageforge.show.json', import.meta.url), 'utf8'));
   proposal.rig.name = 'AI replacement design';
   proposal.stage = { ...authored.stage, screenEvents: [] };
   proposal.crowd = { generatorVersion: 1, seed: 91, zones: [], exclusions: [], placements: [] };
-  const send = async (tool, args) => {
-    const response = await page.evaluate(([tool, args]) => window.sendP2Ai(tool, args), [tool, args]);
-    expect(response).toMatchObject({ ok: true, result: { status: 'pending' } });
-    await expect(page.getByTestId('ai-proposal-banner')).toBeVisible();
-  };
-  await send('propose_show', { show: proposal });
+  await sendAiProposal(page, 'propose_show', { show: proposal });
   await page.getByTestId('ai-proposal-reject').press('Enter');
   await expect(page.getByTestId('ai-proposal-banner')).toBeHidden();
   expect(await savedRaw(page)).toBe(raw);
   expect(await page.evaluate(() => window.stageforgeProbe.rig().name)).toBe('Prior live design');
 
   // The first change can be a look. A later whole-show approval still makes this a replacement on Revert.
-  await send('propose_look', { patch: { primaryColor: '#ed27aa' } });
-  await page.getByTestId('ai-proposal-accept').press('Enter');
-  await expect(page.getByTestId('ai-proposal-banner')).toBeHidden();
+  await acceptAiProposal(page, 'propose_look', { patch: { primaryColor: '#ed27aa' } });
+  expect((await callAi(page, 'get_state', {})).look.primaryColor).toBe('#ed27aa');
   expect(await savedRaw(page)).toBe(raw);
-  await send('propose_show', { show: proposal });
-  await page.getByTestId('ai-proposal-accept').press('Enter');
-  await expect(page.getByTestId('ai-proposal-banner')).toBeHidden();
+  await acceptAiProposal(page, 'propose_show', { show: proposal });
   const accepted = JSON.parse(await savedRaw(page));
   expect(accepted.current.rig.name).toBe('AI replacement design');
   expect(accepted.current.stage).toEqual(proposal.stage);
   expect(accepted.current.crowd).toEqual(proposal.crowd);
   expect(accepted.previous).toEqual(prior);
 
-  await button(page, 'Show control').press('Enter');
-  await page.getByTestId('ai-bridge-revert').press('Enter');
-  await expect(page.getByTestId('ai-bridge-revert')).toHaveCount(0);
-  await button(page, 'Close show control').press('Enter');
+  await revertAi(page);
   const reverted = JSON.parse(await savedRaw(page));
   expect(reverted.current.rig.name).toBe('Prior live design');
   expect(reverted.previous).toEqual(accepted.current);
@@ -353,6 +398,96 @@ test('P2 AI whole-show approval rotates local designs and Revert restores the pr
   expect(live.look).toEqual(preAiDesk.look);
   expect(live.stage).toEqual(preAiDesk.stage);
   expect(live.crowd).toEqual(preAiDesk.crowd);
+});
+
+test('P2 AI Revert restores a detached desk and its protected design history', async ({ page }) => {
+  const prior = { rig: { ...legacyShow().rig, name: 'Protected saved design' } };
+  const older = { rig: { ...legacyShow().rig, name: 'Protected previous design' } };
+  const raw = designEnvelope(prior, older);
+  await installMockAi(page, raw);
+  await page.goto('/?probe');
+  const show = p2Rehearsal();
+  show.rig.name = 'Opened detached show';
+  await openShow(page, show);
+  await enableAi(page);
+
+  const look = { patch: { primaryColor: '#ed27aa' } };
+  await acceptAiProposal(page, 'propose_look', look);
+  expect((await callAi(page, 'get_state', {})).look.primaryColor).toBe(look.patch.primaryColor);
+  await revertAi(page);
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  expect(await savedRaw(page)).toBe(raw);
+  await button(page, 'Show files').press('Enter');
+  await expect(button(files(page), 'Save as local design')).toBeVisible();
+  const before = await exportOpenShow(page);
+  expect(before.rig.name).toBe(show.rig.name);
+  expect(before.look.primaryColor).toBe(show.look.primaryColor);
+  await button(files(page), 'Close Show files').press('Enter');
+
+  const candidate = p2Rehearsal();
+  candidate.rig.name = 'AI replacement for detached show';
+  await page.evaluate(() => { window.p2AiWriteDenied = true; });
+  await acceptAiProposal(page, 'propose_show', { show: candidate });
+  expect((await callAi(page, 'get_state', {})).rig.name).toBe(candidate.rig.name);
+  expect(await savedRaw(page)).toBe(raw);
+  await revertAi(page);
+  await page.evaluate(() => {
+    window.p2AiWriteDenied = false;
+    window.dispatchEvent(new Event('pagehide'));
+  });
+  expect(await savedRaw(page)).toBe(raw);
+
+  await acceptAiProposal(page, 'propose_look', look);
+  await acceptAiProposal(page, 'propose_show', { show: candidate });
+  const accepted = await savedRaw(page);
+  expect(JSON.parse(accepted)).toMatchObject({ current: { rig: { name: candidate.rig.name } }, previous: prior });
+  await page.evaluate(() => { window.p2AiWriteDenied = true; });
+  await revertAi(page);
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  expect(await savedRaw(page)).toBe(accepted);
+
+  await button(page, 'Show files').press('Enter');
+  await expect(button(files(page), 'Save as local design')).toBeVisible();
+  const retry = button(files(page), 'Retry local design save');
+  await expect(retry).toBeEnabled();
+  const reverted = await exportOpenShow(page);
+  expect(reverted.rig.name).toBe(show.rig.name);
+  expect(reverted.cues).toEqual(before.cues);
+  expect(reverted.look).toEqual(before.look);
+  await page.evaluate(() => { window.p2AiWriteDenied = false; });
+  await retry.press('Enter');
+  await expect(retry).toHaveCount(0);
+  expect(await savedRaw(page)).toBe(raw);
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.stageforgeProbe?.rig().name)).toBe(prior.rig.name);
+  expect(await savedRaw(page)).toBe(raw);
+});
+
+test('P2 AI Revert retry leaves a later saved design untouched', async ({ page }) => {
+  const saved = { rig: { ...legacyShow().rig, name: 'Protected design before AI' } };
+  await installMockAi(page, designEnvelope(saved));
+  await page.goto('/?probe');
+  const show = p2Rehearsal();
+  show.rig.name = 'Detached before AI';
+  await openShow(page, show);
+  await enableAi(page);
+  await acceptAiProposal(page, 'propose_show', { show: p2Rehearsal() });
+  expect(JSON.parse(await savedRaw(page)).current.rig.name).toBe(p2Rehearsal().rig.name);
+
+  await page.evaluate(() => { window.p2AiWriteDenied = true; });
+  await revertAi(page);
+  await button(page, 'Show files').press('Enter');
+  const retry = button(files(page), 'Retry local design save');
+  await expect(retry).toBeEnabled();
+  const latest = designEnvelope({ rig: { ...legacyShow().rig, name: 'Later saved design' } }, saved);
+  await page.evaluate(({ key, latest }) => {
+    window.p2AiWriteDenied = false;
+    localStorage.setItem(key, latest);
+  }, { key, latest });
+  await retry.press('Enter');
+  await expect(retry).toHaveCount(0);
+  expect(await savedRaw(page)).toBe(latest);
+  expect((await exportOpenShow(page)).rig.name).toBe(show.rig.name);
 });
 
 async function installMockDmx(page, order) {

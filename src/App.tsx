@@ -55,7 +55,7 @@ import {
 } from './data/demoTrack';
 import { normalizeDesign } from './data/stageDesign';
 import { downloadRig, downloadStageFile, parseRigJson, standaloneRigExportIssue } from './data/rigImport';
-import { makeDesignRecoveryShow, readSavedDesign, writeSavedDesign, type SavedDesignRecord } from './data/savedDesign';
+import { makeDesignRecoveryShow, readSavedDesign, SAVED_DESIGN_KEY, writeSavedDesign, type SavedDesignRecord } from './data/savedDesign';
 import { makeShowFile, MAX_SHOW_JSON_BYTES, parseShowFile, pruneInterchangeFixtureSpecs, referencedFiles, type NativeStage, type ShowInterchange, type ShowTimeline } from './data/showFile';
 import { resolveCrowdLayout, type CrowdLayout } from './data/crowdPlacement';
 import { hasCatalogFixtures } from './data/equipmentCatalog';
@@ -78,7 +78,7 @@ import { allowsNegativeAmount } from './engine/audioModulation';
 import type { DmxSnapshot } from './components/DmxMonitorDrawer';
 import { LiveDmxBadge } from './components/LiveDmxBadge';
 import { AiProposalBanner } from './components/AiProposalBanner';
-import { useAiBridge, type AiBridgeApi, type AiRevertSnapshot } from './aiBridge/useAiBridge';
+import { useAiBridge, type AiBridgeApi, type AiLocalDesignUndo, type AiRevertSnapshot } from './aiBridge/useAiBridge';
 import {
   AUDIENCE_SCAN_ERROR,
   cueEnablesAudienceScan,
@@ -114,6 +114,28 @@ import {
   EDITOR_CAPABILITIES,
 } from './viewer/capabilities';
 import { parseViewerSource, type ParsedViewerDocument } from './viewer/parseViewer';
+
+interface StoredLocalDesign {
+  source: string | null;
+  record?: SavedDesignRecord;
+}
+
+interface LocalDesignWrite {
+  before: StoredLocalDesign;
+  source: string;
+  record: SavedDesignRecord;
+}
+
+interface QueuedLocalDesign extends SavedDesignRecord {
+  retainRecoveredBase: boolean;
+  onSaved?: (write: LocalDesignWrite) => void;
+}
+
+type PendingLocalDesign = QueuedLocalDesign | {
+  expected: string;
+  restore: StoredLocalDesign | { source?: never; record: SavedDesignRecord };
+  followUp: PendingLocalDesign | null;
+};
 
 const loadCostEstimatorModal = () => import('./components/CostEstimatorModal');
 const createLazyCostEstimatorModal = () => lazy(loadCostEstimatorModal);
@@ -807,7 +829,7 @@ export const App: React.FC = () => {
   const replayScreen = useRef<ScreenRef>(NO_SCREEN);
   const replayScreenClock = useRef(0);
   const replayMusicClock = useRef(0);
-  const pendingDesign = useRef<(SavedDesignRecord & { retainRecoveredBase: boolean }) | null>(null);
+  const pendingDesign = useRef<PendingLocalDesign | null>(null);
   const saveTimer = useRef<number | undefined>(undefined);
   const [cinemaMode, setCinemaMode] = useState(() =>
     window.matchMedia('(pointer: coarse) and (max-width: 700px), (pointer: coarse) and (max-height: 500px)').matches
@@ -1510,28 +1532,49 @@ export const App: React.FC = () => {
 
   const flushDesign = useCallback(() => {
     window.clearTimeout(saveTimer.current);
-    if (!capabilitiesRef.current.autosave || !pendingDesign.current) return;
-    const { retainRecoveredBase, ...queued } = pendingDesign.current;
+    const pending = pendingDesign.current;
+    if (!capabilitiesRef.current.autosave || !pending) return;
     // Preserve opaque data even if a different tab changed the slot after this desk opened.
-    const disk = readSavedDesign();
+    let source: string | null = null;
+    const disk = readSavedDesign({ getItem: (key) => (source = localStorage.getItem(key)) });
+    if ('restore' in pending && disk.status !== 'inaccessible' && source !== pending.expected) {
+      // A later write owns the slot. Retrying this undo would replace someone else's design.
+      pendingDesign.current = null;
+      savedDesignRef.current = disk;
+      setSavedDesign(disk);
+      setDesignSaveFailed(false);
+      return;
+    }
     if (disk.status !== 'ready' && disk.status !== 'missing') {
       savedDesignRef.current = disk;
       setSavedDesign(disk);
       if (disk.status === 'inaccessible') setDesignSaveFailed(true);
       return;
     }
-    // A denied initial read gave this draft no base. Keep the newly readable disk current
-    // as its recovery version, while leaving the disk untouched until the write succeeds.
-    const design = retainRecoveredBase && disk.status === 'ready'
-      ? { ...queued, previous: disk.record.current }
-      : queued;
     try {
-      writeSavedDesign(design);
-      pendingDesign.current = null;
-      const saved = { status: 'ready' as const, record: design };
+      let design: SavedDesignRecord | undefined;
+      if ('restore' in pending) {
+        design = pending.restore.record;
+        const restoreSource = pending.restore.source;
+        if (restoreSource === null) localStorage.removeItem(SAVED_DESIGN_KEY);
+        else if (restoreSource !== undefined) localStorage.setItem(SAVED_DESIGN_KEY, restoreSource);
+        else if (design) writeSavedDesign(design);
+        pendingDesign.current = pending.followUp;
+      } else {
+        const { current, previous, retainRecoveredBase, onSaved } = pending;
+        // A denied initial read gave this edit no base. Preserve the current draft if it is now readable.
+        const saved = { current, previous: retainRecoveredBase && disk.status === 'ready' ? disk.record.current : previous };
+        writeSavedDesign(saved, onSaved && { setItem: (key, json) => {
+          localStorage.setItem(key, json);
+          onSaved({ before: { source, record: disk.status === 'ready' ? disk.record : undefined }, source: json, record: saved });
+        } });
+        design = saved;
+        pendingDesign.current = null;
+      }
+      const saved = design ? { status: 'ready' as const, record: design } : { status: 'missing' as const };
       savedDesignRef.current = saved;
       setSavedDesign(saved);
-      setDesignSaveFailed(false);
+      setDesignSaveFailed(Boolean(pendingDesign.current));
     } catch {
       // setItem is atomic. Keep the previous record and this exact queued revision.
       savedDesignRef.current = disk;
@@ -1540,23 +1583,81 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  const queueDesign = useCallback((next: RigConfig, immediate = false, adopt = false) => {
+  const queueDesign = useCallback((next: RigConfig, immediate = false, adopt = false, onSaved?: QueuedLocalDesign['onSaved']) => {
     if (!capabilitiesRef.current.autosave) return;
     const saved = savedDesignRef.current;
     if (saved.status === 'corrupt' || saved.status === 'newer') return;
     const pending = pendingDesign.current;
-    const base = pending ?? (saved.status === 'ready' ? saved.record : undefined);
+    const pendingBase = pending && 'restore' in pending ? pending.restore.record : pending;
+    const base = pendingBase ?? (saved.status === 'ready' ? saved.record : undefined);
     const current = { rig: next, stage: pruneNativeStage(nativeStage.current), crowd: crowdRef.current };
-    const previous = adopt || localDesignMode.current !== 'attached' ? base?.current : base?.previous;
-    pendingDesign.current = {
-      current, previous,
-      retainRecoveredBase: pending?.retainRecoveredBase ?? (saved.status === 'inaccessible'),
+    const detached = localDesignMode.current !== 'attached';
+    const preserveDiskCurrent = onSaved !== undefined && (detached || (adopt && !pending));
+    const queued: QueuedLocalDesign = {
+      current,
+      previous: adopt || detached ? base?.current : base?.previous,
+      retainRecoveredBase: preserveDiskCurrent ||
+        (pending && 'retainRecoveredBase' in pending ? pending.retainRecoveredBase : saved.status === 'inaccessible'),
+      onSaved,
     };
+    pendingDesign.current = queued;
     localDesignMode.current = 'attached';
     window.clearTimeout(saveTimer.current);
     if (immediate) flushDesign();
     else saveTimer.current = window.setTimeout(flushDesign, 250);
+    return queued;
   }, [flushDesign]);
+
+  const captureAiLocalDesignUndo = useCallback((): AiLocalDesignUndo => {
+    const originalMode = localDesignMode.current;
+    const originalPending = pendingDesign.current;
+    let originalSource: string | null | undefined;
+    try { originalSource = localStorage.getItem(SAVED_DESIGN_KEY); } catch { /* storage is unavailable */ }
+    let followUp = originalPending;
+    let queuedByAi: QueuedLocalDesign | undefined;
+    let savedByAi: LocalDesignWrite | undefined;
+    let savedReplacement = false;
+    let canRotateBack = originalMode === 'attached';
+    return {
+      save(replace) {
+        const pending = pendingDesign.current;
+        if (!queuedByAi || (pending && pending !== queuedByAi)) {
+          followUp = pending;
+          if (pending !== originalPending) canRotateBack = false;
+        }
+        const queued = queueDesign(rigRef.current, replace, replace, (write) => {
+          savedReplacement ||= replace;
+          if (savedByAi && savedByAi.source === write.before.source) {
+            savedByAi = { ...write, before: savedByAi.before };
+          } else {
+            if (savedByAi || write.before.source !== originalSource) canRotateBack = false;
+            savedByAi = write;
+          }
+        });
+        if (queued) queuedByAi = queued;
+      },
+      restore() {
+        if (!queuedByAi) return;
+        localDesignMode.current = originalMode;
+        if (pendingDesign.current && pendingDesign.current !== queuedByAi) return;
+        window.clearTimeout(saveTimer.current);
+        if (!savedByAi) {
+          // Approval never reached disk. Cancel its queued write and keep any earlier edit.
+          pendingDesign.current = followUp;
+          setDesignSaveFailed(Boolean(followUp));
+          return;
+        }
+        // A detached desk never becomes the saved design as a side effect of Revert.
+        // An attached whole-show Revert keeps the displaced AI design as its recovery copy.
+        const restore = canRotateBack && savedReplacement && !followUp ? { record: {
+          current: { rig: rigRef.current, stage: pruneNativeStage(nativeStage.current), crowd: crowdRef.current },
+          previous: savedByAi.record.current,
+        } } : savedByAi.before;
+        pendingDesign.current = { expected: savedByAi.source, restore, followUp };
+        flushDesign();
+      },
+    };
+  }, [flushDesign, queueDesign]);
 
   useEffect(() => {
     const stage = nativeStage.current;
@@ -2828,7 +2929,7 @@ export const App: React.FC = () => {
     setShowState(s => s.autoDirector ? { ...s, autoDirector: false } : s);
   };
   const applyRig = useCallback((
-    next: RigConfig, saveNow = false, mode: 'edit' | 'document' | 'preset' | 'replace' = 'edit',
+    next: RigConfig, saveNow = false, mode: 'edit' | 'document' | 'preset' | 'replace' | 'transient' = 'edit',
   ) => {
     if (!capabilitiesRef.current.edit) return;
     cancelDemoTrackLoad();
@@ -2838,7 +2939,7 @@ export const App: React.FC = () => {
       localDesignMode.current = mode;
     } else {
       if (next.schemaVersion !== 1 && !isPristinePreset(next)) next = { ...next, schemaVersion: 1 };
-      queueDesign(next, saveNow, mode === 'replace');
+      if (mode !== 'transient') queueDesign(next, saveNow, mode === 'replace');
     }
     rigRef.current = next;
     setRig(next);
@@ -3745,7 +3846,7 @@ export const App: React.FC = () => {
       audioEngineRef.current?.stopAll();
       clearAllBumps();
       expectedMusic.current = file.media?.music ?? NO_MUSIC;
-      applyRig(nextRig, true, 'replace');
+      applyRig(nextRig, false, 'transient');
       cuesRef.current = file.cues;
       activeCueIdRef.current = file.activeCueId;
       setCues(file.cues);
@@ -3823,7 +3924,6 @@ export const App: React.FC = () => {
     if (candidate.kind === 'propose_wall_cue' && candidate.stage) {
       const nextStage = structuredClone(candidate.stage);
       installStage(nextStage);
-      queueDesign(rigRef.current);
       const nextEvents = nextStage.screenEvents ?? [];
       if (candidate.timeline) {
         cancelDemoLoads();
@@ -3845,9 +3945,9 @@ export const App: React.FC = () => {
       return true;
     }
     return false;
-  }, [applyRig, cancelDemoLoads, clearAllBumps, installInterchange, installStage, previewRig, queueDesign, takeDesk, wallClock]);
+  }, [applyRig, cancelDemoLoads, clearAllBumps, installInterchange, installStage, previewRig, takeDesk, wallClock]);
 
-  const restoreAiRevertSnapshot = useCallback((snap: AiRevertSnapshot, replacedShow = false) => {
+  const restoreAiRevertSnapshot = useCallback((snap: AiRevertSnapshot) => {
     if (!capabilitiesRef.current.edit) return;
     const nextRig = normalizeDesign(snap.rig);
     cancelDemoLoads();
@@ -3878,7 +3978,7 @@ export const App: React.FC = () => {
       music: { ...nextMusic, playing: false },
     });
     showControlRef.current.syncFromShowTimeline(snap.timeline);
-    applyRig(nextRig, true, replacedShow ? 'replace' : 'edit');
+    applyRig(nextRig, false, 'transient');
     cuesRef.current = snap.cues;
     activeCueIdRef.current = snap.activeCueId;
     setCues(snap.cues);
@@ -3946,6 +4046,7 @@ export const App: React.FC = () => {
       },
       applyCandidate: applyAiCandidate,
       restoreSnapshot: restoreAiRevertSnapshot,
+      captureLocalDesignUndo: captureAiLocalDesignUndo,
       onGo: () => {
         // Single authoritative lookup + follow-chain audienceScan check (H1 + M4).
         const list = aiDeskRefs.current.cues;

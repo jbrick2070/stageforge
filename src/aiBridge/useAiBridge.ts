@@ -33,13 +33,19 @@ import {
 export const DEFAULT_AI_BRIDGE_PORT = 47821;
 export type { AiRevertSnapshot };
 
+export interface AiLocalDesignUndo {
+  save: (replace: boolean) => void;
+  restore: () => void;
+}
+
 export interface AiBridgeCallbacks {
   getDeskSnapshot: () => AiDeskSnapshot;
   getSafetyReport: () => PreflightReport | null;
   getAudioLevels: () => AudioMetrics;
   captureFrame: (maxWidth?: number) => Promise<{ base64: string; width: number; height: number; byteLength: number }>;
   applyCandidate: (candidate: AiProposalCandidate) => boolean;
-  restoreSnapshot: (snapshot: AiRevertSnapshot, replacedShow?: boolean) => void;
+  restoreSnapshot: (snapshot: AiRevertSnapshot) => void;
+  captureLocalDesignUndo: () => AiLocalDesignUndo;
   // Run-tool callbacks (all checked through `allows(clockMode, 'ai', action)` first)
   onGo: () => { ok?: boolean; isError?: boolean; activeCueId?: string | null; message?: string };
   onBack: () => { ok?: boolean; isError?: boolean; activeCueId?: string | null; message?: string };
@@ -123,7 +129,7 @@ export function useAiBridge(
   const proposalStoreRef = useRef(new AiProposalStore());
   const [pendingProposals, setPendingProposals] = useState<AiProposalRecord[]>([]);
 
-  const revertSnapshotRef = useRef<{ snapshot: AiRevertSnapshot; replacedShow: boolean } | null>(null);
+  const revertSnapshotRef = useRef<{ snapshot: AiRevertSnapshot; localDesign: AiLocalDesignUndo } | null>(null);
   const [revertCapturedAt, setRevertCapturedAt] = useState<number | null>(null);
 
   const [toolLog, setToolLog] = useState<AiToolLogEntry[]>([]);
@@ -246,6 +252,7 @@ export function useAiBridge(
     // roll back on failure and mark accepted only after apply succeeds.
     const preApplySnapshot = snapshotCurrentDesk();
     const revert = revertSnapshotRef.current;
+    const localDesign = revert?.localDesign ?? cbRef.current.captureLocalDesignUndo();
     try {
       const applied = cbRef.current.applyCandidate(candidateToApply);
       if (!applied) {
@@ -262,11 +269,15 @@ export function useAiBridge(
       return false;
     }
 
-    const replacedShow = candidateToApply.kind === 'propose_show';
+    // The live desk has applied successfully. Only proposals that authored the design
+    // may now update its independent local recovery record.
+    if (candidateToApply.kind === 'propose_show' || candidateToApply.kind === 'propose_wall_cue') {
+      localDesign.save(candidateToApply.kind === 'propose_show');
+    }
     if (!revert) {
-      revertSnapshotRef.current = { snapshot: preApplySnapshot, replacedShow };
+      revertSnapshotRef.current = { snapshot: preApplySnapshot, localDesign };
       setRevertCapturedAt(preApplySnapshot.capturedAt);
-    } else if (replacedShow) revert.replacedShow = true;
+    }
     store.transition(id, 'accepted');
     syncPendingState();
     cbRef.current.onToast(`Applied AI proposal: ${rec.summary}`);
@@ -289,7 +300,8 @@ export function useAiBridge(
     const toRestore = structuredClone(snap.snapshot);
     revertSnapshotRef.current = null;
     setRevertCapturedAt(null);
-    cbRef.current.restoreSnapshot(toRestore, snap.replacedShow);
+    cbRef.current.restoreSnapshot(toRestore);
+    snap.localDesign.restore();
     cbRef.current.onToast('Reverted desk to snapshot taken before first AI change.');
   }, [clearPendingAndAutoAccept]);
 
