@@ -5,7 +5,7 @@ import { P4_CAMERA, p4Rehearsal } from '../support/p4-rehearsal.mjs';
 const button = (scope, name) => scope.getByRole('button', { name, exact: true });
 const files = page => page.getByRole('dialog', { name: 'Show files', exact: true });
 const monitor = page => page.getByRole('complementary', { name: 'DMX monitor', exact: true });
-const source = page => page.getByLabel('Level source', { exact: true });
+const source = page => page.getByRole('combobox', { name: 'Level source', exact: true });
 const sourceStatus = page => page.getByTestId('level-source-status');
 
 async function mockP3(page) {
@@ -141,6 +141,14 @@ async function readPreview(page, steps = [20]) {
   }, steps);
 }
 const lensPeak = unit => Math.max(...unit.lenses.map(pixel => pixel.luminance));
+
+function roomRehearsal() {
+  const show = p4Rehearsal();
+  show.look.blinderLevel = 1;
+  // Keep the projected deck samples free of booth and speaker geometry.
+  Object.assign(show.rig.audioRig, { djBooth: false, subWall: false, monitorCount: 0 });
+  return show;
+}
 
 test('P4 Art-Net External Levels renders independently while Desk buffers and cue ownership remain separate', async ({ page }, info) => {
   test.setTimeout(120_000);
@@ -292,9 +300,7 @@ test('P4 Reduced renders anti-phase input within the shared flash ceiling and ho
 test('P4 preheated External lamps and Desk handoff govern the post-bloom lenses and room spill', async ({ page }, info) => {
   test.setTimeout(120_000);
   await mockP3(page);
-  const show = p4Rehearsal();
-  show.look.blinderLevel = 1;
-  await freezeAfterFirstFrame(page, show);
+  await freezeAfterFirstFrame(page, roomRehearsal());
   const rx = await openInput(page);
   await button(rx, 'Start listening').press('Enter');
   await source(page).selectOption('external');
@@ -358,9 +364,7 @@ test('P4 adding a stock Desk bank cannot relight a dark room during External ref
   test.setTimeout(120_000);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await mockP3(page);
-  const show = p4Rehearsal();
-  show.look.blinderLevel = 1;
-  await freezeAfterFirstFrame(page, show);
+  await freezeAfterFirstFrame(page, roomRehearsal());
   const desk = await readPreview(page, [250, 250, 250]);
   expect(desk.spillLevel).toBe(1);
   const rx = await openInput(page);

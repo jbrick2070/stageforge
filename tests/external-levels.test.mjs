@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { createServer } from 'vite';
+import { Color } from 'three';
 import { p4Rehearsal } from './support/p4-rehearsal.mjs';
 
 const compiler = await createServer({
@@ -10,7 +11,7 @@ const compiler = await createServer({
 after(() => compiler.close());
 const { ArtNetPreviewLevels } = await compiler.ssrLoadModule('/src/dmx/artNetPreviewLevels.ts');
 const { BlinderPreviewBank, resolveBlinderPreviewBinding } = await compiler.ssrLoadModule('/src/engine/blinderPreview.ts');
-const { createPreviewFlashState } = await compiler.ssrLoadModule('/src/engine/previewFlash.ts');
+const { createPreviewFlashOutput, createPreviewFlashState, evaluatePreviewFlash } = await compiler.ssrLoadModule('/src/engine/previewFlash.ts');
 const { buildDmxPatch } = await compiler.ssrLoadModule('/src/data/dmxPatch.ts');
 
 const authority = { revision: 'document', generation: 1 };
@@ -36,14 +37,26 @@ const bind = (unitId, start, universe = 3) => ({ unitId, address: { universe, st
 const feed = (input, at, sequence, data, universe = 3, clock = at, token = authority) =>
   input.acceptBatch(batch(clock, [row(universe, sequence, at, clock, data)], token), clock);
 
-function bankHarness(bindings, input = incoming()) {
+function bankHarness(bindings, input = incoming(), realDesk = false) {
   const bank = new BlinderPreviewBank();
   const state = createPreviewFlashState();
+  const preview = createPreviewFlashOutput();
+  const neutral = new Color(0);
   bank.reconcile(bindings, input, state, 0);
   const frame = (clock, rawDesk = 0, { master = 1, limited = true, blackout = false, now = clock } = {}) => {
-    state.clockMs = state.budgetClock.clockMs = clock;
     const visible = bank.prepare(input, state, clock, limited);
-    const spill = bank.deliver(input, state, now, visible && !blackout ? rawDesk : 0, rawDesk, master, blackout, limited);
+    let desk = visible && !blackout ? rawDesk : 0;
+    if (realDesk) {
+      desk = evaluatePreviewFlash(state, {
+        dtSec: (clock - state.clockMs) / 1000, tSec: clock / 1000,
+        limited, blackout, master, blinder: desk, blinderVisible: visible,
+        ledBright: 0, beatPulse: 0, beamIntensity: 0, washIntensity: 0, laserStrobe: 0,
+        primaryColor: neutral, accentColor: neutral,
+      }, preview).blinder;
+    } else {
+      state.clockMs = state.budgetClock.clockMs = clock;
+    }
+    const spill = bank.deliver(input, state, now, desk, rawDesk, master, blackout, limited);
     return { spill, visible };
   };
   return { bank, state, input, frame };
@@ -253,4 +266,78 @@ test('P4 new stock siblings start from visible darkness even when the hidden Des
     assert.equal(h.frame(1840, 1, { limited }).spill, 1, 'a legitimate steady Desk target eventually survives the handoff');
     assert.equal(h.bank.level('new-stock'), 1);
   }
+});
+
+function rehearsalRoom(limited) {
+  const original = bind('original', 1);
+  const h = bankHarness([original], incoming(), true);
+  const frame = (at, desk = 1, blackout = false) => h.frame(at, desk, { limited, blackout });
+  assert.deepEqual(frame(20), { spill: 1, visible: true });
+  h.input.source = 'external';
+  assert.deepEqual(frame(40), { spill: 0, visible: false });
+  assert.equal(h.state.blinderGov.delivered, 1, 'the common Desk governor really remains parked at full');
+  feed(h.input, 800, 1, slots(255));
+  assert.equal(frame(800).spill, 1);
+  return { ...h, frame, original };
+}
+
+test('P4 supported lamps introduced during Stop or document handoff use the real Desk admission', () => {
+  for (const limited of [true, false]) {
+    for (const replace of [false, true]) {
+      const h = rehearsalRoom(limited);
+      feed(h.input, 820, 2, slots(0));
+      assert.equal(h.frame(820).spill, 0);
+      if (replace) {
+        h.input.resetDocument();
+      } else {
+        h.input.source = 'desk';
+        h.input.end();
+        assert.deepEqual(h.frame(830), { spill: 0, visible: false });
+      }
+      const added = bind('new', 2);
+      const stock = { unitId: 'stock', address: null };
+      h.bank.reconcile(replace ? [added, stock] : [h.original, added, stock], h.input, h.state, 835);
+      assert.deepEqual(h.frame(840), { spill: 0, visible: false });
+      assert.equal(h.bank.level('new'), 0);
+      assert.equal(h.bank.level('stock'), 0, 'full-rate cannot bypass stock admission while returning to Desk');
+      assert.equal(h.state.blinderGov.delivered, 1);
+      assert.equal(h.state.budgetClock.lastAdmittedRiseMs, 800);
+      assert.equal(h.frame(1220).spill, 1);
+      assert.equal(h.bank.level('new'), 1);
+      assert.equal(h.bank.level('stock'), 1);
+      assert.equal(h.frame(1700).visible, false, 'parity is checked before normal Desk resumes');
+      assert.deepEqual(h.frame(1720), { spill: 1, visible: true });
+    }
+  }
+});
+
+test('P4 removing every lamp hands actual room spill back through the shared gate', () => {
+  for (const limited of [true, false]) {
+    for (const stop of [false, true]) {
+      const h = rehearsalRoom(limited);
+      feed(h.input, 820, 2, slots(0));
+      assert.equal(h.frame(820).spill, 0);
+      if (stop) {
+        h.input.source = 'desk';
+        h.input.end();
+        assert.equal(h.frame(830).spill, 0);
+      }
+      h.bank.reconcile([], h.input, h.state, 835);
+      assert.deepEqual(h.frame(840), { spill: 0, visible: false });
+      assert.equal(h.state.blinderGov.delivered, 1);
+      assert.equal(h.state.budgetClock.lastAdmittedRiseMs, 800);
+      assert.deepEqual(h.frame(1220), { spill: 1, visible: false });
+      assert.equal(h.frame(1700).visible, false);
+      assert.deepEqual(h.frame(1720), { spill: 1, visible: true });
+      assert.deepEqual(h.frame(1730, 0), { spill: 0, visible: true });
+      if (!limited) assert.deepEqual(h.frame(1740), { spill: 1, visible: true });
+    }
+  }
+
+  const lit = rehearsalRoom(true);
+  lit.bank.reconcile([], lit.input, lit.state, 815);
+  assert.deepEqual(lit.frame(820), { spill: 1, visible: false }, 'existing room spill keeps its actual lit level');
+  lit.bank.blackout(lit.state);
+  assert.equal(lit.frame(830, 1, true).spill, 0);
+  assert.equal(lit.frame(840).spill, 0, 'blackout drops immediately without surrendering current admission history');
 });

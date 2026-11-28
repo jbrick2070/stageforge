@@ -12,7 +12,7 @@ const { encodeArtDmxPacket } = require('../../desktop/dmx-packets.cjs');
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const staged = path.join(root, 'desktop', 'build', 'app');
 const button = (scope, name) => scope.getByRole('button', { name, exact: true });
-const source = page => page.getByLabel('Level source', { exact: true });
+const source = page => page.getByRole('combobox', { name: 'Level source', exact: true });
 const status = page => page.getByTestId('level-source-status');
 const contrast = 0.07;
 

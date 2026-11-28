@@ -43,6 +43,8 @@ const sameAddress = (a: BlinderInputAddress | null, b: BlinderInputAddress | nul
 /** Final visual lens owners. The desk still synthesizes all DMX bytes independently. */
 export class BlinderPreviewBank {
   private units = new Map<string, BlinderPreviewUnit>();
+  private readonly roomGovernor = createScalarGovernorState();
+  private emptyHandoff = false;
   private documentEpoch = 0;
   private hasDeskLens = true;
   private pendingFall = false;
@@ -61,30 +63,32 @@ export class BlinderPreviewBank {
       const governor = old?.governor ?? createScalarGovernorState();
       // Every new lens starts visibly dark. Prior local history survives a changed patch.
       governor.initialized = true;
-      if (old && old.route !== 'desk') this.darken(old, state);
+      if (old && old.route !== 'desk') this.darken(old.governor, state);
       next.set(binding.unitId, {
         ...binding, governor,
-        route: old?.route ?? (mixedDelivery && !binding.address ? 'joiningDesk' : 'desk'),
+        route: old?.route ?? (mixedDelivery ? 'joiningDesk' : 'desk'),
         changedAt: now,
         generation: input.authority?.generation ?? null,
         seenSequence: binding.address ? input.latestSequence(binding.address.universe) : 0,
       });
     }
     for (const [unitId, old] of previous) {
-      if (!next.has(unitId)) this.darken(old, state);
+      if (!next.has(unitId)) this.darken(old.governor, state);
     }
+    if (previous.size && !next.size) this.emptyHandoff = mixedDelivery;
+    else if (next.size) this.emptyHandoff = false;
     this.units = next;
   }
 
   prepare(input: ArtNetPreviewLevels, state: PreviewFlashState, nextClockMs = state.clockMs, deskLimited = true): boolean {
     const newDocument = input.documentEpoch !== this.documentEpoch;
     this.documentEpoch = input.documentEpoch;
-    this.hasDeskLens = this.units.size === 0;
+    this.hasDeskLens = this.units.size === 0 && !this.emptyHandoff;
     for (const unit of this.units.values()) {
-      if (newDocument && unit.route !== 'desk') this.darken(unit, state);
+      if (newDocument && unit.route !== 'desk') this.darken(unit.governor, state);
       if (input.source === 'external' && unit.address) unit.route = 'external';
       else if (unit.route === 'external') unit.route = 'returning';
-      else if (unit.route === 'joiningDesk' && !deskLimited) unit.route = 'desk';
+      else if (unit.route === 'joiningDesk' && input.source === 'external' && !deskLimited) unit.route = 'desk';
       if (unit.route === 'desk') this.hasDeskLens = true;
     }
     if (this.pendingFall) {
@@ -97,10 +101,23 @@ export class BlinderPreviewBank {
   deliver(input: ArtNetPreviewLevels, state: PreviewFlashState, now: number,
     desk: number, rawDesk: number, master: number, blackout: boolean, deskLimited: boolean): number {
     this.limited = false;
-    if (!this.units.size) return desk; // no-bank legacy spill
-    let room = 0;
     const clock = state.budgetClock;
     const t = state.clockMs;
+    if (!this.units.size) {
+      if (!this.emptyHandoff) {
+        observeScalarDelivery(this.roomGovernor, null, t, desk);
+        return desk;
+      }
+      // Preserve the last visible room level across a rebuild that removes all lamps.
+      const governed = stepFinalPreviewScalar(this.roomGovernor, clock, t, rawDesk, blackout);
+      this.limited = governed.limited;
+      if (atDeskParity(this.roomGovernor, state, blackout ? 0 : rawDesk)) {
+        copyScalarGovernorState(state.blinderGov, this.roomGovernor);
+        this.emptyHandoff = false;
+      }
+      return governed.value;
+    }
+    let room = 0;
     // Observe actual Desk siblings before admitting individual lens rises on this same frame.
     for (const unit of this.units.values()) {
       if (unit.route !== 'desk') continue;
@@ -127,32 +144,39 @@ export class BlinderPreviewBank {
       this.limited ||= governed.limited;
       if (unit.route === 'returning' || unit.route === 'joiningDesk') {
         if (!returning || unit.governor.lastRiseMs > returning.lastRiseMs) returning = unit.governor;
-        if (Math.abs(governed.value - (dark ? 0 : target)) > 1e-6 ||
-            !canReleaseScalarHandoff(unit.governor, clock, t)) canReturn = false;
+        if (!atDeskParity(unit.governor, state, dark ? 0 : target)) canReturn = false;
       }
     }
     if (returning && canReturn) {
       if (!this.hasDeskLens) copyScalarGovernorState(state.blinderGov, returning);
       for (const unit of this.units.values()) if (unit.route === 'returning' || unit.route === 'joiningDesk') unit.route = 'desk';
     }
+    observeScalarDelivery(this.roomGovernor, null, t, room);
     return room;
   }
 
   level(unitId: string): number { return this.units.get(unitId)?.governor.delivered ?? 0; }
 
   hasExternalOrHandoff(): boolean {
+    if (this.emptyHandoff) return true;
     for (const unit of this.units.values()) if (unit.route !== 'desk') return true;
     return false;
   }
 
   blackout(state: PreviewFlashState): void {
-    for (const unit of this.units.values()) this.darken(unit, state);
+    for (const unit of this.units.values()) this.darken(unit.governor, state);
+    this.darken(this.roomGovernor, state);
   }
 
-  private darken(unit: BlinderPreviewUnit, state: PreviewFlashState): void {
+  private darken(governor: ScalarGovernorState, state: PreviewFlashState): void {
     // Rebuild and operator events can occur after a rise at the previous tick's timestamp.
     // Account for this real fall at the next control tick, independently of same-frame dedup.
-    this.pendingFall ||= unit.governor.delivered >= 0.02;
-    stepGovernedScalar(unit.governor, null, state.clockMs, 0, true);
+    this.pendingFall ||= governor.delivered >= 0.02;
+    stepGovernedScalar(governor, null, state.clockMs, 0, true);
   }
+}
+
+function atDeskParity(governor: ScalarGovernorState, state: PreviewFlashState, target: number): boolean {
+  return Math.abs(governor.delivered - target) <= 1e-6 &&
+    canReleaseScalarHandoff(governor, state.budgetClock, state.clockMs);
 }
