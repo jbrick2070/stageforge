@@ -1955,6 +1955,7 @@ export class StageEngine {
     this.composer.render(0);
     const gl = this.renderer.getContext();
     const { width, height } = this.renderer.domElement;
+    const spillLevel = this.blinderLight.intensity / 75;
     const projected = new THREE.Vector3();
     const pixels = new Uint8Array(9 * 9 * 4);
     const samplePixel = (radius: number) => {
@@ -1971,6 +1972,7 @@ export class StageEngine {
     const lenses = this.blinders.map(blinder => ({
       unitId: blinder.binding.unitId,
       address: blinder.binding.address,
+      deliveredLevel: this.artNetPreview ? this.blinderPreview.level(blinder.binding.unitId) : spillLevel,
       lenses: blinder.lenses.flatMap(lens => {
         lens.getWorldPosition(projected).project(this.camera);
         return samplePixel(1);
@@ -1984,7 +1986,7 @@ export class StageEngine {
         projected.set(x, stageSurfaceHeight(rig, x, z) + 0.015, z).project(this.camera);
         return samplePixel(4);
       })) : [];
-    return { lenses, room, spillLevel: this.blinderLight.intensity / 75 };
+    return { lenses, room, spillLevel };
   }
 
   private captureCanvas: HTMLCanvasElement | null = null;

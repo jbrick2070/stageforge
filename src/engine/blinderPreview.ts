@@ -53,7 +53,8 @@ export class BlinderPreviewBank {
   reconcile(bindings: readonly BlinderPreviewBinding[], input: ArtNetPreviewLevels, state: PreviewFlashState, now: number): void {
     const previous = this.units;
     const next = new Map<string, BlinderPreviewUnit>();
-    const mixedDelivery = input.source === 'external' || this.hasExternalOrHandoff();
+    const hadHandoff = this.hasExternalOrHandoff();
+    const mixedDelivery = input.source === 'external' || hadHandoff;
     for (const binding of bindings) {
       const old = previous.get(binding.unitId);
       if (old && sameAddress(old.address, binding.address)) {
@@ -75,7 +76,7 @@ export class BlinderPreviewBank {
     for (const [unitId, old] of previous) {
       if (!next.has(unitId)) this.darken(old.governor, state);
     }
-    if (previous.size && !next.size) this.emptyHandoff = mixedDelivery;
+    if (previous.size && !next.size) this.emptyHandoff = hadHandoff;
     else if (next.size) this.emptyHandoff = false;
     this.units = next;
   }

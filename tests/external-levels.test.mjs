@@ -340,4 +340,15 @@ test('P4 removing every lamp hands actual room spill back through the shared gat
   lit.bank.blackout(lit.state);
   assert.equal(lit.frame(830, 1, true).spill, 0);
   assert.equal(lit.frame(840).spill, 0, 'blackout drops immediately without surrendering current admission history');
+
+  const stock = bankHarness([{ unitId: 'stock', address: null }], incoming(), true);
+  const fullRate = { limited: false };
+  assert.deepEqual(stock.frame(20, 0, fullRate), { spill: 0, visible: true });
+  stock.input.source = 'external';
+  assert.deepEqual(stock.frame(40, 1, fullRate), { spill: 1, visible: true });
+  assert.equal(stock.state.budgetClock.lastAdmittedRiseMs, 40);
+  assert.deepEqual(stock.frame(60, 0, fullRate), { spill: 0, visible: true });
+  assert.equal(stock.bank.hasExternalOrHandoff(), false);
+  stock.bank.reconcile([], stock.input, stock.state, 65);
+  assert.deepEqual(stock.frame(70, 1, fullRate), { spill: 1, visible: true }, 'stock-only removal retains legacy full-rate Desk spill');
 });
