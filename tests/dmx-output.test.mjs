@@ -792,7 +792,8 @@ test('QA regressions: mid-bind shutdown (H1), concurrent enable (H2), blackout t
 });
 
 test('P2 authenticated Arm and Go bind the current window, configuration and eligibility generation before UDP sends', async (t) => {
-  const mockDgram = createMockDgram({ manualBindOn: [1, 3] });
+  const manualBindOn = [1, 3];
+  const mockDgram = createMockDgram({ manualBindOn });
   const statuses = [];
   const controller = sender.createDmxController({
     dgramModule: mockDgram, discoverDurationMs: 2, testPorts: { artnetDiscovery: 0 },
@@ -801,7 +802,11 @@ test('P2 authenticated Arm and Go bind the current window, configuration and eli
       if (status.state === 'idle' && status.lastStopReason && status.authority) interlock.invalidateDmxEligibility(owner, status.authority);
     },
   });
-  t.after(() => controller.shutdown('test-end'));
+  t.after(async () => {
+    const stopped = controller.shutdown('test-end');
+    for (const index of manualBindOn) mockDgram.sockets[index]?.finishBind();
+    await stopped;
+  });
   const interlock = createOutputInterlock({ requireDmxAuthority: true, isDmxActive: () => controller.active });
   const { onControl, onEligibility, onFrame, onHeartbeat } = createDmxIpcHandlers(() => controller, { interlock, requireArmedClaim: true });
   const { onOutputClaim } = createAiBridgeIpcHandlers(() => null, () => interlock);
@@ -830,6 +835,7 @@ test('P2 authenticated Arm and Go bind the current window, configuration and eli
   await assert.rejects(go(other, a), /current pre-flight revision/);
   const scanA = onControl(win, { type: 'discover', iface: '127.0.0.1' });
   const pending = go(win, a);
+  void pending.catch(() => {}); // Teardown can cancel this bind if an earlier assertion fails.
   assert.equal(controller.ownerId, 4);
   await scanA;
   assert.equal(statuses.at(-1).state, 'starting', 'the first Art-Net scan can complete while Go is still binding');
@@ -840,10 +846,12 @@ test('P2 authenticated Arm and Go bind the current window, configuration and eli
   assert.equal(eligible(win, fence, false), true);
   assert.equal(eligible(win, fence, true), false, 'same-revision restoration must advance generation');
   assert.equal(eligible(win, a, true), false, 'old affirmative update cannot undo revocation');
-  assert.equal(statuses.at(-1).state, 'idle');
-  assert.equal(statuses.at(-1).lastStopReason, 'eligibility-changed');
+  assert.equal(statuses.at(-1).state, 'stopping');
+  assert.equal(controller.active, true, 'the canceled native bind still owns output until its socket closes');
   mockDgram.sockets[1].finishBind();
   await assert.rejects(pending, /cancelled|changed/);
+  assert.equal(statuses.at(-1).state, 'idle');
+  assert.equal(statuses.at(-1).lastStopReason, 'eligibility-changed');
   assert.equal(mockDgram.sockets[1].sent.length, 0);
   assert.equal(mockDgram.sockets[1].closed, true);
 
@@ -853,6 +861,7 @@ test('P2 authenticated Arm and Go bind the current window, configuration and eli
   await release(a);
   const scanB = onControl(win, { type: 'discover', iface: '127.0.0.1' });
   const startingB = go(win, b);
+  void startingB.catch(() => {});
   await release(b); // Go consumed the arm. This UI release cannot cancel the accepted lease.
   await scanB;
   const binding = await onControl(win, { type: 'getStatus' });
