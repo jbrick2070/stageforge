@@ -47,6 +47,7 @@ export interface LiveDmxControllerApi {
   arm: () => Promise<boolean>;
   disarm: () => void;
   isLive: boolean;
+  hasOutputActivity: () => boolean;
   banner: LiveDmxBannerState;
   dismissStoppedNotice: () => void;
   enable: () => Promise<boolean>;
@@ -81,6 +82,8 @@ export function useLiveDmxOutput(
   const discoveryGeneration = useRef(0);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const outputDrains = useRef(0);
+  const [, setDraining] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
   const authorityRef = useRef<DmxAuthorityBridge | null>(null);
@@ -200,6 +203,8 @@ export function useLiveDmxOutput(
   }, [beginAction, finishAction, getEligibility, isAuthorityCurrent, revokeAuthority, rigRef, settings.mode]);
 
   const serialRef = useRef<EnttecProTransport | null>(null);
+  const hasOutputActivity = useCallback(() => Boolean(busyRef.current || outputDrains.current || armedClaimRef.current ||
+    networkAuthorityRef.current || desktopLiveRef.current || serialClaimRef.current || serialRef.current?.isRunning()), []);
   if (!serialRef.current) {
     serialRef.current = new EnttecProTransport((next) => {
       if (!mountedRef.current) return;
@@ -393,18 +398,26 @@ export function useLiveDmxOutput(
     const network = networkAuthorityRef.current;
     const serialClaim = serialClaimRef.current;
     const active = desktopLiveRef.current || serialRef.current?.isRunning();
-    revokeAuthority();
-    const generation = faultGenRef.current;
-    engineRef.current?.setDmxFrameListener(undefined);
-    onBeforeDisableRef.current?.();
-    if (mountedRef.current) setDesktopStatus(prev => prev?.enabled ? { ...prev, enabled: false, state: 'idle' } : prev);
-    const bridge = window.stageforgeDesktop;
-    await Promise.all([
-      serialRef.current!.disable().finally(() => { if (serialClaim) releaseClaim('serial', serialClaim); }),
-      network && bridge?.dmxControl ? bridge.dmxControl({ type: 'disable' }).then(status => {
-        if (faultGenRef.current === generation) receiveDesktopStatus(status);
-      }) : undefined,
-    ]);
+    outputDrains.current++;
+    if (mountedRef.current) setDraining(true);
+    try {
+      revokeAuthority();
+      const generation = faultGenRef.current;
+      engineRef.current?.setDmxFrameListener(undefined);
+      onBeforeDisableRef.current?.();
+      if (mountedRef.current) setDesktopStatus(prev => prev?.enabled ? { ...prev, enabled: false, state: 'idle' } : prev);
+      const bridge = window.stageforgeDesktop;
+      const results = await Promise.allSettled([
+        serialRef.current!.disable().finally(() => { if (serialClaim) releaseClaim('serial', serialClaim); }),
+        network && bridge?.dmxControl ? bridge.dmxControl({ type: 'disable' }).then(status => {
+          if (faultGenRef.current === generation) receiveDesktopStatus(status);
+        }) : undefined,
+      ]);
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+    } finally {
+      if (--outputDrains.current === 0 && mountedRef.current) setDraining(false);
+    }
     return Boolean(active);
   }, [engineRef, receiveDesktopStatus, releaseClaim, revokeAuthority]);
   stopCurrentOutputRef.current = stopCurrentOutput;
@@ -629,6 +642,7 @@ export function useLiveDmxOutput(
     arm,
     disarm,
     isLive,
+    hasOutputActivity,
     banner,
     dismissStoppedNotice,
     enable,

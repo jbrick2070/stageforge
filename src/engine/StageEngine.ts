@@ -2549,6 +2549,14 @@ export class StageEngine {
     }));
   }
 
+  public laserPreviewColorsForTest() {
+    return this.laserUnits.map(unit => ({
+      color: unit.sheetMat.uniforms.uColorA.value.toArray() as number[],
+      intensity: Number(unit.sheetMat.uniforms.uIntensity.value),
+      visible: unit.sheetMesh.visible || unit.coneMesh.visible,
+    }));
+  }
+
   public releaseDirector(crossfade: boolean) {
     this.manualFadeStart = crossfade && this.directedStep !== undefined && this.directedStep < 384
       ? this.elapsed : undefined;

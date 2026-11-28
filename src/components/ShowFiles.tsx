@@ -56,7 +56,7 @@ export function DeskDialog({ title, onClose, className, children }: {title: stri
   </dialog>;
 }
 
-export type ShowExample = 'amber-walk-on' | 'split-rig' | 'steamboat-willie';
+export type ShowExample = 'amber-walk-on' | 'split-rig' | 'steamboat-willie' | 'deep-house';
 
 export function ShowFiles({ name, media, stage, timeline, missing, cueNames, lastMvrSummary, onViewMvrReport, onOpen, onOpenInViewer, onExample, onSave, onRelink, onError, onClose, rigExportIssue, localDesign }: {
   name: string; media: ShowMedia; stage?: NativeStage; timeline?: ShowTimeline; missing: string[]; cueNames: Map<string, string>;
@@ -127,6 +127,7 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, las
       <button disabled={busy} onClick={() => void job(async () => { await onExample('amber-walk-on'); onClose(); })}>Open Amber Walk-on example</button>
       <button disabled={busy} onClick={() => void job(async () => { await onExample('split-rig'); onClose(); })}>Open Split Rig rehearsal</button>
       <button disabled={busy} onClick={() => void job(async () => { await onExample('steamboat-willie'); onClose(); })}>Open Steamboat Willie example</button>
+      <button disabled={busy} onClick={() => void job(async () => { await onExample('deep-house'); onClose(); })}>Open Deep House rehearsal</button>
       <a href="https://github.com/jbrick2070/stageforge/blob/main/docs/show-format.md" target="_blank" rel="noreferrer">Format &amp; source</a>
     </div>
     <h3>Media</h3>

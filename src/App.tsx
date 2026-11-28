@@ -159,6 +159,9 @@ import { deferredComponent } from './components/deferred';
 import { INITIAL_SHOW_STATE, RIG_TEMPLATES, SHOW_CUES } from './data/presets';
 import { calculateProductionEstimate, formatUSD } from './data/productionEstimator';
 import { applyDeskPatch } from './data/movingGroups';
+import { ApcPerformance } from './components/ApcPerformance';
+import { APC_PADS, APC_SCENES, apcActionAvailable, apcFaderValue, apcPadSelected, applyApcLook, resolveApcRig, type ApcAction } from './input/apc40Pack';
+import { useApc40 } from './input/useApc40';
 import {
   AudioMapConfig,
   AudioMetrics,
@@ -478,6 +481,28 @@ export const App: React.FC = () => {
   const capabilitiesRef = useRef(capabilities);
   capabilitiesRef.current = capabilities;
   const sessionEpochRef = useRef(0);
+  const apcEpoch = useRef(0);
+  const apcInvalidate = useRef<() => void>(() => {});
+  const apcRearm = useRef<() => void>(() => {});
+  const apcDocumentRequest = useRef<number | null>(null);
+  const [, setApcDocumentPending] = useState(false);
+  const apcModalRef = useRef(false);
+  const [apcOpen, setApcOpen] = useState(false);
+  const apcOpenRef = useRef(false);
+  const fenceApc = useCallback(() => {
+    apcEpoch.current++;
+    apcInvalidate.current();
+  }, []);
+  const beginApcDocumentRequest = (request: number) => {
+    apcDocumentRequest.current = request;
+    setApcDocumentPending(true);
+    fenceApc();
+  };
+  const finishApcDocumentRequest = (request: number) => {
+    if (apcDocumentRequest.current !== request) return;
+    apcDocumentRequest.current = null;
+    setApcDocumentPending(false);
+  };
   const pendingViewerEntriesRef = useRef(0);
   const deskSnapshotRef = useRef<DeskSessionSnapshot | null>(null);
 
@@ -1088,6 +1113,7 @@ export const App: React.FC = () => {
   // emergency blackout/shutdown BEFORE any document/rig/stage/MVR/ILDA/cue/ack mutation touches StageEngine.
   const stopLiveOutputBeforeStructuralChange = useCallback(
     (reason: string) => {
+      fenceApc();
       const dmx = liveDmxRef.current;
       if (dmx.isLive || dmx.busy) {
         setLiveSafetyViolation(reason);
@@ -1098,7 +1124,7 @@ export const App: React.FC = () => {
         dmx.disarm();
       }
     },
-    [clearAllBumps],
+    [clearAllBumps, fenceApc],
   );
   stopLiveOutputSyncRef.current = stopLiveOutputBeforeStructuralChange;
 
@@ -1972,6 +1998,7 @@ export const App: React.FC = () => {
     getTakePlayheadMs: () => timeline.playhead(),
     isTakePlaying: () => timeline.mode === 'playing',
     onModeReset: (nextMode) => {
+      apcRearm.current();
       cancelDemoLoads();
       cancelCuePreview();
       clockModeRef.current = nextMode;
@@ -2244,6 +2271,7 @@ export const App: React.FC = () => {
       beamFrusta: () => engine.beamFrustaForTest(),
       beamPrisms: () => engine.beamPrismsForTest(),
       beamLevels: () => engine.beamLevelsForTest(),
+      ...(import.meta.env.DEV && { laserPreviewColors: () => engine.laserPreviewColorsForTest() }),
       blinderLensPixels: () => engine.blinderPreviewPixelsForTest().lenses,
       blinderPreviewPixels: () => engine.blinderPreviewPixelsForTest(true),
       poolFrusta: () => engine.poolFrustaForTest(),
@@ -3181,9 +3209,7 @@ export const App: React.FC = () => {
     showToast(`Viewing ${file.rig.name} · ${file.cues.length} cues${warning}`);
   };
 
-  const openViewerPayload = async (source: File | string | Uint8Array) => {
-    const request = ++openRequestRef.current;
-    const startEpoch = sessionEpochRef.current;
+  const openVerifiedViewerPayload = async (source: File | string | Uint8Array, request: number, startEpoch: number) => {
     // Parse and verify purely in memory before entering viewer mode or touching the desk.
     const parsed = await parseViewerSource(source);
     if (request !== openRequestRef.current || startEpoch !== sessionEpochRef.current) return;
@@ -3255,6 +3281,15 @@ export const App: React.FC = () => {
     }
 
     applyViewerDocument(parsed);
+  };
+  const openViewerPayload = async (source: File | string | Uint8Array) => {
+    const request = ++openRequestRef.current;
+    beginApcDocumentRequest(request);
+    try {
+      await openVerifiedViewerPayload(source, request, sessionEpochRef.current);
+    } finally {
+      finishApcDocumentRequest(request);
+    }
   };
 
   const exitViewer = () => {
@@ -3611,15 +3646,21 @@ export const App: React.FC = () => {
     const request = ++openRequestRef.current;
     setPendingMvr(null);
     const folder = import.meta.env.BASE_URL + 'examples/';
+    const mediaByExample: Partial<Record<ShowExample, string>> = {
+      'amber-walk-on': 'amber-clouds.mp4',
+      'split-rig': 'amber-clouds.mp4',
+    };
+    const mediaName = mediaByExample[name];
     const [show, video] = await Promise.all([
       fetch(folder + name + '.stageforge.show.json'),
-      name === 'steamboat-willie' ? undefined : fetch(folder + 'amber-clouds.mp4'),
+      mediaName ? fetch(folder + mediaName) : undefined,
     ]);
     if (!show.ok || (video && !video.ok)) throw new Error('The example files could not be opened.');
     const [json, videoBlob] = await Promise.all([show.text(), video?.blob()]);
     if (epoch !== sessionEpochRef.current || request !== openRequestRef.current || !capabilitiesRef.current.edit) return;
     if (designerOpenRef.current) { showToast('Close the stage plan before opening a file.'); return; }
-    openDocument(json, videoBlob ? [{ kind: 'video', file: new File([videoBlob], 'amber-clouds.mp4', { type: 'video/mp4' }) }] : []);
+    openDocument(json, videoBlob && mediaName ? [{ kind: 'video', file: new File([videoBlob], mediaName, { type: 'video/mp4' }) }] : []);
+    if (name === 'deep-house') { apcOpenRef.current = true; setApcOpen(true); }
   };
   const media = { music: readMusic(), screen: readScreen() };
   const referencedMedia = useMemo(() => referencedFiles(media, cues, timeline.timeline, studioStage),
@@ -3679,6 +3720,7 @@ export const App: React.FC = () => {
     }
     if (source === undefined) return;
     const request = ++openRequestRef.current;
+    beginApcDocumentRequest(request);
     setPendingMvr(null);
     try {
       if (command === 'openMvr' && typeof source !== 'string') {
@@ -3691,9 +3733,60 @@ export const App: React.FC = () => {
       if (request === openRequestRef.current) {
         window.alert(error instanceof Error ? error.message : 'Could not open this StageForge rig.');
       }
+    } finally {
+      finishApcDocumentRequest(request);
     }
   });
   useEffect(() => window.stageforgeDesktop?.onRigCommand(fileCommand), []);
+
+  const apcRig = useMemo(() => resolveApcRig(rig), [rig]);
+  const apcSessionEpoch = sessionEpochRef.current;
+  apcModalRef.current = cinemaMode || !!designerRig || filesOpen || !!pendingMvr || viewingMvrReport || cueEditor || costModalOpen;
+  const apcScope = (epoch: number) => epoch === apcEpoch.current && apcSessionEpoch === sessionEpochRef.current &&
+    apcOpenRef.current && capabilitiesRef.current.edit && capabilitiesRef.current.controllers && !viewerModeRef.current &&
+    window.top === window.self && !pendingViewerEntriesRef.current && apcDocumentRequest.current === null && !apcModalRef.current &&
+    !designerOpenRef.current && rigRef.current === rig && apcRig.eligible &&
+    !isWebXrPageInterlocked() && webXrPhaseRef.current !== 'warning' && !webXrBlocksPhysicalOutput(webXrPhaseRef.current) &&
+    !engineRef.current?.isWebXrPhysicalOutputInterlocked() && !liveDmxRef.current.hasOutputActivity();
+  const apcAvailable = (action: ApcAction, state = showStateRef.current) =>
+    apcActionAvailable(action, apcRig, state, cuesRef.current, {
+      suspended: clockModeRef.current === 'chase' || timeline.isPlaying() || replaying.current,
+      motorDrop: liveBumpRef.current.motorDrop, laserClip: !!ildaClip,
+    });
+  const dispatchApc = (action: ApcAction, epoch: number) => {
+    if (!apcScope(epoch) || !apcAvailable(action)) return false;
+    if (action.kind === 'blackout') {
+      applyOperatorBlackout(true);
+    } else if (action.kind === 'cue') {
+      const cue = cuesRef.current.find(item => item.id === action.id);
+      if (!cue) return false;
+      triggerCue(cue);
+    } else {
+      if (action.kind === 'fader' && action.fader === 'masterDimmer') {
+        previewRig();
+        setCueModified(true);
+      } else {
+        takeDesk();
+      }
+      // React may commit after an operator or rig transition; validate the live desk again in the updater.
+      setShowState(state => apcScope(epoch) && apcAvailable(action, state) ? applyApcLook(state, action) : state);
+    }
+    return true;
+  };
+  const apcRenderEpoch = apcEpoch.current;
+  const apcEligible = apcScope(apcRenderEpoch);
+  const apcFeedback = useMemo(() => apcRig.recognized
+    ? [...APC_PADS, ...APC_SCENES].map(pad => apcPadSelected(pad.action, showState, activeCueId) ? pad.selectedLed : pad.led)
+    : [], [apcRig.recognized, showState, activeCueId]);
+  const apcMidi = useApc40({
+    open: apcOpen, eligible: apcEligible, epoch: apcRenderEpoch, feedback: apcFeedback, current: apcScope,
+    read: fader => apcScope(apcEpoch.current) && apcAvailable({ kind: 'fader', fader, value: 0 })
+      ? apcFaderValue(showStateRef.current, fader, apcRig) : null,
+    send: dispatchApc,
+  });
+  apcInvalidate.current = apcMidi.invalidate;
+  apcRearm.current = apcMidi.rearm;
+  useEffect(() => { apcRearm.current(); }, [activeCueId, showControl.clockMode, timeline.mode]);
 
   const controller = useShowGamepad({
     enabled: capabilities.controllers && !costModalOpen && !designerRig && !filesOpen && !pendingMvr && !viewingMvrReport && !cueEditor && timeline.mode !== 'playing',
@@ -4226,6 +4319,15 @@ export const App: React.FC = () => {
       {/* Full-Viewport HQ 3D WebGL2 Canvas */}
       <div ref={viewportRef} className="stage-viewport w-full h-full cursor-grab active:cursor-grabbing" />
       <ShowOverlay audioStore={live.audio} controller={controller} cinema={cinemaMode} showControllerGuide={capabilities.controllers} />
+      {capabilities.controllers && !cinemaMode && apcRig.recognized && <ApcPerformance open={apcOpen}
+        look={showState} rig={apcRig} cueId={activeCueId} midi={apcMidi}
+        available={action => apcEligible && apcAvailable(action)}
+        send={action => { if (dispatchApc(action, apcRenderEpoch)) apcMidi.rearm(); }}
+        toggle={() => {
+          apcOpenRef.current = !apcOpenRef.current;
+          setApcOpen(apcOpenRef.current);
+          if (!apcOpenRef.current) fenceApc();
+        }} />}
 
       {viewerMode ? (
         <PitchViewer

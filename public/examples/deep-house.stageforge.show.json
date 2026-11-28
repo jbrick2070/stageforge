@@ -1,0 +1,592 @@
+{
+  "$schema": "https://jbrick2070.github.io/stageforge/schemas/show-v15.schema.json",
+  "format": "stageforge-show",
+  "version": 15,
+  "rig": {
+    "name": "Deep House · Signal Room",
+    "venue": "warehouse",
+    "stageWidth": 13,
+    "stageDepth": 8.5,
+    "stageHeight": 0.82,
+    "ledWall": {
+      "enabled": true,
+      "width": 9.6,
+      "height": 3.4,
+      "curved": false,
+      "sideWings": true
+    },
+    "audioRig": {
+      "lineArrays": false,
+      "speakerProfile": "touring",
+      "monitorCount": 2,
+      "subWall": false,
+      "subCount": 2,
+      "djBooth": true,
+      "crowdDensity": 0.22
+    },
+    "trussPods": [
+      {
+        "id": "deep-house-lift",
+        "name": "Signal ring · simulated lift",
+        "shape": "circle",
+        "width": 7.2,
+        "x": 0,
+        "baseY": 5.1,
+        "z": -0.6,
+        "rotationY": 0,
+        "motorized": true,
+        "motorMinY": 3.25,
+        "motorMaxY": 7.1,
+        "fixtures": [
+          {
+            "id": "deep-house-beams",
+            "type": "beam",
+            "modelName": "Signal moving beam",
+            "count": 8,
+            "dmxUniverse": 3,
+            "dmxStartChannel": 1,
+            "dmxChannels": 16
+          }
+        ]
+      },
+      {
+        "id": "deep-house-wash-truss",
+        "name": "Backline wash",
+        "shape": "box",
+        "width": 11,
+        "x": 0,
+        "baseY": 6.4,
+        "z": -3.15,
+        "rotationY": 0,
+        "motorized": false,
+        "motorMinY": 6.4,
+        "motorMaxY": 6.4,
+        "fixtures": [
+          {
+            "id": "deep-house-wash",
+            "type": "wash",
+            "modelName": "Signal moving wash",
+            "count": 6,
+            "dmxUniverse": 3,
+            "dmxStartChannel": 145,
+            "dmxChannels": 16
+          }
+        ]
+      }
+    ],
+    "floorFx": [
+      {
+        "id": "deep-house-rgb",
+        "type": "floor_laser",
+        "modelName": "Laserworld DS-3000RGB MK5",
+        "count": 1,
+        "dmxUniverse": 3,
+        "dmxStartChannel": 251,
+        "x": 0,
+        "z": -2.35,
+        "spread": 0,
+        "catalogId": "laserworld-ds-3000rgb",
+        "dmxMode": "ShowNET DJ (19-Ch)",
+        "dmxChannels": 19
+      },
+      {
+        "id": "deep-house-floor-beams",
+        "type": "floor_beam",
+        "modelName": "Signal floor moving beam",
+        "count": 4,
+        "dmxUniverse": 3,
+        "dmxStartChannel": 273,
+        "x": 0,
+        "z": -2.15,
+        "spread": 5.4,
+        "dmxChannels": 16
+      },
+      {
+        "id": "deep-house-haze",
+        "type": "hazer",
+        "modelName": "Signal haze pair",
+        "count": 2,
+        "dmxUniverse": 3,
+        "dmxStartChannel": 337,
+        "x": 0,
+        "z": -0.7,
+        "spread": 10.2,
+        "dmxChannels": 1
+      }
+    ],
+    "props": [
+      {
+        "id": "deep-house-left-arch",
+        "kind": "arch",
+        "x": -5.35,
+        "z": -1.0,
+        "scale": 0.7,
+        "rotation": 0,
+        "color": "#238cf1"
+      },
+      {
+        "id": "deep-house-right-arch",
+        "kind": "arch",
+        "x": 5.35,
+        "z": -1.0,
+        "scale": 0.7,
+        "rotation": 0,
+        "color": "#9251ff"
+      }
+    ]
+  },
+  "cues": [
+    {
+      "id": "deep-house-intro",
+      "name": "Intro",
+      "tag": "SHOW",
+      "accent": "#397aff",
+      "state": {
+        "primaryColor": "#397aff",
+        "accentColor": "#b15aff",
+        "colorSplitMode": "alternate",
+        "movementMode": "fan",
+        "beamIntensity": 0.57,
+        "washIntensity": 0.35,
+        "laser": {
+          "enabled": true,
+          "intensity": 0.38,
+          "pattern": "liquid_sky",
+          "beamCount": 12,
+          "spreadX": 0.77,
+          "spreadY": 0.28,
+          "speed": 0.3,
+          "tilt": 0.22,
+          "rotation": 0,
+          "colorMode": "custom",
+          "strobe": 0,
+          "audienceScan": false,
+          "colorA": "#20e7f8"
+        },
+        "led": {
+          "enabled": true,
+          "brightness": 0.66,
+          "visualMode": "tour_text",
+          "speed": 0.34,
+          "tourText": "DEEP HOUSE",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "motors": {
+          "mode": "manual",
+          "speed": 0.53,
+          "podTargets": {
+            "deep-house-lift": {
+              "height": 0.48,
+              "tilt": 0.07
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "deep-house-groove",
+      "name": "Groove",
+      "tag": "SHOW",
+      "accent": "#20e7f8",
+      "state": {
+        "primaryColor": "#20e7f8",
+        "accentColor": "#397aff",
+        "colorSplitMode": "alternate",
+        "movementMode": "circle",
+        "beamIntensity": 0.66,
+        "washIntensity": 0.44,
+        "laser": {
+          "enabled": true,
+          "intensity": 0.48,
+          "pattern": "liquid_sky",
+          "beamCount": 12,
+          "spreadX": 0.77,
+          "spreadY": 0.28,
+          "speed": 0.3,
+          "tilt": 0.22,
+          "rotation": 0,
+          "colorMode": "custom",
+          "strobe": 0,
+          "audienceScan": false,
+          "colorA": "#397aff"
+        },
+        "led": {
+          "enabled": true,
+          "brightness": 0.76,
+          "visualMode": "cybergrid",
+          "speed": 0.34,
+          "tourText": "DEEP HOUSE",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "motors": {
+          "mode": "manual",
+          "speed": 0.53,
+          "podTargets": {
+            "deep-house-lift": {
+              "height": 0.56,
+              "tilt": 0.07
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "deep-house-build",
+      "name": "Build",
+      "tag": "SHOW",
+      "accent": "#b15aff",
+      "state": {
+        "primaryColor": "#b15aff",
+        "accentColor": "#20e7f8",
+        "colorSplitMode": "alternate",
+        "movementMode": "wave",
+        "beamIntensity": 0.76,
+        "washIntensity": 0.59,
+        "laser": {
+          "enabled": true,
+          "intensity": 0.58,
+          "pattern": "liquid_sky",
+          "beamCount": 12,
+          "spreadX": 0.77,
+          "spreadY": 0.28,
+          "speed": 0.3,
+          "tilt": 0.22,
+          "rotation": 0,
+          "colorMode": "custom",
+          "strobe": 0,
+          "audienceScan": false,
+          "colorA": "#b15aff"
+        },
+        "led": {
+          "enabled": true,
+          "brightness": 0.8,
+          "visualMode": "spectrum",
+          "speed": 0.34,
+          "tourText": "DEEP HOUSE",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "motors": {
+          "mode": "manual",
+          "speed": 0.53,
+          "podTargets": {
+            "deep-house-lift": {
+              "height": 0.69,
+              "tilt": 0.07
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "deep-house-peak",
+      "name": "Peak",
+      "tag": "SHOW",
+      "accent": "#ff243f",
+      "state": {
+        "primaryColor": "#ff243f",
+        "accentColor": "#b15aff",
+        "colorSplitMode": "alternate",
+        "movementMode": "flyout",
+        "beamIntensity": 0.94,
+        "washIntensity": 0.77,
+        "laser": {
+          "enabled": true,
+          "intensity": 0.73,
+          "pattern": "liquid_sky",
+          "beamCount": 12,
+          "spreadX": 0.77,
+          "spreadY": 0.28,
+          "speed": 0.3,
+          "tilt": 0.22,
+          "rotation": 0,
+          "colorMode": "custom",
+          "strobe": 0,
+          "audienceScan": false,
+          "colorA": "#ffe644"
+        },
+        "led": {
+          "enabled": true,
+          "brightness": 0.96,
+          "visualMode": "tunnel",
+          "speed": 0.34,
+          "tourText": "DEEP HOUSE",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "motors": {
+          "mode": "manual",
+          "speed": 0.53,
+          "podTargets": {
+            "deep-house-lift": {
+              "height": 0.84,
+              "tilt": 0.07
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "deep-house-close",
+      "name": "Close",
+      "tag": "SHOW",
+      "accent": "#ff931a",
+      "state": {
+        "primaryColor": "#ff931a",
+        "accentColor": "#397aff",
+        "colorSplitMode": "alternate",
+        "movementMode": "fan",
+        "beamIntensity": 0.37,
+        "washIntensity": 0.28,
+        "laser": {
+          "enabled": true,
+          "intensity": 0.25,
+          "pattern": "liquid_sky",
+          "beamCount": 12,
+          "spreadX": 0.77,
+          "spreadY": 0.28,
+          "speed": 0.3,
+          "tilt": 0.22,
+          "rotation": 0,
+          "colorMode": "custom",
+          "strobe": 0,
+          "audienceScan": false,
+          "colorA": "#ff931a"
+        },
+        "led": {
+          "enabled": true,
+          "brightness": 0.52,
+          "visualMode": "mandala",
+          "speed": 0.34,
+          "tourText": "DEEP HOUSE",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "motors": {
+          "mode": "manual",
+          "speed": 0.53,
+          "podTargets": {
+            "deep-house-lift": {
+              "height": 0.37,
+              "tilt": 0.07
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "deep-house-smoke-blue",
+      "name": "Smoke Blue",
+      "tag": "SHOW",
+      "accent": "#397aff",
+      "state": {
+        "primaryColor": "#397aff",
+        "accentColor": "#20e7f8",
+        "colorSplitMode": "alternate",
+        "movementMode": "sweep",
+        "beamIntensity": 0.74,
+        "washIntensity": 0.49,
+        "laser": {
+          "enabled": true,
+          "intensity": 0.53,
+          "pattern": "liquid_sky",
+          "beamCount": 12,
+          "spreadX": 0.77,
+          "spreadY": 0.28,
+          "speed": 0.3,
+          "tilt": 0.22,
+          "rotation": 0,
+          "colorMode": "custom",
+          "strobe": 0,
+          "audienceScan": false,
+          "colorA": "#397aff"
+        },
+        "led": {
+          "enabled": true,
+          "brightness": 0.78,
+          "visualMode": "plasma",
+          "speed": 0.34,
+          "tourText": "DEEP HOUSE",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "motors": {
+          "mode": "manual",
+          "speed": 0.53,
+          "podTargets": {
+            "deep-house-lift": {
+              "height": 0.52,
+              "tilt": 0.07
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "deep-house-acid-break",
+      "name": "Acid Break",
+      "tag": "SHOW",
+      "accent": "#25ee75",
+      "state": {
+        "primaryColor": "#25ee75",
+        "accentColor": "#ffe644",
+        "colorSplitMode": "alternate",
+        "movementMode": "figure8",
+        "beamIntensity": 0.77,
+        "washIntensity": 0.64,
+        "laser": {
+          "enabled": true,
+          "intensity": 0.57,
+          "pattern": "liquid_sky",
+          "beamCount": 12,
+          "spreadX": 0.77,
+          "spreadY": 0.28,
+          "speed": 0.3,
+          "tilt": 0.22,
+          "rotation": 0,
+          "colorMode": "custom",
+          "strobe": 0,
+          "audienceScan": false,
+          "colorA": "#25ee75"
+        },
+        "led": {
+          "enabled": true,
+          "brightness": 0.85,
+          "visualMode": "cybergrid",
+          "speed": 0.34,
+          "tourText": "DEEP HOUSE",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "motors": {
+          "mode": "manual",
+          "speed": 0.53,
+          "podTargets": {
+            "deep-house-lift": {
+              "height": 0.72,
+              "tilt": 0.07
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "deep-house-white-room",
+      "name": "White Room",
+      "tag": "SHOW",
+      "accent": "#ffffff",
+      "state": {
+        "primaryColor": "#ffffff",
+        "accentColor": "#397aff",
+        "colorSplitMode": "alternate",
+        "movementMode": "fan",
+        "beamIntensity": 0.78,
+        "washIntensity": 0.54,
+        "laser": {
+          "enabled": true,
+          "intensity": 0.64,
+          "pattern": "liquid_sky",
+          "beamCount": 12,
+          "spreadX": 0.77,
+          "spreadY": 0.28,
+          "speed": 0.3,
+          "tilt": 0.22,
+          "rotation": 0,
+          "colorMode": "custom",
+          "strobe": 0,
+          "audienceScan": false,
+          "colorA": "#ffffff"
+        },
+        "led": {
+          "enabled": true,
+          "brightness": 0.85,
+          "visualMode": "tunnel",
+          "speed": 0.34,
+          "tourText": "DEEP HOUSE",
+          "customMediaUrl": null,
+          "customMediaType": null
+        },
+        "motors": {
+          "mode": "manual",
+          "speed": 0.53,
+          "podTargets": {
+            "deep-house-lift": {
+              "height": 0.61,
+              "tilt": 0.07
+            }
+          }
+        }
+      }
+    }
+  ],
+  "look": {
+    "masterDimmer": 0.9,
+    "blackout": false,
+    "autoDirector": false,
+    "audioReactive": false,
+    "bpm": 122,
+    "beamIntensity": 0.57,
+    "washIntensity": 0.35,
+    "beamZoom": 0.2,
+    "goboPrism": false,
+    "primaryColor": "#397aff",
+    "accentColor": "#b15aff",
+    "colorSplitMode": "alternate",
+    "movementMode": "fan",
+    "movementSpeed": 0.28,
+    "movementSpread": 0.64,
+    "manualPan": 0,
+    "manualTilt": -0.32,
+    "focusMarkId": null,
+    "strobeRate": 0,
+    "blinderLevel": 0,
+    "laser": {
+      "enabled": true,
+      "intensity": 0.38,
+      "pattern": "liquid_sky",
+      "beamCount": 12,
+      "spreadX": 0.77,
+      "spreadY": 0.28,
+      "speed": 0.3,
+      "tilt": 0.22,
+      "rotation": 0,
+      "colorMode": "custom",
+      "strobe": 0,
+      "audienceScan": false,
+      "colorA": "#20e7f8"
+    },
+    "motors": {
+      "mode": "manual",
+      "speed": 0.53,
+      "podTargets": {
+        "deep-house-lift": {
+          "height": 0.48,
+          "tilt": 0.07
+        }
+      }
+    },
+    "atmo": {
+      "hazeLevel": 0.62,
+      "smokeOutput": 0,
+      "co2Active": false,
+      "co2AutoOnDrop": false
+    },
+    "led": {
+      "enabled": true,
+      "brightness": 0.66,
+      "visualMode": "tour_text",
+      "speed": 0.34,
+      "tourText": "DEEP HOUSE",
+      "customMediaUrl": null,
+      "customMediaType": null
+    },
+    "bloomStrength": 0.66
+  },
+  "activeCueId": "deep-house-intro",
+  "controls": {
+    "camera": "foh",
+    "volume": 0.72
+  }
+}

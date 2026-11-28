@@ -366,5 +366,6 @@ export function useShowTimeline(sample: () => DeskFrame, apply: (event: Timeline
       ...(run.timecodeOffsetMs !== undefined ? { timecodeOffsetMs: run.timecodeOffsetMs } : {}),
     };
   };
-  return { timeline, mode, timeMs, canResume, record, play, pause, seek, playhead, stop, replace, syncWallDuration, snapshot, chaseSeek, chaseAdvance, resolveFrameAt, resetChase, setMetadata, publishCueTransition, publishCueFadeInterruption };
+  return { timeline, mode, timeMs, canResume, record, play, pause, seek, playhead, stop, replace, syncWallDuration, snapshot, chaseSeek, chaseAdvance, resolveFrameAt, resetChase, setMetadata, publishCueTransition, publishCueFadeInterruption,
+    isPlaying: () => session.current?.mode === 'playing' };
 }
