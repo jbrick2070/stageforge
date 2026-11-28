@@ -43,11 +43,14 @@ interface ArtNetInputStatusBridge {
   phase: 'starting' | 'listening' | 'stopping' | 'off';
   port: number | null;
   error: string | null;
+  anchorMs: number;
 }
 
 interface ArtNetInputRowBridge extends ArtNetInputMappingBridge {
   state: 'awaiting' | 'active' | 'stale';
   ageMs: number | null;
+  sampleAtMs: number | null;
+  sampleSeq: number | null;
   received: number;
   lost: number;
   data: Uint8Array;
@@ -56,6 +59,7 @@ interface ArtNetInputRowBridge extends ArtNetInputMappingBridge {
 interface ArtNetInputBatchBridge {
   authority: DmxAuthorityBridge;
   batchId: number;
+  sentAtMs: number;
   rows: ArtNetInputRowBridge[];
   drops: { invalid: number; unselected: number; unmapped: number; sequence: number };
 }

@@ -159,6 +159,10 @@ export function createScalarGovernorState(): ScalarGovernorState {
 
 export function cloneScalarGovernorState(src: ScalarGovernorState): ScalarGovernorState {
   const copy = createScalarGovernorState();
+  return copyScalarGovernorState(copy, src);
+}
+
+export function copyScalarGovernorState(copy: ScalarGovernorState, src: ScalarGovernorState): ScalarGovernorState {
   copy.initialized = src.initialized;
   copy.delivered = src.delivered;
   copy.anchor = src.anchor;
@@ -195,6 +199,7 @@ export function stepGovernedScalar(
   threshold = DEFAULT_SCALAR_EXCURSION,
   minSpacingFallbackMs = 334,
   out: ScalarStepResult = SCALAR_SCRATCH,
+  observeDelivered = false,
 ): ScalarStepResult {
   const safeDesired = Number.isFinite(desired) ? Math.max(0, desired) : 0;
   const minSpacing = sharedClock ? sharedClock.minSpacingMs : minSpacingFallbackMs;
@@ -353,7 +358,7 @@ export function stepGovernedScalar(
     (ch.lastDir !== -1 || ch.revCount <= MAX_REVERSALS_BEFORE_ADMIT);
   const globalOk = sharedClock ? canAdmitFlashRise(sharedClock, tMs) : true;
 
-  if (localOk && globalOk) {
+  if (observeDelivered || (localOk && globalOk)) {
     if (ch.lastDir === -1) {
       ch.revCount = pushTimestamp(ch.revTimes, ch.revCount, tMs);
     }
@@ -374,6 +379,19 @@ export function stepGovernedScalar(
   out.value = ch.delivered;
   out.limited = true;
   return out;
+}
+
+/** Account for a value already delivered by another path without applying a second clamp. */
+export function observeScalarDelivery(ch: ScalarGovernorState, clock: FlashBudgetClock | null, tMs: number, delivered: number): void {
+  stepGovernedScalar(ch, clock, tMs, delivered, false, true, DEFAULT_SCALAR_EXCURSION, undefined, SCALAR_SCRATCH, true);
+}
+
+/** Check both the local and room refractory before handing a lens back to passthrough. */
+export function canReleaseScalarHandoff(ch: ScalarGovernorState, clock: FlashBudgetClock, tMs: number): boolean {
+  ch.revCount = pruneTimestamps(ch.revTimes, ch.revCount, tMs);
+  return tMs >= ch.limitedUntilMs && tMs - ch.lastRiseMs >= clock.minSpacingMs &&
+    tMs - clock.lastAdmittedRiseMs >= clock.minSpacingMs &&
+    (ch.lastDir !== -1 || ch.revCount <= MAX_REVERSALS_BEFORE_ADMIT) && canAdmitFlashRise(clock, tMs);
 }
 
 export interface RgbGovernorState {

@@ -122,6 +122,7 @@ export interface PreviewFlashInput {
   blackout: boolean;
   master: number;
   blinder: number;
+  blinderVisible?: boolean;
   ledBright: number;
   beatPulse: number;
   bass?: number;
@@ -534,7 +535,7 @@ export function evaluatePreviewFlash(
 
   if (!input.limited) {
     syncScalarPassthrough(state.masterGov, input.master);
-    syncScalarPassthrough(state.blinderGov, input.blinder);
+    if (input.blinderVisible !== false) syncScalarPassthrough(state.blinderGov, input.blinder);
     syncScalarPassthrough(state.ledBrightGov, input.ledBright);
     syncScalarPassthrough(state.beatPulseGov, input.beatPulse);
     syncScalarPassthrough(state.bassGov, bassIn);
@@ -556,7 +557,7 @@ export function evaluatePreviewFlash(
     state.laserOnUntilMs = -Infinity;
 
     out.master = input.master;
-    out.blinder = input.blinder;
+    out.blinder = input.blinderVisible === false ? 0 : input.blinder;
     out.ledBright = input.ledBright;
     out.beatPulse = input.beatPulse;
     out.bass = bassIn;
@@ -621,7 +622,7 @@ export function evaluatePreviewFlash(
   };
 
   const nextMaster = runScalar(state.masterGov, input.master, true);
-  const nextBlinder = runScalar(state.blinderGov, input.blinder, true);
+  const nextBlinder = input.blinderVisible === false ? 0 : runScalar(state.blinderGov, input.blinder, true);
   const nextLedBright = runScalar(state.ledBrightGov, input.ledBright, true);
   const nextBeatPulse = runScalar(state.beatPulseGov, input.beatPulse, false);
   const nextBass = runScalar(state.bassGov, bassIn, false);

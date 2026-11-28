@@ -65,7 +65,7 @@ function createArtNetInput({
   }
 
   function status(session, phase, error = null) {
-    const update = { phase, port: phase === 'listening' ? session.handle.port : null, error };
+    const update = { phase, port: phase === 'listening' ? session.handle.port : null, error, anchorMs: session.anchorMs };
     publish(session, 'stageforge:artnet-input-status', update);
     return { authority: session.authority, ...update };
   }
@@ -110,6 +110,7 @@ function createArtNetInput({
     }
     row.sequence = packet.sequence;
     row.lastAt = clock;
+    if (row.sampleSeq !== null) row.sampleSeq = row.sampleSeq < Number.MAX_SAFE_INTEGER ? row.sampleSeq + 1 : null;
     row.stale = false;
     row.received = maxCounter(row.received);
     row.data.fill(0);
@@ -129,9 +130,10 @@ function createArtNetInput({
       portAddress: row.portAddress, universe: row.universe, sender: row.sender,
       state: row.stale ? 'stale' : row.lastAt === null ? 'awaiting' : 'active',
       ageMs: row.lastAt === null ? null : Math.max(0, Math.floor(clock - row.lastAt)),
+      sampleAtMs: row.lastAt, sampleSeq: row.sampleSeq,
       received: row.received, lost: row.lost, data: new Uint8Array(row.data),
     }));
-    publish(session, 'stageforge:artnet-input-batch', { batchId, rows, drops: { ...session.drops } });
+    publish(session, 'stageforge:artnet-input-batch', { batchId, sentAtMs: clock, rows, drops: { ...session.drops } });
   }
 
   function finish(session, error) {
@@ -172,10 +174,10 @@ function createArtNetInput({
     }
     const lease = interlock.reservePreview(wcId);
     const session = {
-      event, authority, signature, wcId, lease, phase: 'starting', timer: null,
+      event, authority, signature, wcId, lease, anchorMs: now(), phase: 'starting', timer: null,
       handle: null, closePromise: null, stopPromise: null, ready: null,
       rows: new Map(config.mappings.map((row) => [row.portAddress, {
-        ...row, lastAt: null, sequence: 0, stale: false, received: 0, lost: 0, data: new Uint8Array(512),
+        ...row, lastAt: null, sampleSeq: 0, sequence: 0, stale: false, received: 0, lost: 0, data: new Uint8Array(512),
       }])),
       drops: { invalid: 0, unmapped: 0, unselected: 0, sequence: 0 },
       dirty: true, inFlight: null, batchId: 0,

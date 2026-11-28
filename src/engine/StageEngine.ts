@@ -155,6 +155,8 @@ import {
   type PreviewFlashState,
   type PreviewLaserGovernorEntry,
 } from './previewFlash';
+import { BlinderPreviewBank, resolveBlinderPreviewBinding, type BlinderPreviewBinding } from './blinderPreview';
+import type { ArtNetPreviewLevels } from '../dmx/artNetPreviewLevels';
 import {
   DEFAULT_RENDER_SETTINGS,
   estimateRenderTargetBytes,
@@ -342,6 +344,8 @@ interface StrobeInstance extends DmxOutput {
 
 interface BlinderInstance extends DmxOutput {
   lensMat: THREE.MeshBasicMaterial;
+  lenses: THREE.Mesh[];
+  binding: BlinderPreviewBinding;
 }
 
 interface TrussPodRuntime {
@@ -481,6 +485,8 @@ export class StageEngine {
   };
   private strobes: StrobeInstance[] = [];
   private blinders: BlinderInstance[] = [];
+  private artNetPreview: ArtNetPreviewLevels | null = null;
+  private blinderPreview = new BlinderPreviewBank();
   private atmosphereDmx: (DmxOutput & { type: 'hazer' | 'smoke' | 'co2' })[] = [];
   private djStripMat: THREE.MeshBasicMaterial | null = null;
   private crowdMesh: THREE.InstancedMesh | null = null;
@@ -1943,6 +1949,31 @@ export class StageEngine {
     }
   }
 
+  /** Probe only. Sample the installed lamps on the compositor's presented framebuffer. */
+  public blinderLensPixelsForTest() {
+    if (this.standby) throw new Error('Blinder pixels are unavailable in standby.');
+    this.composer.render(0);
+    const gl = this.renderer.getContext();
+    const { width, height } = this.renderer.domElement;
+    const projected = new THREE.Vector3();
+    const pixels = new Uint8Array(3 * 3 * 4);
+    return this.blinders.map(blinder => ({
+      unitId: blinder.binding.unitId,
+      address: blinder.binding.address,
+      lenses: blinder.lenses.flatMap(lens => {
+        lens.getWorldPosition(projected).project(this.camera);
+        if (projected.z < -1 || projected.z > 1) return [];
+        const x = Math.floor((1 + projected.x) * width / 2);
+        const y = Math.floor((1 + projected.y) * height / 2);
+        if (x <= 0 || x >= width - 1 || y <= 0 || y >= height - 1) return [];
+        gl.readPixels(x - 1, y - 1, 3, 3, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        let sum = 0;
+        for (let i = 0; i < pixels.length; i += 4) sum += (pixels[i] * 0.2126 + pixels[i + 1] * 0.7152 + pixels[i + 2] * 0.0722);
+        return [{ x, y: height - 1 - y, luminance: sum / (9 * 255) }];
+      }),
+    }));
+  }
+
   private captureCanvas: HTMLCanvasElement | null = null;
 
   /**
@@ -2172,7 +2203,24 @@ export class StageEngine {
       this.dmxUniverse1.fill(0);
       this.dmxUniverse2.fill(0);
       this.clearExtendedSimDmx();
+      if (this.artNetPreview && (this.artNetPreview.source === 'external' || this.blinderPreview.hasExternalOrHandoff())) {
+        this.blinderPreview.blackout(this.previewFlashState);
+        for (const blinder of this.blinders) blinder.lensMat.color.setRGB(0, 0, 0);
+        this.blinderLight.intensity = 0;
+        this.scenicKey.intensity = 0;
+        for (const light of this.sideFills) light.intensity = 0;
+      }
     }
+  }
+
+  public setArtNetPreview(preview: ArtNetPreviewLevels): void {
+    this.artNetPreview = preview;
+    this.reconcileBlinderPreview();
+  }
+
+  private reconcileBlinderPreview(): void {
+    if (this.artNetPreview) this.blinderPreview.reconcile(this.blinders.map(unit => unit.binding),
+      this.artNetPreview, this.previewFlashState, performance.now());
   }
 
   private clearPhysicalDmxBuffers() {
@@ -3354,7 +3402,8 @@ export class StageEngine {
         const slot = built.mountSlots[slotIdx];
         if (!slot) return;
 
-        const { effectiveStart: start, width, universe, unitId, groupKey } = patch.unitFor(fg, i, scope)!;
+        const patchUnit = patch.unitFor(fg, i, scope)!;
+        const { effectiveStart: start, width, universe, unitId, groupKey } = patchUnit;
         const buffer = this.simulatedDmxBuffer(universe);
         const physBuffer = this.physicalDmxBuffer(universe);
         const physicalClass = classifyPhysicalGroup(fg);
@@ -3419,7 +3468,8 @@ export class StageEngine {
           bl.group.rotation.y = slot.rotY;
           bl.group.translateY(-drop).translateZ(0.28);
           podGroup.add(nameFixtureUnit(bl.group, fg, i, start));
-          this.blinders.push({ lensMat: bl.lensMat, buffer, physBuffer, start, width, physicalClass });
+          this.blinders.push({ lensMat: bl.lensMat, lenses: bl.lenses, binding: resolveBlinderPreviewBinding(fg, patchUnit),
+            buffer, physBuffer, start, width, physicalClass });
         }
       });
 
@@ -3517,6 +3567,7 @@ export class StageEngine {
       }
     }
 
+    this.reconcileBlinderPreview();
     this.assignOpeningGroups(rig.stageWidth);
     this.laserSpeedPhaseOffsets = new Array(this.laserUnits.length).fill(0);
     this.laserRotPhaseOffsets = new Array(this.laserUnits.length).fill(0);
@@ -4010,14 +4061,16 @@ export class StageEngine {
       group.add(reflectors);
     }
     const lensMat = new THREE.MeshBasicMaterial({ color: 0x181208 });
+    const lenses: THREE.Mesh[] = [];
     for (const [i, lens] of parts.lenses.entries()) {
       if (lens.kind !== 'circle') continue;
       const pod = new THREE.Mesh(new THREE.CircleGeometry(lens.r, 14), lensMat);
       pod.name = `Blinder lamp ${i + 1}`;
       pod.position.set(lens.x, lens.y, lens.z);
       group.add(pod);
+      lenses.push(pod);
     }
-    return { group, lensMat };
+    return { group, lensMat, lenses };
   }
 
   private createCo2JetUnit(catalogId?: string): THREE.Group {
@@ -4445,6 +4498,7 @@ export class StageEngine {
   }
 
   private updateScene(dt: number, audio: AudioMetrics, audioDt = dt) {
+    if (this.standby && this.artNetPreview?.source === 'external') this.previewRig();
     // The frame loop still clears the canvas and publishes telemetry while the desk is idle.
     if (this.standby) return false;
     const demo = this.currentState.autoDirector ? audio.demo : undefined;
@@ -4530,6 +4584,9 @@ export class StageEngine {
     const rawLedBass = s.audioReactive && audio.playing ? audio.bass : 0.35 + 0.2 * Math.sin(t * 3.1);
     const rawLedMid = s.audioReactive && audio.playing ? audio.mid : 0.35 + 0.2 * Math.cos(t * 2.4);
     const rawLedHigh = s.audioReactive && audio.playing ? audio.high : 0.28 + 0.2 * Math.sin(t * 4.5);
+    const artNetPreview = this.artNetPreview;
+    const deskBlinderVisible = artNetPreview ? this.blinderPreview.prepare(artNetPreview, this.previewFlashState,
+      this.previewFlashState.clockMs + audioDt * 1000) : true;
     const previewFlash = evaluatePreviewFlash(
       this.previewFlashState,
       {
@@ -4539,6 +4596,7 @@ export class StageEngine {
         blackout: blackoutActive || darkOpening,
         master,
         blinder: rawEffBlinder,
+        blinderVisible: deskBlinderVisible,
         ledBright: rawLedBright,
         beatPulse,
         bass: rawLedBass,
@@ -5255,10 +5313,13 @@ export class StageEngine {
     if (blinderGovLimited) {
       mod.flashLimited = true;
     }
-    const previewBlinder = previewFlash.blinder;
+    const previewBlinder = artNetPreview ? this.blinderPreview.deliver(artNetPreview, this.previewFlashState, performance.now(),
+      previewFlash.blinder, rawEffBlinder, previewMaster, blackoutActive || darkOpening, previewLimited) : previewFlash.blinder;
+    if (artNetPreview && this.blinderPreview.limited) previewFlash.activeLimiting = true;
     const warmAmber = this.warmAmberColor;
     for (const bl of this.blinders) {
-      bl.lensMat.color.copy(warmAmber).multiplyScalar(previewBlinder * 4.2);
+      const lensLevel = artNetPreview ? this.blinderPreview.level(bl.binding.unitId) : previewBlinder;
+      bl.lensMat.color.copy(warmAmber).multiplyScalar(lensLevel * 4.2);
       if (bl.start) {
         bl.buffer[bl.start - 1] = Math.round(THREE.MathUtils.clamp(effBlinder, 0, 1) * 255);
         const ps = this.physicalUnitScratch;

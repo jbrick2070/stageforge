@@ -22,7 +22,9 @@ StageForge outputs its live 2-universe DMX512 desk state (Universes 1 and 2, 512
 
 Open **DMX monitor → Art-Net input** in the desktop editor. Input starts off. Choose the local binding and a pinned sender IPv4 for each mapping, then click **Start listening**. Loopback is the default. To share the receive socket with Art-Net Timecode, choose **All interfaces** and keep each mapping pinned to the intended sender. The default wire mappings are Port-Address `0` to `U1` and `2` to `U3`.
 
-The monitor shows the selected universe’s 512 slots, last frame age, sequence loss and drop counters. Three seconds without an accepted frame clears that universe. A fresh frame from its pinned sender restores reception. Click **Stop listening** before changing the binding, mappings or pins. Received levels stay in the monitor and are cleared when you open another show or enter Pitch Viewer.
+The monitor shows the selected universe’s 512 slots, last frame age, sequence loss and drop counters. Three seconds without an accepted frame clears that universe. A fresh frame from its pinned sender restores reception. Click **Stop listening** before changing the binding, mappings or pins. Received levels are cleared when you open another show or enter Pitch Viewer.
+
+The desktop **Level source** defaults to **Desk**. While listening, select **External Levels** to preview explicitly one-channel generic blinders at their resolved patch addresses. Unmapped or stale inputs darken those fixtures, and stock and catalogue fixtures keep their Desk levels. The source control stays visible with the monitor closed and is independent of the clock mode. **Stop listening** returns the affected lamps to the current Desk look through the shared flash limiter. Received levels and source selection stay out of show files, cues, takes and output buffers.
 
 Desktop Art-Net input, live output and its USB chooser, node discovery, and the AI bridge use the same desktop authority checks. Stop listening before arming live output or scanning for nodes. A compatible Art-Net Timecode listener can keep receiving after you stop the input monitor. Browser Web Serial remains local to its renderer.
 

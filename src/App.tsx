@@ -77,6 +77,7 @@ import { EMPTY_AUDIO_MOD_TELEMETRY, type AudioModulationTelemetry } from './comp
 import { allowsNegativeAmount } from './engine/audioModulation';
 import type { DmxSnapshot } from './components/DmxMonitorDrawer';
 import { LiveDmxBadge } from './components/LiveDmxBadge';
+import { LevelSourceControl } from './components/LevelSourceControl';
 import { AiProposalBanner } from './components/AiProposalBanner';
 import { useAiBridge, type AiBridgeApi, type AiLocalDesignUndo, type AiRevertSnapshot } from './aiBridge/useAiBridge';
 import {
@@ -2225,6 +2226,7 @@ export const App: React.FC = () => {
       throw error;
     }
     engineRef.current = engine;
+    if (typeof window.stageforgeDesktop?.artNetInput === 'function') engine.setArtNetPreview(artNetInput.preview);
     engine.setBumpState(liveBumpRef.current);
     if (isWebXrPageInterlocked()) engine.setWebXrPhysicalOutputInterlock(true);
     // Apply initial safety & overlay bindings immediately after engine construction (effects above run before mount).
@@ -2238,6 +2240,7 @@ export const App: React.FC = () => {
       beamFrusta: () => engine.beamFrustaForTest(),
       beamPrisms: () => engine.beamPrismsForTest(),
       beamLevels: () => engine.beamLevelsForTest(),
+      blinderLensPixels: () => engine.blinderLensPixelsForTest(),
       poolFrusta: () => engine.poolFrustaForTest(),
       measureSnapshot: () => engine.getMeasureSnapshot(false),
       preflightReport: () => preflightRef.current,
@@ -4433,6 +4436,8 @@ export const App: React.FC = () => {
             setDmxDrawerOpen(true);
           }}
         />
+
+        {artNetInput.available && <LevelSourceControl input={artNetInput} />}
 
         {webXrPhase === 'ready' && (
           <button
