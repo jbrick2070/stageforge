@@ -34,7 +34,13 @@ async function expectControllerGeometry(page, desk) {
     return {
       pads: bounds('.apc-row button'), scenes: bounds('.apc-scenes button'),
       faders: bounds('.apc-faders input'), stop: bounds('.apc-stop')[0],
-      labelsFit: Array.from(root.querySelectorAll('.apc-faders label span'), element => element.scrollWidth <= element.clientWidth + 1),
+      labelsFit: Array.from(root.querySelectorAll('.apc-faders label span'), element => {
+        const text = element.getBoundingClientRect();
+        const slot = element.parentElement.getBoundingClientRect();
+        return text.width > 0 && text.height > 0 && element.scrollWidth <= element.clientWidth + 1 &&
+          text.left >= slot.left - 1 && text.right <= slot.right + 1 &&
+          text.top >= slot.top - 1 && text.bottom <= slot.bottom + 1;
+      }),
       direction: getComputedStyle(root.querySelector('.apc-faders input')).direction,
       writingMode: getComputedStyle(root.querySelector('.apc-faders input')).writingMode,
     };
@@ -44,6 +50,7 @@ async function expectControllerGeometry(page, desk) {
   expect(geometry.faders).toHaveLength(9);
   expect(geometry.direction).toBe('rtl');
   expect(geometry.writingMode).toBe('vertical-lr');
+  expect(geometry.labelsFit).toHaveLength(18);
   expect(geometry.labelsFit.every(Boolean)).toBe(true);
   for (const [index, scene] of geometry.scenes.entries()) {
     const row = geometry.pads.slice(index * 8, index * 8 + 8);
