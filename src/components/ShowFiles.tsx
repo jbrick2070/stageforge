@@ -68,7 +68,7 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, las
   rigExportIssue?: string;
   localDesign?: {
     notice?: string; restore?: () => boolean; previous?: () => boolean; adopt?: () => void; retry?: () => void;
-    recoveryDownloads?: { name: string; download: () => void }[];
+    recoveryDownload?: { name: string; download: () => void };
   };
 }) {
   const [note, setNote] = useState('');
@@ -113,15 +113,14 @@ export function ShowFiles({ name, media, stage, timeline, missing, cueNames, las
     {localDesign && <>
       <h3>Local design</h3>
       {localDesign.notice && <p role="status">{localDesign.notice}</p>}
-      {Boolean(localDesign.recoveryDownloads?.length) && <p role="status">The later saved design was kept. Download any unsaved designs below before closing or reloading StageForge.</p>}
       <div className="file-actions">
         {localDesign.restore && <button disabled={busy} onClick={() => void job(async () => { if (localDesign.restore?.()) onClose(); })}>Restore saved design</button>}
         {localDesign.previous && <button disabled={busy} onClick={() => void job(async () => { if (localDesign.previous?.()) onClose(); })}>Restore previous design</button>}
         {localDesign.adopt && <button disabled={busy} onClick={localDesign.adopt}>Save as local design</button>}
         {localDesign.retry && <button disabled={busy} onClick={localDesign.retry}>Retry local design save</button>}
-        {localDesign.recoveryDownloads?.map(({ name, download }, index) => (
-          <button key={index} disabled={busy} onClick={() => void job(async () => download())}>Download unsaved design JSON · {name}</button>
-        ))}
+        {localDesign.recoveryDownload && <button disabled={busy} onClick={() => void job(async () => localDesign.recoveryDownload?.download())}>
+          Download unsaved design JSON · {localDesign.recoveryDownload.name}
+        </button>}
       </div>
     </>}
     <div className="file-actions">

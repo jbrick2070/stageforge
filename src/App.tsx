@@ -129,12 +129,13 @@ interface LocalDesignWrite {
 interface QueuedLocalDesign extends SavedDesignRecord {
   retainRecoveredBase: boolean;
   onSaved?: (write: LocalDesignWrite) => void;
+  expected?: string;
+  awaitingRetry?: boolean;
 }
 
 type PendingLocalDesign = QueuedLocalDesign | {
   expected: string;
   restore: StoredLocalDesign | { source?: never; record: SavedDesignRecord };
-  followUp: PendingLocalDesign | null;
 };
 
 const loadCostEstimatorModal = () => import('./components/CostEstimatorModal');
@@ -830,7 +831,6 @@ export const App: React.FC = () => {
   const replayScreenClock = useRef(0);
   const replayMusicClock = useRef(0);
   const pendingDesign = useRef<PendingLocalDesign | null>(null);
-  const [recoverableLocalDesigns, setRecoverableLocalDesigns] = useState<DesignContent[]>([]);
   const saveTimer = useRef<number | undefined>(undefined);
   const [cinemaMode, setCinemaMode] = useState(() =>
     window.matchMedia('(pointer: coarse) and (max-width: 700px), (pointer: coarse) and (max-height: 500px)').matches
@@ -1531,29 +1531,29 @@ export const App: React.FC = () => {
   publishCueFadeInterruptionRef.current = timeline.publishCueFadeInterruption;
   publishCueTransitionRef.current = timeline.publishCueTransition;
 
-  const flushDesign = useCallback(() => {
+  const flushDesign = useCallback((trigger?: Event | 'retry') => {
     window.clearTimeout(saveTimer.current);
     const pending = pendingDesign.current;
     if (!capabilitiesRef.current.autosave || !pending) return;
+    if ('awaitingRetry' in pending && pending.awaitingRetry && trigger !== 'retry') return;
     // Preserve opaque data even if a different tab changed the slot after this desk opened.
     let source: string | null = null;
     const disk = readSavedDesign({ getItem: (key) => (source = localStorage.getItem(key)) });
-    if ('restore' in pending && disk.status !== 'inaccessible' && source !== pending.expected) {
-      // The later save owns the slot. Keep the original unsaved edit available for export.
-      pendingDesign.current = null;
-      let followUp = pending.followUp;
-      while (followUp && 'restore' in followUp) followUp = followUp.followUp;
-      const unsaved = followUp?.current;
-      if (unsaved) setRecoverableLocalDesigns((designs) => [...designs, unsaved]);
+    if (pending.expected !== undefined && disk.status !== 'inaccessible' && source !== pending.expected) {
+      // Cancel a stale undo. A later manual draft stays queued for deliberate Retry against the latest save.
+      pendingDesign.current = 'restore' in pending ? null : {
+        ...pending, expected: undefined, awaitingRetry: true, retainRecoveredBase: true,
+      };
+      if ('restore' in pending && localDesignMode.current === 'attached') localDesignMode.current = 'document';
       savedDesignRef.current = disk;
       setSavedDesign(disk);
-      setDesignSaveFailed(false);
+      setDesignSaveFailed(Boolean(pendingDesign.current));
       return;
     }
     if (disk.status !== 'ready' && disk.status !== 'missing') {
       savedDesignRef.current = disk;
       setSavedDesign(disk);
-      if (disk.status === 'inaccessible') setDesignSaveFailed(true);
+      setDesignSaveFailed(true);
       return;
     }
     try {
@@ -1564,7 +1564,6 @@ export const App: React.FC = () => {
         if (restoreSource === null) localStorage.removeItem(SAVED_DESIGN_KEY);
         else if (restoreSource !== undefined) localStorage.setItem(SAVED_DESIGN_KEY, restoreSource);
         else if (design) writeSavedDesign(design);
-        pendingDesign.current = pending.followUp;
       } else {
         const { current, previous, retainRecoveredBase, onSaved } = pending;
         // A denied initial read gave this edit no base. Preserve the current draft if it is now readable.
@@ -1574,12 +1573,12 @@ export const App: React.FC = () => {
           onSaved({ before: { source, record: disk.status === 'ready' ? disk.record : undefined }, source: json, record: saved });
         } });
         design = saved;
-        pendingDesign.current = null;
       }
+      pendingDesign.current = null;
       const saved = design ? { status: 'ready' as const, record: design } : { status: 'missing' as const };
       savedDesignRef.current = saved;
       setSavedDesign(saved);
-      setDesignSaveFailed(Boolean(pendingDesign.current));
+      setDesignSaveFailed(false);
     } catch {
       // setItem is atomic. Keep the previous record and this exact queued revision.
       savedDesignRef.current = disk;
@@ -1590,19 +1589,30 @@ export const App: React.FC = () => {
 
   const queueDesign = useCallback((next: RigConfig, immediate = false, adopt = false, onSaved?: QueuedLocalDesign['onSaved']) => {
     if (!capabilitiesRef.current.autosave) return;
+    const detached = localDesignMode.current !== 'attached';
+    let pending = pendingDesign.current;
+    if (detached && pending && !('restore' in pending)) {
+      // This edit belongs to the open show. Let the first draft reach disk before attaching it.
+      flushDesign();
+      pending = pendingDesign.current;
+      if (pending) {
+        showToast('An earlier local design is waiting. Retry or download it in Show files. Save Show JSON to keep changes to the open show.');
+        return;
+      }
+    }
     const saved = savedDesignRef.current;
     if (saved.status === 'corrupt' || saved.status === 'newer') return;
-    const pending = pendingDesign.current;
-    const pendingBase = pending && 'restore' in pending ? pending.restore.record : pending;
-    const base = pendingBase ?? (saved.status === 'ready' ? saved.record : undefined);
+    const base = pending ? ('restore' in pending ? pending.restore.record : pending)
+      : (saved.status === 'ready' ? saved.record : undefined);
     const current = { rig: next, stage: pruneNativeStage(nativeStage.current), crowd: crowdRef.current };
-    const detached = localDesignMode.current !== 'attached';
     const preserveDiskCurrent = onSaved !== undefined && (detached || (adopt && !pending));
     const queued: QueuedLocalDesign = {
       current,
       previous: adopt || detached ? base?.current : base?.previous,
+      expected: pending?.expected,
+      awaitingRetry: pending && 'awaitingRetry' in pending ? pending.awaitingRetry : undefined,
       retainRecoveredBase: preserveDiskCurrent ||
-        (pending && 'retainRecoveredBase' in pending ? pending.retainRecoveredBase : saved.status === 'inaccessible'),
+        (pending ? 'retainRecoveredBase' in pending && pending.retainRecoveredBase : saved.status === 'inaccessible'),
       onSaved,
     };
     pendingDesign.current = queued;
@@ -1611,25 +1621,23 @@ export const App: React.FC = () => {
     if (immediate) flushDesign();
     else saveTimer.current = window.setTimeout(flushDesign, 250);
     return queued;
+  }, [flushDesign, showToast]);
+
+  const prepareAiLocalDesignChange = useCallback(() => {
+    if (pendingDesign.current) flushDesign();
+    return pendingDesign.current === null;
   }, [flushDesign]);
 
   const captureAiLocalDesignUndo = useCallback((): AiLocalDesignUndo => {
     const originalMode = localDesignMode.current;
-    const originalPending = pendingDesign.current;
     let originalSource: string | null | undefined;
     try { originalSource = localStorage.getItem(SAVED_DESIGN_KEY); } catch { /* storage is unavailable */ }
-    let followUp = originalPending;
     let queuedByAi: QueuedLocalDesign | undefined;
     let savedByAi: LocalDesignWrite | undefined;
     let savedReplacement = false;
     let canRotateBack = originalMode === 'attached';
     return {
       save(replace) {
-        const pending = pendingDesign.current;
-        if (!queuedByAi || (pending && pending !== queuedByAi)) {
-          followUp = pending;
-          if (pending !== originalPending) canRotateBack = false;
-        }
         const queued = queueDesign(rigRef.current, replace, replace, (write) => {
           savedReplacement ||= replace;
           if (savedByAi && savedByAi.source === write.before.source) {
@@ -1647,18 +1655,18 @@ export const App: React.FC = () => {
         if (pendingDesign.current && pendingDesign.current !== queuedByAi) return;
         window.clearTimeout(saveTimer.current);
         if (!savedByAi) {
-          // Approval never reached disk. Cancel its queued write and keep any earlier edit.
-          pendingDesign.current = followUp;
-          setDesignSaveFailed(Boolean(followUp));
+          // Approval never reached disk. Cancel its queued write.
+          pendingDesign.current = null;
+          setDesignSaveFailed(false);
           return;
         }
         // A detached desk never becomes the saved design as a side effect of Revert.
         // An attached whole-show Revert keeps the displaced AI design as its recovery copy.
-        const restore = canRotateBack && savedReplacement && !followUp ? { record: {
+        const restore = canRotateBack && savedReplacement ? { record: {
           current: { rig: rigRef.current, stage: pruneNativeStage(nativeStage.current), crowd: crowdRef.current },
           previous: savedByAi.record.current,
         } } : savedByAi.before;
-        pendingDesign.current = { expected: savedByAi.source, restore, followUp };
+        pendingDesign.current = { expected: savedByAi.source, restore };
         flushDesign();
       },
     };
@@ -3423,9 +3431,14 @@ export const App: React.FC = () => {
     rigExportIssue,
     onExportShow: () => downloadDesignRecovery({ rig, stage: nativeStage.current, crowd: crowdRef.current }),
   };
+  const pendingLocalEdit = designSaveFailed && pendingDesign.current && 'current' in pendingDesign.current
+    ? pendingDesign.current : undefined;
   const localDesignNotice = savedDesign.status === 'corrupt' ? 'The local design is unreadable and has been preserved.'
     : savedDesign.status === 'newer' ? 'The local design was saved by a newer version and has been preserved.'
     : savedDesign.status === 'inaccessible' ? 'Local design storage is unavailable. Save Show JSON or a Show Bundle.'
+    : pendingLocalEdit?.awaitingRetry ? 'A later save is in place. Retry to save your edit and keep that design as its previous version.'
+    : pendingLocalEdit && localDesignMode.current !== 'attached'
+      ? 'An earlier local design is waiting to be saved. Save Show JSON to keep changes to the open show.'
     : designSaveFailed ? 'Could not save the latest design. The previous save remains intact.'
     : undefined;
   const localDesignControls = {
@@ -3434,8 +3447,8 @@ export const App: React.FC = () => {
     previous: savedDesign.status === 'ready' && savedDesign.record.previous ? () => restoreLocalDesign('previous') : undefined,
     adopt: localDesignMode.current !== 'attached' && (savedDesign.status === 'ready' || savedDesign.status === 'missing')
       ? () => queueDesign(rigRef.current, true, true) : undefined,
-    retry: designSaveFailed ? flushDesign : undefined,
-    recoveryDownloads: recoverableLocalDesigns.map((design) => ({ name: design.rig.name, download: () => downloadDesignRecovery(design) })),
+    retry: designSaveFailed ? () => flushDesign('retry') : undefined,
+    recoveryDownload: pendingLocalEdit && { name: pendingLocalEdit.current.rig.name, download: () => downloadDesignRecovery(pendingLocalEdit.current) },
   };
   // MVR (DIN SPEC 15801) rigs from StageForge or other tools. Parse purely first; clean
   // StageForge round trips commit directly, while foreign MVRs or StageForge MVRs with
@@ -4053,6 +4066,7 @@ export const App: React.FC = () => {
       },
       applyCandidate: applyAiCandidate,
       restoreSnapshot: restoreAiRevertSnapshot,
+      prepareLocalDesignChange: prepareAiLocalDesignChange,
       captureLocalDesignUndo: captureAiLocalDesignUndo,
       onGo: () => {
         // Single authoritative lookup + follow-chain audienceScan check (H1 + M4).

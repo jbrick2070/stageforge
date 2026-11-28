@@ -45,6 +45,7 @@ export interface AiBridgeCallbacks {
   captureFrame: (maxWidth?: number) => Promise<{ base64: string; width: number; height: number; byteLength: number }>;
   applyCandidate: (candidate: AiProposalCandidate) => boolean;
   restoreSnapshot: (snapshot: AiRevertSnapshot) => void;
+  prepareLocalDesignChange: () => boolean;
   captureLocalDesignUndo: () => AiLocalDesignUndo;
   // Run-tool callbacks (all checked through `allows(clockMode, 'ai', action)` first)
   onGo: () => { ok?: boolean; isError?: boolean; activeCueId?: string | null; message?: string };
@@ -248,6 +249,12 @@ export function useAiBridge(
       return false;
     }
 
+    const changesDesign = candidateToApply.kind === 'propose_show' || candidateToApply.kind === 'propose_wall_cue';
+    if (changesDesign && !cbRef.current.prepareLocalDesignChange()) {
+      cbRef.current.onToast('A local design is waiting to be saved. Open Show files to retry or download it before applying this proposal.');
+      return false;
+    }
+
     // Transactional apply (M1): capture pre-apply rollback snapshot BEFORE mutating;
     // roll back on failure and mark accepted only after apply succeeds.
     const preApplySnapshot = snapshotCurrentDesk();
@@ -271,7 +278,7 @@ export function useAiBridge(
 
     // The live desk has applied successfully. Only proposals that authored the design
     // may now update its independent local recovery record.
-    if (candidateToApply.kind === 'propose_show' || candidateToApply.kind === 'propose_wall_cue') {
+    if (changesDesign) {
       localDesign.save(candidateToApply.kind === 'propose_show');
     }
     if (!revert) {
