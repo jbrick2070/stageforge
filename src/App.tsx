@@ -807,7 +807,7 @@ export const App: React.FC = () => {
   const replayScreen = useRef<ScreenRef>(NO_SCREEN);
   const replayScreenClock = useRef(0);
   const replayMusicClock = useRef(0);
-  const pendingDesign = useRef<SavedDesignRecord | null>(null);
+  const pendingDesign = useRef<(SavedDesignRecord & { retainRecoveredBase: boolean }) | null>(null);
   const saveTimer = useRef<number | undefined>(undefined);
   const [cinemaMode, setCinemaMode] = useState(() =>
     window.matchMedia('(pointer: coarse) and (max-width: 700px), (pointer: coarse) and (max-height: 500px)').matches
@@ -1511,14 +1511,20 @@ export const App: React.FC = () => {
   const flushDesign = useCallback(() => {
     window.clearTimeout(saveTimer.current);
     if (!capabilitiesRef.current.autosave || !pendingDesign.current) return;
-    const design = pendingDesign.current;
+    const { retainRecoveredBase, ...queued } = pendingDesign.current;
     // Preserve opaque data even if a different tab changed the slot after this desk opened.
     const disk = readSavedDesign();
     if (disk.status !== 'ready' && disk.status !== 'missing') {
       savedDesignRef.current = disk;
       setSavedDesign(disk);
+      if (disk.status === 'inaccessible') setDesignSaveFailed(true);
       return;
     }
+    // A denied initial read gave this draft no base. Keep the newly readable disk current
+    // as its recovery version, while leaving the disk untouched until the write succeeds.
+    const design = retainRecoveredBase && disk.status === 'ready'
+      ? { ...queued, previous: disk.record.current }
+      : queued;
     try {
       writeSavedDesign(design);
       pendingDesign.current = null;
@@ -1528,6 +1534,8 @@ export const App: React.FC = () => {
       setDesignSaveFailed(false);
     } catch {
       // setItem is atomic. Keep the previous record and this exact queued revision.
+      savedDesignRef.current = disk;
+      setSavedDesign(disk);
       setDesignSaveFailed(true);
     }
   }, []);
@@ -1536,10 +1544,14 @@ export const App: React.FC = () => {
     if (!capabilitiesRef.current.autosave) return;
     const saved = savedDesignRef.current;
     if (saved.status === 'corrupt' || saved.status === 'newer') return;
-    const base = pendingDesign.current ?? (saved.status === 'ready' ? saved.record : undefined);
+    const pending = pendingDesign.current;
+    const base = pending ?? (saved.status === 'ready' ? saved.record : undefined);
     const current = { rig: next, stage: pruneNativeStage(nativeStage.current), crowd: crowdRef.current };
     const previous = adopt || localDesignMode.current !== 'attached' ? base?.current : base?.previous;
-    pendingDesign.current = { current, previous };
+    pendingDesign.current = {
+      current, previous,
+      retainRecoveredBase: pending?.retainRecoveredBase ?? (saved.status === 'inaccessible'),
+    };
     localDesignMode.current = 'attached';
     window.clearTimeout(saveTimer.current);
     if (immediate) flushDesign();
@@ -3304,10 +3316,10 @@ export const App: React.FC = () => {
       downloadStageFile(rig.name, 'stageforge.show.json', new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' }));
     },
   };
-  const localDesignNotice = designSaveFailed ? 'Could not save the latest design. The previous save remains intact.'
-    : savedDesign.status === 'corrupt' ? 'The local design is unreadable and has been preserved.'
+  const localDesignNotice = savedDesign.status === 'corrupt' ? 'The local design is unreadable and has been preserved.'
     : savedDesign.status === 'newer' ? 'The local design was saved by a newer version and has been preserved.'
     : savedDesign.status === 'inaccessible' ? 'Local design storage is unavailable. Save Show JSON or a Show Bundle.'
+    : designSaveFailed ? 'Could not save the latest design. The previous save remains intact.'
     : undefined;
   const localDesignControls = {
     notice: localDesignNotice,
@@ -3733,7 +3745,7 @@ export const App: React.FC = () => {
       audioEngineRef.current?.stopAll();
       clearAllBumps();
       expectedMusic.current = file.media?.music ?? NO_MUSIC;
-      applyRig(nextRig, true);
+      applyRig(nextRig, true, 'replace');
       cuesRef.current = file.cues;
       activeCueIdRef.current = file.activeCueId;
       setCues(file.cues);
@@ -3835,7 +3847,7 @@ export const App: React.FC = () => {
     return false;
   }, [applyRig, cancelDemoLoads, clearAllBumps, installInterchange, installStage, previewRig, queueDesign, takeDesk, wallClock]);
 
-  const restoreAiRevertSnapshot = useCallback((snap: AiRevertSnapshot) => {
+  const restoreAiRevertSnapshot = useCallback((snap: AiRevertSnapshot, replacedShow = false) => {
     if (!capabilitiesRef.current.edit) return;
     const nextRig = normalizeDesign(snap.rig);
     cancelDemoLoads();
@@ -3866,7 +3878,7 @@ export const App: React.FC = () => {
       music: { ...nextMusic, playing: false },
     });
     showControlRef.current.syncFromShowTimeline(snap.timeline);
-    applyRig(nextRig, true);
+    applyRig(nextRig, true, replacedShow ? 'replace' : 'edit');
     cuesRef.current = snap.cues;
     activeCueIdRef.current = snap.activeCueId;
     setCues(snap.cues);

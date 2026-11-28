@@ -39,7 +39,7 @@ export interface AiBridgeCallbacks {
   getAudioLevels: () => AudioMetrics;
   captureFrame: (maxWidth?: number) => Promise<{ base64: string; width: number; height: number; byteLength: number }>;
   applyCandidate: (candidate: AiProposalCandidate) => boolean;
-  restoreSnapshot: (snapshot: AiRevertSnapshot) => void;
+  restoreSnapshot: (snapshot: AiRevertSnapshot, replacedShow?: boolean) => void;
   // Run-tool callbacks (all checked through `allows(clockMode, 'ai', action)` first)
   onGo: () => { ok?: boolean; isError?: boolean; activeCueId?: string | null; message?: string };
   onBack: () => { ok?: boolean; isError?: boolean; activeCueId?: string | null; message?: string };
@@ -123,7 +123,7 @@ export function useAiBridge(
   const proposalStoreRef = useRef(new AiProposalStore());
   const [pendingProposals, setPendingProposals] = useState<AiProposalRecord[]>([]);
 
-  const revertSnapshotRef = useRef<AiRevertSnapshot | null>(null);
+  const revertSnapshotRef = useRef<{ snapshot: AiRevertSnapshot; replacedShow: boolean } | null>(null);
   const [revertCapturedAt, setRevertCapturedAt] = useState<number | null>(null);
 
   const [toolLog, setToolLog] = useState<AiToolLogEntry[]>([]);
@@ -245,7 +245,7 @@ export function useAiBridge(
     // Transactional apply (M1): capture pre-apply rollback snapshot BEFORE mutating;
     // roll back on failure and mark accepted only after apply succeeds.
     const preApplySnapshot = snapshotCurrentDesk();
-    const hadRevert = revertSnapshotRef.current !== null;
+    const revert = revertSnapshotRef.current;
     try {
       const applied = cbRef.current.applyCandidate(candidateToApply);
       if (!applied) {
@@ -262,10 +262,11 @@ export function useAiBridge(
       return false;
     }
 
-    if (!hadRevert) {
-      revertSnapshotRef.current = preApplySnapshot;
+    const replacedShow = candidateToApply.kind === 'propose_show';
+    if (!revert) {
+      revertSnapshotRef.current = { snapshot: preApplySnapshot, replacedShow };
       setRevertCapturedAt(preApplySnapshot.capturedAt);
-    }
+    } else if (replacedShow) revert.replacedShow = true;
     store.transition(id, 'accepted');
     syncPendingState();
     cbRef.current.onToast(`Applied AI proposal: ${rec.summary}`);
@@ -285,10 +286,10 @@ export function useAiBridge(
     const snap = revertSnapshotRef.current;
     if (!snap) return;
     clearPendingAndAutoAccept();
-    const toRestore = structuredClone(snap);
+    const toRestore = structuredClone(snap.snapshot);
     revertSnapshotRef.current = null;
     setRevertCapturedAt(null);
-    cbRef.current.restoreSnapshot(toRestore);
+    cbRef.current.restoreSnapshot(toRestore, snap.replacedShow);
     cbRef.current.onToast('Reverted desk to snapshot taken before first AI change.');
   }, [clearPendingAndAutoAccept]);
 

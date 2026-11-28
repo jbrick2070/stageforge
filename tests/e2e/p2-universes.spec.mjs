@@ -179,6 +179,134 @@ test('P2 adopts fixture edits after a protected Show open and atomically recover
   expect(restored.previous.rig.name).toBe('Edited local draft');
 });
 
+test('P2 Retry rotates in the disk design when the initial local read was denied', async ({ page }) => {
+  const prior = { rig: { ...legacyShow().rig, name: 'Existing disk design' } };
+  const older = { rig: { ...legacyShow().rig, name: 'Older disk design' } };
+  const raw = JSON.stringify({ format: 'stageforge-local-design', version: 1, current: prior, previous: older });
+  await page.addInitScript(({ key, raw }) => {
+    localStorage.setItem(key, raw);
+    const get = Storage.prototype.getItem;
+    const set = Storage.prototype.setItem;
+    window.p2Disk = { readDenied: true, writeDenied: true, inspect: () => get.call(localStorage, key) };
+    Storage.prototype.getItem = function (name) {
+      if (this === localStorage && name === key && window.p2Disk.readDenied) throw new DOMException('Denied', 'SecurityError');
+      return get.call(this, name);
+    };
+    Storage.prototype.setItem = function (name, value) {
+      if (this === localStorage && name === key && window.p2Disk.writeDenied) throw new DOMException('Quota', 'QuotaExceededError');
+      return set.call(this, name, value);
+    };
+  }, { key, raw });
+  await page.goto('/?probe');
+  const show = p2Rehearsal();
+  show.rig.name = 'Queued editor design';
+  await openShow(page, show);
+  const builder = await openRigBuilder(page);
+  await builder.getByLabel('DMX universe for Wash One on Main truss').selectOption('4');
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  expect(await page.evaluate(() => window.p2Disk.inspect())).toBe(raw);
+  await button(builder, 'Close Rig Builder').press('Enter');
+  await button(page, 'Show files').press('Enter');
+  await expect(files(page).getByText(/Local design storage is unavailable/)).toBeVisible();
+  const retry = button(files(page), 'Retry local design save');
+  await expect(retry).toBeEnabled();
+
+  await page.evaluate(() => { window.p2Disk.readDenied = false; });
+  await retry.press('Enter');
+  await expect(files(page).getByText(/previous save remains intact/)).toBeVisible();
+  expect(await savedRaw(page)).toBe(raw);
+  await expect(retry).toBeEnabled();
+  await page.evaluate(() => { window.p2Disk.writeDenied = false; });
+  await retry.press('Enter');
+  await expect(retry).toHaveCount(0);
+  const saved = JSON.parse(await savedRaw(page));
+  expect(saved.current.rig.name).toBe('Queued editor design');
+  expect(saved.current.rig.trussPods[0].fixtures[0].dmxUniverse).toBe(4);
+  expect(saved.previous).toEqual(prior);
+});
+
+test('P2 AI whole-show approval rotates local designs and Revert restores the pre-AI desk', async ({ page }) => {
+  const prior = { rig: { ...legacyShow().rig, name: 'Prior live design' } };
+  const older = { rig: { ...legacyShow().rig, name: 'Older recovery design' } };
+  const raw = JSON.stringify({ format: 'stageforge-local-design', version: 1, current: prior, previous: older });
+  await page.addInitScript(({ key, raw }) => {
+    localStorage.setItem(key, raw);
+    let request;
+    let reply;
+    let status = { enabled: false, state: 'off', generation: 0, port: null, token: null, url: null,
+      activeSessions: 0, activeToolCalls: 0, lastError: null };
+    window.stageforgeDesktop = {
+      onRigCommand: () => () => {},
+      aiBridgeControl: async ({ type, config }) => {
+        if (type === 'enable') status = { ...status, enabled: true, state: 'on', generation: 1, port: config.port };
+        return status;
+      },
+      onAiBridgeStatus: () => () => {},
+      onAiBridgeRequest: handler => { request = handler; return () => { request = undefined; }; },
+      replyAiBridgeRequest: async response => { reply?.(response); return true; },
+    };
+    window.sendP2Ai = (tool, args) => new Promise(resolve => {
+      reply = resolve;
+      request({ requestId: crypto.randomUUID(), bridgeGeneration: status.generation,
+        deadlineMs: Date.now() + 15000, tool, arguments: args });
+    });
+  }, { key, raw });
+  await page.goto('/?probe');
+  await button(page, 'Show files').press('Enter');
+  const preAiDesk = await exportOpenShow(page);
+  expect(preAiDesk.rig.name).toBe('Prior live design');
+  await button(files(page), 'Close Show files').press('Enter');
+  await button(page, 'Show control').press('Enter');
+  await page.getByTestId('ai-bridge-enable').press('Enter');
+  await expect(page.getByTestId('ai-bridge-status')).toContainText('ON');
+  await button(page, 'Close show control').press('Enter');
+
+  const proposal = p2Rehearsal();
+  const authored = JSON.parse(await readFile(new URL('../fixtures/native-authoring-v3.stageforge.show.json', import.meta.url), 'utf8'));
+  proposal.rig.name = 'AI replacement design';
+  proposal.stage = { ...authored.stage, screenEvents: [] };
+  proposal.crowd = { generatorVersion: 1, seed: 91, zones: [], exclusions: [], placements: [] };
+  const send = async (tool, args) => {
+    const response = await page.evaluate(([tool, args]) => window.sendP2Ai(tool, args), [tool, args]);
+    expect(response).toMatchObject({ ok: true, result: { status: 'pending' } });
+    await expect(page.getByTestId('ai-proposal-banner')).toBeVisible();
+  };
+  await send('propose_show', { show: proposal });
+  await page.getByTestId('ai-proposal-reject').press('Enter');
+  await expect(page.getByTestId('ai-proposal-banner')).toBeHidden();
+  expect(await savedRaw(page)).toBe(raw);
+  expect(await page.evaluate(() => window.stageforgeProbe.rig().name)).toBe('Prior live design');
+
+  // The first change can be a look. A later whole-show approval still makes this a replacement on Revert.
+  await send('propose_look', { patch: { primaryColor: '#ed27aa' } });
+  await page.getByTestId('ai-proposal-accept').press('Enter');
+  await expect(page.getByTestId('ai-proposal-banner')).toBeHidden();
+  expect(await savedRaw(page)).toBe(raw);
+  await send('propose_show', { show: proposal });
+  await page.getByTestId('ai-proposal-accept').press('Enter');
+  await expect(page.getByTestId('ai-proposal-banner')).toBeHidden();
+  const accepted = JSON.parse(await savedRaw(page));
+  expect(accepted.current.rig.name).toBe('AI replacement design');
+  expect(accepted.current.stage).toEqual(proposal.stage);
+  expect(accepted.current.crowd).toEqual(proposal.crowd);
+  expect(accepted.previous).toEqual(prior);
+
+  await button(page, 'Show control').press('Enter');
+  await page.getByTestId('ai-bridge-revert').press('Enter');
+  await expect(page.getByTestId('ai-bridge-revert')).toHaveCount(0);
+  await button(page, 'Close show control').press('Enter');
+  const reverted = JSON.parse(await savedRaw(page));
+  expect(reverted.current.rig.name).toBe('Prior live design');
+  expect(reverted.previous).toEqual(accepted.current);
+  await button(page, 'Show files').press('Enter');
+  const live = await exportOpenShow(page);
+  expect(live.rig.name).toBe(preAiDesk.rig.name);
+  expect(live.cues).toEqual(preAiDesk.cues);
+  expect(live.look).toEqual(preAiDesk.look);
+  expect(live.stage).toEqual(preAiDesk.stage);
+  expect(live.crowd).toEqual(preAiDesk.crowd);
+});
+
 async function installMockDmx(page, order) {
   await page.addInitScript(order => {
     let listener;
