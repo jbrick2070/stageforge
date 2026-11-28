@@ -840,14 +840,22 @@ test('Sprint 24 (Codex SF-M1): live TOCTOU pre-flight staleness and runtime haza
   assert.match(appSrc, /if\s*\(\s*!preflightReport\.canArm\s*\)\s*\{[\s\S]{0,400}?clearAllBumps\(\);[\s\S]{0,160}?emergencyStopOnFault/);
   assert.match(appSrc, /if\s*\(\s*rep\s*&&\s*!rep\.canArm\s*\)\s*\{[\s\S]{0,400}?emergencyStopOnFault/);
 
+  const viewerHelperStart = appSrc.indexOf('const openVerifiedViewerPayload = async');
   const openViewerFnStart = appSrc.indexOf('const openViewerPayload = async');
-  assert.ok(openViewerFnStart > 0);
-  const viewerStopIdx = appSrc.indexOf("stopLiveOutputBeforeStructuralChange('Entered Pitch Viewer", openViewerFnStart);
-  const viewerLockIdx = appSrc.indexOf('syncDesktopViewerMode(true)', openViewerFnStart);
-  const viewerApplyIdx = appSrc.indexOf('applyViewerDocument(parsed)', openViewerFnStart);
+  const exitViewerFnStart = appSrc.indexOf('const exitViewer =', openViewerFnStart);
+  assert.ok(viewerHelperStart > 0 && openViewerFnStart > viewerHelperStart && exitViewerFnStart > openViewerFnStart);
+  const openViewerFn = appSrc.slice(openViewerFnStart, exitViewerFnStart);
+  const apcFence = openViewerFn.indexOf('beginApcDocumentRequest(request)');
+  const verifiedOpen = openViewerFn.indexOf('await openVerifiedViewerPayload(source, request, sessionEpochRef.current)');
+  assert.ok(apcFence > 0 && verifiedOpen > apcFence, 'Viewer entry fences APC before awaiting the verified opener');
+  const verifiedViewerFn = appSrc.slice(viewerHelperStart, openViewerFnStart);
+  const viewerVerifyIdx = verifiedViewerFn.indexOf('await parseViewerSource(source)');
+  const viewerStopIdx = verifiedViewerFn.indexOf("stopLiveOutputBeforeStructuralChange('Entered Pitch Viewer");
+  const viewerLockIdx = verifiedViewerFn.indexOf('syncDesktopViewerMode(true)');
+  const viewerApplyIdx = verifiedViewerFn.indexOf('applyViewerDocument(parsed)');
   assert.ok(
-    viewerStopIdx > openViewerFnStart && viewerLockIdx > viewerStopIdx && viewerApplyIdx > viewerLockIdx,
-    'openViewerPayload must invoke synchronous stop barrier BEFORE syncDesktopViewerMode(true) and applyViewerDocument(parsed)',
+    viewerVerifyIdx > 0 && viewerStopIdx > viewerVerifyIdx && viewerLockIdx > viewerStopIdx && viewerApplyIdx > viewerLockIdx,
+    'Viewer entry verifies the payload, then invokes the synchronous stop barrier before locking and applying it',
   );
 
   const liveHookSrc = await fs.readFile(path.join(repoRoot, 'src/dmx/useLiveDmxOutput.ts'), 'utf8');
