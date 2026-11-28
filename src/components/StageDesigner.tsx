@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent, ReactNode } from 'react';
+import { MAX_LOGICAL_DMX_UNIVERSE } from '../data/dmxUniverses';
 import { parseRigJson } from '../data/rigImport';
 import {
   Check,
@@ -923,7 +924,7 @@ export function StageDesigner({ rig, stage, crowd, laserState, ildaClip, onChang
     let nextStage: NativeStage | undefined;
     let nextCrowd: CrowdLayout | undefined;
     try {
-      next = normalizeDesign(parseRigJson(JSON.stringify(draft)));
+      next = normalizeDesign(parseRigJson(JSON.stringify(draft), MAX_LOGICAL_DMX_UNIVERSE));
       nextStage = finalizeStage(next, stageDraft);
       nextCrowd = crowdDraft ? structuredClone(crowdDraft) : undefined;
       if (nextCrowd) resolveCrowdLayout(next, nextCrowd);

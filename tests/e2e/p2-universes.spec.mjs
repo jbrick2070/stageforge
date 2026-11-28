@@ -107,6 +107,54 @@ test('P2 opens and saves three equal addresses, monitors extended SIM and clears
   expect(await savedRaw(page)).toBe(storageBeforeViewer);
 });
 
+test('P2 applies Stage Designer edits from a v15 show and a saved design without changing the extended patch', async ({ page }) => {
+  await page.goto('/?probe');
+  const show = p2Rehearsal();
+  const authored = JSON.parse(await readFile(new URL('../fixtures/native-authoring-v3.stageforge.show.json', import.meta.url), 'utf8'));
+  show.stage = { ...authored.stage, screenEvents: [] };
+  const assignments = rig => [...rig.trussPods.flatMap(pod => pod.fixtures), ...rig.floorFx].map(
+    fixture => [fixture.id, fixture.dmxUniverse, fixture.dmxStartChannel, fixture.dmxChannels],
+  );
+  const patch = assignments(show.rig);
+  expect(patch).toEqual(expect.arrayContaining([['wide-reserve', 3, 1, 20], ['Last Hazer', 16, 512, 1]]));
+  await openShow(page, show);
+  const plan = page.getByRole('dialog', { name: 'Stage designer', exact: true });
+  const label = plan.getByLabel('Screen label', { exact: true });
+  const applyScreenLabel = async (before, after) => {
+    await expect(plan).toBeVisible();
+    await plan.getByLabel('Plan objects').selectOption('w:side-led');
+    await expect(label).toHaveValue(before);
+    await label.fill(after);
+    await label.press('Enter');
+    await button(plan, 'Apply design').click();
+    await expect(plan).toBeHidden();
+  };
+  const checkExport = async screenLabel => {
+    await button(page, 'Show files').press('Enter');
+    const exported = await exportOpenShow(page);
+    expect(exported.version).toBe(15);
+    expect(exported.rig.name).toBe(show.rig.name);
+    expect(assignments(exported.rig)).toEqual(patch);
+    expect(exported.stage.walls.find(wall => wall.id === 'side-led')?.label).toBe(screenLabel);
+    await button(files(page), 'Close Show files').press('Enter');
+  };
+
+  await button(page, 'Design stage').click();
+  await applyScreenLabel('Stage right', 'Deck relay');
+  await checkExport('Deck relay');
+  const saved = await savedRaw(page);
+  expect(JSON.parse(saved).current.stage.walls.find(wall => wall.id === 'side-led')?.label).toBe('Deck relay');
+
+  await openShow(page, { ...p2Rehearsal(), rig: { ...show.rig, name: 'Other live design' } });
+  const builder = await openRigBuilder(page);
+  await expect(builder.getByText('Other live design', { exact: true })).toBeVisible();
+  expect(await savedRaw(page)).toBe(saved);
+  await button(builder, 'Open saved design').press('Enter');
+  await applyScreenLabel('Deck relay', 'Recalled relay');
+  await button(builder, 'Close Rig Builder').press('Enter');
+  await checkExport('Recalled relay');
+});
+
 test('P2 adopts fixture edits after a protected Show open and atomically recovers a local draft after a failed pagehide save', async ({ page }) => {
   const legacy = legacyShow().rig;
   await page.addInitScript(({ key, legacy }) => {
