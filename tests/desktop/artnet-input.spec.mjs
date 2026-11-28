@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const { encodeArtDmxPacket } = require('../../desktop/dmx-packets.cjs');
 const { encodeArtNetTimecode } = require('../../desktop/osc-packets.cjs');
-const staged = fileURLToPath(new URL('../../desktop/build/app/', import.meta.url));
+const root = fileURLToPath(new URL('../../', import.meta.url));
+const staged = path.join(root, 'desktop', 'build', 'app');
 const show = fileURLToPath(new URL('../fixtures/native-authoring-v3.stageforge.show.json', import.meta.url));
 
 function bind(socket) {
@@ -35,12 +36,13 @@ test('desktop Art-Net input monitors pinned U3, keeps Timecode listening, emits 
   const profile = `--user-data-dir=${path.join(temp, 'profile')}`;
   const reserved = dgram.createSocket('udp4');
   const sender = dgram.createSocket('udp4');
+  await bind(sender);
   const port = await bind(reserved);
   await close(reserved);
-  await bind(sender);
   const launch = () => electron.launch({
     executablePath: require('electron'), args: [staged, profile],
     env: { ...process.env, STAGEFORGE_ARTNET_RX_TEST_PORT: String(port), STAGEFORGE_DMX_TEST_ARTNET_PORT: String(port) },
+    timeout: 20_000,
   });
   const send = packet => new Promise((resolve, reject) => sender.send(packet, port, '127.0.0.1',
     error => error ? reject(error) : resolve()));
@@ -49,7 +51,8 @@ test('desktop Art-Net input monitors pinned U3, keeps Timecode listening, emits 
   let app;
   try {
     app = await launch();
-    const page = await app.firstWindow();
+    const page = await app.firstWindow({ timeout: 12_000 });
+    page.setDefaultTimeout(12_000);
     await page.waitForLoadState('domcontentloaded');
     await app.evaluate(() => {
       const dgram = process.getBuiltinModule('node:dgram');
@@ -138,7 +141,8 @@ test('desktop Art-Net input monitors pinned U3, keeps Timecode listening, emits 
 
     await app.close();
     app = await launch();
-    const restarted = await app.firstWindow();
+    const restarted = await app.firstWindow({ timeout: 12_000 });
+    restarted.setDefaultTimeout(12_000);
     const fresh = await openInput(restarted);
     await expect(fresh.rx.getByTestId('artnet-input-status')).toHaveText('Off');
     await expect(fresh.rx.getByLabel('Art-Net binding')).toHaveValue('127.0.0.1');
