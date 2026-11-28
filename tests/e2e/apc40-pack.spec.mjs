@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { installApcMidiMock } from '../support/apc40-midi.mjs';
+import { dragApcFaderTo } from '../support/apc40-surface.mjs';
 
 const sourceShow = new URL('../../public/examples/deep-house.stageforge.show.json', import.meta.url);
 const button = (scope, name) => scope.getByRole('button', { name, exact: true });
@@ -22,6 +23,46 @@ async function openPorts(page) {
   await button(panel(page), 'Enable MIDI access').click();
   await panel(page).getByRole('combobox', { name: 'APC40 MIDI input' }).selectOption('in-a');
   await panel(page).getByRole('combobox', { name: 'APC40 MIDI output' }).selectOption('out-a');
+}
+
+async function expectControllerGeometry(page, desk) {
+  const geometry = await desk.evaluate(root => {
+    const bounds = selector => Array.from(root.querySelectorAll(selector), element => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x: x + width / 2, y: y + height / 2, width, height };
+    });
+    return {
+      pads: bounds('.apc-row button'), scenes: bounds('.apc-scenes button'),
+      faders: bounds('.apc-faders input'), stop: bounds('.apc-stop')[0],
+      labelsFit: Array.from(root.querySelectorAll('.apc-faders label span'), element => element.scrollWidth <= element.clientWidth + 1),
+      direction: getComputedStyle(root.querySelector('.apc-faders input')).direction,
+      writingMode: getComputedStyle(root.querySelector('.apc-faders input')).writingMode,
+    };
+  });
+  expect(geometry.pads).toHaveLength(40);
+  expect(geometry.scenes).toHaveLength(5);
+  expect(geometry.faders).toHaveLength(9);
+  expect(geometry.direction).toBe('rtl');
+  expect(geometry.writingMode).toBe('vertical-lr');
+  expect(geometry.labelsFit.every(Boolean)).toBe(true);
+  for (const [index, scene] of geometry.scenes.entries()) {
+    const row = geometry.pads.slice(index * 8, index * 8 + 8);
+    expect(Math.abs(scene.y - row[0].y)).toBeLessThan(2);
+    expect(scene.x).toBeGreaterThan(row[7].x + row[7].width / 2);
+    row.forEach((pad, column) => expect(Math.abs(pad.x - geometry.faders[column].x)).toBeLessThan(2));
+  }
+  expect(Math.abs(geometry.stop.x - geometry.scenes[4].x)).toBeLessThan(2);
+  expect(geometry.stop.y).toBeGreaterThan(geometry.scenes[4].y);
+  expect(Math.abs(geometry.faders[8].x - geometry.scenes[4].x)).toBeLessThan(2);
+  expect(geometry.faders.every(fader => fader.height > fader.width && fader.y > geometry.stop.y)).toBe(true);
+  await button(desk, 'Cue looks White Room').focus();
+  await page.keyboard.press('Tab');
+  await expect(button(desk.getByRole('group', { name: 'Scene buttons' }), 'Intro')).toBeFocused();
+  await button(desk.getByRole('group', { name: 'Scene buttons' }), 'Close').focus();
+  await page.keyboard.press('Tab');
+  await expect(button(desk, 'Latch blackout')).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(fader(page, 'Beam level')).toBeFocused();
 }
 
 async function readStage(page) {
@@ -53,6 +94,10 @@ test('APC40 Deep House opens silently and plays independent rendered lighting, l
     await expect(desk.getByRole('group', { name, exact: true }).getByRole('button')).toHaveCount(8);
   }
   await expect(desk.getByRole('group', { name: 'Performance faders' }).getByRole('slider')).toHaveCount(9);
+  await expectControllerGeometry(page, desk);
+  await page.setViewportSize({ width: 1280, height: 1050 });
+  await expectControllerGeometry(page, desk);
+  await page.setViewportSize({ width: 1440, height: 1050 });
   const early = await readStage(page);
   expect(early.laser.visible).toBe(true);
   expect(early.laser.intensity).toBeGreaterThan(0.1);
@@ -70,8 +115,19 @@ test('APC40 Deep House opens silently and plays independent rendered lighting, l
   expect(greenFrame.laser.color[1]).toBeGreaterThan(greenFrame.laser.color[0] + 0.2);
   expect(greenFrame.laser.color).not.toEqual(redFrame.laser.color);
   expect(greenFrame.beam.lens).toEqual(redFrame.beam.lens);
-  await fader(page, 'Simulated lift height').press('End');
-  await expect(fader(page, 'Simulated lift height')).toHaveValue('1');
+  const lift = fader(page, 'Simulated lift height');
+  await lift.press('Home');
+  await expect(lift).toHaveValue('0');
+  await lift.press('ArrowUp');
+  await expect(lift).toHaveValue('0.01');
+  await lift.press('ArrowDown');
+  await expect(lift).toHaveValue('0');
+  await lift.press('End');
+  await expect(lift).toHaveValue('1');
+  await dragApcFaderTo(page, lift, 'bottom');
+  await expect(lift).toHaveValue('0');
+  await dragApcFaderTo(page, lift, 'top');
+  await expect(lift).toHaveValue('1');
   const high = await readStage(page);
   expect(high.origin.y).toBeGreaterThan(greenFrame.origin.y + 1);
   expect(high.physical.u1.every(byte => byte === 0) && high.physical.u2.every(byte => byte === 0)).toBe(true);
@@ -83,9 +139,22 @@ test('APC40 Deep House opens silently and plays independent rendered lighting, l
   await expect(button(scenes, 'Groove')).toHaveAttribute('aria-pressed', 'true');
   await button(desk, 'Wall and movement Wall Plasma').press('Enter');
   await expect(button(desk, 'Wall and movement Wall Plasma')).toHaveAttribute('aria-pressed', 'true');
-  await fader(page, 'LED wall brightness').press('End');
-  await expect(fader(page, 'LED wall brightness')).toHaveValue('1');
+  const wallLevel = fader(page, 'LED wall brightness');
+  await wallLevel.press('End');
+  await expect(wallLevel).toHaveValue('1');
+  const layout = button(desk, 'Compact view');
+  const existingFader = await wallLevel.elementHandle();
+  await layout.evaluate(element => element.click());
+  await expect(layout).toHaveAttribute('aria-pressed', 'true');
+  await expect(wallLevel).toBeFocused();
+  await expect(wallLevel).toHaveValue('1');
+  expect(await wallLevel.evaluate((element, before) => element === before, existingFader)).toBe(true);
+  await expect(button(scenes, 'Groove')).toHaveAttribute('aria-pressed', 'true');
+  await layout.evaluate(element => element.click());
+  await expect(layout).toHaveAttribute('aria-pressed', 'false');
+  await expect(wallLevel).toBeFocused();
   await readStage(page);
+  await desk.locator('.apc-desk').evaluate(element => { element.scrollTop = 0; });
   const imagePath = info.outputPath('deep-house-signal-room.png');
   await page.screenshot({ path: imagePath });
   await info.attach('Deep House stage and APC40 performance desk', { path: imagePath, contentType: 'image/png' });
@@ -104,6 +173,15 @@ test('APC40 Deep House opens silently and plays independent rendered lighting, l
   });
   await expect(files(page)).toBeHidden();
   await expect(button(desk, 'Wall and movement Wall Plasma')).toHaveAttribute('aria-pressed', 'true');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(layout).toBeHidden();
+  await expect(wallLevel).toHaveValue('1');
+  expect(await wallLevel.evaluate(element => getComputedStyle(element).writingMode)).toBe('horizontal-tb');
+  const narrowFit = await desk.evaluate(root => {
+    const { left, right } = root.getBoundingClientRect();
+    return left >= 0 && right <= window.innerWidth && document.documentElement.scrollWidth <= window.innerWidth;
+  });
+  expect(narrowFit).toBe(true);
 });
 
 test('APC40 mocked MIDI shares cue and pickup paths, latches blackout and suspends in Chase', async ({ page }) => {
@@ -117,10 +195,22 @@ test('APC40 mocked MIDI shares cue and pickup paths, latches blackout and suspen
   await openPorts(page);
   await button(panel(page), 'Connect APC40 mkII').click();
   await expect(panel(page).getByText('APC40 mkII ready', { exact: true })).toBeVisible();
+  const midiCalls = () => page.evaluate(() => window.apcTest.calls);
+  await expect.poll(async () => (await midiCalls()).filter(([type]) => type === 'send').length).toBe(47);
+  const beforeLayout = await midiCalls();
+  const layout = button(panel(page), 'Compact view');
+  await layout.click();
+  await expect(layout).toHaveAttribute('aria-pressed', 'true');
+  await expect(panel(page).getByText('APC40 mkII ready', { exact: true })).toBeVisible();
+  await layout.click();
+  await expect(layout).toHaveAttribute('aria-pressed', 'false');
+  await page.clock.runFor(70);
+  expect(await midiCalls()).toEqual(beforeLayout);
   await emit(page, [0x90, 32, 127], 'in-other');
   expect((await look(page)).primaryColor).not.toBe('#ff243f');
   await emit(page, [0x90, 32, 127]);
   await expect.poll(async () => (await look(page)).primaryColor).toBe('#ff243f');
+  await expect(button(panel(page), 'Lighting color Red')).toHaveAttribute('aria-pressed', 'true');
   await emit(page, [0x90, 32, 0]);
   await emit(page, [0x90, 0x53, 127]);
   await expect.poll(() => page.evaluate(() => window.stageforgeProbe.activeCueId())).toBe('deep-house-groove');
@@ -128,6 +218,7 @@ test('APC40 mocked MIDI shares cue and pickup paths, latches blackout and suspen
   await expect(fader(page, 'Beam level')).toHaveValue('0.66');
   await emit(page, [0xb0, 7, 110]);
   await expect.poll(async () => (await look(page)).beamIntensity).toBeCloseTo(110 / 127);
+  await expect.poll(async () => Number(await fader(page, 'Beam level').inputValue())).toBeCloseTo(110 / 127, 2);
   await fader(page, 'Beam level').press('End');
   await emit(page, [0xb0, 7, 40]);
   await expect.poll(async () => (await look(page)).beamIntensity).toBe(1);

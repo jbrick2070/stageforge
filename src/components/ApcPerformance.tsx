@@ -18,42 +18,51 @@ export function ApcPerformance({ open, toggle, look, rig, cueId, available, send
 }) {
   const [input, setInput] = useState('');
   const [output, setOutput] = useState('');
+  const [compact, setCompact] = useState(false);
   const blocked = !available({ kind: 'blackout' });
   const suspended = !blocked && !available({ kind: 'fader', fader: 'masterDimmer', value: 0 });
   return (
-    <aside className="apc-performance" aria-label="APC40 mkII Deep House performance">
+    <aside className="apc-performance" data-compact={compact} aria-label="APC40 mkII Deep House performance">
       <button type="button" className="transport-btn apc-toggle" onClick={toggle} aria-expanded={open}>
         {open ? 'Close APC40 desk' : 'APC40 performance'}
       </button>
       {open && <div className="apc-desk">
         <header>
           <h2>Deep House</h2>
-          <button type="button" className="transport-btn" disabled={blocked} onClick={() => send({ kind: 'blackout' })}>Latch blackout</button>
+          <button type="button" className="transport-btn apc-layout-toggle" aria-pressed={compact}
+            onClick={() => setCompact(value => !value)}>Compact view</button>
         </header>
         {blocked && <p role="status">Available on the Deep House U3 rehearsal stage in the editor with physical output off.</p>}
         {suspended && <p role="status">Playback owns the desk. Blackout is available.</p>}
-        <div className="apc-pads">
-          {APC_ROWS.map(row => <div className="apc-row" role="group" aria-label={row.name} key={row.name}>
-            <h3>{row.name}</h3>
-            <div>
-              {row.pads.map(pad => {
-                const selected = apcPadSelected(pad.action, look, cueId);
-                return <button type="button" key={pad.name} aria-label={row.name + ' ' + pad.name}
-                  aria-pressed={selected} disabled={!available(pad.action)} onClick={() => send(pad.action)}
-                  style={{ '--pad-primary': pad.hex, '--pad-accent': pad.accent ?? pad.hex } as CSSProperties}>
-                  <span className="apc-color-strip" aria-hidden="true" />
-                  <span>{pad.name}</span>
-                  {selected && <span className="apc-selected" aria-hidden="true">✓</span>}
-                </button>;
-              })}
-            </div>
-          </div>)}
-        </div>
-        <div className="apc-scenes" role="group" aria-label="Scene buttons">
-          {APC_SCENES.map(scene => <button type="button" key={scene.name} aria-pressed={apcPadSelected(scene.action, look, cueId)}
-            disabled={!available(scene.action)} onClick={() => send(scene.action)} className="transport-btn">
-            {scene.name}
-          </button>)}
+        <div className="apc-launch-bank">
+          <div className="apc-pads">
+            {APC_ROWS.map(row => <div className="apc-row" role="group" aria-label={row.name} key={row.name}>
+              <h3>{row.name}</h3>
+              <div>
+                {row.pads.map(pad => {
+                  const selected = apcPadSelected(pad.action, look, cueId);
+                  return <button type="button" key={pad.name} aria-label={row.name + ' ' + pad.name}
+                    aria-pressed={selected} disabled={!available(pad.action)} onClick={() => send(pad.action)}
+                    style={{ '--pad-primary': pad.hex, '--pad-accent': pad.accent ?? pad.hex } as CSSProperties}>
+                    <span className="apc-color-strip" aria-hidden="true" />
+                    <span>{pad.name}</span>
+                    {selected && <span className="apc-selected" aria-hidden="true">✓</span>}
+                  </button>;
+                })}
+              </div>
+            </div>)}
+          </div>
+          <div className="apc-scenes" role="group" aria-label="Scene buttons">
+            {APC_SCENES.map(scene => <button type="button" key={scene.name} aria-pressed={apcPadSelected(scene.action, look, cueId)}
+              disabled={!available(scene.action)} onClick={() => send(scene.action)} className="transport-btn">
+              {scene.name}
+            </button>)}
+          </div>
+          <button type="button" className="transport-btn apc-stop" aria-label="Latch blackout"
+            disabled={blocked} onClick={() => send({ kind: 'blackout' })}>
+            <span className="apc-stop-hardware" aria-hidden="true">Stop All Clips</span>
+            <span>Latch blackout</span>
+          </button>
         </div>
         <div className="apc-faders" role="group" aria-label="Performance faders">
           {APC_FADERS.map(([fader, label]) => {

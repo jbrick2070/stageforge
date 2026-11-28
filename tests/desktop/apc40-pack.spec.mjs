@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installApcMidiMock } from '../support/apc40-midi.mjs';
+import { dragApcFaderTo } from '../support/apc40-surface.mjs';
 
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -23,6 +24,7 @@ test('APC40 packaged rehearsal uses selected mocked MIDI, handles denial and dis
     });
     if (installed) expect(await app.evaluate(({ app }) => app.isPackaged)).toBe(true);
     const page = await app.firstWindow({ timeout: 12_000 });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1280, 900));
     page.setDefaultTimeout(12_000);
     await page.addInitScript(installApcMidiMock);
     await page.goto('stageforge://app/?probe', { waitUntil: 'domcontentloaded' });
@@ -32,6 +34,20 @@ test('APC40 packaged rehearsal uses selected mocked MIDI, handles denial and dis
     await expect(files).toBeHidden();
     const desk = page.getByRole('complementary', { name: 'APC40 mkII Deep House performance' });
     await expect(desk.getByRole('heading', { name: 'Deep House', exact: true })).toBeVisible();
+    const beam = desk.getByRole('slider', { name: 'Beam level', exact: true });
+    await expect.poll(() => beam.evaluate(element => getComputedStyle(element).writingMode)).toBe('vertical-lr');
+    await beam.press('Home');
+    await expect(beam).toHaveValue('0');
+    await beam.press('ArrowUp');
+    await expect(beam).toHaveValue('0.01');
+    await beam.press('ArrowDown');
+    await expect(beam).toHaveValue('0');
+    await beam.press('End');
+    await expect(beam).toHaveValue('1');
+    await dragApcFaderTo(page, beam, 'bottom');
+    await expect(beam).toHaveValue('0');
+    await dragApcFaderTo(page, beam, 'top');
+    await expect(beam).toHaveValue('1');
     expect(await page.evaluate(() => window.apcTest.calls)).toEqual([]);
     const syncBefore = await page.evaluate(() => window.stageforgeProbe.showControlActive());
     await desk.getByText('APC40 mkII MIDI connection', { exact: true }).click();
@@ -53,6 +69,13 @@ test('APC40 packaged rehearsal uses selected mocked MIDI, handles denial and dis
       ['send', 'out-a', [0xf0, 0x47, 0x7f, 0x29, 0x60, 0, 4, 0x42, 1, 0, 0, 0xf7]],
       ['send', 'out-a', [0x90, 32, 5]],
     ]);
+    const layout = button(desk, 'Compact view');
+    await layout.click();
+    await expect(beam).toHaveValue('1');
+    await layout.click();
+    await expect(beam).toHaveValue('1');
+    await expect(desk.getByText('APC40 mkII ready', { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => window.apcTest.calls)).toEqual(before);
     await page.evaluate(() => window.apcTest.emit([0x90, 32, 127]));
     await expect(button(desk, 'Lighting color Red')).toHaveAttribute('aria-pressed', 'true');
     await page.evaluate(() => window.apcTest.addDuplicate());

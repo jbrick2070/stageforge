@@ -207,6 +207,9 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
   box-shadow: 0 12px 28px #0009; font-size: 11px; display: grid; gap: 7px;
 }
 .apc-desk > header { display: flex; justify-content: space-between; align-items: center; }
+.apc-layout-toggle, .apc-stop-hardware { display: none; }
+.apc-launch-bank { display: grid; min-width: 0; gap: 5px; }
+.apc-stop { justify-self: start; }
 .apc-desk h2 { font-weight: 800; font-size: 17px; letter-spacing: .06em; }
 .apc-desk :focus-visible { outline: 2px solid #b4e9ff; outline-offset: 1px; }
 .apc-pads { display: grid; gap: 4px; overflow-x: auto; padding-bottom: 1px; }
@@ -237,7 +240,101 @@ input[type="range"].vertical-fader::-webkit-slider-thumb {
 .apc-midi label { display: grid; gap: 2px; }
 .apc-midi select { color: #e8f6ff; background: #1b2838; padding: 3px; border: 1px solid #4d687b; border-radius: 4px; }
 @media (max-width: 540px) {
+  .apc-row { grid-template-columns: minmax(0, 1fr); }
+  .apc-row > div { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .apc-faders { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1080px) {
+  .apc-layout-toggle { display: inline-flex; }
+  .apc-layout-toggle[aria-pressed="true"] { border-color: #b7dbed; }
+  .apc-performance[data-compact="false"] {
+    --apc-gap: 5px;
+    --apc-legend: 108px;
+    --apc-scene: 96px;
+    --apc-pad-height: 34px;
+    width: min(838px, calc(100% - 24px));
+  }
+  .apc-performance[data-compact="false"] .apc-desk {
+    background: linear-gradient(180deg, #252b32, #13171d 63%, #1a2028);
+    border-color: #58616b;
+    border-radius: 12px;
+    padding: 10px 12px 9px;
+    box-shadow: inset 0 1px #ffffff26, inset 0 -2px #07090bc0, 0 12px 28px #0009;
+  }
+  .apc-performance[data-compact="false"] .apc-launch-bank {
+    grid-template-columns: minmax(0, 1fr) var(--apc-scene);
+    gap: var(--apc-gap);
+  }
+  .apc-performance[data-compact="false"] .apc-pads,
+  .apc-performance[data-compact="false"] .apc-scenes {
+    display: grid;
+    grid-template-rows: repeat(5, var(--apc-pad-height));
+    gap: var(--apc-gap);
+  }
+  .apc-performance[data-compact="false"] .apc-pads { overflow: visible; padding: 0; }
+  .apc-performance[data-compact="false"] .apc-row {
+    grid-template-columns: var(--apc-legend) minmax(0, 1fr);
+    gap: var(--apc-gap);
+  }
+  .apc-performance[data-compact="false"] .apc-row > div { height: 100%; gap: var(--apc-gap); }
+  .apc-performance[data-compact="false"] .apc-row button {
+    min-height: 0;
+    border-color: #59636c;
+    border-radius: 5px;
+    padding: 8px 3px 3px;
+    background: linear-gradient(180deg, #35404c, #1c242d);
+    box-shadow: inset 0 1px #ffffff31, inset 0 -2px #0a0e13;
+  }
+  .apc-performance[data-compact="false"] .apc-row button:hover:not(:disabled) {
+    background: linear-gradient(180deg, #465469, #273241);
+  }
+  .apc-performance[data-compact="false"] .apc-row button[aria-pressed="true"] {
+    border-color: #f0f9ff;
+    background: linear-gradient(180deg, #465568, #263039);
+  }
+  .apc-performance[data-compact="false"] .apc-color-strip {
+    inset: 2px 3px auto;
+    height: 5px;
+    border-radius: 3px;
+  }
+  .apc-performance[data-compact="false"] .apc-scenes button { justify-content: center; }
+  .apc-performance[data-compact="false"] .apc-stop {
+    grid-column: 2;
+    justify-self: stretch;
+    display: grid;
+    justify-items: center;
+    gap: 0;
+    padding: 4px 2px;
+    border-color: #b77873;
+    font-size: 10px;
+    line-height: 1.15;
+  }
+  .apc-performance[data-compact="false"] .apc-stop-hardware { display: inline; font-weight: 700; }
+  .apc-performance[data-compact="false"] .apc-faders {
+    grid-template-columns: var(--apc-legend) repeat(8, minmax(0, 1fr)) var(--apc-scene);
+    gap: var(--apc-gap);
+  }
+  .apc-performance[data-compact="false"] .apc-faders label {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(25px, auto) 94px auto;
+    justify-items: center;
+    gap: 3px;
+    padding: 4px 2px 3px;
+    border: 1px solid #48515a;
+    border-radius: 5px;
+    background: #12171d;
+    text-align: center;
+    line-height: 1.2;
+  }
+  .apc-performance[data-compact="false"] .apc-faders label:first-child { grid-column: 2; }
+  .apc-performance[data-compact="false"] .apc-faders label:last-child { border-color: #74889b; }
+  .apc-performance[data-compact="false"] .apc-faders input {
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 27px;
+    height: 94px;
+    cursor: ns-resize;
+  }
 }
 .stage-status-stack {
   grid-area: stage; align-self: start; justify-self: end; position: relative;
