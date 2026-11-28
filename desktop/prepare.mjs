@@ -156,6 +156,8 @@ async function main() {
     copyFile(path.join(source, 'dmx-ipc.cjs'), path.join(app, 'dmx-ipc.cjs')),
     copyFile(path.join(source, 'osc-packets.cjs'), path.join(app, 'osc-packets.cjs')),
     copyFile(path.join(source, 'artnet-rx.cjs'), path.join(app, 'artnet-rx.cjs')),
+    copyFile(path.join(source, 'artnet-input.cjs'), path.join(app, 'artnet-input.cjs')),
+    copyFile(path.join(source, 'quit-drain.cjs'), path.join(app, 'quit-drain.cjs')),
     copyFile(path.join(source, 'show-control-service.cjs'), path.join(app, 'show-control-service.cjs')),
     copyFile(path.join(source, 'show-control-ipc.cjs'), path.join(app, 'show-control-ipc.cjs')),
     copyFile(path.join(source, 'viewer-ipc.cjs'), path.join(app, 'viewer-ipc.cjs')),

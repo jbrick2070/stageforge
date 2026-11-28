@@ -104,6 +104,7 @@ export class EnttecProTransport {
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
   private portDisconnectListener: (() => void) | null = null;
   private sessionGen = 0;
+  private opening: Promise<SerialTransportStatus> | null = null;
   private drainPromise: Promise<SerialTransportStatus> | null = null;
   private timerId: ReturnType<typeof setTimeout> | null = null;
   private statsTimerId: ReturnType<typeof setInterval> | null = null;
@@ -156,7 +157,16 @@ export class EnttecProTransport {
     this.slots.set(data);
   }
 
-  public async enable(options: { universe: 1 | 2; rateHz: number; allowAllDevices?: boolean; isEligible?: () => boolean }): Promise<SerialTransportStatus> {
+  public enable(options: { universe: 1 | 2; rateHz: number; allowAllDevices?: boolean; isEligible?: () => boolean }): Promise<SerialTransportStatus> {
+    if (this.opening) return Promise.reject(new Error('USB DMX is still opening or closing.'));
+    const opening = this.openPort(options);
+    this.opening = opening;
+    const clear = () => { if (this.opening === opening) this.opening = null; };
+    void opening.then(clear, clear);
+    return opening;
+  }
+
+  private async openPort(options: { universe: 1 | 2; rateHz: number; allowAllDevices?: boolean; isEligible?: () => boolean }): Promise<SerialTransportStatus> {
     const drain = this.drainPromise ?? (this.enabled || this.port ? this.disable() : null);
     const gen = ++this.sessionGen;
     const isCurrent = () => this.sessionGen === gen && (options.isEligible?.() ?? true);
@@ -212,7 +222,13 @@ export class EnttecProTransport {
       ? `USB ${info.usbVendorId.toString(16).padStart(4, '0')}:${(info.usbProductId ?? 0).toString(16).padStart(4, '0')}`
       : 'Enttec DMX USB Pro';
 
-    const writer = port.writable.getWriter();
+    let writer: WritableStreamDefaultWriter<Uint8Array>;
+    try {
+      writer = port.writable.getWriter();
+    } catch (error) {
+      try { await port.close(); } catch { /* port already closed */ }
+      throw error;
+    }
     const onDisconnect = () => {
       if (this.sessionGen !== gen || this.port !== port) return;
       this.error = 'USB DMX interface disconnected.';
@@ -252,7 +268,15 @@ export class EnttecProTransport {
   public disable(): Promise<SerialTransportStatus> {
     this.sessionGen++;
     if (this.drainPromise) return this.drainPromise;
-    if (!this.enabled && !this.port) return Promise.resolve(this.getStatus());
+    if (!this.enabled && !this.port) {
+      if (!this.opening) return Promise.resolve(this.getStatus());
+      // The native open may settle after Stop. Join its canceled-port close before releasing authority.
+      const getStatus = () => this.getStatus();
+      const drain = this.opening.then(getStatus, getStatus);
+      this.drainPromise = drain;
+      void drain.then(() => { if (this.drainPromise === drain) this.drainPromise = null; });
+      return drain;
+    }
 
     this.enabled = false;
     this.writing = false;
@@ -316,12 +340,7 @@ export class EnttecProTransport {
       }
 
       if (port) {
-        try {
-          await Promise.race([
-            port.close(),
-            new Promise<void>((resolve) => setTimeout(resolve, 1000)),
-          ]);
-        } catch { /* ignore */ }
+        try { await port.close(); } catch { /* already closed or disconnected */ }
       }
     } catch { /* output is already disabled if the disconnected port cannot be drained */ }
   }

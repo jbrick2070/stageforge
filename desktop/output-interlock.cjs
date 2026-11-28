@@ -24,6 +24,9 @@ function createOutputInterlock(options = {}) {
   /** @type {number | null} */
   let bridgeOwnerId = null;
   let dmxAttempt = null;
+  let preview = null;
+  let discovery = null;
+  let admissionsClosed = false;
   /** @type {Map<number, Set<'armed' | 'serial'>>} */
   const claims = new Map();
   const eligibility = new Map();
@@ -47,7 +50,6 @@ function createOutputInterlock(options = {}) {
   }
 
   function revokeDmxClaims(wcId) {
-    if (dmxAttempt?.wcId === wcId) dmxAttempt = null;
     const arm = armAuthority.get(wcId);
     if (arm) releaseOutput(wcId, 'armed', arm);
     // USB has no main-process writer to stop. Keep its exclusion claim until the
@@ -75,6 +77,7 @@ function createOutputInterlock(options = {}) {
   }
 
   function currentSerialAuthority(wcId) {
+    if (admissionsClosed || preview) return null;
     const authority = serialAuthority.get(wcId);
     return isCurrentDmxAuthority(wcId, authority) ? authority : null;
   }
@@ -93,7 +96,7 @@ function createOutputInterlock(options = {}) {
   }
 
   function hasOutputAuthority() {
-    if (dmxAttempt || isDmxActive()) return true;
+    if (dmxAttempt || isDmxActive() || discovery) return true;
     return claims.size > 0;
   }
 
@@ -102,6 +105,9 @@ function createOutputInterlock(options = {}) {
   }
 
   function canEnableBridge() {
+    if (admissionsClosed) return 'StageForge is closing.';
+    if (preview) return 'Stop Art-Net input before enabling the AI bridge.';
+    if (discovery) return 'Wait for Art-Net discovery to finish before enabling the AI bridge.';
     if (bridgePhase === 'starting' || bridgePhase === 'stopping') {
       return 'AI bridge is currently changing state; wait a moment and try again.';
     }
@@ -119,10 +125,30 @@ function createOutputInterlock(options = {}) {
   }
 
   function canClaimOutput() {
+    if (admissionsClosed) return 'StageForge is closing.';
+    if (preview) return 'Stop Art-Net input before arming or enabling live DMX output.';
     if (bridgePhase !== 'off') {
       return 'Disable the AI bridge before arming or enabling live DMX output.';
     }
     return null;
+  }
+
+  function reservePreview(wcId) {
+    if (admissionsClosed) throw new Error('StageForge is closing.');
+    if (preview) throw new Error('Art-Net input is busy in another attempt or window.');
+    if (isBridgeHoldingAuthority()) throw new Error('Disable the AI bridge before starting Art-Net input.');
+    if (hasOutputAuthority()) throw new Error('Stop or disarm DMX output and wait for discovery or USB cleanup before starting Art-Net input.');
+    preview = { wcId };
+    return preview;
+  }
+
+  function reserveDiscovery(wcId) {
+    if (admissionsClosed) throw new Error('StageForge is closing.');
+    if (preview) throw new Error('Stop Art-Net input before scanning for Art-Net nodes.');
+    if (isBridgeHoldingAuthority()) throw new Error('Disable the AI bridge before scanning for Art-Net nodes.');
+    if (discovery) throw new Error('Art-Net discovery is already busy in another attempt or window.');
+    discovery = { wcId };
+    return discovery;
   }
 
   function tryBeginBridgeStart(wcId) {
@@ -201,7 +227,6 @@ function createOutputInterlock(options = {}) {
 
   function clearWindowClaims(wcId) {
     if (typeof wcId !== 'number') return false;
-    if (requireDmxAuthority && dmxAttempt?.wcId === wcId) dmxAttempt = null;
     eligibility.delete(wcId);
     armAuthority.delete(wcId);
     serialAuthority.delete(wcId);
@@ -250,6 +275,11 @@ function createOutputInterlock(options = {}) {
     VALID_CLAIM_KINDS,
     canEnableBridge,
     canClaimOutput,
+    reservePreview,
+    reserveDiscovery,
+    releasePreview: (lease) => { if (lease === preview) preview = null; },
+    releaseDiscovery: (lease) => { if (lease === discovery) discovery = null; },
+    closeAdmissions: () => { admissionsClosed = true; },
     isBridgeHoldingAuthority,
     hasOutputAuthority,
     hasWindowClaim,

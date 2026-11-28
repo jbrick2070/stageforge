@@ -26,6 +26,40 @@ interface DmxAuthorityBridge {
   generation: number;
 }
 
+interface ArtNetInputMappingBridge {
+  portAddress: number;
+  universe: number;
+  sender: string;
+}
+
+interface ArtNetInputConfigBridge {
+  binding: 'loopback' | 'all' | 'interface';
+  address: string;
+  mappings: ArtNetInputMappingBridge[];
+}
+
+interface ArtNetInputStatusBridge {
+  authority: DmxAuthorityBridge;
+  phase: 'starting' | 'listening' | 'stopping' | 'off';
+  port: number | null;
+  error: string | null;
+}
+
+interface ArtNetInputRowBridge extends ArtNetInputMappingBridge {
+  state: 'awaiting' | 'active' | 'stale';
+  ageMs: number | null;
+  received: number;
+  lost: number;
+  data: Uint8Array;
+}
+
+interface ArtNetInputBatchBridge {
+  authority: DmxAuthorityBridge;
+  batchId: number;
+  rows: ArtNetInputRowBridge[];
+  drops: { invalid: number; unselected: number; unmapped: number; sequence: number };
+}
+
 interface DmxStatusBridge {
   enabled: boolean;
   authority?: DmxAuthorityBridge;
@@ -205,6 +239,12 @@ interface Window {
     dmxControl(command: Extract<DmxControlCommandBridge, { type: 'enable' }>): Promise<DmxStatusBridge>;
     dmxControl(command: DmxControlCommandBridge): Promise<unknown>;
     onDmxStatus(listener: (status: DmxStatusBridge) => void): () => void;
+    artNetInput(command: { type: 'listInterfaces' }): Promise<Pick<DmxNetworkInterfaceBridge, 'name' | 'address'>[]>;
+    artNetInput(command: { type: 'start'; authority: DmxAuthorityBridge; config: ArtNetInputConfigBridge }): Promise<ArtNetInputStatusBridge>;
+    artNetInput(command: { type: 'stop' | 'document'; authority: DmxAuthorityBridge }): Promise<boolean>;
+    onArtNetInputStatus(listener: (status: ArtNetInputStatusBridge) => void): () => void;
+    onArtNetInputBatch(listener: (batch: ArtNetInputBatchBridge) => void): () => void;
+    ackArtNetInput(ack: Pick<ArtNetInputBatchBridge, 'authority' | 'batchId'>): boolean;
     showControl(command: { type: 'getStatus' }): Promise<ShowControlStatusBridge>;
     showControl(command: { type: 'stop' }): Promise<ShowControlStatusBridge>;
     showControl(command: { type: 'configure'; config: ShowControlConfigBridge }): Promise<ShowControlStatusBridge>;

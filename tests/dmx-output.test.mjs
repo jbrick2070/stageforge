@@ -1058,13 +1058,16 @@ test('P2 USB Stop, pagehide and Viewer share terminal blackout and close before 
   assert.equal(interlock.hasOutputAuthority(), false, 'destroyed windows release their last reservation');
 });
 
-test('QA regression (M5): Enttec Pro disable() resolves cleanly and aborts writer even when write() and close() hang', async () => {
+test('Enttec Pro aborts a stalled writer and keeps Stop pending through native close', async () => {
   let aborted = false;
   let released = false;
+  let finishClose;
+  let beginClose;
+  const closing = new Promise(resolve => { beginClose = resolve; });
   const statuses = [];
   const stalledPort = {
     open: async () => {},
-    close: () => new Promise(() => {}), // hangs forever
+    close: () => new Promise(resolve => { finishClose = resolve; beginClose(); }),
     getInfo: () => ({ usbVendorId: 0x0403, usbProductId: 0x6001 }),
     writable: {
       getWriter: () => ({
@@ -1080,11 +1083,63 @@ test('QA regression (M5): Enttec Pro disable() resolves cleanly and aborts write
   );
   await transport.enable({ universe: 1, rateHz: 30 });
   const start = Date.now();
-  const finalStatus = await transport.disable();
+  const drain = transport.disable();
+  let stopped = false;
+  void drain.then(() => { stopped = true; });
+  await closing;
+  assert.equal(stopped, false, 'an unfinished native close keeps the reservation');
+  assert.equal(transport.disable(), drain);
+  finishClose();
+  const finalStatus = await drain;
   const elapsed = Date.now() - start;
   assert.equal(finalStatus.enabled, false);
   assert.equal(aborted, true, 'must abort stalled writer on blackout timeout');
   assert.equal(released, true, 'must release writer lock');
   assert.equal(statuses.at(-1)?.enabled, false, 'must emit disabled status in finally');
   assert.ok(elapsed < 2200, `disable() must finish within timeout bounds (took ${elapsed} ms)`);
+});
+
+test('cancelled Enttec native open never gets a writer and keeps the desktop claim through close', async () => {
+  let beginOpen, finishOpen, beginClose, finishClose;
+  const opening = new Promise(resolve => { beginOpen = resolve; });
+  const closing = new Promise(resolve => { beginClose = resolve; });
+  const port = {
+    open: () => new Promise(resolve => { finishOpen = resolve; beginOpen(); }),
+    close: () => new Promise(resolve => { finishClose = resolve; beginClose(); }),
+    writable: { getWriter() { assert.fail('cancelled startup must not acquire a writer'); } },
+  };
+  const transport = new enttec.EnttecProTransport(() => {}, () => ({ requestPort: async () => port }));
+  const lock = createOutputInterlock({ requireDmxAuthority: true });
+  const key = { revision: 'usb-before-preview', generation: 1 };
+  assert.equal(lock.updateDmxEligibility(8, key, true).ok, true);
+  assert.equal(lock.claimOutput(8, 'armed', key).ok, true);
+  assert.equal(lock.claimOutput(8, 'serial', key).ok, true);
+  const unavailable = assert.rejects(transport.enable({ universe: 1, rateHz: 30 }), /startup was cancelled/);
+  await opening;
+  lock.invalidateDmxEligibility(8, key);
+  const stop = transport.disable();
+  assert.equal(transport.disable(), stop);
+  const released = stop.then(() => lock.releaseOutput(8, 'serial', key));
+  assert.throws(() => lock.reservePreview(9), /USB cleanup/);
+  finishOpen();
+  await closing;
+  assert.throws(() => lock.reservePreview(9), /USB cleanup/);
+  assert.match(lock.canEnableBridge(), /USB Serial/);
+  finishClose();
+  assert.equal(await released, true);
+  await unavailable;
+  const preview = lock.reservePreview(9);
+  assert.equal(lock.claimOutput(8, 'serial', key).ok, false);
+  lock.releasePreview(preview);
+});
+
+test('Enttec does not close a port it failed to open', async () => {
+  const port = {
+    open: async () => { throw new Error('Port is already open'); },
+    close: async () => { assert.fail('this attempt did not open the port'); },
+    writable: { getWriter() { assert.fail('failed startup must not acquire a writer'); } },
+  };
+  const transport = new enttec.EnttecProTransport(() => {}, () => ({ requestPort: async () => port }));
+  await assert.rejects(transport.enable({ universe: 1, rateHz: 30 }), /Port is already open/);
+  await transport.disable();
 });

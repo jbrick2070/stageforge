@@ -3,6 +3,8 @@ const { open: openFileHandle } = require('node:fs/promises');
 const path = require('node:path');
 const { isAppPage, createRendererHandler, serialDeviceKey, selectVisibleSerialPorts } = require('./protocol.cjs');
 const { createArtNetRxMux } = require('./artnet-rx.cjs');
+const { createArtNetInput } = require('./artnet-input.cjs');
+const { createQuitDrain } = require('./quit-drain.cjs');
 const { createDmxController } = require('./dmx-sender.cjs');
 const { createDmxIpcHandlers, isAuthorizedDmxSender } = require('./dmx-ipc.cjs');
 const { createShowControlService } = require('./show-control-service.cjs');
@@ -69,10 +71,10 @@ function resolveTestPorts() {
 
 let dmx = null;
 let artnetRx = null;
+let artnetInput = null;
 let showControl = null;
 let outputInterlock = null;
 let aiBridge = null;
-let quittingAfterShutdown = false;
 const viewerTracker = createViewerModeTracker();
 // Serial device grants live only in memory for this session (never persisted across launches).
 const grantedSerialDevices = new Map();
@@ -87,6 +89,14 @@ function notifyDmxAuthorityRevoked(wcId, authority, reason) {
 
 function revokeDesktopDmxForLifecycle(reason) {
   outputInterlock?.invalidateAllDmxEligibility((wcId, authority) => notifyDmxAuthorityRevoked(wcId, authority, reason));
+  void stopArtNetActivity();
+}
+
+function stopArtNetActivity(wcId, forget = false) {
+  return Promise.allSettled([
+    forget ? artnetInput?.forgetWindow(wcId) : artnetInput?.stopForWindow(wcId),
+    dmx?.cancelDiscover(wcId),
+  ]);
 }
 
 function syncMenuForWindow(win) {
@@ -126,30 +136,44 @@ function createWindow() {
   });
   const wc = win.webContents;
   const wcId = wc.id;
+  let replacingRenderer = false;
   wc.on('will-navigate', (event, url) => {
     if (!isAppPage(url)) event.preventDefault();
   });
   wc.on('did-start-navigation', (details) => {
     if (details && details.isMainFrame && !details.isSameDocument) {
+      replacingRenderer = true;
       extendedPatchWindows.delete(wcId);
       viewerTracker.clearWindow(wcId);
       syncMenuForWindow();
-      if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
+      // Keep a closing native serial claim until the old renderer releases it or is replaced.
+      outputInterlock?.revokeWindowDmxEligibility(wcId,
+        (owner, authority) => notifyDmxAuthorityRevoked(owner, authority, 'navigation'));
+      void stopArtNetActivity(wcId, true);
       if (dmx && dmx.ownerId === wcId) void dmx.shutdown('navigation');
       if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
       if (aiBridge && aiBridge.ownerId === wcId) void aiBridge.disable('navigation', { skipQuiesceWait: true });
     }
+  });
+  wc.on('did-finish-load', () => {
+    if (!replacingRenderer) return;
+    replacingRenderer = false;
+    outputInterlock?.clearWindowClaims(wcId);
   });
   wc.on('render-process-gone', () => {
     extendedPatchWindows.delete(wcId);
     viewerTracker.clearWindow(wcId);
     syncMenuForWindow();
     if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
+    void stopArtNetActivity(wcId, true);
     if (dmx && dmx.ownerId === wcId) void dmx.shutdown('renderer-crash');
     if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
     if (aiBridge && aiBridge.ownerId === wcId) void aiBridge.disable('renderer-crash', { skipQuiesceWait: true });
   });
   win.on('unresponsive', () => {
+    outputInterlock?.revokeWindowDmxEligibility(wcId,
+      (owner, authority) => notifyDmxAuthorityRevoked(owner, authority, 'window unresponsive'));
+    void stopArtNetActivity(wcId);
     if (dmx && dmx.ownerId === wcId && dmx.active) void dmx.shutdown('heartbeat-timeout');
   });
   wc.on('destroyed', () => {
@@ -157,14 +181,17 @@ function createWindow() {
     viewerTracker.clearWindow(wcId);
     syncMenuForWindow();
     if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
+    void stopArtNetActivity(wcId, true);
     if (dmx && dmx.ownerId === wcId) void dmx.shutdown('window-destroyed');
     if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
     if (aiBridge && aiBridge.ownerId === wcId) void aiBridge.disable('window-destroyed', { skipQuiesceWait: true });
   });
+  win.on('close', () => { void stopArtNetActivity(wcId); });
   win.on('closed', () => {
     viewerTracker.clearWindow(wcId);
     syncMenuForWindow();
     if (outputInterlock) outputInterlock.clearWindowClaims(wcId);
+    void stopArtNetActivity(wcId, true);
     if (dmx && dmx.ownerId === wcId) void dmx.shutdown('window-closed');
     if (showControl && showControl.ownerId === wcId) void showControl.shutdown();
     if (aiBridge && aiBridge.ownerId === wcId) void aiBridge.disable('window-closed', { skipQuiesceWait: true });
@@ -276,6 +303,8 @@ function registerDmxIpc() {
   ipcMain.on('stageforge:dmx-heartbeat', onHeartbeat);
   ipcMain.handle('stageforge:dmx-control', onControl);
   ipcMain.handle('stageforge:dmx-eligibility', onEligibility);
+  ipcMain.handle('stageforge:artnet-input-control', artnetInput.onControl);
+  ipcMain.on('stageforge:artnet-input-ack', artnetInput.onAck);
   ipcMain.on('stageforge:rig-export-state', (event, hasExtendedPatch) => {
     if (!isAuthorizedDmxSender(event) || typeof hasExtendedPatch !== 'boolean') return;
     if (hasExtendedPatch) extendedPatchWindows.add(event.sender.id);
@@ -303,6 +332,7 @@ function registerDmxIpc() {
       outputInterlock?.revokeWindowDmxEligibility(wcId,
         (owner, authority) => notifyDmxAuthorityRevoked(owner, authority, 'entered Pitch Viewer'));
       const shutdowns = [];
+      shutdowns.push(stopArtNetActivity(wcId));
       if (dmx && dmx.ownerId === wcId) shutdowns.push(dmx.shutdown('viewer-mode'));
       if (showControl && showControl.ownerId === wcId) shutdowns.push(showControl.shutdown());
       if (aiBridge && aiBridge.ownerId === wcId) shutdowns.push(aiBridge.disable('viewer-mode'));
@@ -327,19 +357,18 @@ if (!hasLock) {
     }
   });
 
-  app.on('before-quit', (event) => {
-    if (dmx) dmx.cancelDiscover();
-    const needsShutdown = Boolean((dmx && dmx.active) || (showControl && showControl.active) || (aiBridge && aiBridge.active));
-    if (!quittingAfterShutdown && needsShutdown) {
-      event.preventDefault();
-      quittingAfterShutdown = true;
-      void Promise.all([
-        dmx && dmx.active ? dmx.shutdown('quit') : Promise.resolve(),
-        showControl && showControl.active ? showControl.shutdown() : Promise.resolve(),
-        aiBridge && aiBridge.active ? aiBridge.disable('quit', { skipQuiesceWait: true }) : Promise.resolve(),
-      ]).finally(() => app.quit());
-    }
-  });
+  app.on('before-quit', createQuitDrain({
+    closeAdmissions: () => outputInterlock?.closeAdmissions(),
+    hasWork: () => Boolean(artnetInput?.active || dmx?.discovering || dmx?.active || showControl?.active || aiBridge?.active),
+    drain: () => Promise.allSettled([
+      stopArtNetActivity(),
+      dmx?.active ? dmx.shutdown('quit') : undefined,
+      showControl?.active ? showControl.shutdown() : undefined,
+      aiBridge?.active ? aiBridge.disable('quit', { skipQuiesceWait: true }) : undefined,
+      artnetRx?.closeAll(),
+    ]),
+    quit: () => app.quit(),
+  }));
 
   app.whenReady().then(() => {
     protocol.handle('stageforge', serveRenderer);
@@ -389,6 +418,14 @@ if (!hasLock) {
     outputInterlock = createOutputInterlock({
       isDmxActive: () => Boolean(dmx && dmx.active),
       requireDmxAuthority: true,
+    });
+    artnetInput = createArtNetInput({
+      mux: artnetRx,
+      interlock: outputInterlock,
+      listInterfaces: () => dmx.listInterfaces(),
+      port: testPorts?.artnetRx,
+      isRestricted: (wcId) => viewerTracker.isViewerWindow(wcId),
+      onDocumentChange: (wcId) => dmx.cancelDiscover(wcId),
     });
     aiBridge = createAiBridgeService({
       isPackaged: app.isPackaged,

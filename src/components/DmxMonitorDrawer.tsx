@@ -5,10 +5,12 @@ import { isLogicalDmxUniverse, isPhysicalDmxUniverse, LOGICAL_DMX_UNIVERSES, typ
 import { getCatalogEntry, getCatalogMode, hasCatalogFixtures, type LaserChannelRole } from '../data/equipmentCatalog';
 import { classifyPhysicalGroup } from '../dmx/physicalDmx';
 import type { LiveDmxControllerApi } from '../dmx/useLiveDmxOutput';
+import type { ArtNetInputApi } from '../dmx/useArtNetInput';
 import type { PreflightReport } from '../data/preflight';
 import { useLive, type LiveStore } from '../state/liveTelemetry';
 import { RigConfig } from '../types/show';
 import { DmxOutputSection } from './DmxOutputSection';
+import { ArtNetInputSection } from './ArtNetInputSection';
 
 export interface DmxSnapshot {
   u1: Uint8Array;
@@ -23,6 +25,7 @@ interface DmxMonitorDrawerProps {
   rig: RigConfig;
   dmxStore: LiveStore<DmxSnapshot>;
   liveOutput: LiveDmxControllerApi;
+  artNetInput: ArtNetInputApi;
   preflight?: PreflightReport;
   liveViolationMessage?: string | null;
   aiBridgeBlocking?: boolean;
@@ -60,6 +63,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   rig,
   dmxStore,
   liveOutput,
+  artNetInput,
   preflight,
   liveViolationMessage,
   aiBridgeBlocking,
@@ -68,6 +72,8 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
   onClose,
 }) => {
   const [universe, setUniverse] = useState<LogicalDmxUniverse>(1);
+  const [inputView, setInputView] = useState(false);
+  const showInput = artNetInput.available && inputView;
   const [view, setView] = useState<'grid' | 'patch'>('grid');
   const [bufferMode, setBufferMode] = useState<'simulated' | 'physical'>('simulated');
   const [bank, setBank] = useState(0);
@@ -137,20 +143,27 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
             DMX512 LIVE MONITOR
           </h2>
           <p className="font-mono-tech text-[9px] text-zinc-400">
-            {bufferMode === 'physical' ? 'PHYSICAL OUTPUT PREVIEW · 0–255' : 'SIMULATED CHANNEL LEVELS · 0–255'}
+            {showInput ? 'RECEIVED ART-NET · 0–255' : bufferMode === 'physical' ? 'PHYSICAL OUTPUT PREVIEW · 0–255' : 'SIMULATED CHANNEL LEVELS · 0–255'}
           </p>
         </div>
-        <button
-          onClick={onClose}
-          aria-label="Close DMX monitor"
-          className="p-1.5 rounded bg-white/5 hover:bg-rose-500/30 text-zinc-300 cursor-pointer"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1.5">
+          {artNetInput.available && <button type="button" aria-pressed={showInput} onClick={() => setInputView(value => !value)}
+            className="rounded border border-white/15 px-1.5 py-1 text-[10px] text-zinc-100 cursor-pointer">
+            Art-Net input
+          </button>}
+          <button
+            onClick={onClose}
+            aria-label="Close DMX monitor"
+            className="p-1.5 rounded bg-white/5 hover:bg-rose-500/30 text-zinc-300 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       <DmxOutputSection
         output={liveOutput}
+        hidden={showInput && !liveOutput.isLive}
         rig={rig}
         hasCatalogFixtures={catalogPatched}
         preflight={preflight}
@@ -160,6 +173,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
         onOpenPreflight={onOpenPreflight}
       />
 
+      {showInput ? <ArtNetInputSection input={artNetInput} /> : <>
       <div className="flex items-center justify-between px-3 py-1.5 bg-black/40 border-b border-white/10">
         <div className="flex gap-1">
           <button
@@ -334,6 +348,7 @@ export const DmxMonitorDrawer: React.FC<DmxMonitorDrawerProps> = ({
           </div>
         )}
       </div>
+      </>}
     </aside>
   );
 };

@@ -40,6 +40,7 @@ export interface LiveDmxControllerApi {
   discovering: boolean;
   discoveryWarning: string | null;
   discoverArtNet: () => Promise<void>;
+  clearDiscovery: () => void;
   busy: boolean;
   error: string | null;
   armed: boolean;
@@ -77,6 +78,7 @@ export function useLiveDmxOutput(
   const [discoveredNodes, setDiscoveredNodes] = useState<ArtNetDiscoveredNodeBridge[]>([]);
   const [discovering, setDiscovering] = useState(false);
   const [discoveryWarning, setDiscoveryWarning] = useState<string | null>(null);
+  const discoveryGeneration = useRef(0);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -355,16 +357,24 @@ export function useLiveDmxOutput(
     };
   }, [engineRef, rigRef, enabled, isLive, desktopLive, serialLive, getEligibility]);
 
+  const clearDiscovery = useCallback(() => {
+    discoveryGeneration.current++;
+    setDiscovering(false);
+    setDiscoveredNodes([]);
+    setDiscoveryWarning(null);
+  }, []);
+
   const discoverArtNet = useCallback(async () => {
     if (!enabledRef.current) return;
     const bridge = window.stageforgeDesktop;
     if (!bridge?.dmxControl || discovering) return;
+    const generation = ++discoveryGeneration.current;
     setDiscovering(true);
     setDiscoveryWarning(null);
     setError(null);
     try {
       const result = await bridge.dmxControl({ type: 'discover', iface: settings.iface });
-      if (!enabledRef.current) return;
+      if (!enabledRef.current || generation !== discoveryGeneration.current) return;
       setDiscoveredNodes(result.nodes);
       setDiscoveryWarning(result.warning);
       if (result.nodes.length > 0) {
@@ -373,9 +383,9 @@ export function useLiveDmxOutput(
         onToast('No Art-Net nodes replied on this interface.');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Art-Net discovery failed.');
+      if (generation === discoveryGeneration.current) setError(err instanceof Error ? err.message : 'Art-Net discovery failed.');
     } finally {
-      setDiscovering(false);
+      if (generation === discoveryGeneration.current) setDiscovering(false);
     }
   }, [discovering, onToast, settings.iface]);
 
@@ -612,6 +622,7 @@ export function useLiveDmxOutput(
     discovering,
     discoveryWarning,
     discoverArtNet,
+    clearDiscovery,
     busy,
     error,
     armed,

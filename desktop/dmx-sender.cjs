@@ -260,6 +260,8 @@ function createDmxController({
   dgramModule = dgram,
   nowNs = () => process.hrtime.bigint(),
   discoverDurationMs = 2600,
+  scheduleDiscovery = setTimeout,
+  cancelDiscoveryTimer = clearTimeout,
   blackoutPaceMs = BLACKOUT_PACE_MS,
   shutdownTimeoutMs = SHUTDOWN_TIMEOUT_MS,
   heartbeatTimeoutMs = HEARTBEAT_TIMEOUT_MS,
@@ -290,8 +292,8 @@ function createDmxController({
   let lastError = null;
   let degraded = false;
   let shutdownPromise = null;
-  let discoverPromise = null;
-  let activeDiscoverCancel = null;
+  let startupDrain = null;
+  let discovery = null;
 
   const buffers = [new Uint8Array(512), new Uint8Array(512)];
   const sacnSeq = [0, 0];
@@ -514,14 +516,16 @@ function createDmxController({
     ownerId = windowOwnerId ?? null;
     authority = requestedAuthority;
 
-    const sock = dgramModule.createSocket({ type: 'udp4' });
-    sock.on('error', (err) => {
-      if (socket !== sock) return;
-      recordSendError(err);
-      emitStatus();
-    });
-
+    let closeStartup;
+    startupDrain = new Promise((resolve) => { closeStartup = resolve; });
+    let sock;
     try {
+      sock = dgramModule.createSocket({ type: 'udp4' });
+      sock.on('error', (err) => {
+        if (socket !== sock) return;
+        recordSendError(err);
+        emitStatus();
+      });
       await bindSocket(sock, { port: 0, address: config.iface });
       if (state !== 'starting' || sessionGen !== myGen || !mayStart()) {
         throw new Error('DMX output startup was cancelled.');
@@ -542,6 +546,17 @@ function createDmxController({
       }
       if (err instanceof Error && err.message === 'DMX output startup was cancelled.') throw err;
       throw new Error(`Could not bind UDP socket on ${config.iface}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (state === 'stopping') {
+        const prevOwner = ownerId;
+        state = 'idle';
+        ownerId = null;
+        authority = undefined;
+        shutdownPromise = null;
+        emitStatus(prevOwner);
+      }
+      startupDrain = null;
+      closeStartup();
     }
 
     socket = sock;
@@ -606,16 +621,15 @@ function createDmxController({
     if (state === 'starting') {
       const prevOwner = ownerId;
       sessionGen++;
-      state = 'idle';
-      ownerId = null;
+      state = 'stopping';
       lastStopAuthority = authority;
-      authority = undefined;
       lastHeartbeatNs = null;
       lastStopReason = reason;
       lastStopOwnerId = prevOwner;
       stopEventId++;
+      shutdownPromise = startupDrain.then(() => getStatus());
       emitStatus(prevOwner);
-      return Promise.resolve(getStatus());
+      return shutdownPromise;
     }
 
     if (state === 'idle') return Promise.resolve(getStatus());
@@ -646,6 +660,8 @@ function createDmxController({
     emitStatus(prevOwner);
 
     let cancelled = false;
+    let socketDrain;
+    const closeOutputSocket = () => (socketDrain ??= closeSocket(closingSocket));
     const zeroPair = [ZERO_SLOTS, ZERO_SLOTS];
 
     // Self-contained send bound strictly to closingSocket & closingConfig.
@@ -693,13 +709,13 @@ function createDmxController({
       } catch {
         // Best-effort blackout even if socket errored mid-shutdown.
       } finally {
-        await closeSocket(closingSocket);
+        await closeOutputSocket();
       }
     };
 
     const timeoutGuard = delay(shutdownTimeoutMs).then(() => {
       cancelled = true;
-      return closeSocket(closingSocket);
+      return closeOutputSocket();
     });
 
     const timed = Promise.race([runBlackout(), timeoutGuard]).finally(() => {
@@ -720,133 +736,111 @@ function createDmxController({
     return shutdownPromise;
   }
 
-  function discover(ifaceAddress) {
-    // Coalesce concurrent discovery scans so two binds never fight over UDP 6454.
-    if (discoverPromise) return discoverPromise;
-    discoverPromise = runDiscover(ifaceAddress).finally(() => {
-      discoverPromise = null;
+  function discover(ifaceAddress, { wcId = null, isEligible = () => true, reserve = () => () => {} } = {}) {
+    if (discovery) {
+      if (discovery.wcId === wcId && discovery.iface === ifaceAddress && !discovery.cancelled && isEligible()) return discovery.promise;
+      throw new Error('Art-Net discovery is already busy in another attempt or window.');
+    }
+    const release = reserve();
+    const attempt = { wcId, iface: ifaceAddress, cancelled: false, wake: null, promise: null };
+    discovery = attempt;
+    const current = () => discovery === attempt && !attempt.cancelled && isEligible();
+    attempt.promise = runDiscover(ifaceAddress, attempt, current).finally(() => {
+      if (discovery === attempt) discovery = null;
+      release();
     });
-    return discoverPromise;
+    return attempt.promise;
   }
 
-  async function runDiscover(ifaceAddress) {
-    const interfaces = listNetworkInterfaces(osModule);
-    const ifaceEntry = interfaces.find((item) => item.address === ifaceAddress);
-    if (!ifaceEntry) {
-      throw new Error(`Network interface "${String(ifaceAddress)}" is not available on this machine.`);
-    }
-
+  async function runDiscover(ifaceAddress, attempt, current) {
+    const ifaceEntry = listNetworkInterfaces(osModule).find((item) => item.address === ifaceAddress);
+    if (!ifaceEntry) throw new Error(`Network interface "${String(ifaceAddress)}" is not available on this machine.`);
+    const check = () => { if (!current()) throw new Error('Art-Net discovery was cancelled.'); };
+    check();
     discoveredNodes.clear();
     const sendSock = dgramModule.createSocket({ type: 'udp4' });
     let listenSock = null;
+    let releaseSharedRx = null;
     let warning = null;
-
     const handleReply = (msg, rinfo) => {
-      if (discoveredNodes.size >= MAX_DISCOVERED_NODES) return;
-      if (!ifaceEntry.internal && !isInSubnet(rinfo.address, ifaceEntry.address, ifaceEntry.netmask)) {
-        return;
-      }
+      if (!current() || discoveredNodes.size >= MAX_DISCOVERED_NODES) return;
+      if (!ifaceEntry.internal && !isInSubnet(rinfo.address, ifaceEntry.address, ifaceEntry.netmask)) return;
       if (ifaceEntry.internal && !isLoopbackIpv4(rinfo.address)) return;
       const node = parseArtPollReply(msg, rinfo.address);
-      if (!node) return;
-      const key = `${node.ip}:${node.bindIndex}`;
-      discoveredNodes.set(key, node);
+      if (node) discoveredNodes.set(`${node.ip}:${node.bindIndex}`, node);
     };
-
     sendSock.on('error', () => {});
     sendSock.on('message', handleReply);
 
     try {
-      await bindSocket(sendSock, { port: 0, address: ifaceEntry.address });
-      if (ifaceEntry.broadcast) {
-        sendSock.setBroadcast(true);
+      try {
+        await bindSocket(sendSock, { port: 0, address: ifaceEntry.address });
+      } catch (error) {
+        throw new Error(`Could not open discovery socket on ${ifaceEntry.address}: ${error.message ?? error}`);
       }
-    } catch (err) {
-      await closeSocket(sendSock);
-      throw new Error(`Could not open discovery socket on ${ifaceEntry.address}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+      check();
+      if (ifaceEntry.broadcast) sendSock.setBroadcast(true);
 
-    // Attempt exclusive bind on UDP 6454 (0.0.0.0) so directed broadcasts arrive on all OSes.
-    // If the shared Art-Net RX multiplexer already holds port 6454 (e.g., Art-Net TC RX active),
-    // subscribe to OpPollReply (0x2100) on that socket instead of colliding with ourselves.
-    // Never set reuseAddr: on Windows SO_REUSEADDR can steal port 6454 from a running QLC+/console.
-    const discoveryBindPort = (testPorts && testPorts.artnetDiscovery !== undefined)
-      ? testPorts.artnetDiscovery
-      : ARTNET_PORT;
-    let releaseSharedRx = null;
-    if (discoveryBindPort > 0) {
-      if (artnetRx && artnetRx.isBound && (artnetRx.port === discoveryBindPort || (testPorts && testPorts.artnetDiscovery === undefined))) {
+      const testPort = testPorts?.artnetDiscovery;
+      const discoveryPort = testPort ?? (testPorts?.artnetRx !== undefined
+        ? artnetRx?.port ?? testPorts.artnetRx : ARTNET_PORT);
+      if (discoveryPort > 0) {
         try {
-          const handle = await artnetRx.acquire(ARTNET_OPCODE_POLL_REPLY, handleReply, { port: discoveryBindPort });
-          releaseSharedRx = handle.release;
-        } catch {
-          // Fall back to direct ephemeral reply listening.
-        }
-      } else {
-        const candidate = dgramModule.createSocket({ type: 'udp4' });
-        candidate.on('error', () => {});
-        candidate.on('message', handleReply);
-        try {
-          await bindSocket(candidate, { port: discoveryBindPort, address: '0.0.0.0', exclusive: true });
-          listenSock = candidate;
+          if (artnetRx) {
+            const handle = await artnetRx.acquire(ARTNET_OPCODE_POLL_REPLY, handleReply, { port: discoveryPort, address: '0.0.0.0' });
+            releaseSharedRx = handle.release;
+          } else {
+            listenSock = dgramModule.createSocket({ type: 'udp4' });
+            listenSock.on('error', () => {});
+            listenSock.on('message', handleReply);
+            await bindSocket(listenSock, { port: discoveryPort, address: '0.0.0.0', exclusive: true });
+          }
         } catch (err) {
-          await closeSocket(candidate);
-          if (err && err.code === 'EADDRINUSE') {
+          if (err?.code === 'EADDRINUSE') {
             warning = 'Discovery unavailable on UDP 6454 — another Art-Net app owns port 6454 on this machine. Enter node IPs manually.';
           }
         }
       }
-    }
-
-    const pollPacket = encodeArtPollPacket({ flags: 0x00, diagPriority: 0x00 });
-    const targetIp = ifaceEntry.broadcast || ifaceEntry.address;
-    const targetPort = (testPorts && testPorts.artnet) || ARTNET_PORT;
-
-    const sendPoll = () => {
-      try {
-        sendSock.send(pollPacket, targetPort, targetIp, () => {});
-      } catch {
-        // ignore transient send errors during discovery
-      }
-    };
-
-    sendPoll();
-    const secondPollDelay = Math.min(1500, Math.floor(discoverDurationMs / 2));
-
-    await new Promise((resolve) => {
-      const secondTimer = setTimeout(sendPoll, secondPollDelay);
-      const endTimer = setTimeout(() => {
-        activeDiscoverCancel = null;
-        resolve();
-      }, discoverDurationMs);
-      activeDiscoverCancel = () => {
-        clearTimeout(secondTimer);
-        clearTimeout(endTimer);
-        resolve();
+      check();
+      const pollPacket = encodeArtPollPacket({ flags: 0x00, diagPriority: 0x00 });
+      const targetIp = ifaceEntry.broadcast || ifaceEntry.address;
+      const targetPort = testPorts?.artnet || ARTNET_PORT;
+      const sendPoll = () => {
+        if (!current()) return;
+        try { sendSock.send(pollPacket, targetPort, targetIp, () => {}); } catch { /* transient discovery send */ }
       };
-    });
-
-    await Promise.all([
-      closeSocket(sendSock),
-      closeSocket(listenSock),
-      releaseSharedRx ? releaseSharedRx().catch(() => {}) : Promise.resolve(),
-    ]);
-    const nodes = [...discoveredNodes.values()];
+      sendPoll();
+      await new Promise((resolve) => {
+        const secondTimer = scheduleDiscovery(sendPoll, Math.min(1500, Math.floor(discoverDurationMs / 2)));
+        const endTimer = scheduleDiscovery(() => attempt.wake?.(), discoverDurationMs);
+        attempt.wake = () => {
+          attempt.wake = null;
+          cancelDiscoveryTimer(secondTimer);
+          cancelDiscoveryTimer(endTimer);
+          resolve();
+        };
+      });
+    } finally {
+      await Promise.all([closeSocket(sendSock), closeSocket(listenSock), releaseSharedRx?.()]);
+    }
+    check();
     emitStatus();
-    return { nodes, warning };
+    return { nodes: [...discoveredNodes.values()], warning };
   }
 
-  function cancelDiscover() {
-    if (activeDiscoverCancel) {
-      activeDiscoverCancel();
-      activeDiscoverCancel = null;
-    }
+  function cancelDiscover(wcId) {
+    const attempt = discovery;
+    if (!attempt || (wcId !== undefined && attempt.wcId !== wcId)) return Promise.resolve();
+    attempt.cancelled = true;
+    attempt.wake?.();
+    return attempt.promise.catch(() => {});
   }
 
   return {
     get cid() { return cid.uuid; },
     get ownerId() { return ownerId; },
     get authority() { return authority; },
+    get discovering() { return discovery !== null; },
     get active() { return state === 'starting' || state === 'running' || state === 'stopping'; },
     isRunning() { return state === 'running'; },
     listInterfaces: () => listNetworkInterfaces(osModule),

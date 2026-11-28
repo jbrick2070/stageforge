@@ -7,6 +7,8 @@ const showControlStatusListeners = new Set();
 const aiBridgeStatusListeners = new Set();
 const aiBridgeRequestListeners = new Set();
 const dmxRevocationListeners = new Set();
+const artNetInputStatusListeners = new Set();
+const artNetInputBatchListeners = new Set();
 let pending;
 let latestDmxStatus;
 let latestShowControlStatus;
@@ -18,6 +20,8 @@ const isBuffer = value => Object.prototype.toString.call(value) === '[object Arr
 const isUniverse = value => value === 1 || value === 2;
 const isAuthority = value => value && typeof value.revision === 'string' && Number.isSafeInteger(value.generation);
 const DMX_CONTROL_TYPES = new Set(['listInterfaces', 'getStatus', 'enable', 'disable', 'discover']);
+const ARTNET_INPUT_TYPES = new Set(['listInterfaces', 'start', 'stop', 'document']);
+const ARTNET_INPUT_PHASES = new Set(['starting', 'listening', 'stopping', 'off']);
 const SHOW_CONTROL_TYPES = new Set(['getStatus', 'configure', 'stop', 'send']);
 const AI_BRIDGE_CONTROL_TYPES = new Set(['getStatus', 'enable', 'disable', 'quiesced']);
 const OUTPUT_CLAIM_TYPES = new Set(['claim', 'release']);
@@ -56,6 +60,17 @@ ipcRenderer.on('stageforge:dmx-status', (_event, status) => {
 ipcRenderer.on('stageforge:dmx-authority-revoked', (_event, authority, reason) => {
   if (!isAuthority(authority) || typeof reason !== 'string') return;
   for (const listener of [...dmxRevocationListeners]) deliver(listener, [authority, reason]);
+});
+
+ipcRenderer.on('stageforge:artnet-input-status', (_event, status) => {
+  if (!isAuthority(status?.authority) || !ARTNET_INPUT_PHASES.has(status.phase)) return;
+  for (const listener of [...artNetInputStatusListeners]) deliver(listener, [status]);
+});
+
+ipcRenderer.on('stageforge:artnet-input-batch', (_event, batch) => {
+  if (!isAuthority(batch?.authority) || !Number.isSafeInteger(batch.batchId) || batch.batchId < 1 ||
+      !Array.isArray(batch.rows) || batch.rows.length > 16 || batch.rows.some(row => !isBytes(row?.data) || row.data.byteLength !== 512)) return;
+  for (const listener of [...artNetInputBatchListeners]) deliver(listener, [batch]);
 });
 
 ipcRenderer.on('stageforge:show-control-event', (_event, payload) => {
@@ -125,6 +140,27 @@ contextBridge.exposeInMainWorld('stageforgeDesktop', {
     dmxStatusListeners.add(listener);
     if (latestDmxStatus) deliver(listener, [latestDmxStatus]);
     return () => dmxStatusListeners.delete(listener);
+  },
+  artNetInput(command) {
+    if (!command || typeof command !== 'object' || Array.isArray(command) || !ARTNET_INPUT_TYPES.has(command.type)) {
+      return Promise.reject(new TypeError('Expected a valid Art-Net input command'));
+    }
+    return ipcRenderer.invoke('stageforge:artnet-input-control', command);
+  },
+  onArtNetInputStatus(listener) {
+    if (typeof listener !== 'function') throw new TypeError('Expected an Art-Net input status listener');
+    artNetInputStatusListeners.add(listener);
+    return () => artNetInputStatusListeners.delete(listener);
+  },
+  onArtNetInputBatch(listener) {
+    if (typeof listener !== 'function') throw new TypeError('Expected an Art-Net input batch listener');
+    artNetInputBatchListeners.add(listener);
+    return () => artNetInputBatchListeners.delete(listener);
+  },
+  ackArtNetInput(ack) {
+    if (!isAuthority(ack?.authority) || !Number.isSafeInteger(ack.batchId) || ack.batchId < 1) return false;
+    ipcRenderer.send('stageforge:artnet-input-ack', ack);
+    return true;
   },
   showControl(command) {
     if (!command || typeof command !== 'object' || Array.isArray(command) || !SHOW_CONTROL_TYPES.has(command.type)) {

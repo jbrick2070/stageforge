@@ -1,172 +1,134 @@
 'use strict';
 
-// Shared UDP 6454 (Art-Net) receive multiplexer for Electron main process.
-// Holds a single exclusive-bind socket (never reuseAddr, respecting Windows port isolation)
-// when Art-Net Timecode RX is active, allowing Art-Net discovery (OpCode 0x2100) to subscribe
-// to the same socket without EADDRINUSE collisions.
-
+// Shared exclusive UDP socket for independent Art-Net subscriptions.
 const dgram = require('node:dgram');
 const { ARTNET_PORT } = require('./dmx-packets.cjs');
 
-const ARTNET_ID = Buffer.from([0x41, 0x72, 0x74, 0x2d, 0x4e, 0x65, 0x74, 0x00]);
+const ARTNET_ID = Buffer.from('Art-Net\0', 'ascii');
 
-function bindExclusive(socket, port, address = '0.0.0.0') {
+function bindExclusive(socket, port, address) {
   return new Promise((resolve, reject) => {
-    const onError = (err) => {
-      socket.off('listening', onListening);
-      reject(err);
-    };
-    const onListening = () => {
+    const cleanup = () => {
       socket.off('error', onError);
-      resolve();
+      socket.off('listening', onListening);
     };
+    const onError = (error) => { cleanup(); reject(error); };
+    const onListening = () => { cleanup(); resolve(); };
     socket.once('error', onError);
     socket.once('listening', onListening);
-    socket.bind({ port, address, exclusive: true });
+    try { socket.bind({ port, address, exclusive: true }); } catch (error) { onError(error); }
   });
 }
 
 function closeSocket(socket) {
   return new Promise((resolve) => {
-    if (!socket) return resolve();
-    try {
-      socket.close(() => resolve());
-    } catch {
-      resolve();
-    }
+    try { socket.close(resolve); } catch { resolve(); }
   });
 }
 
 function createArtNetRxMux({ dgramModule = dgram, bindPort = ARTNET_PORT, bindAddress = '0.0.0.0' } = {}) {
-  let socket = null;
-  let boundPort = null;
+  let bound = null;
   let opening = null;
   let closing = null;
-  let refs = 0;
-  let generation = 0;
   let epoch = 0;
-  const handlersByOpCode = new Map(); // opcode -> Set<{ fn: (msg, rinfo) => void }>
 
-  function dispatch(msg, rinfo) {
-    if (!msg || msg.byteLength < 10) return;
-    if (!msg.subarray(0, 8).equals(ARTNET_ID)) return;
-    const opcode = msg.readUInt16LE(8);
-    const set = handlersByOpCode.get(opcode);
-    if (!set || set.size === 0) return;
-    for (const entry of [...set]) {
-      try {
-        entry.fn(msg, rinfo);
-      } catch {
-        // Isolate subscriber errors so other Art-Net listeners keep running.
-      }
-    }
+  function beginClose(work) {
+    const drain = work.finally(() => { if (closing === drain) closing = null; });
+    closing = drain;
+    return drain;
   }
 
-  async function ensureBound(portOverride, addressOverride) {
-    if (closing) await closing;
-    const targetPort = portOverride !== undefined ? portOverride : bindPort;
-    const targetAddr = addressOverride !== undefined ? addressOverride : bindAddress;
-    if (socket) {
-      if (portOverride === undefined || targetPort === 0 || boundPort === targetPort) return boundPort;
-      throw new Error(`Art-Net RX is already bound on UDP port ${boundPort}.`);
-    }
-    if (opening) return opening;
-    const myGen = ++generation;
-    opening = (async () => {
-      const candidate = dgramModule.createSocket({ type: 'udp4' });
-      candidate.on('error', () => {});
-      candidate.on('message', dispatch);
-      try {
-        await bindExclusive(candidate, targetPort, targetAddr);
-        if (generation !== myGen) {
-          await closeSocket(candidate);
-          throw new Error('Art-Net RX startup was cancelled.');
+  function closeBinding(binding) {
+    bound = null;
+    binding.handlers.clear();
+    binding.closePromise = beginClose(closeSocket(binding.socket));
+    return binding.closePromise;
+  }
+
+  function open(port, address) {
+    const attempt = { port, address, epoch, promise: null };
+    opening = attempt;
+    attempt.promise = (async () => {
+      const socket = dgramModule.createSocket({ type: 'udp4' });
+      const handlers = new Map();
+      const binding = { socket, port, address, handlers, count: 0, closePromise: null };
+      socket.on('error', () => {});
+      socket.on('message', (msg, rinfo) => {
+        if (bound !== binding || msg.length < 10 || !msg.subarray(0, 8).equals(ARTNET_ID)) return;
+        const subscriptions = handlers.get(msg.readUInt16LE(8));
+        if (!subscriptions) return;
+        for (const entry of subscriptions) {
+          try { entry.handler(msg, rinfo); } catch { /* isolate each subscriber */ }
         }
-        socket = candidate;
-        const addr = candidate.address();
-        boundPort = addr && typeof addr === 'object' ? addr.port : targetPort;
-        return boundPort;
-      } catch (err) {
-        await closeSocket(candidate);
-        throw err;
-      } finally {
-        opening = null;
+      });
+      try {
+        await bindExclusive(socket, port, address);
+        if (epoch !== attempt.epoch) throw new Error('Art-Net RX startup was cancelled.');
+        const effective = socket.address();
+        binding.port = effective.port;
+        binding.address = effective.address ?? address;
+        bound = binding;
+        return binding;
+      } catch (error) {
+        await closeSocket(socket);
+        throw error;
       }
-    })();
-    return opening;
+    })().finally(() => { if (opening === attempt) opening = null; });
+    return attempt.promise;
   }
 
-  async function acquire(opcode, handler, opts = {}) {
+  async function acquire(opcode, handler, { port = bindPort, address = bindAddress } = {}) {
     if (typeof handler !== 'function') throw new TypeError('Handler must be a function.');
-    // Wrap each acquire in a unique token object so overlapping acquires with the same
-    // callback reference never delete each other's subscription on release (H1).
-    const entry = { fn: handler };
-    const myEpoch = epoch;
-    let set = handlersByOpCode.get(opcode);
-    if (!set) {
-      set = new Set();
-      handlersByOpCode.set(opcode, set);
-    }
-    set.add(entry);
-    refs++;
-    try {
-      const port = await ensureBound(opts.port, opts.address);
-      let released = false;
-      const release = async () => {
-        if (released || myEpoch !== epoch) return;
-        released = true;
-        const currentSet = handlersByOpCode.get(opcode);
-        if (currentSet) {
-          currentSet.delete(entry);
-          if (currentSet.size === 0) handlersByOpCode.delete(opcode);
-        }
-        refs = Math.max(0, refs - 1);
-        if (refs === 0) {
-          generation++;
-          const sock = socket;
-          socket = null;
-          boundPort = null;
-          const p = closeSocket(sock).finally(() => {
-            if (closing === p) closing = null;
-          });
-          closing = p;
-          await p;
-        }
-      };
-      return { port, release };
-    } catch (err) {
-      if (myEpoch === epoch) {
-        set.delete(entry);
-        if (set.size === 0) handlersByOpCode.delete(opcode);
-        refs = Math.max(0, refs - 1);
+    const requestedEpoch = epoch;
+    while (closing) await closing;
+    if (requestedEpoch !== epoch) throw new Error('Art-Net RX startup was cancelled.');
+    let binding = bound;
+    if (binding) {
+      if (address !== binding.address || (port !== 0 && port !== binding.port)) {
+        throw new Error(`Art-Net RX already uses ${binding.address}:${binding.port}.`);
       }
-      throw err;
+    } else {
+      if (opening && ((port !== 0 && opening.port !== port) || opening.address !== address)) {
+        throw new Error(`Art-Net RX is opening ${opening.address}:${opening.port}.`);
+      }
+      binding = await (opening?.promise ?? open(port, address));
+      if (requestedEpoch !== epoch || bound !== binding) throw new Error('Art-Net RX startup was cancelled.');
     }
+    // Subscriptions are distinct, even if callers share the same function reference.
+    const entry = { handler };
+    let subscriptions = binding.handlers.get(opcode);
+    if (!subscriptions) binding.handlers.set(opcode, subscriptions = new Set());
+    subscriptions.add(entry);
+    binding.count++;
+    let released = false;
+    return {
+      port: binding.port,
+      release() {
+        if (released || bound !== binding) return binding.closePromise ?? Promise.resolve();
+        released = true;
+        subscriptions.delete(entry);
+        if (!subscriptions.size) binding.handlers.delete(opcode);
+        if (--binding.count === 0) return closeBinding(binding);
+        return Promise.resolve();
+      },
+    };
   }
 
-  async function closeAll() {
-    generation++;
+  function closeAll() {
+    // Repeated global closes invalidate any new waiter and join the actual drain.
     epoch++;
-    handlersByOpCode.clear();
-    refs = 0;
-    const sock = socket;
-    socket = null;
-    boundPort = null;
-    const p = closeSocket(sock).finally(() => {
-      if (closing === p) closing = null;
-    });
-    closing = p;
-    await p;
+    if (closing) return closing;
+    if (bound) return closeBinding(bound);
+    if (opening) return beginClose(opening.promise.catch(() => {}));
+    return Promise.resolve();
   }
 
   return {
-    get isBound() { return socket !== null; },
-    get port() { return boundPort; },
+    get isBound() { return bound !== null; },
+    get port() { return bound?.port ?? null; },
     acquire,
     closeAll,
   };
 }
 
-module.exports = {
-  createArtNetRxMux,
-};
+module.exports = { createArtNetRxMux };

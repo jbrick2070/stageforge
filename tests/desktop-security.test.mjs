@@ -152,6 +152,10 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
     'sendDmxHeartbeat',
     'dmxControl',
     'onDmxStatus',
+    'artNetInput',
+    'onArtNetInputStatus',
+    'onArtNetInputBatch',
+    'ackArtNetInput',
     'showControl',
     'onShowControlEvent',
     'onShowControlStatus',
@@ -240,6 +244,20 @@ test('preload enforces command/payload whitelist, DMX validation, replays pendin
   await exposedApi.dmxControl({ type: 'getStatus' });
   assert.equal(invokedMessages.length, 1);
   assert.equal(invokedMessages[0][0], 'stageforge:dmx-control');
+
+  await assert.rejects(() => exposedApi.artNetInput({ type: 'send' }), TypeError);
+  await exposedApi.artNetInput({ type: 'listInterfaces' });
+  assert.equal(invokedMessages.at(-1)[0], 'stageforge:artnet-input-control');
+  const receivedInput = [];
+  const offInput = exposedApi.onArtNetInputBatch(batch => receivedInput.push(batch));
+  const fireInput = ipcHandlers.get('stageforge:artnet-input-batch');
+  fireInput({}, { authority, batchId: 1, rows: [{ data: Uint8Array.of(1) }] });
+  fireInput({}, { authority, batchId: 1, rows: [{ data: validFrame }] });
+  assert.equal(receivedInput.length, 1);
+  assert.equal(exposedApi.ackArtNetInput({ authority, batchId: 0 }), false);
+  assert.equal(exposedApi.ackArtNetInput({ authority, batchId: 1 }), true);
+  assert.deepEqual(sentMessages.at(-1), ['stageforge:artnet-input-ack', { authority, batchId: 1 }]);
+  offInput();
 
   // DMX status replay & listener isolation
   fireStatus({}, { enabled: false, state: 'idle' });
@@ -366,6 +384,8 @@ test('serial port helpers prioritize FTDI devices, cap at 8, and desktop/prepare
   assert.ok(localRequires.includes('dmx-ipc.cjs'));
   assert.ok(localRequires.includes('osc-packets.cjs'));
   assert.ok(localRequires.includes('artnet-rx.cjs'));
+  assert.ok(localRequires.includes('artnet-input.cjs'));
+  assert.ok(localRequires.includes('quit-drain.cjs'));
   assert.ok(localRequires.includes('show-control-service.cjs'));
   assert.ok(localRequires.includes('show-control-ipc.cjs'));
   assert.ok(localRequires.includes('viewer-ipc.cjs'));

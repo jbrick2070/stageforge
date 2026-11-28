@@ -105,6 +105,7 @@ import { computePowerReport, riggingPowerCsv } from './data/powerReport';
 import { evaluateRigLoads } from './data/rigLoads';
 import { loadShopStockState, saveShopStockState, type ShopStockState } from './data/shopStock';
 import { useLiveDmxOutput } from './dmx/useLiveDmxOutput';
+import { useArtNetInput } from './dmx/useArtNetInput';
 import {
   CapabilitiesProvider,
   capabilitiesForMode,
@@ -333,6 +334,8 @@ export const App: React.FC = () => {
   const audioEngineRef = useRef<AudioEngine | null>(null);
 
   const [viewerMode, setViewerMode] = useState<boolean>(() => isViewerUrlSearch(window.location.search));
+  const artNetInput = useArtNetInput(!viewerMode);
+  const { invalidateDocument: invalidateArtNetDocument, stop: stopArtNetInput } = artNetInput;
   const viewerModeRef = useRef(viewerMode);
   viewerModeRef.current = viewerMode;
 
@@ -915,6 +918,11 @@ export const App: React.FC = () => {
   );
   const liveDmxRef = useRef(liveDmx);
   liveDmxRef.current = liveDmx;
+  const { clearDiscovery } = liveDmx;
+  const advanceArtNetDocument = useCallback(() => {
+    invalidateArtNetDocument();
+    clearDiscovery();
+  }, [invalidateArtNetDocument, clearDiscovery]);
 
   const beginWebXrRequest = useCallback((mod: WebXrModule) => {
     const dmx = liveDmxRef.current;
@@ -2945,6 +2953,7 @@ export const App: React.FC = () => {
     next: RigConfig, saveNow = false, mode: 'edit' | 'document' | 'preset' | 'replace' | 'transient' = 'edit',
   ) => {
     if (!capabilitiesRef.current.edit) return;
+    if (mode === 'document' || mode === 'preset' || mode === 'replace') advanceArtNetDocument();
     cancelDemoTrackLoad();
     stopLiveOutputBeforeStructuralChange('Rig or patch changed while live output was active — re-run pre-flight.');
     if (mode === 'document' || mode === 'preset') {
@@ -2956,7 +2965,7 @@ export const App: React.FC = () => {
     }
     rigRef.current = next;
     setRig(next);
-  }, [flushDesign, queueDesign, cancelDemoTrackLoad, stopLiveOutputBeforeStructuralChange]);
+  }, [flushDesign, queueDesign, cancelDemoTrackLoad, stopLiveOutputBeforeStructuralChange, advanceArtNetDocument]);
 
   // Always-fresh ref mirror for snapshot fields so async viewer entry never captures stale render-closure state (H1).
   const deskLiveStateRef = useRef({
@@ -3172,6 +3181,8 @@ export const App: React.FC = () => {
     if (request !== openRequestRef.current || startEpoch !== sessionEpochRef.current) return;
 
     if (!viewerModeRef.current) {
+      stopArtNetInput();
+      clearDiscovery();
       // Stop any live/armed physical DMX output synchronously BEFORE locking menus or applying viewer state (qa-07 R1).
       stopLiveOutputBeforeStructuralChange('Entered Pitch Viewer while live output was active.');
       // Lock desktop main-process menus & output gates BEFORE switching renderer state (fail-closed, H2 & L3).
@@ -3893,6 +3904,7 @@ export const App: React.FC = () => {
         activeCamera: file.controls?.camera ?? 'foh',
         volume: file.controls?.volume ?? 0.72,
       };
+      advanceArtNetDocument();
       return true;
     }
     if ((candidate.kind === 'propose_look' || candidate.kind === 'propose_audio_mapping') && candidate.look) {
@@ -3965,7 +3977,7 @@ export const App: React.FC = () => {
       return true;
     }
     return false;
-  }, [applyRig, cancelDemoLoads, clearAllBumps, installInterchange, installStage, previewRig, takeDesk, wallClock]);
+  }, [advanceArtNetDocument, applyRig, cancelDemoLoads, clearAllBumps, installInterchange, installStage, previewRig, takeDesk, wallClock]);
 
   const restoreAiRevertSnapshot = useCallback((snap: AiRevertSnapshot) => {
     if (!capabilitiesRef.current.edit) return;
@@ -4645,6 +4657,7 @@ export const App: React.FC = () => {
             rig={rig}
             dmxStore={live.dmx}
             liveOutput={liveDmx}
+            artNetInput={artNetInput}
             preflight={preflightReport}
             liveViolationMessage={liveSafetyViolation}
             aiBridgeBlocking={aiBridgeBlocking}

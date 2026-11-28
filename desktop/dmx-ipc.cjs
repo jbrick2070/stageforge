@@ -5,6 +5,7 @@
 
 const { isAppPage } = require('./protocol.cjs');
 const { isDmxAuthority, sameAuthority } = require('./output-interlock.cjs');
+const { isIPv4 } = require('node:net');
 
 function isAuthorizedDmxSender(event) {
   const frame = event && event.senderFrame;
@@ -94,10 +95,17 @@ function createDmxIpcHandlers(getDmx, options = {}) {
         return dmx.shutdown('disable');
       case 'discover':
         if (restricted) throw new Error('DMX output is disabled in pitch viewer mode.');
-        if (keys.length !== 2 || typeof command.iface !== 'string') {
+        if (keys.length !== 2 || typeof command.iface !== 'string' || !isIPv4(command.iface)) {
           throw new Error('Invalid Art-Net discover command.');
         }
-        return dmx.discover(command.iface);
+        return dmx.discover(command.iface, {
+          wcId: event.sender.id,
+          isEligible: () => isAuthorizedDmxSender(event) && !isRestricted(event.sender.id),
+          reserve: () => {
+            const lease = interlock?.reserveDiscovery(event.sender.id);
+            return () => interlock?.releaseDiscovery(lease);
+          },
+        });
       case 'enable': {
         if (restricted) throw new Error('DMX output is disabled in pitch viewer mode.');
         const strict = Boolean(interlock?.requireDmxAuthority);

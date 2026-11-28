@@ -26,6 +26,7 @@ function saveAdvancedOpen(open: boolean): void {
 
 interface DmxOutputSectionProps {
   output: LiveDmxControllerApi;
+  hidden?: boolean;
   rig?: RigConfig;
   hasCatalogFixtures?: boolean;
   preflight?: PreflightReport;
@@ -37,6 +38,7 @@ interface DmxOutputSectionProps {
 
 export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
   output,
+  hidden,
   rig,
   hasCatalogFixtures,
   preflight,
@@ -116,6 +118,7 @@ export const DmxOutputSection: React.FC<DmxOutputSectionProps> = ({
 
   return (
     <section
+      hidden={hidden}
       aria-label="Live output"
       data-testid="dmx-output-section"
       className="border-b border-white/10 bg-black/50"

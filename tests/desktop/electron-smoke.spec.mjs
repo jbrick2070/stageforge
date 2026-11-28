@@ -264,6 +264,10 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
       'sendDmxHeartbeat',
       'dmxControl',
       'onDmxStatus',
+      'artNetInput',
+      'onArtNetInputStatus',
+      'onArtNetInputBatch',
+      'ackArtNetInput',
       'showControl',
       'onShowControlEvent',
       'onShowControlStatus',
@@ -282,6 +286,13 @@ test('boots the renderer from stageforge://app/ with CSP, a sandboxed preload br
   // A non-zero frame rate means the WebGL render loop is running.
   await expect(page.getByText(/fixtures · \d+ lasers · [1-9]\d* fps/)).toBeVisible();
   await expect(page.getByText('Master blackout', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'DMX monitor', exact: true }).click();
+  const dmxMonitor = page.getByRole('complementary', { name: 'DMX monitor', exact: true });
+  await dmxMonitor.getByRole('button', { name: 'Art-Net input', exact: true }).click();
+  await expect(dmxMonitor.getByTestId('artnet-input-status')).toHaveText('Off');
+  await expect(dmxMonitor.getByLabel('Art-Net binding')).toHaveValue('127.0.0.1');
+  await expect(dmxMonitor.getByRole('button', { name: 'Start listening', exact: true })).toBeVisible();
+  await dmxMonitor.getByRole('button', { name: 'Close DMX monitor', exact: true }).click();
   expectNoProblems();
 });
 
